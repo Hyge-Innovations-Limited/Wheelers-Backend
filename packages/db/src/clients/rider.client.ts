@@ -103,11 +103,23 @@ export const rideClient = {
     }),
 
   /** Unmatched rides older than `cutoff`, oldest first — the sweeper's input. */
-  findStaleUnmatched: (cutoff: Date, limit = 200) =>
+  // A ride re-dispatched after a driver dropped keeps its createdAt, so the
+  // sweep killed it within a minute. Age by last activity instead, and leave
+  // a ride alone while a driver's offer is still fresh on the table — the
+  // rider may be topping up to pay for it.
+  findStaleUnmatched: (cutoff: Date, limit = 200, pendingBidGraceMs = 10 * 60_000) =>
     prisma.ride.findMany({
       where: {
         status: { in: ['REQUESTED', 'MATCHING'] },
-        createdAt: { lt: cutoff },
+        updatedAt: { lt: cutoff },
+        NOT: {
+          bids: {
+            some: {
+              status: 'PENDING',
+              createdAt: { gt: new Date(Date.now() - pendingBidGraceMs) },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
       take: limit,
@@ -207,8 +219,8 @@ export const rideClient = {
     agreedFareNgn?: number;
     paymentMethod?: RidePaymentMethod;
   }) =>
-    prisma.ride.update({
-      where: { id: rideId },
+    prisma.ride.updateMany({
+      where: { id: rideId, status: { in: ['REQUESTED', 'MATCHING'] } },
       data: {
         driverId,
         status:    'DRIVER_ASSIGNED',

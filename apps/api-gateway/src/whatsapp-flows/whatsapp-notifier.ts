@@ -288,6 +288,20 @@ export async function sendRideCancelledNotification(
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 
+/** A driver whose offer was on the rider's list is no longer available. */
+export async function sendOfferWithdrawnNotification(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  driverName: string | undefined,
+  remaining: number,
+): Promise<void> {
+  const who = driverName ? `*${driverName}*` : 'One driver';
+  const next = remaining > 0
+    ? `Reply *more* to see the ${remaining} still available.`
+    : 'Other offers will land here as drivers respond.';
+  await sendMetaWhatsappMessage(deps, phone, `ℹ️ ${who} is no longer available — their offer has been removed. ${next}`);
+}
+
 export async function sendBidTimeoutNotification(
   deps: WhatsappNotifierDeps,
   phone: string,

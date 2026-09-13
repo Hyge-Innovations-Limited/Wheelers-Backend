@@ -21,6 +21,11 @@ import {
   addBid,
   shouldNotify,
   clearActiveRide,
+  clearActiveRideIfMatches,
+  clearPendingAccept,
+  getActiveRide,
+  removeBid,
+  IN_TRIP_ACTIVE_RIDE_TTL,
   cleanupRideKeys,
   setRideState,
   getRideState,
@@ -47,6 +52,7 @@ import {
   sendRideCompletedNotification,
   sendRideCancelledNotification,
   sendBidTimeoutNotification,
+  sendOfferWithdrawnNotification,
   sendRiderPaidNotification,
   sendDepositConfirmation,
   sendGroupRideGroupedNotification,
@@ -283,14 +289,18 @@ async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_COUNTER_OFFER') {
-    let waRider = await isWhatsappRider(deps.redisClient, event.riderId);
+    const waRiderByPointer = await isWhatsappRider(deps.redisClient, event.riderId);
+    let waRider = waRiderByPointer;
     if (!waRider && deps.whatsappNotifier) {
       // isWhatsappRider keys on the active-ride entry — which the
       // bid-timeout cleanup deletes. A late bid then looked like it belonged
-      // to an app rider and the WhatsApp rider heard nothing. The phone
-      // mapping outlives the cleanup: a rider with a phone on file is a
-      // WhatsApp rider, active-ride key or not.
-      waRider = (await lookupPhoneByUserId(deps.redisClient, event.riderId)) !== null;
+      // to an app rider and the WhatsApp rider heard nothing. But a phone on
+      // file alone is not proof: an app rider who chatted with the bot
+      // yesterday had their whole ride hijacked to WhatsApp. Fall back only
+      // when this ride has WhatsApp state or the rider has no live app socket.
+      const hasPhone = (await lookupPhoneByUserId(deps.redisClient, event.riderId)) !== null;
+      const hasWaMeta = hasPhone && (await getRideMeta(deps.redisClient, event.rideId)) !== null;
+      waRider = hasPhone && (hasWaMeta || !registry.hasUser(event.riderId));
     }
     console.info('[consumer] counter-offer', {
       rideId: event.rideId,
@@ -354,7 +364,11 @@ async function handleRideEvent(
           await storeWhatsappRide(deps.redisClient, event.rideId, meta);
           await addBid(deps.redisClient, event.rideId, bid);
           await setRideState(deps.redisClient, event.rideId, 'bidding');
-          await setActiveRide(deps.redisClient, event.riderId, event.rideId);
+          // Never yank the pointer off a ride the rider has since started.
+          const currentActive = await getActiveRide(deps.redisClient, event.riderId).catch(() => null);
+          if (!currentActive || currentActive === event.rideId) {
+            await setActiveRide(deps.redisClient, event.riderId, event.rideId);
+          }
         }
       }
       console.info('[consumer] counter-offer state', {
@@ -391,7 +405,10 @@ async function handleRideEvent(
           scheduleBidFlush(deps, event.rideId, event.riderId);
         }
       }
-    } else {
+    }
+    if (!waRiderByPointer) {
+      // An app rider — or one we could not tell apart — always gets the
+      // socket event; sending to a rider with no socket is a no-op.
       await registry.sendToUser(event.riderId, 'ride:counter_offer', {
         rideId: event.rideId,
         bidId: event.bidId,
@@ -444,6 +461,17 @@ async function handleRideEvent(
       });
     }
 
+    // A sweep tick landing between an accept and the assignment write used
+    // to release the just-created hold. Only an unmatched ride times out.
+    const timedOutRide = await rideClient.findById(event.rideId).catch(() => null);
+    if (timedOutRide && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(timedOutRide.status)) {
+      console.info('[gateway] bid timeout ignored — ride already matched', {
+        rideId: event.rideId,
+        status: timedOutRide.status,
+      });
+      return;
+    }
+
     await driverBidClient.resolvePending(event.rideId, 'EXPIRED').catch(() => {});
 
     // Same money cleanup as a cancellation: the fare hold and any reserved
@@ -463,7 +491,8 @@ async function handleRideEvent(
         const timedOutMeta = await getRideMeta(deps.redisClient, event.rideId).catch(() => null);
         await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
       }
-      await clearActiveRide(deps.redisClient, event.riderId);
+      await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
+      await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
       await cleanupRideKeys(deps.redisClient, event.rideId);
     } else {
       await registry.sendToUser(event.riderId, 'ride:bid_timeout', {
@@ -509,12 +538,14 @@ async function handleRideEvent(
         driverId: gone.driverId,
         reason: 'driver_unavailable',
       });
+      await dropBidFromWhatsappRide(deps, gone.rideId, gone.riderId, gone.driverId);
     }
 
     // Notify rider
     const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
     if (waRider && deps.whatsappNotifier) {
-      await setRideState(deps.redisClient, event.rideId, 'confirmed');
+      await setRideState(deps.redisClient, event.rideId, 'confirmed', IN_TRIP_ACTIVE_RIDE_TTL);
+      await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
 
       // Store accepted bid for driver profile flow
       try {
@@ -624,7 +655,7 @@ async function handleRideEvent(
       driverEarningsNgn: matchFees.driverPayoutNgn,
       lockedFareNgn: event.lockedFareNgn,
       paymentMethod: event.paymentMethod,
-      riderPaid: true,
+      riderPaid: event.paymentMethod !== 'CASH',
       riderPhone,
     });
 
@@ -658,6 +689,7 @@ async function handleRideEvent(
     // riders get a socket event their ride screen can react to.
     const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
     if (waRider && deps.whatsappNotifier) {
+      await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
       if (phone) {
         const arrivedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
@@ -679,14 +711,16 @@ async function handleRideEvent(
 
   if (event.eventType === 'RIDE_STARTED') {
     // RIDE_STARTED only has driverId (Driver record ID), not driverUserId.
-    // Look up driverUserId from rideParticipants (set by RIDE_DRIVER_ASSIGNED).
-    const participants = rideParticipants.get(event.rideId);
+    // Look up driverUserId from rideParticipants (set by RIDE_DRIVER_ASSIGNED),
+    // or from the database after a gateway restart.
+    const participants = await participantsFor(event.rideId, rideParticipants);
     const driverUserId = participants?.driverUserId;
 
     // Notify rider
     const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
     if (waRider && deps.whatsappNotifier) {
-      await setRideState(deps.redisClient, event.rideId, 'in_progress');
+      await setRideState(deps.redisClient, event.rideId, 'in_progress', IN_TRIP_ACTIVE_RIDE_TTL);
+      await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
       if (phone) {
         await sendRideStartedNotification(deps.whatsappNotifier, phone).catch(() => {});
@@ -730,7 +764,8 @@ async function handleRideEvent(
           driverName: completedBid?.driverName,
         }).catch(() => {});
       }
-      await clearActiveRide(deps.redisClient, event.riderId);
+      await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
+      await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
     } else {
       const riderFees = calculateRideFees(event.fareNgn);
       await registry.sendToUser(event.riderId, 'ride:completed', {
@@ -785,7 +820,13 @@ async function handleRideEvent(
     // wallet-service releases it too (consumer race) — whichever ran first,
     // the result still carries the hold amount and the wallet's balance, so
     // the rider's message can state the refund as a fact, not a hope.
-    const holdRelease = await walletClient.cancelRideHold(event.rideId).catch(() => null);
+    // A driver bailing puts the ride back into matching under the same id.
+    // The rider's fare stays held for the next driver; releasing it here
+    // meant the re-match ran unsecured and completion found no hold.
+    const driverBailed = event.cancelledBy === 'driver';
+    const holdRelease = driverBailed
+      ? null
+      : await walletClient.cancelRideHold(event.rideId).catch(() => null);
 
     const releasedReferralCashback = await referralClient.releaseRideCashback(
       event.rideId,
@@ -803,7 +844,13 @@ async function handleRideEvent(
           balanceNgn: holdRelease ? Number(holdRelease.wallet.balanceNgn) : undefined,
         }).catch(() => {});
       }
-      await clearActiveRide(deps.redisClient, event.riderId);
+      if (driverBailed) {
+        // Back to bidding on the same ride: new offers land in the same chat.
+        await setRideState(deps.redisClient, event.rideId, 'bidding');
+      } else {
+        await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
+        await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
+      }
     } else {
       await registry.sendToUser(event.riderId, 'ride:cancelled', {
         rideId: event.rideId,
@@ -848,9 +895,11 @@ async function handleRideEvent(
       }
     }
 
-    // Clean up WhatsApp Redis state for this ride
-    await cleanupRideKeys(deps.redisClient, event.rideId);
-    await clearActiveRide(deps.redisClient, event.riderId).catch(() => {});
+    if (!driverBailed) {
+      // Clean up WhatsApp Redis state for this ride
+      await cleanupRideKeys(deps.redisClient, event.rideId);
+      await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => {});
+    }
 
     rideParticipants.delete(event.rideId);
     return;
@@ -861,6 +910,7 @@ async function handleRideEvent(
     // lapsing, which says nothing about a bid.
     if (event.reason === 'manual_reject') {
       await driverBidClient.markWithdrawn(event.rideId, event.driverId).catch(() => {});
+      await dropBidFromWhatsappRide(deps, event.rideId, event.riderId, event.driverId);
     }
     await registry.sendToUser(event.riderId, 'ride:driver_rejected', {
       rideId: event.rideId,
@@ -879,8 +929,9 @@ async function handleRideEvent(
       createdAt: event.timestamp,
     };
 
-    // Send to both participants — the rideParticipants map has riderId + driverId
-    const participants = rideParticipants.get(event.rideId);
+    // Send to both participants. The map is in-memory; after a restart it is
+    // empty for every in-flight trip, so fall back to the database.
+    const participants = await participantsFor(event.rideId, rideParticipants);
     if (participants?.riderId) {
       await registry.sendToUser(participants.riderId, 'chat:message', chatPayload);
     }
@@ -1011,7 +1062,7 @@ async function handleGpsProcessedEvent(
   registry: SocketRegistry,
   rideParticipants: Map<string, RideParticipantState>,
 ): Promise<void> {
-  const participants = rideParticipants.get(event.rideId);
+  const participants = await participantsFor(event.rideId, rideParticipants);
   if (!participants?.riderId) {
     return;
   }
@@ -1212,4 +1263,51 @@ async function handleGroupRideEvent(
       }
     }
   }
+}
+
+
+/**
+ * Participants of a ride, from memory or — after a gateway restart emptied
+ * the map — from the database. Chat, live distance and trip events used to
+ * go silent for the rest of every in-flight trip after a deploy.
+ */
+async function participantsFor(
+  rideId: string,
+  rideParticipants: Map<string, RideParticipantState>,
+): Promise<RideParticipantState | undefined> {
+  const cached = rideParticipants.get(rideId);
+  if (cached?.riderId && cached.driverUserId) return cached;
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (!ride) return cached;
+  let driverUserId = cached?.driverUserId;
+  if (!driverUserId && ride.driverId) {
+    const driver = await driverClient.findById(ride.driverId).catch(() => null);
+    driverUserId = driver?.userId;
+  }
+  const merged: RideParticipantState = { ...cached, riderId: ride.riderId, driverUserId };
+  rideParticipants.set(rideId, merged);
+  return merged;
+}
+
+/**
+ * A bid that is gone on the app side must be gone on the WhatsApp side too,
+ * or the rider can still "pay" for a driver who withdrew.
+ */
+async function dropBidFromWhatsappRide(
+  deps: StartGatewayConsumerDeps,
+  rideId: string,
+  riderId: string,
+  driverId: string,
+): Promise<void> {
+  const bids = await getBids(deps.redisClient, rideId).catch(() => []);
+  const gone = bids.find((b) => b.driverId === driverId);
+  if (!gone) return;
+  const remaining = await removeBid(deps.redisClient, rideId, driverId).catch(() => bids);
+  await storeLastBatch(deps.redisClient, rideId, remaining).catch(() => {});
+  if (!deps.whatsappNotifier) return;
+  const isWa = await isWhatsappRider(deps.redisClient, riderId);
+  if (!isWa) return;
+  const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
+  if (!phone) return;
+  await sendOfferWithdrawnNotification(deps.whatsappNotifier, phone, gone.driverName, remaining.length).catch(() => {});
 }

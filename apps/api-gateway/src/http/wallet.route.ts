@@ -472,6 +472,7 @@ export async function handleCreateWalletWithdrawalRoute(
   deps: WalletRouteDeps,
 ): Promise<void> {
   let reservedRequestId: string | undefined;
+  let payoutMayExist = false;
   let auditUserId: string | undefined;
   let auditAmountNgn: number | undefined;
 
@@ -624,15 +625,30 @@ export async function handleCreateWalletWithdrawalRoute(
         });
         reservedRequestId = reserveResult.request.id;
 
-        // Create payout via Pouch Liquifia (from the treasury when configured)
-        const payout = await deps.pouchLiquifiaClient.createPayout({
-          virtualAccountId: payoutSourceVaId,
-          reference: reserveResult.request.id,
-          amount: requestedAmountNgn,
-          destinationAccount: accountNumber,
-          destinationBankUuid: bankUuid,
-          idempotencyKey: reserveResult.request.id,
-        });
+        // Create payout via Pouch Liquifia (from the treasury when configured).
+        // A timeout or 5xx AFTER Pouch took the request is ambiguous: releasing
+        // the reservation then pays the user twice. Keep it for reconciliation.
+        let payout;
+        try {
+          payout = await deps.pouchLiquifiaClient.createPayout({
+            virtualAccountId: payoutSourceVaId,
+            reference: reserveResult.request.id,
+            amount: requestedAmountNgn,
+            destinationAccount: accountNumber,
+            destinationBankUuid: bankUuid,
+            idempotencyKey: reserveResult.request.id,
+          });
+        } catch (payoutError) {
+          const status = (payoutError as { status?: unknown })?.status;
+          if (typeof status !== 'number' || status >= 500 || status === 408) {
+            payoutMayExist = true;
+            throw new Error(
+              'Your withdrawal was submitted but the bank has not confirmed it yet. The amount stays reserved until it does. Your wallet balance is untouched otherwise.',
+            );
+          }
+          throw payoutError;
+        }
+        payoutMayExist = classifyPouchPayoutStatus(payout.status) !== "failed";
 
         // Pouch reports rejections inside an HTTP 200 — a payout with
         // status FAILED/REJECTED must not be recorded as created, or the
@@ -704,7 +720,11 @@ export async function handleCreateWalletWithdrawalRoute(
       providerCode: (error as { code?: string })?.code ?? null,
     });
 
-    if (reservedRequestId) {
+    if (reservedRequestId && payoutMayExist) {
+      console.error("[api-gateway][wallet-withdrawal] payout may exist — reservation kept for reconciliation", {
+        withdrawalRequestId: reservedRequestId,
+      });
+    } else if (reservedRequestId) {
       await withdrawalClient
         .releaseFailedRequest({
           withdrawalRequestId: reservedRequestId,

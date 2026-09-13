@@ -222,11 +222,14 @@ async function handleVirtualAccountCredited(
   if (!virtualAccount) {
     const customerId = pickString(data, ['customerId', 'customer_id', 'customer.id', 'data.customerId']);
     const customerReference = pickString(data, ['customerReference', 'customer_reference', 'customer.customer_reference']);
-    const user = customerId
-      ? await userClient.findByPouchCustomerId(customerId)
-      : customerReference
+    // Try both: after a reissue the payload's customer_id is the OLD
+    // customer, which no user points at any more, but the reference still
+    // starts with the user id.
+    const byCustomer = customerId ? await userClient.findByPouchCustomerId(customerId).catch(() => null) : null;
+    const user = byCustomer
+      ?? (customerReference
         ? await userClient.findById(customerReference.replace(/-r\d+$/, '')).catch(() => null)
-        : null;
+        : null);
     if (user) {
       virtualAccount = await virtualAccountClient.findByUserId(user.id);
       if (virtualAccount) {
@@ -293,7 +296,10 @@ async function handlePayoutSuccess(
     return;
   }
 
-  const withdrawal = await withdrawalClient.findByProviderReference(providerReference);
+  // Our payout reference IS the withdrawal request id, so the row exists
+  // even when attachPayout has not written providerReference yet.
+  const withdrawal = await withdrawalClient.findByProviderReference(providerReference)
+    ?? await withdrawalClient.findById(providerReference).catch(() => null);
   if (!withdrawal) {
     // Not every payout is a user withdrawal — treasury float sweeps succeed
     // here too, and they have no WithdrawalRequest to settle.
@@ -358,14 +364,16 @@ async function handlePayoutFailed(
     return;
   }
 
-  const withdrawal = await withdrawalClient.findByProviderReference(providerReference);
+  const withdrawal = await withdrawalClient.findByProviderReference(providerReference)
+    ?? await withdrawalClient.findById(providerReference).catch(() => null);
   if (!withdrawal) {
-    // Likely the race where this webhook beat attachPayout's write of
-    // providerReference. Fail the request so the provider retries — with the
-    // dedup marker cleared upstream, the retry will find the row and refund.
-    throw new Error(
-      `payout.failed: no withdrawal found for reference ${providerReference} (possible attachPayout race — provider should retry)`,
-    );
+    // Not ours: a failed treasury sweep or escrow transfer has no
+    // WithdrawalRequest. Throwing here made Pouch retry forever.
+    console.warn('[api-gateway][pouch-webhook] payout.failed with no matching withdrawal (sweep or manual payout)', {
+      providerReference,
+      failureReason,
+    });
+    return;
   }
 
   await withdrawalClient.releaseFailedRequest({

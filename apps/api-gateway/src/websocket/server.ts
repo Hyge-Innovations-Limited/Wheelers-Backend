@@ -56,6 +56,12 @@ async function withdrawDriverFromMarket(
       driverId: bid.driverId,
       reason: 'driver_unavailable',
     });
+    // The driver was never told their bid was pulled; the app showed
+    // "waiting on rider" for half an hour.
+    void deps.registry.sendToUser(driverUserId, 'ride:bid_withdrawn', {
+      rideId: bid.rideId,
+      reason: 'driver_offline',
+    });
   }
 }
 

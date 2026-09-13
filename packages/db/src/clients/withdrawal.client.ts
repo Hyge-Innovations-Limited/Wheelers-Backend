@@ -151,20 +151,19 @@ export const withdrawalClient = {
         return request;
       }
 
-      if (request.reservation.status === 'ACTIVE') {
+      // ATOMIC CLAIM. The webhook, the status poll, payment-service and the
+      // reconciler can all release the same request; a read-then-write let
+      // two of them each credit the wallet. Only the claimer moves money.
+      const claimed = await tx.walletReservation.updateMany({
+        where: { id: request.reservationId, status: 'ACTIVE' },
+        data: { status: 'RELEASED', releasedAt: new Date() },
+      });
+      if (claimed.count === 1) {
         await tx.wallet.update({
           where: { id: request.walletId },
           data: {
             balanceNgn: { increment: Number(request.reservedAmountNgn) },
             lockedNgn: { decrement: Number(request.reservedAmountNgn) },
-          },
-        });
-
-        await tx.walletReservation.update({
-          where: { id: request.reservationId },
-          data: {
-            status: 'RELEASED',
-            releasedAt: new Date(),
           },
         });
       }
@@ -199,7 +198,13 @@ export const withdrawalClient = {
           return request;
         }
 
-        if (request.reservation.status !== 'ACTIVE') {
+        // Same atomic claim as release: settle ∥ release used to pay out AND
+        // refund, and lockedNgn went negative.
+        const claimed = await tx.walletReservation.updateMany({
+          where: { id: request.reservationId, status: 'ACTIVE' },
+          data: { status: 'CONSUMED', consumedAt: new Date() },
+        });
+        if (claimed.count === 0) {
           throw new Error('Withdrawal reservation is not active.');
         }
 
@@ -223,14 +228,6 @@ export const withdrawalClient = {
               pouchPayoutId: request.pouchPayoutId,
               bankNetworkId: request.bankNetworkId,
             }),
-          },
-        });
-
-        await tx.walletReservation.update({
-          where: { id: request.reservationId },
-          data: {
-            status: 'CONSUMED',
-            consumedAt: new Date(),
           },
         });
 

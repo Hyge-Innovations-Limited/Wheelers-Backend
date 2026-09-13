@@ -1,4 +1,4 @@
-import { driverClient } from '@wheleers/db';
+import { driverClient, rideClient } from '@wheleers/db';
 import { safeParseKafkaEvent, TOPICS, type DriverOnlineEvent, type DriverOfflineEvent } from '@wheleers/kafka-schemas';
 import type { MessageContext } from '@wheleers/kafka-client';
 
@@ -18,6 +18,18 @@ export function createDriverEventsConsumer(params: {
       if (!event) return;
 
       if (event.eventType === 'DRIVER_ONLINE') {
+        // The app re-announces online on every reconnect, including mid-trip.
+        // A driver on a trip is not in the market: putting them back in the
+        // pool re-broadcast every pending ride to them and flipped their
+        // status from ON_RIDE to ONLINE.
+        const onTrip = await rideClient.findActiveByDriver(event.driverId).catch(() => null);
+        if (onTrip) {
+          console.info('[ride-service] driver online ignored — on a trip', {
+            driverId: event.driverId,
+            rideId: onTrip.id,
+          });
+          return;
+        }
         state.onlineDrivers.set(event.driverId, {
           driverId: event.driverId,
           userId: event.userId,

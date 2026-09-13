@@ -22,6 +22,8 @@ import { matchDriver } from '../handlers/match-driver.handler';
 const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
 /** How long the whole search runs before the rider is told nobody took it. */
 const BID_TIMEOUT_MS = RIDE.BID_TIMEOUT_SECONDS * 1000;
+/** How long a rider gets to pick (and fund) an offer once one exists. */
+const DECISION_WINDOW_MS = 10 * 60_000;
 
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
@@ -244,11 +246,14 @@ export function createRideRequestedConsumer(params: {
     const pending = findPendingForRideId(event.rideId);
     if (!pending) return;
 
-    // Reset the bid timeout since we got activity
+    // An offer is on the table: give the rider a decision window instead of
+    // the 90 s broadcast timeout. Clearing without re-arming left closure to
+    // the stale sweep, which fired 2–3 minutes after the ⏳ the driver saw.
     if (pending.timeout) {
       clearTimeout(pending.timeout);
       pending.timeout = null;
     }
+    startBidTimeout(pending.rideRequested, DECISION_WINDOW_MS);
 
     // Store driver info so we can use it when the rider accepts
     pending.counterOfferDrivers.set(event.driverId, {
@@ -344,6 +349,32 @@ export function createRideRequestedConsumer(params: {
 
   async function handleOfferAccepted(event: RideOfferAcceptedEvent): Promise<void> {
     const pending = state.pendingMatchesByRideId.get(event.rideId);
+
+    // One driver, one trip. Two riders accepting the same driver inside the
+    // Kafka lag both passed the gateway's busy check; the second assignment
+    // used to go through and overwrite the first on the driver's app.
+    const busyWith = await rideClient.findActiveByDriver(event.driverId).catch(() => null);
+    if (busyWith && busyWith.id !== event.rideId) {
+      console.warn('[ride-service] offer accepted for a driver already on a trip — cancelling this ride', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        busyRideId: busyWith.id,
+      });
+      await rideEventsProducer.rideCancelled({
+        eventType: 'RIDE_CANCELLED',
+        rideId: event.rideId,
+        riderId: event.riderId,
+        reason: 'driver_unavailable',
+        cancelledBy: 'system',
+        timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        console.error('[ride-service] could not cancel double-booked ride', {
+          rideId: event.rideId,
+          error: (err as any)?.message ?? err,
+        });
+      });
+      return;
+    }
 
     // Pending match state is in-memory only, so a restart or a consumer-group
     // rebalance between RIDE_REQUESTED and the rider accepting wipes it. This
@@ -452,7 +483,7 @@ export function createRideRequestedConsumer(params: {
     };
   }
 
-  function startBidTimeout(event: RideRequestedEvent): void {
+  function startBidTimeout(event: RideRequestedEvent, windowMs: number = BID_TIMEOUT_MS): void {
     const pending = state.pendingMatchesByRideId.get(event.rideId);
 
     const timeout = setTimeout(() => {
@@ -464,7 +495,7 @@ export function createRideRequestedConsumer(params: {
       }).catch((err) => {
         console.warn(`[ride-service] bid timeout publish failed:`, (err as any)?.message ?? err);
       });
-    }, BID_TIMEOUT_MS);
+    }, windowMs);
     timeout.unref();
 
     if (pending) {

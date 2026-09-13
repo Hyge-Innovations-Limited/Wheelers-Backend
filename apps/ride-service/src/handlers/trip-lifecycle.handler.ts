@@ -35,10 +35,20 @@ export function createTripLifecycleHandler(params?: {
         });
 
         try {
-          await rideClient.assignDriver(event.rideId, event.driverId, {
+          const assigned = await rideClient.assignDriver(event.rideId, event.driverId, {
             agreedFareNgn: event.agreedFareNgn,
             paymentMethod: event.paymentMethod,
           });
+          if (assigned.count === 0) {
+            // Already assigned (a second accept raced this one) or no longer
+            // open. The first driver keeps the trip; this one is not marked
+            // ON_RIDE for a ride they did not get.
+            console.warn('[ride-service] assignment skipped — ride already assigned or closed', {
+              rideId: event.rideId,
+              driverId: event.driverId,
+            });
+            return;
+          }
           await driverClient.updateStatus(event.driverId, DriverStatus.ON_RIDE);
         } catch (err) {
           // agreedFareNgn is written here and read back at completion. If this

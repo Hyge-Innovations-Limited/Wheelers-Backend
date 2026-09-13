@@ -250,6 +250,15 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_CANCELLED') {
+        // A driver bailing puts the ride back into matching with the same
+        // rideId; the rider's fare must stay held for the next driver. The
+        // hold is released when the ride truly ends (rider cancel, timeout).
+        if (event.cancelledBy === 'driver') {
+          console.info(`[${serviceId}][escrow] driver cancelled — hold kept for re-match`, {
+            rideId: event.rideId,
+          });
+          return;
+        }
         try {
           const holdResult = await walletRepository.cancelRideHold(event.rideId);
           if (!holdResult) {
@@ -284,14 +293,10 @@ export function createRideEventsConsumer(params: {
             reason: 'ride_cancelled',
           }, { key: event.rideId });
 
-          // Return the escrowed cash to the rider's account.
-          if (cashEscrow) {
-            await cashEscrow.refundToRider({
-              rideId: event.rideId,
-              riderId: holdResult.wallet.userId,
-              amountNgn: holdResult.holdAmountNgn,
-            });
-          }
+          // Deliberately NO cash transfer back to the rider's VA. The ledger
+          // credit above IS the refund; a transfer to their VA comes back
+          // through the deposit webhook and credits the wallet a second time
+          // (the same bounce that removed releaseToDriver at completion).
         } catch (error) {
           console.error(`[${serviceId}][escrow] CRITICAL: cancel release FAILED — rider funds still locked`, {
             rideId: event.rideId,

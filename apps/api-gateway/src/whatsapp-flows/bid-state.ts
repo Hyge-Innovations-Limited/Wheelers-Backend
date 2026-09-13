@@ -53,7 +53,13 @@ export interface WhatsappBid {
 const RIDE_META_TTL = 900;           // 15 minutes
 const BIDS_TTL = 900;                // 15 minutes
 const RIDE_STATE_TTL = 1800;         // 30 minutes
-const ACTIVE_RIDE_TTL = 1800;        // 30 minutes
+const ACTIVE_RIDE_TTL = 1800;        // 30 minutes — while still looking for a driver
+/**
+ * Once a driver is assigned the pointer must outlive the trip. It used to
+ * expire 30 minutes after booking, so on a long ride "cancel" fell into the
+ * booking flow and the completion message never came.
+ */
+export const IN_TRIP_ACTIVE_RIDE_TTL = 3 * 60 * 60;
 const PENDING_LOCATION_TTL = 600;    // 10 minutes
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
 const DEBOUNCE_TTL = 30;             // 30 seconds
@@ -172,8 +178,24 @@ export async function setActiveRide(
   redis: RedisClient,
   userId: string,
   rideId: string,
+  ttlSeconds: number = ACTIVE_RIDE_TTL,
 ): Promise<void> {
-  await redis.set(activeRideKey(userId), rideId, ACTIVE_RIDE_TTL);
+  await redis.set(activeRideKey(userId), rideId, ttlSeconds);
+}
+
+/**
+ * Clear the pointer only if it still names this ride. Cleanup for a ride
+ * that ended used to wipe whatever the rider had moved on to.
+ */
+export async function clearActiveRideIfMatches(
+  redis: RedisClient,
+  userId: string,
+  rideId: string,
+): Promise<boolean> {
+  const current = await redis.get(activeRideKey(userId)).catch(() => null);
+  if (current !== null && current !== rideId) return false;
+  await redis.del(activeRideKey(userId));
+  return true;
 }
 
 export async function getActiveRide(
@@ -283,8 +305,9 @@ export async function setRideState(
   redis: RedisClient,
   rideId: string,
   state: RideState,
+  ttlSeconds: number = RIDE_STATE_TTL,
 ): Promise<void> {
-  await redis.set(rideStateKey(rideId), state, RIDE_STATE_TTL);
+  await redis.set(rideStateKey(rideId), state, ttlSeconds);
 }
 
 export async function getRideState(

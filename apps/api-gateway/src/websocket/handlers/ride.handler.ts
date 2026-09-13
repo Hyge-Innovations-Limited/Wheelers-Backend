@@ -52,6 +52,29 @@ function requireString(payload: Record<string, unknown>, key: string): string {
  * A driver additionally has a CEILING (₦500/km): the rider names the price on
  * Wheelers, so a driver may haggle upward but not without limit.
  */
+/**
+ * The trip belongs to one driver. Without this any driver who ever saw the
+ * request could start, arrive, or COMPLETE someone else's ride — and be paid
+ * for it, because settlement trusted the driver id on the event.
+ */
+async function assertDriverOwnsRide(rideId: string, auth: { driverId?: string | null }) {
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (!ride) throw new Error('This ride no longer exists.');
+  if (!auth.driverId || ride.driverId !== auth.driverId) {
+    throw new Error('This ride is not assigned to you.');
+  }
+  return ride;
+}
+
+async function assertRideOpenForBids(rideId: string) {
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (!ride) throw new Error('This request no longer exists.');
+  if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') {
+    throw new Error('This request is no longer open.');
+  }
+  return ride;
+}
+
 async function assertOfferWithinBand(
   rideId: string,
   offerNgn: number,
@@ -411,6 +434,24 @@ export async function handleRideMessage(
     const bidId = getString(payload, 'bidId');
     const paymentMethod = parsePaymentMethod(payload['paymentMethod']);
 
+    // A second accept on a ride that already has a driver (double-tap on two
+    // offers) must not publish a second assignment.
+    const acceptingRide = await rideClient.findById(rideId).catch(() => null);
+    if (acceptingRide && acceptingRide.riderId !== auth.userId) {
+      throw new Error('This ride is not yours.');
+    }
+    if (acceptingRide && acceptingRide.status !== 'REQUESTED' && acceptingRide.status !== 'MATCHING') {
+      return {
+        type: 'ride:accept_offer:rejected',
+        payload: {
+          rideId,
+          driverId,
+          reason: 'already_matched',
+          message: 'This ride already has a driver.',
+        },
+      };
+    }
+
     // ── The moment of commitment. The driver must still exist in the
     // market: online, recently seen, not already on a trip. Without this a
     // rider could pay for a driver who won another ride minutes ago or
@@ -595,6 +636,7 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:stop:confirm') {
+    if (auth.driverId) await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
     const driverId = getString(payload, 'driverId') ?? auth.driverId ?? auth.userId;
     const event = RideStopConfirmedEvent.parse({
       eventType: 'RIDE_STOP_CONFIRMED',
@@ -626,6 +668,12 @@ export async function handleRideMessage(
     if (!riderId) {
       throw new Error('Could not resolve the rider for this ride.');
     }
+    if (ride) {
+      const isParty = cancelledBy === 'driver'
+        ? ride.driverId === auth.driverId
+        : ride.riderId === auth.userId;
+      if (!isParty) throw new Error('This ride is not yours to cancel.');
+    }
 
     const event = RideCancelledEvent.parse({
       eventType: 'RIDE_CANCELLED',
@@ -647,7 +695,8 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:start') {
-    const driverId = getString(payload, 'driverId') ?? auth.driverId;
+    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    const driverId = auth.driverId;
     if (!driverId) throw new Error('Missing required field: driverId');
 
     const event = RideStartedEvent.parse({
@@ -670,7 +719,8 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:end') {
-    const endDriverId = getString(payload, 'driverId') ?? auth.driverId;
+    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    const endDriverId = auth.driverId;
     if (!endDriverId) throw new Error('Missing required field: driverId');
 
     const event = RideCompletionRequestedEvent.parse({
@@ -698,9 +748,9 @@ export async function handleRideMessage(
     // This used to ack the driver and publish nothing — so the rider was
     // never told the car was outside. The app only sends rideId, so resolve
     // the rider from the ride row.
-    const ride = await rideClient.findById(rideId).catch(() => null);
-    const riderId = getString(payload, 'riderId') ?? ride?.riderId;
-    const driverId = getString(payload, 'driverId') ?? auth.driverId ?? ride?.driverId;
+    const ride = await assertDriverOwnsRide(rideId, auth);
+    const riderId = ride.riderId;
+    const driverId = auth.driverId ?? ride.driverId;
 
     if (riderId && driverId) {
       const event = RideArrivedEvent.parse({
@@ -760,6 +810,12 @@ export async function handleRideMessage(
     if (!bidRiderId) {
       throw new Error('This request no longer exists.');
     }
+    // The request must still be taking bids, and the bid must sit inside
+    // the fare band (₦500/km ceiling, rider floor). The app's +100/+500
+    // chips and "change bid" never checked the cap; the server must.
+    await assertRideOpenForBids(acceptRideId);
+    await assertOfferWithinBand(acceptRideId, requireNumber(payload, 'agreedFareNgn'), 'driver');
+
     const proximity = await computeBidProximity(
       auth.userId,
       acceptRideId,

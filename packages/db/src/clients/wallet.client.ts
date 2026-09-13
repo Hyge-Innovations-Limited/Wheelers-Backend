@@ -254,10 +254,14 @@ export const walletClient = {
         // balance check and throws before the unique constraint could catch
         // it — surfacing as a fake CRITICAL 'ride running unsecured'.
         const existing = await tx.rideHold.findUnique({ where: { rideId } });
-        if (existing) {
+        if (existing && existing.status !== 'RELEASED') {
           const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: walletId } });
           return { wallet, holdAmountNgn: Number(existing.amountNgn), applied: false as const };
         }
+        // A RELEASED row means an earlier driver dropped and the ride was
+        // re-matched. Treating it as "already held" let the new match run
+        // with nothing locked and settlement then found no ACTIVE hold.
+        const rearm = existing?.status === 'RELEASED';
 
         const current = await tx.wallet.findUniqueOrThrow({
           where: { id: walletId },
@@ -278,15 +282,25 @@ export const walletClient = {
           },
         });
 
-        await tx.rideHold.create({
-          data: {
-            rideId,
-            walletId,
-            riderId,
-            driverUserId,
-            amountNgn,
-          },
-        });
+        if (rearm) {
+          const reclaimed = await tx.rideHold.updateMany({
+            where: { rideId, status: 'RELEASED' },
+            data: { status: 'ACTIVE', walletId, riderId, driverUserId, amountNgn, settledAt: null, settledAmountNgn: null },
+          });
+          if (reclaimed.count === 0) {
+            throw new Error(`Ride hold for ${rideId} changed state while being re-armed`);
+          }
+        } else {
+          await tx.rideHold.create({
+            data: {
+              rideId,
+              walletId,
+              riderId,
+              driverUserId,
+              amountNgn,
+            },
+          });
+        }
 
         return { wallet, holdAmountNgn: amountNgn, applied: true as const };
       });
@@ -345,14 +359,29 @@ export const walletClient = {
           },
         });
 
-        // 2. Calculate fees — rider's offer is inclusive of all fees
-        const fees = calculateRideFees(fareNgn);
-        const riderTotalNgn = fees.totalNgn; // same as fareNgn
+        // 2. Calculate fees — rider's offer is inclusive of all fees. If the
+        // fare came in above what was held and the rider has nothing else,
+        // settle for what is there rather than throwing: a throw rolled the
+        // claim back and left the money locked and the driver unpaid forever.
+        const availableNgn = Number(unlockedRiderWallet.balanceNgn);
+        const effectiveFareNgn = Math.min(fareNgn, Math.max(availableNgn, Number(hold.amountNgn)));
+        if (effectiveFareNgn < fareNgn) {
+          console.error('[wallet] ride settled below fare — rider short after hold', {
+            rideId,
+            fareNgn,
+            heldNgn: Number(hold.amountNgn),
+            availableNgn,
+            settledNgn: effectiveFareNgn,
+          });
+          await tx.rideHold.update({ where: { rideId }, data: { settledAmountNgn: effectiveFareNgn } });
+        }
+        const fees = calculateRideFees(effectiveFareNgn);
+        const riderTotalNgn = fees.totalNgn;
         const platformFeeNgn = fees.platformTotalNgn;
         const driverPayoutNgn = fees.driverPayoutNgn;
 
         // 3. Debit rider (their offer amount)
-        if (Number(unlockedRiderWallet.balanceNgn) < riderTotalNgn) {
+        if (availableNgn < riderTotalNgn) {
           throw new Error(
             `Insufficient balance on rider wallet ${hold.walletId} after unlocking: ` +
             `has ${unlockedRiderWallet.balanceNgn} NGN, needs ${riderTotalNgn} NGN`,

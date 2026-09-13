@@ -136,7 +136,7 @@ export async function provisionPouchAccount(
   const va = await pouch.createVirtualAccount(pouchCustomerId, {
     country: 'NG',
     currency: 'NGN',
-    idempotencyKey: `va-provision-${userId}-${Date.now()}`,
+    idempotencyKey: `va-provision-${userId}`,
   });
 
   await virtualAccountClient.create({

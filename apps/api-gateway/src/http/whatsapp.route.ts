@@ -1825,10 +1825,13 @@ async function handleIncomingMetaMessage(
       }
 
       if (activeRideId) {
+        const cancelledRide = await rideClient.findById(activeRideId).catch(() => null);
         const cancelEvent = RideCancelledEvent.parse({
           eventType: 'RIDE_CANCELLED',
           rideId: activeRideId,
           riderId: user.id,
+          driverId: cancelledRide?.driverId ?? undefined,
+          cancelledBy: 'rider',
           reason,
           timestamp: new Date().toISOString(),
         });
@@ -2265,10 +2268,13 @@ async function handleIncomingMetaMessage(
             }
 
             // Route planned — now cancel the old ride
+            const editCancelledRide = await rideClient.findById(activeRideId).catch(() => null);
             const cancelEvent = RideCancelledEvent.parse({
               eventType: 'RIDE_CANCELLED',
               rideId: activeRideId,
               riderId: user.id,
+              driverId: editCancelledRide?.driverId ?? undefined,
+              cancelledBy: 'rider',
               reason: 'rider_editing_route',
               timestamp: new Date().toISOString(),
             });
@@ -2904,10 +2910,13 @@ async function handleIncomingMetaMessage(
 
           // If rider had an active ride, cancel it now that the edit succeeded
           if (activeRideId) {
+            const editCancelledRide = await rideClient.findById(activeRideId).catch(() => null);
             const cancelEvent = RideCancelledEvent.parse({
               eventType: 'RIDE_CANCELLED',
               rideId: activeRideId,
               riderId: user.id,
+              driverId: editCancelledRide?.driverId ?? undefined,
+              cancelledBy: 'rider',
               reason: 'rider_editing_route',
               timestamp: new Date().toISOString(),
             });
@@ -3401,10 +3410,13 @@ async function handleIncomingMetaMessage(
 
       // If rider had an active ride, cancel it now that the edit succeeded
       if (activeRideId) {
+        const editCancelledRide = await rideClient.findById(activeRideId).catch(() => null);
         const cancelEvent = RideCancelledEvent.parse({
           eventType: 'RIDE_CANCELLED',
           rideId: activeRideId,
           riderId: user.id,
+          driverId: editCancelledRide?.driverId ?? undefined,
+          cancelledBy: 'rider',
           reason: 'rider_editing_route',
           timestamp: new Date().toISOString(),
         });
