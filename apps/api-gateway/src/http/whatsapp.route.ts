@@ -4115,6 +4115,78 @@ async function handleIncomingMetaMessage(
     // 6. NO ACTIVE RIDE, NO PENDING STATE — AI conversation / ride intent
     // ══════════════════════════════════════════════════════════════════════
 
+    // ── "Search again" is a VERB, not a vibe. Handled BEFORE the intent
+    // parser: fed "keep searching", the LLM re-read the old route out of
+    // the chat history as a brand-new request and asked the rider to
+    // confirm addresses they had already confirmed. Restart the search.
+    if (/^\s*(search again|keep searching|try again|retry|find (me )?(a )?driver)\b/i.test(incomingMessage)) {
+      const lastRoute = await getLastRoute(deps.redisClient, user.id);
+      if (!lastRoute) {
+        const reply = 'Tell me the route first — like *"From 102 Opebi Rd to Yaba"* — and I\'ll find you a driver.';
+        await appendWhatsappConversation(deps.redisClient, phone, [
+          { role: 'user', content: incomingMessage },
+          { role: 'assistant', content: reply },
+        ]);
+        await sendMetaReply(deps, phone, reply);
+        return;
+      }
+
+      const rideId = randomUUID();
+      const searchEvent = RideRequestedEvent.parse({
+        eventType: 'RIDE_REQUESTED',
+        rideId,
+        riderId: user.id,
+        pickup: { lat: lastRoute.pickupLat, lng: lastRoute.pickupLng, address: lastRoute.pickupAddress },
+        destination: { lat: lastRoute.destLat, lng: lastRoute.destLng, address: lastRoute.destAddress },
+        stops: [],
+        plannedDistanceKm: lastRoute.distanceKm,
+        plannedDurationSeconds: lastRoute.durationSeconds,
+        fareEstimateNgn: lastRoute.suggestedFareNgn,
+        paymentMethod: 'WALLET',
+        riderOfferNgn: lastRoute.offerNgn,
+        suggestedFareNgn: lastRoute.suggestedFareNgn,
+        minOfferNgn: lastRoute.minOfferNgn,
+        ratePerKmNgn: lastRoute.ratePerKmNgn,
+        route: lastRoute.route as never,
+        timestamp: new Date().toISOString(),
+      });
+      await deps.publisher.publishRideEvent(searchEvent);
+
+      await storeWhatsappRide(deps.redisClient, rideId, {
+        riderId: user.id,
+        phone,
+        pickupAddress: lastRoute.pickupAddress,
+        pickupLat: lastRoute.pickupLat,
+        pickupLng: lastRoute.pickupLng,
+        destinationAddress: lastRoute.destAddress,
+        destinationLat: lastRoute.destLat,
+        destinationLng: lastRoute.destLng,
+        distanceKm: lastRoute.distanceKm,
+        durationSeconds: lastRoute.durationSeconds,
+        offerNgn: lastRoute.offerNgn,
+        suggestedFareNgn: lastRoute.suggestedFareNgn,
+        paymentMethod: 'WALLET',
+        createdAt: new Date().toISOString(),
+      });
+      await setActiveRide(deps.redisClient, user.id, rideId);
+      await setBookingStage(deps.redisClient, user.id, 'searching');
+
+      const reply = [
+        `🔍 *Searching again!*`,
+        ``,
+        `${lastRoute.pickupAddress} → ${lastRoute.destAddress}`,
+        `Your offer: ₦${lastRoute.offerNgn.toLocaleString()}`,
+        ``,
+        `Asking drivers nearby — offers land here as they come. Sending a higher number any time raises your offer.`,
+      ].join('\n');
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: incomingMessage },
+        { role: 'assistant', content: reply },
+      ]);
+      await sendMetaReply(deps, phone, reply);
+      return;
+    }
+
     const recentMessages = await getWhatsappConversation(deps.redisClient, phone);
 
     const groq = new GroqClient({
@@ -4448,77 +4520,6 @@ async function handleIncomingMetaMessage(
         await sendMetaReply(deps, phone, reply);
         return;
       }
-    }
-
-    // ── "Search again" is a VERB, not a vibe. It used to fall through to
-    // the LLM, which replied something reassuring and published nothing —
-    // the rider believed a search restarted; no driver was ever asked.
-    if (/^\s*(search again|keep searching|try again|retry|find (me )?(a )?driver)\b/i.test(incomingMessage)) {
-      const lastRoute = await getLastRoute(deps.redisClient, user.id);
-      if (!lastRoute) {
-        const reply = 'Tell me the route first — like *"From 102 Opebi Rd to Yaba"* — and I\'ll find you a driver.';
-        await appendWhatsappConversation(deps.redisClient, phone, [
-          { role: 'user', content: incomingMessage },
-          { role: 'assistant', content: reply },
-        ]);
-        await sendMetaReply(deps, phone, reply);
-        return;
-      }
-
-      const rideId = randomUUID();
-      const searchEvent = RideRequestedEvent.parse({
-        eventType: 'RIDE_REQUESTED',
-        rideId,
-        riderId: user.id,
-        pickup: { lat: lastRoute.pickupLat, lng: lastRoute.pickupLng, address: lastRoute.pickupAddress },
-        destination: { lat: lastRoute.destLat, lng: lastRoute.destLng, address: lastRoute.destAddress },
-        stops: [],
-        plannedDistanceKm: lastRoute.distanceKm,
-        plannedDurationSeconds: lastRoute.durationSeconds,
-        fareEstimateNgn: lastRoute.suggestedFareNgn,
-        paymentMethod: 'WALLET',
-        riderOfferNgn: lastRoute.offerNgn,
-        suggestedFareNgn: lastRoute.suggestedFareNgn,
-        minOfferNgn: lastRoute.minOfferNgn,
-        ratePerKmNgn: lastRoute.ratePerKmNgn,
-        route: lastRoute.route as never,
-        timestamp: new Date().toISOString(),
-      });
-      await deps.publisher.publishRideEvent(searchEvent);
-
-      await storeWhatsappRide(deps.redisClient, rideId, {
-        riderId: user.id,
-        phone,
-        pickupAddress: lastRoute.pickupAddress,
-        pickupLat: lastRoute.pickupLat,
-        pickupLng: lastRoute.pickupLng,
-        destinationAddress: lastRoute.destAddress,
-        destinationLat: lastRoute.destLat,
-        destinationLng: lastRoute.destLng,
-        distanceKm: lastRoute.distanceKm,
-        durationSeconds: lastRoute.durationSeconds,
-        offerNgn: lastRoute.offerNgn,
-        suggestedFareNgn: lastRoute.suggestedFareNgn,
-        paymentMethod: 'WALLET',
-        createdAt: new Date().toISOString(),
-      });
-      await setActiveRide(deps.redisClient, user.id, rideId);
-      await setBookingStage(deps.redisClient, user.id, 'searching');
-
-      const reply = [
-        `🔍 *Searching again!*`,
-        ``,
-        `${lastRoute.pickupAddress} → ${lastRoute.destAddress}`,
-        `Your offer: ₦${lastRoute.offerNgn.toLocaleString()}`,
-        ``,
-        `Asking drivers nearby — offers land here as they come. Sending a higher number any time raises your offer.`,
-      ].join('\n');
-      await appendWhatsappConversation(deps.redisClient, phone, [
-        { role: 'user', content: incomingMessage },
-        { role: 'assistant', content: reply },
-      ]);
-      await sendMetaReply(deps, phone, reply);
-      return;
     }
 
     // ── Balance questions are MONEY questions — answered from the database,
