@@ -2,21 +2,104 @@ interface GeocodeResult {
   lat: number;
   lng: number;
   formattedAddress: string;
+  /** ISO 3166-1 alpha-2, when Google reported one. */
+  countryCode?: string;
+}
+
+interface GoogleGeocodingResult {
+  geometry?: {
+    location?: {
+      lat?: number;
+      lng?: number;
+    };
+  };
+  formatted_address?: string;
+  types?: string[];
+  partial_match?: boolean;
+  address_components?: Array<{
+    short_name?: string;
+    long_name?: string;
+    types?: string[];
+  }>;
 }
 
 interface GoogleGeocodingResponse {
   status: string;
-  results?: Array<{
-    geometry?: {
-      location?: {
-        lat?: number;
-        lng?: number;
-      };
-    };
-    formatted_address?: string;
-    types?: string[];
-    partial_match?: boolean;
-  }>;
+  results?: GoogleGeocodingResult[];
+}
+
+/* ───────────────────────── service area ───────────────────────── */
+
+/**
+ * Wheelers runs in one country. Anything Google resolves elsewhere — "Eiffel
+ * Tower", "Pier 39", a pin dropped in Accra — is refused before it can become
+ * a pickup or drop-off. Set GEOCODE_SERVICE_COUNTRY='' to lift the fence.
+ */
+const SERVICE_COUNTRY = (process.env['GEOCODE_SERVICE_COUNTRY'] ?? 'NG').trim().toUpperCase();
+const SERVICE_COUNTRY_NAME = 'Nigeria';
+
+/** Nigeria's bounding box — a cheap first check for raw coordinates. */
+const NIGERIA_BOUNDS = { minLat: 4.0, maxLat: 14.0, minLng: 2.6, maxLng: 14.8 };
+
+export function isWithinServiceBounds(lat: number, lng: number): boolean {
+  if (!SERVICE_COUNTRY) return true;
+  if (SERVICE_COUNTRY !== 'NG') return true; // only Nigeria has a box on file
+  return lat >= NIGERIA_BOUNDS.minLat && lat <= NIGERIA_BOUNDS.maxLat
+    && lng >= NIGERIA_BOUNDS.minLng && lng <= NIGERIA_BOUNDS.maxLng;
+}
+
+function countryOf(result: GoogleGeocodingResult): string | undefined {
+  const component = result.address_components?.find((c) => c.types?.includes('country'));
+  return component?.short_name?.toUpperCase();
+}
+
+function isOutsideServiceArea(result: GoogleGeocodingResult): boolean {
+  if (!SERVICE_COUNTRY) return false;
+  const country = countryOf(result);
+  if (country) return country !== SERVICE_COUNTRY;
+  const location = result.geometry?.location;
+  if (location?.lat != null && location?.lng != null) {
+    return !isWithinServiceBounds(location.lat, location.lng);
+  }
+  return false;
+}
+
+/**
+ * Queries Google matched somewhere outside the service area, kept briefly so
+ * the reply can say "that's outside Nigeria" instead of "could not find".
+ */
+const OUTSIDE_MATCH_TTL_MS = 10 * 60_000;
+const recentOutsideMatches = new Map<string, { resolvedTo: string; at: number }>();
+
+function rememberOutsideMatch(query: string, resolvedTo: string): void {
+  if (recentOutsideMatches.size > 500) recentOutsideMatches.clear();
+  recentOutsideMatches.set(query.trim().toLowerCase(), { resolvedTo, at: Date.now() });
+}
+
+/** Where a failed query actually landed, if it was refused for being abroad. */
+export function outsideServiceAreaMatch(query: string): string | null {
+  const hit = recentOutsideMatches.get(query.trim().toLowerCase());
+  if (!hit) return null;
+  if (Date.now() - hit.at > OUTSIDE_MATCH_TTL_MS) {
+    recentOutsideMatches.delete(query.trim().toLowerCase());
+    return null;
+  }
+  return hit.resolvedTo;
+}
+
+export const OUTSIDE_SERVICE_AREA_LINE =
+  `Wheelers runs in ${SERVICE_COUNTRY_NAME} only for now 🇳🇬`;
+
+/**
+ * The first line of a "we could not use that address" reply. Says why: a
+ * place that exists but is abroad gets the geofence message, not a shrug.
+ */
+export function geocodeMissLine(query: string): string {
+  const abroad = outsideServiceAreaMatch(query);
+  if (abroad) {
+    return `"${query}" is outside ${SERVICE_COUNTRY_NAME} (${abroad}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+  }
+  return `Could not find "${query}" on the map.`;
 }
 
 /**
@@ -80,10 +163,27 @@ export async function reverseGeocode(
       lat,
       lng,
       formattedAddress: result.formatted_address ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      countryCode: countryOf(result),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Is a dropped pin somewhere we operate? Bounding box first (free), then the
+ * reverse-geocoded country when Google answered. A pin we cannot place at all
+ * is allowed through — the box already excludes the obvious cases.
+ */
+export function isPinInsideServiceArea(
+  lat: number,
+  lng: number,
+  reverse: GeocodeResult | null,
+): boolean {
+  if (!SERVICE_COUNTRY) return true;
+  if (!isWithinServiceBounds(lat, lng)) return false;
+  if (reverse?.countryCode && reverse.countryCode !== SERVICE_COUNTRY) return false;
+  return true;
 }
 
 /**
@@ -183,6 +283,10 @@ async function geocodeManyOnce(
       const location = result.geometry?.location;
       if (!location?.lat || !location?.lng) continue;
       if (result.types?.some((type) => TOO_COARSE_TYPES.has(type))) continue;
+      if (isOutsideServiceArea(result)) {
+        rememberOutsideMatch(address, result.formatted_address ?? address);
+        continue;
+      }
       if (
         result.partial_match &&
         !partialMatchLooksRelated(address, result.formatted_address ?? '')
@@ -190,7 +294,7 @@ async function geocodeManyOnce(
       const formattedAddress = result.formatted_address ?? address;
       if (seen.has(formattedAddress)) continue;
       seen.add(formattedAddress);
-      candidates.push({ lat: location.lat, lng: location.lng, formattedAddress });
+      candidates.push({ lat: location.lat, lng: location.lng, formattedAddress, countryCode: countryOf(result) });
       if (candidates.length >= limit) break;
     }
     return candidates;
@@ -250,10 +354,21 @@ async function geocodeOnce(
       return null;
     }
 
+    if (isOutsideServiceArea(result)) {
+      console.info('[geocoding] refusing result outside service area', {
+        address,
+        resolvedTo: result.formatted_address,
+        country: countryOf(result) ?? 'unknown',
+      });
+      rememberOutsideMatch(address, result.formatted_address ?? address);
+      return null;
+    }
+
     return {
       lat: location.lat,
       lng: location.lng,
       formattedAddress: result.formatted_address ?? address,
+      countryCode: countryOf(result),
     };
   } catch (error) {
     console.warn('[geocoding] Failed', {

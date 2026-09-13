@@ -19,6 +19,8 @@ export { riderKycClient }       from './clients/rider-kyc.client';
 export { adminClient }          from './clients/admin.client';
 export { analyticsClient }      from './clients/analytics.client';
 export { activityClient }       from './clients/activity.client';
+export { memoryClient }         from './clients/memory.client';
+export type { MemoryFactInput, MemoryRole } from './clients/memory.client';
 export { adminMetricsClient }   from './clients/admin-metrics.client';
 export { interstateClient, InterstateError, refundFractionFor } from './clients/interstate.client';
 export type { BookingMode, QuoteResult } from './clients/interstate.client';

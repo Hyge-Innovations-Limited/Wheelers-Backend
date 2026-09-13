@@ -854,6 +854,38 @@ model RiderKycAttempt {
 // Kafka sink (analytics-worker) plus synchronous logActivity calls in the
 // api-gateway for actions that never touch Kafka. dedupKey makes at-least-once
 // Kafka delivery safe to replay.
+/// Durable WhatsApp transcript. The Redis conversation window keeps the last
+/// ten turns for a week; this keeps every turn, so the bot can be reminded of
+/// what a rider said last month.
+model WhatsappMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// What we know about a rider, as subject → predicate → object edges: the
+/// rider is the subject, `predicate` is the relation (home, work,
+/// frequent_place, prefers_payment, language, called, note …) and `object`
+/// the value. Repeats raise `weight`; the highest-weighted edge per predicate
+/// is the one we trust.
+model UserMemoryFact {
+  id          String   @id @default(uuid())
+  userId      String
+  predicate   String
+  object      String
+  weight      Int      @default(1)
+  source      String   @default("llm")
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([userId, predicate, object])
+  @@index([userId, predicate])
+}
+
 model UserActivityEvent {
   id         String   @id @default(uuid())
   userId     String

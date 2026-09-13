@@ -25,7 +25,9 @@ import {
 } from '../LLM/conversation-store';
 import { WhatsappBotService } from '../LLM/whatsapp-bot.service';
 import { GroqClient } from '../LLM/groq.client';
+import { geocodeMissLine, isPinInsideServiceArea, outsideServiceAreaMatch, OUTSIDE_SERVICE_AREA_LINE } from '../LLM/geocoding';
 import { parseRideIntent } from '../LLM/ride-intent-parser';
+import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
 import { geocodeAddress, geocodeAddressCandidates, reverseGeocode } from '../LLM/geocoding';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { downloadMetaMedia } from '../whatsapp-flows/meta-media';
@@ -534,8 +536,23 @@ function parseAcceptCommand(message: string): AcceptCommand | null {
   return null;
 }
 
-function parseCounterOffer(message: string): number | null {
-  const lower = message.toLowerCase().trim();
+/**
+ * "2,600" is two thousand six hundred, not a typo. Fold thousands separators
+ * (comma or a single space), a leading ₦/N, and a trailing ".00" away before
+ * the number patterns run, so the amount a rider typed is the amount we use.
+ */
+export function normalizeAmountText(message: string): string {
+  return message
+    .toLowerCase()
+    .trim()
+    .replace(/(\d)[,\s](?=\d{3}\b)/g, '$1')
+    .replace(/(\d)\.0{1,2}\b/g, '$1')
+    .replace(/(^|\s)(?:₦|ngn|naira|n)\s*(?=\d)/g, '$1n')
+    .replace(/(\d)\s*(?:naira|ngn)\b/g, '$1');
+}
+
+export function parseCounterOffer(message: string): number | null {
+  const lower = normalizeAmountText(message);
   // Match plain numbers like "1500", "2000"
   const numMatch = lower.match(/^(\d{3,6})$/);
   if (numMatch) return parseInt(numMatch[1], 10);
@@ -1104,7 +1121,7 @@ async function handleGroupStageText(
       }
       if (!pickupGeo) {
         await replyAndLog(deps, phone, incomingMessage,
-          `Could not find "${routeMatch[1]!.trim()}" on the map.\n\nPlease type a more specific pickup address or share a location pin 📍`);
+          `${geocodeMissLine(routeMatch[1]!.trim())}\n\nPlease type a more specific pickup address or share a location pin 📍`);
         return;
       }
       // Pickup resolved but destination didn't — keep it and ask again.
@@ -1133,7 +1150,7 @@ async function handleGroupStageText(
     const candidates = await geocodeAddressCandidates(deps.googleMapsApiKey, typed);
     if (candidates.length === 0) {
       await replyAndLog(deps, phone, incomingMessage,
-        `Could not find "${typed}" on the map.\n\nPlease type a more specific address or share a location pin 📍`);
+        `${geocodeMissLine(typed)}\n\nPlease type a more specific address or share a location pin 📍`);
       return;
     }
 
@@ -1628,20 +1645,6 @@ export async function handleMetaWhatsappWebhookRoute(
       },
     });
 
-    // First contact ever: everyone sees the short terms once, with the full
-    // version a tap away. Sent before any other reply so it can't be missed.
-    if (user.created) {
-      await sendMetaReply(deps, phone, [
-        `📄 *Welcome to Wheelers! Quick terms before we ride:*`,
-        ``,
-        `1. Fares are agreed between you and your driver before pickup — you pay what you accepted, nothing hidden.`,
-        `2. Your location and trip details are used only to match, route, and keep your rides safe.`,
-        `3. Group rides need a one-time selfie so every rider in the car is verified.`,
-        ``,
-        `Read the full terms: https://wheelersng.com/`,
-      ].join('\n')).catch(() => {});
-    }
-
     // Store phone lookup for Kafka consumer notifications
     await setPhoneLookup(deps.redisClient, user.id, phone).catch(() => {});
 
@@ -2127,7 +2130,7 @@ export async function handleMetaWhatsappWebhookRoute(
             const geo = await geocodeAddress(deps.googleMapsApiKey, inlineAddress);
             if (!geo) {
               const label = isPickup ? 'pickup' : 'destination';
-              const reply = `Could not find "${inlineAddress}" on the map. Your ride is still active.\n\nTry a more specific ${label} address or share a location pin 📍`;
+              const reply = `${geocodeMissLine(inlineAddress)} Your ride is still active.\n\nTry a more specific ${label} address or share a location pin 📍`;
               await appendWhatsappConversation(deps.redisClient, phone, [
                 { role: 'user', content: incomingMessage },
                 { role: 'assistant', content: reply },
@@ -2684,6 +2687,16 @@ export async function handleMetaWhatsappWebhookRoute(
       const reverseGeo = await reverseGeocode(deps.googleMapsApiKey, locationLat, locationLng);
       const address = reverseGeo?.formattedAddress ?? `${locationLat.toFixed(4)}, ${locationLng.toFixed(4)}`;
 
+      if (!isPinInsideServiceArea(locationLat, locationLng, reverseGeo)) {
+        const reply = `That pin is outside Nigeria (${address}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+        await appendWhatsappConversation(deps.redisClient, phone, [
+          { role: 'user', content: '[Shared location pin]' },
+          { role: 'assistant', content: reply },
+        ]);
+        await sendMetaReply(deps, phone, reply);
+        return;
+      }
+
       // ── Group ride pickup/destination pins ──
       if (bookingStage === 'group_awaiting_pickup' || bookingStage === 'group_awaiting_destination') {
         await applyGroupLocation(
@@ -2924,7 +2937,10 @@ export async function handleMetaWhatsappWebhookRoute(
       }
 
       if (!pickupGeo) {
-        const reply = `Could not find "${answer}"${hint?.area ? ` in ${hint.area}` : ''} on the map.\n\nTry a nearby landmark or street name, or share a location pin 📍`;
+        const missLine = outsideServiceAreaMatch(answer)
+          ? geocodeMissLine(answer)
+          : `Could not find "${answer}"${hint?.area ? ` in ${hint.area}` : ''} on the map.`;
+        const reply = `${missLine}\n\nTry a nearby landmark or street name, or share a location pin 📍`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -3032,7 +3048,7 @@ export async function handleMetaWhatsappWebhookRoute(
       }
 
       if (!destGeo) {
-        const reply = `Could not find "${typedDestination}" on the map.\n\nPlease type a more specific destination address or share a location pin 📍`;
+        const reply = `${geocodeMissLine(typedDestination)}\n\nPlease type a more specific destination address or share a location pin 📍`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -3136,7 +3152,7 @@ export async function handleMetaWhatsappWebhookRoute(
       const geo = await geocodeAddress(deps.googleMapsApiKey, typedEditAddress);
       if (!geo) {
         const label = bookingStage === 'editing_pickup' ? 'pickup' : 'destination';
-        const reply = `Could not find "${typedEditAddress}" on the map.\n\nPlease type a more specific ${label} address or share a location pin 📍`;
+        const reply = `${geocodeMissLine(typedEditAddress)}\n\nPlease type a more specific ${label} address or share a location pin 📍`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -3393,7 +3409,7 @@ export async function handleMetaWhatsappWebhookRoute(
             const geo = await geocodeAddress(deps.googleMapsApiKey, inlineAddress);
             if (!geo) {
               const label = isPickup ? 'pickup' : 'destination';
-              const reply = `Could not find "${inlineAddress}" on the map.\n\nPlease try a more specific ${label} address or share a location pin 📍`;
+              const reply = `${geocodeMissLine(inlineAddress)}\n\nPlease try a more specific ${label} address or share a location pin 📍`;
               await appendWhatsappConversation(deps.redisClient, phone, [
                 { role: 'user', content: incomingMessage },
                 { role: 'assistant', content: reply },
@@ -3487,7 +3503,7 @@ export async function handleMetaWhatsappWebhookRoute(
         if (editIntent?.intent === 'edit_pickup' && editIntent.pickup?.address.trim()) {
           const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.pickup.address);
           if (!pickupGeo) {
-            const reply = `Could not find "${editIntent.pickup.address}" on the map.\n\nPlease try a more specific pickup address.`;
+            const reply = `${geocodeMissLine(editIntent.pickup.address)}\n\nPlease try a more specific pickup address.`;
             await appendWhatsappConversation(deps.redisClient, phone, [
               { role: 'user', content: incomingMessage },
               { role: 'assistant', content: reply },
@@ -3553,7 +3569,7 @@ export async function handleMetaWhatsappWebhookRoute(
         if (editIntent?.intent === 'edit_destination' && editIntent.destination?.address.trim()) {
           const destGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.destination.address);
           if (!destGeo) {
-            const reply = `Could not find "${editIntent.destination.address}" on the map.\n\nPlease try a more specific destination address.`;
+            const reply = `${geocodeMissLine(editIntent.destination.address)}\n\nPlease try a more specific destination address.`;
             await appendWhatsappConversation(deps.redisClient, phone, [
               { role: 'user', content: incomingMessage },
               { role: 'assistant', content: reply },
@@ -3760,8 +3776,31 @@ export async function handleMetaWhatsappWebhookRoute(
       timeoutMs: deps.groqTimeoutMs,
     });
 
-    // Try to parse ride intent
-    const rideIntent = await parseRideIntent(groq, incomingMessage, recentMessages);
+    // Try to parse ride intent — with what we remember about this rider, so
+    // "take me home" and "same place as last time" resolve to real addresses.
+    const riderMemory = await loadRiderMemory(user.id).catch(() => null);
+    const rideIntent = await parseRideIntent(
+      groq,
+      incomingMessage,
+      riderMemory?.transcript?.length ? riderMemory.transcript : recentMessages,
+      riderMemory ? renderRiderMemoryForIntent(riderMemory) : undefined,
+    );
+
+    if (rideIntent && (rideIntent.intent === 'ride_request' || rideIntent.intent === 'group_ride_request') && rideIntent.outsideNigeria) {
+      const place = rideIntent.destination?.address || rideIntent.pickup?.address || 'that place';
+      const reply = `${place} is outside Nigeria. ${OUTSIDE_SERVICE_AREA_LINE}\n\nAnywhere in Nigeria I can take you? 🚗`;
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: incomingMessage },
+        { role: 'assistant', content: reply },
+      ]);
+      await sendMetaReply(deps, phone, reply);
+      return;
+    }
+
+    if (rideIntent && rideIntent.intent !== 'other') {
+      // Learn from booking messages too — the general-chat path does its own.
+      rememberExchange(groq, user.id, incomingMessage, null);
+    }
 
     // ── Edit pickup/destination with no pending route → tell user to start fresh ──
     if (rideIntent?.intent === 'edit_pickup' || rideIntent?.intent === 'edit_destination') {
@@ -3805,7 +3844,7 @@ export async function handleMetaWhatsappWebhookRoute(
         ]);
 
         if (!pickupGeo) {
-          const reply = `Could not find "${rideIntent.pickup!.address}" on the map.\n\nPlease try a more specific pickup address, or share a location pin 📍`;
+          const reply = `${geocodeMissLine(rideIntent.pickup!.address)}\n\nPlease try a more specific pickup address, or share a location pin 📍`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -3824,7 +3863,7 @@ export async function handleMetaWhatsappWebhookRoute(
           });
           await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
 
-          const reply = `📍 Pickup: *${pickupGeo.formattedAddress}*\n\nCould not find "${rideIntent.destination!.address}" on the map.\n\nPlease type a more specific destination or share a destination location pin 📍`;
+          const reply = `📍 Pickup: *${pickupGeo.formattedAddress}*\n\n${geocodeMissLine(rideIntent.destination!.address)}\n\nPlease type a more specific destination or share a destination location pin 📍`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },

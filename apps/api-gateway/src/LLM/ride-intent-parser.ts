@@ -13,6 +13,8 @@ export interface RideIntent {
   destination: RideLocation | null;
   offerNgn: number | null;
   paymentMethod: 'CASH' | 'WALLET' | 'CRYPTO_WALLET' | null;
+  /** True when the pickup or destination is clearly not in Nigeria. */
+  outsideNigeria?: boolean;
 }
 
 const RIDE_INTENT_SYSTEM_PROMPT = `
@@ -23,12 +25,13 @@ Return ONLY a JSON object with these fields:
 - "destination": { "address": string, "area": string, "specific": boolean } | null
 - "offerNgn": number | null
 - "paymentMethod": "WALLET" | "CRYPTO_WALLET" | "CASH" | null
+- "outsideNigeria": boolean — true if the pickup or destination is clearly outside Nigeria (another country or a city/landmark abroad: Paris, London, Accra, Dubai, New York, Eiffel Tower). Wheelers operates ONLY in Nigeria.
 
 "specific" field:
 - true = the location is precise enough to find on a map (a street, landmark, building, mall, hotel, school, hospital, market, plaza, station, airport, bridge, gate, pier, park, etc.)
 - false = just a broad area/neighborhood/city name with no specific point (e.g. "Lekki", "VI", "Ikeja", "downtown", "midtown")
-- Examples of SPECIFIC (true): "Chevron roundabout Lekki", "Shoprite Ikeja", "Palms Mall", "Golden Gate Bridge", "Pier 39 San Francisco", "Union Square San Francisco", "1 Market Street San Francisco", "Unilag main gate", "SFO Airport"
-- Examples of NOT SPECIFIC (false): "Lekki", "VI", "Ikeja", "San Francisco", "downtown", "Abuja"
+- Examples of SPECIFIC (true): "Chevron roundabout Lekki", "Shoprite Ikeja", "Palms Mall", "Unilag main gate", "MM2 airport", "Ikeja City Mall", "Wuse market Abuja", "15 Aiyetoro Street Akoka"
+- Examples of NOT SPECIFIC (false): "Lekki", "VI", "Ikeja", "Surulere", "downtown", "Abuja"
 
 Rules:
 - If the user wants a GROUP ride / shared ride / to share a ride and split the fare with other riders → "group_ride_request"
@@ -42,10 +45,9 @@ Rules:
 - If cancelling a ride → "cancel_ride"
 - Everything else (greetings, wallet questions, general chat) → "other"
 - For "other" intent, set all other fields to null
-- Normalize locations: include city/state/country for clarity
-  Nigerian: "VI" → "Victoria Island, Lagos", "Lekki" → "Lekki, Lagos"
-  International: "Pier 39" → "Pier 39, San Francisco, CA", "Golden Gate Bridge" → "Golden Gate Bridge, San Francisco, CA"
-- Extract price if mentioned (e.g., "2000", "₦2,000", "2k" → 2000, "5k" → 5000)
+- Normalize locations: include city/state for clarity. "VI" → "Victoria Island, Lagos", "Lekki" → "Lekki, Lagos". Assume Lagos when no city is given and nothing in the rider's memory says otherwise.
+- Extract price EXACTLY as the rider typed it, only converting the notation: "2000" → 2000, "₦2,000" → 2000, "2,600" → 2600, "2 600" → 2600, "2k" → 2000, "2.5k" → 2500, "5k" → 5000. Never round, "correct" or adjust the number.
+- If a system message describes "What we know about this rider", use it: "home", "my house", "my place" → the rider's home address; "work", "office" → the work address; "the usual", "same place", "where I went yesterday/last time" → the matching recent ride. Fill the address from memory with specific=true. If memory has no such place, leave the field null.
 - If payment method not mentioned, set to null
 - "wallet" or "use wallet" = "WALLET" (means Naira wallet by default)
 - "crypto wallet" or "pay with crypto" or "USDC" = "CRYPTO_WALLET"
@@ -59,8 +61,14 @@ Examples:
 "Take me from Lekki to VI" →
 {"intent":"ride_request","pickup":{"address":"Lekki, Lagos","area":"Lekki","specific":false},"destination":{"address":"Victoria Island, Lagos","area":"VI","specific":false},"offerNgn":null,"paymentMethod":null}
 
-"From Union Square to Pier 39" →
-{"intent":"ride_request","pickup":{"address":"Union Square, San Francisco, CA","area":"San Francisco","specific":true},"destination":{"address":"Pier 39, San Francisco, CA","area":"San Francisco","specific":true},"offerNgn":null,"paymentMethod":null}
+"Book me a ride to Paris" →
+{"intent":"ride_request","pickup":null,"destination":{"address":"Paris, France","area":"Paris","specific":false},"offerNgn":null,"paymentMethod":null,"outsideNigeria":true}
+
+"Ikeja to Ajah for 2,600" →
+{"intent":"ride_request","pickup":{"address":"Ikeja, Lagos","area":"Ikeja","specific":false},"destination":{"address":"Ajah, Lagos","area":"Ajah","specific":false},"offerNgn":2600,"paymentMethod":null,"outsideNigeria":false}
+
+(with memory saying home = "12 Adebayo Street, Surulere, Lagos") "take me home from Shoprite Ikeja" →
+{"intent":"ride_request","pickup":{"address":"Shoprite, Ikeja, Lagos","area":"Ikeja","specific":true},"destination":{"address":"12 Adebayo Street, Surulere, Lagos","area":"Surulere","specific":true},"offerNgn":null,"paymentMethod":null,"outsideNigeria":false}
 
 "Change my pickup to Fiora garden" →
 {"intent":"edit_pickup","pickup":{"address":"Fiora Garden, Lagos","area":"Lagos","specific":true},"destination":null,"offerNgn":null,"paymentMethod":null}
@@ -100,15 +108,19 @@ export async function parseRideIntent(
   groq: GroqClient,
   message: string,
   recentMessages: WhatsappConversationMessage[],
+  riderMemoryContext?: string,
 ): Promise<RideIntent | null> {
   if (!groq.configured) return fallbackRideIntent(message);
 
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     { role: 'system', content: RIDE_INTENT_SYSTEM_PROMPT },
   ];
+  if (riderMemoryContext) {
+    messages.push({ role: 'system', content: riderMemoryContext });
+  }
 
-  // Include last 4 messages for context (pickup/destination from prior messages)
-  const contextMessages = recentMessages.slice(-4);
+  // Recent turns, so a pickup named two messages ago still counts.
+  const contextMessages = recentMessages.slice(-8);
   for (const msg of contextMessages) {
     messages.push({ role: msg.role, content: msg.content });
   }
@@ -122,6 +134,12 @@ export async function parseRideIntent(
     const intent = result as unknown as RideIntent;
     if (!intent.intent || !['ride_request', 'group_ride_request', 'ride_status', 'cancel_ride', 'edit_pickup', 'edit_destination', 'other'].includes(intent.intent)) {
       return null;
+    }
+
+    intent.outsideNigeria = intent.outsideNigeria === true;
+    if (typeof intent.offerNgn === 'string') {
+      const parsed = Number(String(intent.offerNgn).replace(/[^0-9.]/g, ''));
+      intent.offerNgn = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
     }
 
     return intent;
