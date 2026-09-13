@@ -2262,6 +2262,47 @@ export async function handleMetaWhatsappWebhookRoute(
 
         const agreedFare = pendingAccept.fareNgn;
 
+        // Wallet FIRST. A rider who cannot pay must hear "top up", not
+        // "driver unavailable" — the driver check below can fail on a stale
+        // ping alone, and it used to run first, so a short wallet was
+        // reported as a vanished driver. Her pending choice is kept, so
+        // "pay" after funding still confirms the same driver.
+        const wallet = await walletClient.findByUserId(user.id);
+        const balance = wallet ? Number(wallet.balanceNgn) : 0;
+
+        if (!wallet || balance < agreedFare) {
+          const shortage = agreedFare - balance;
+          const va = await virtualAccountClient.findByUserId(user.id);
+
+          const lines = [
+            `💳 *Top up before taking this ride.*`,
+            ``,
+            `Your wallet has ₦${balance.toLocaleString()} and the ride costs ₦${agreedFare.toLocaleString()} — you need ₦${shortage.toLocaleString()} more.`,
+          ];
+
+          if (va) {
+            lines.push(
+              ``,
+              `Top up your wallet:`,
+              `Bank: *${va.bankName}*`,
+              `Account: \`\`\`${va.accountNumber}\`\`\``,
+              `Name: *${va.accountName}*`,
+              ``,
+              `Once it lands, reply *pay* and *${pendingAccept.driverName}* is yours.`,
+            );
+          } else {
+            lines.push(``, `Please top up your wallet, then reply *pay*.`);
+          }
+
+          const reply = lines.join('\n');
+          await appendWhatsappConversation(deps.redisClient, phone, [
+            { role: 'user', content: incomingMessage },
+            { role: 'assistant', content: reply },
+          ]);
+          await sendMetaReply(deps, phone, reply);
+          return;
+        }
+
         // The driver must still exist in the market before money moves —
         // online, recently seen, not already on someone else's trip.
         const payDriver = await driverClient.findById(pendingAccept.driverId).catch(() => null);
@@ -2273,43 +2314,6 @@ export async function handleMetaWhatsappWebhookRoute(
         if (!payDriver || payDriver.status !== 'ONLINE' || !payDriverFresh || payDriverBusy) {
           await clearPendingAccept(deps.redisClient, user.id);
           const reply = `😕 *${pendingAccept.driverName}* just became unavailable — your money has not moved.\n\nReply *more* to see other drivers, or *search again* for a fresh search.`;
-          await appendWhatsappConversation(deps.redisClient, phone, [
-            { role: 'user', content: incomingMessage },
-            { role: 'assistant', content: reply },
-          ]);
-          await sendMetaReply(deps, phone, reply);
-          return;
-        }
-
-        // Check wallet balance
-        const wallet = await walletClient.findByUserId(user.id);
-        const balance = wallet ? Number(wallet.balanceNgn) : 0;
-
-        if (!wallet || balance < agreedFare) {
-          const shortage = agreedFare - balance;
-          const va = await virtualAccountClient.findByUserId(user.id);
-
-          const lines = [
-            `Your wallet balance is ₦${balance.toLocaleString()} but the ride costs ₦${agreedFare.toLocaleString()}.`,
-            ``,
-            `You need ₦${shortage.toLocaleString()} more.`,
-          ];
-
-          if (va) {
-            lines.push(
-              ``,
-              `Top up your wallet:`,
-              `Bank: *${va.bankName}*`,
-              `Account: \`\`\`${va.accountNumber}\`\`\``,
-              `Name: *${va.accountName}*`,
-              ``,
-              `Once funded, reply *pay* to confirm.`,
-            );
-          } else {
-            lines.push(``, `Please top up your wallet and reply *pay*.`);
-          }
-
-          const reply = lines.join('\n');
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
