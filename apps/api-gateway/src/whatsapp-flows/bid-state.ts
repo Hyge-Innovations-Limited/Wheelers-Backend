@@ -7,6 +7,12 @@ export interface PendingLocation {
   lng: number;
   address: string;
   savedAt: string;
+  /**
+   * A destination the rider already named in their first message, carried
+   * forward so "yes" at the destination prompt confirms it instead of being
+   * geocoded as a place called "Yes".
+   */
+  suggestedDestination?: string;
 }
 
 export interface WhatsappRideMeta {

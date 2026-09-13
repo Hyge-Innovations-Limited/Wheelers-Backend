@@ -3003,12 +3003,12 @@ export async function handleMetaWhatsappWebhookRoute(
       // a rider returning to an abandoned booking with "Hey wassup" had their
       // greeting geocoded. Leave it to the intent parser and the chatbot, and
       // keep the stage so their next real answer still lands here.
-      if (looksLikeConversation(incomingMessage)) {
+      if (!confirmedDestination && looksLikeConversation(incomingMessage)) {
         // deliberately no reply and no return — falls through to intent parsing
       } else {
 
       // Try to geocode the typed destination
-      const typedDestination = stripDirectionPrefix(incomingMessage);
+      const typedDestination = confirmedDestination ?? stripDirectionPrefix(incomingMessage);
 
       // A bare number answers a pending "which one did you mean?" list.
       let destGeo: { lat: number; lng: number; formattedAddress: string } | null = null;
@@ -3022,6 +3022,9 @@ export async function handleMetaWhatsappWebhookRoute(
           destGeo = { lat: pick.lat, lng: pick.lng, formattedAddress: pick.address };
         }
       }
+        // The hint is cleared below, so the destination they already gave has
+        // to travel with the pickup for "yes" to mean anything next turn.
+        suggestedDestination: hint?.counterpartAddress || undefined,
 
       if (!destGeo) {
         const candidates = await geocodeAddressCandidates(deps.googleMapsApiKey, typedDestination);
@@ -3063,6 +3066,23 @@ export async function handleMetaWhatsappWebhookRoute(
 
       // Destination geocoded — plan route
       const pickup = { lat: pendingPickup.lat, lng: pendingPickup.lng, address: pendingPickup.address };
+      // We asked them to type "yes" to confirm the destination they named in
+      // their first message. Checked before the small-talk filter because
+      // "ok" counts as small talk there, and before geocoding because "Yes"
+      // is not a place.
+      const isAffirmative = /^(yes|yeah|yea|yep|yup|ok|okay|confirm|correct|sure|y)\b/i.test(incomingMessage.trim());
+      const confirmedDestination = isAffirmative ? pendingPickup.suggestedDestination?.trim() : undefined;
+
+      if (isAffirmative && !confirmedDestination) {
+        const reply = `Where are you going? Type the destination or share a pin 📍`;
+        await appendWhatsappConversation(deps.redisClient, phone, [
+          { role: 'user', content: incomingMessage },
+          { role: 'assistant', content: reply },
+        ]);
+        await sendMetaReply(deps, phone, reply);
+        return;
+      }
+
       const destination = { lat: destGeo.lat, lng: destGeo.lng, address: destGeo.formattedAddress };
 
       const plannedRoute = await planRouteSafe(deps, pickup, destination);
