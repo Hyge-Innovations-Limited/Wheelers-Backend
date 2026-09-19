@@ -96,12 +96,17 @@ if (warm.status === 0) {
   process.exit(1);
 }
 
+const unavailable = new Set();
 for (const endpoint of ENDPOINTS) {
   const results = [];
   for (let i = 0; i < SAMPLES; i += 1) results.push(await hit(endpoint));
   const times = results.map((r) => r.ms).sort((a, b) => a - b);
   const statuses = [...new Set(results.map((r) => r.status || r.error))].join(',');
   const bad = results.filter((r) => !r.ok).length;
+  // Wrong every single time, and not a server error: the endpoint is not
+  // deployed (404) or the token is wrong (401/403). That is not a capacity
+  // problem, so it must not be allowed to end the ramp.
+  if (bad === results.length && results.every((r) => r.status >= 400 && r.status < 500)) unavailable.add(endpoint.name);
   console.log(`${endpoint.name.padEnd(28)} ${ms(pct(times, 50))} ${ms(pct(times, 95))} ${ms(times.at(-1))}   ${String(statuses).padEnd(6)}  ${bad ? `${bad}/${SAMPLES} UNEXPECTED` : verdict(pct(times, 95))}`);
 }
 
@@ -112,7 +117,13 @@ if (!RAMP) {
 
 /* ── phase 2: ramp ────────────────────────────────────────────────────── */
 
-const bag = ENDPOINTS.flatMap((e) => Array(e.weight).fill(e));
+const rampEndpoints = ENDPOINTS.filter((e) => !unavailable.has(e.name));
+if (unavailable.size) console.log(`\nLeft out of the ramp (not deployed, or the token is wrong): ${[...unavailable].join(', ')}`);
+if (rampEndpoints.length === 0) {
+  console.error('Nothing answered as expected — nothing to ramp.');
+  process.exit(1);
+}
+const bag = rampEndpoints.flatMap((e) => Array(e.weight).fill(e));
 const pick = () => bag[Math.floor(Math.random() * bag.length)];
 const stages = [5, 10, 25, 50, 100, 200, 400, 700, 1000].filter((c) => c <= MAX);
 
