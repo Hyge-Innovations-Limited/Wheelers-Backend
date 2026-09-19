@@ -27,6 +27,12 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 let settlementNgn = process.argv[2] ? Number(process.argv[2]) : null;
 let settlementSource = 'argument';
+// Paystack keeps a deposit as "pending settlement" until it settles it (next
+// working day). Only the TRANSFER BALANCE can pay a withdrawal. Both are real
+// cash, so both count toward solvency — but they are reported apart, because
+// "solvent" and "able to pay a withdrawal right now" are different questions.
+let transferBalanceNgn = null;
+let pendingSettlementNgn = null;
 if (settlementNgn === null && /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRET_KEY ?? '')) {
   try {
     const res = await fetch(`${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/balance`, {
@@ -35,8 +41,17 @@ if (settlementNgn === null && /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRE
     const json = await res.json();
     const ngn = (json.data ?? []).find((b) => b.currency === 'NGN');
     if (res.ok && ngn) {
-      settlementNgn = Number(ngn.balance) / 100;
-      settlementSource = `Paystack ${process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_') ? 'TEST' : 'LIVE'} balance, read live`;
+      const isTest = process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_');
+      transferBalanceNgn = Number(ngn.balance) / 100;
+      const totals = await (await fetch(`${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/transaction/totals`, {
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+      })).json().catch(() => null);
+      const pending = (totals?.data?.pending_transfers_by_currency ?? []).find((b) => b.currency === 'NGN');
+      // Test mode credits the balance instantly AND lists the same money as
+      // pending — counting both would double it.
+      pendingSettlementNgn = isTest ? 0 : Number(pending?.amount ?? 0) / 100;
+      settlementNgn = transferBalanceNgn + pendingSettlementNgn;
+      settlementSource = `Paystack ${isTest ? 'TEST' : 'LIVE'}, read live`;
     }
   } catch {
     // fall through: no verdict without a cash figure
@@ -158,6 +173,14 @@ if (settlementNgn !== null) {
   const ledgerVsCash = (liabilitiesReal + platformNgn) - settlementNgn;
   console.log('──────────────────────────────────────────');
   console.log(`provider cash:             ${fmt(settlementNgn)}   (${settlementSource})`);
+  if (transferBalanceNgn !== null) {
+    console.log(`  ├ transfer balance:      ${fmt(transferBalanceNgn)}   ← the ONLY money that can pay a withdrawal right now`);
+    console.log(`  └ pending settlement:    ${fmt(pendingSettlementNgn)}   ← deposits Paystack has received but not yet settled`);
+    if (transferBalanceNgn < liabilitiesReal) {
+      console.log(`⚠ WITHDRAWALS WILL BE REFUSED: users hold ${fmt(liabilitiesReal)} but only ${fmt(transferBalanceNgn)} is in the transfer balance.`);
+      console.log('  Top up the Paystack balance (dashboard → Transfers → Top up), and ask Paystack to settle into your balance instead of your bank.');
+    }
+  }
   console.log(Math.abs(ledgerVsCash) < 0.01
     ? '✅ BOOKS MATCH CASH: users + platform equals the provider balance exactly'
     : `⚠ books differ from cash by ${fmt(ledgerVsCash)} (ledger − cash)`);

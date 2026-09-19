@@ -94,7 +94,11 @@ export async function submitWithdrawal(
   const floatNgn = await paymentsClient.getBalanceNgn().catch(() => null);
   const neededNgn = amountNgn + transferFeeNgn(amountNgn);
   if (floatNgn !== null && floatNgn < neededNgn) {
-    console.error(`${TAG} CRITICAL: provider float cannot cover a withdrawal the ledger allows`, {
+    // Deposits do NOT land in this balance: Paystack holds them as pending
+    // settlement and pays them out to the business bank account. The transfer
+    // balance only grows when it is topped up (or when settlements are
+    // pointed at it), so an empty float is an operations task, not a bug.
+    console.error(`${TAG} CRITICAL: Paystack transfer balance cannot cover this withdrawal — top it up (dashboard → Transfers → Top up)`, {
       userId,
       amountNgn,
       neededNgn,

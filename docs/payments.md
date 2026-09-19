@@ -8,12 +8,20 @@ refunds — is ledger-only.
 ## Money model
 
 - Every user gets one **dedicated virtual account** (a real bank account
-  number, Wema or Titan). Transfers into it pool in the single **Paystack
-  balance**. There are no per-user cash balances at the provider.
-- Withdrawals are **Paystack transfers** drawn from that same balance.
+  number, Wema or Titan). There are no per-user cash balances at the provider.
+- **Paystack holds money in two places, and this matters every day:**
+  - *Pending settlement* — where a deposit lands. Paystack settles it on the
+    next working day, by default **to the business bank account**.
+  - *Transfer balance* — the only money that can pay a withdrawal. It grows
+    only when it is **topped up**, or when settlements are pointed at it.
+  A deposit therefore does NOT make a withdrawal possible by itself. Keep a
+  float in the transfer balance, and ask Paystack to settle into the balance
+  rather than the bank. (Test mode hides this: it credits the balance
+  instantly.)
+- Withdrawals are **Paystack transfers** drawn from the transfer balance.
 - Who owns what is the ledger's job. The invariant the system is built around:
 
-  > sum of all wallet balances (users + platform) = Paystack balance
+  > sum of all wallet balances (users + platform) = transfer balance + pending settlement (+ anything settled to the bank and not yet topped back up)
 
   Every provider fee is booked, so this holds to the kobo. `scripts/audit-money.mjs`
   reads the Paystack balance live and checks it.
