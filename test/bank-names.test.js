@@ -48,3 +48,15 @@ test('overlong parts are capped', () => {
   assert.equal(parts.firstName.length, 50);
   assert.equal(parts.lastName.length, 50);
 });
+
+test('a digit inside a handle is dropped, not turned into a gap', () => {
+  assert.deepEqual(bankNameParts('Uri3l'), { firstName: 'Uril', lastName: 'User' });
+  assert.deepEqual(bankNameParts('J4ne D0e'), { firstName: 'Jne', lastName: 'De' });
+  assert.deepEqual(bankNameParts('Timi 2024'), { firstName: 'Timi', lastName: 'User' });
+});
+
+test('letters with no accent to strip still fold to plain ASCII', () => {
+  assert.equal(sanitizeBankName('Ïtz ØmØ Jësü'), 'Itz OmO Jesu');
+  assert.equal(sanitizeBankName('Łukasz Weiß'), 'Lukasz Weiss');
+  assert.equal(sanitizeBankName('Æsa Þór'), 'AEsa Thor');
+});

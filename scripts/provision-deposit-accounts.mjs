@@ -63,6 +63,7 @@ const users = await prisma.user.findMany({
       { privyDid: { startsWith: 'seed:' } },
       { privyDid: { startsWith: 'parked:' } },
       { privyDid: { startsWith: 'platform:' } },
+      { privyDid: { startsWith: 'deleted:' } },
     ],
   },
   select: { id: true, name: true, phone: true, privyDid: true, virtualAccount: { select: { bankName: true, accountNumber: true, provider: true } } },
@@ -74,7 +75,8 @@ console.log(`${users.length} real user(s) need a deposit account${CONFIRM ? '' :
 for (const u of users) {
   const { firstName, lastName } = bankNameParts(u.name);
   const old = u.virtualAccount ? `  (replaces retired ${u.virtualAccount.bankName} ${u.virtualAccount.accountNumber})` : '';
-  console.log(`  ${u.id}  ${JSON.stringify(u.name ?? '')}  →  ${firstName} ${lastName}${old}`);
+  const wait = u.phone ? '' : '  — NO PHONE: gets an account when they verify one';
+  console.log(`  ${u.id}  ${JSON.stringify(u.name ?? '')}  →  ${firstName} ${lastName}${old}${wait}`);
 }
 
 if (!CONFIRM) {
@@ -85,12 +87,18 @@ if (!CONFIRM) {
 
 let ok = 0;
 let pending = 0;
+let waiting = 0;
 let failed = 0;
 for (const u of users.slice(0, LIMIT)) {
   try {
-    await provisionDepositAccount(payments, u.id, u.name ?? undefined, u.phone ?? undefined);
+    const status = await provisionDepositAccount(payments, u.id, u.name ?? undefined, u.phone ?? undefined);
     const va = await prisma.virtualAccount.findFirst({ where: { userId: u.id, provider: 'paystack' } });
-    if (va) {
+    if (status === 'needs_phone') {
+      // Not a failure: the bank will not open an account without a phone, and
+      // the gateway provisions automatically the moment one is verified.
+      waiting += 1;
+      continue;
+    } else if (va) {
       ok += 1;
       console.log(`  ✓ ${u.id}  ${JSON.stringify(u.name ?? '')}  ${va.bankName} ${va.accountNumber}  "${va.accountName}"`);
     } else {
@@ -104,6 +112,6 @@ for (const u of users.slice(0, LIMIT)) {
   await sleep(350);
 }
 
-console.log(`\nprovisioned ${ok}, pending ${pending}, failed ${failed}\n`);
+console.log(`\nprovisioned ${ok}, pending ${pending}, waiting for a phone number ${waiting}, failed ${failed}\n`);
 await prisma.$disconnect();
 process.exit(failed ? 1 : 0);

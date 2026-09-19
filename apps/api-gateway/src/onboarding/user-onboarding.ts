@@ -68,11 +68,20 @@ async function ensureFiatWallet(userId: string): Promise<void> {
   });
 }
 
+export type DepositAccountStatus = 'ready' | 'exists' | 'pending' | 'needs_phone';
+
 /**
  * Give the user a bank account number they can fund their wallet through.
  * Safe to call any number of times: a live account short-circuits, and every
  * provider call underneath is idempotent (the customer is keyed by a synthetic
  * email derived from the user id, and a customer has exactly one account).
+ *
+ * The bank will not open an account for a customer with no phone number, so a
+ * user without one gets NOTHING created — not even the customer — and
+ * `needs_phone` comes back. Verifying a phone calls this again. A customer
+ * that already exists is always sent the current name and phone first:
+ * without that, someone who signed up by email and added a phone later would
+ * be refused forever, because the bank still held their phoneless record.
  *
  * The display name keeps its emoji; the provider only ever sees the
  * letters-only version.
@@ -82,22 +91,31 @@ export async function provisionDepositAccount(
   userId: string,
   name: string | undefined,
   phone?: string,
-): Promise<void> {
+): Promise<DepositAccountStatus> {
   const existing = await virtualAccountClient.findByUserId(userId);
   if (existing) {
-    return;
+    return 'exists';
   }
 
   const user = await userClient.findById(userId);
+  if (user.privyDid.startsWith('deleted:')) {
+    return 'needs_phone'; // a deleted account never gets a bank account
+  }
+  const contactPhone = (phone ?? user.phone ?? '').trim();
+  if (!contactPhone) {
+    return 'needs_phone';
+  }
   const { firstName, lastName } = bankNameParts(name ?? user.name);
 
   let customerId = user.providerCustomerId ?? undefined;
-  if (!customerId) {
+  if (customerId) {
+    await payments.updateCustomer(customerId, { firstName, lastName, phoneNumber: contactPhone });
+  } else {
     const customer = await payments.createCustomer({
       customerReference: userId,
       firstName,
       lastName,
-      phoneNumber: phone ?? user.phone ?? undefined,
+      phoneNumber: contactPhone,
     });
     customerId = customer.id;
     await userClient.updateProviderCustomerId(userId, customerId);
@@ -111,7 +129,7 @@ export async function provisionDepositAccount(
     // webhook (dedicatedaccount.assign.success), which saves it then.
     if (error instanceof PaymentsApiError && error.code === 'ACCOUNT_PENDING') {
       console.info('[onboarding] deposit account assignment pending', { userId, customerId });
-      return;
+      return 'pending';
     }
     throw error;
   }
@@ -132,6 +150,7 @@ export async function provisionDepositAccount(
     bank: account.bank_name,
     accountNumber: account.account_number,
   });
+  return 'ready';
 }
 
 async function requestCryptoWalletCreation(

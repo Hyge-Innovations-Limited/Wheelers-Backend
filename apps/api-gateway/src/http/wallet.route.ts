@@ -865,12 +865,19 @@ export async function handleProvisionVirtualAccountRoute(
     // One provisioner for every entry point (signup, WhatsApp, phone verify,
     // this route), so they cannot disagree about names or idempotency.
     const fullUser = await userClient.findById(user.id);
-    await provisionDepositAccount(
+    const provisionStatus = await provisionDepositAccount(
       deps.paymentsClient,
       user.id,
       fullUser?.name ?? undefined,
       fullUser?.phone ?? undefined,
     );
+    if (provisionStatus === "needs_phone") {
+      sendJson(res, 409, {
+        error: "Verify your phone number to get your account number. The bank needs one to open an account.",
+        code: "PHONE_REQUIRED",
+      });
+      return;
+    }
 
     const created = await virtualAccountClient.findByUserId(user.id);
     if (!created) {

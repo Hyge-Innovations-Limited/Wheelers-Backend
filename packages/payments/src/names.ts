@@ -18,11 +18,21 @@ export interface BankNameParts {
 
 const MAX_PART_LENGTH = 50;
 
+/** Latin letters NFKD leaves alone — they have no accent to strip, they ARE the letter. */
+const UNDECOMPOSABLE: Record<string, string> = {
+  Ø: 'O', ø: 'o', Đ: 'D', đ: 'd', Ł: 'L', ł: 'l', Ħ: 'H', ħ: 'h',
+  Æ: 'AE', æ: 'ae', Œ: 'OE', œ: 'oe', ß: 'ss', Þ: 'Th', þ: 'th', ı: 'i',
+};
+
 export function sanitizeBankName(value: string | null | undefined): string {
   if (!value) return '';
   return value
+    .replace(/[ØøĐđŁłĦħÆæŒœßÞþı]/g, (ch) => UNDECOMPOSABLE[ch] ?? ch)
     .normalize('NFKD')
     .replace(/\p{M}+/gu, '')
+    // A digit inside a handle ("Uri3l") is dropped, not turned into a gap —
+    // "Uril" is a name, "Uri l" makes the bank print "L URI".
+    .replace(/(?<=\p{L})\d+(?=\p{L})/gu, '')
     .replace(/[^A-Za-z'\-]+/g, ' ')
     .split(' ')
     .map((token) => token.replace(/^['-]+|['-]+$/g, ''))
