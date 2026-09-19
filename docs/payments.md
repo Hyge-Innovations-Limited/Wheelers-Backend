@@ -81,6 +81,7 @@ In the Paystack dashboard:
 | --- | --- |
 | `node scripts/run-with-env.cjs node scripts/provision-deposit-accounts.mjs` | Dry run: who still needs a Paystack account. `--confirm` provisions them. Safe to re-run. |
 | `node scripts/run-with-env.cjs node scripts/audit-money.mjs` | Replays every wallet and compares the whole ledger to the live Paystack balance. |
+| `node scripts/run-with-env.cjs node scripts/reset-wallets.mjs` | **One-time, pre-launch.** Dry run by default. Rebuilds running totals, records any unexplained balance as an explicit `ADJUSTMENT` row, and zeroes every wallet (`--keep=<userId>,…` to carry some over). Refuses while money is in flight; snapshots to `logs/` first. |
 
 ## Tests
 

@@ -4,6 +4,8 @@
 -- A provider charge Wheelers absorbs is its own ledger row type, so it can
 -- never be mistaken for revenue.
 ALTER TYPE "TransactionType" ADD VALUE IF NOT EXISTS 'PROVIDER_FEE';
+-- Operator corrections (the pre-launch wallet reset) get their own type too.
+ALTER TYPE "TransactionType" ADD VALUE IF NOT EXISTS 'ADJUSTMENT';
 
 -- User.pouchCustomerId → providerCustomerId. Every stored value is a Pouch
 -- customer id, meaningless to Paystack: clear them so each user is registered

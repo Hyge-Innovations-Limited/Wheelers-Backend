@@ -692,6 +692,9 @@ enum TransactionType {
   /// A payment-provider charge Wheelers absorbed (deposit cut, transfer fee).
   /// Always a DEBIT on the platform wallet — never revenue.
   PROVIDER_FEE
+  /// A manual, documented correction to a wallet (e.g. the pre-launch reset).
+  /// Never written by the running system — only by an operator script.
+  ADJUSTMENT
 }
 
 enum WalletReservationKind {
