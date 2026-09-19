@@ -1801,21 +1801,18 @@ async function handleIncomingMetaMessage(
       const wallet = await walletClient.findByUserId(user.id).catch(() => null);
       const balance = wallet ? Number(wallet.balanceNgn) : 0;
 
+      // Only an empty wallet is turned away. Any amount the rider holds can be
+      // withdrawn; the bank's own tiny floor is enforced where money moves.
       if (!wallet || !Number.isFinite(balance) || balance < MIN_WITHDRAWAL_NGN) {
-        const va = await virtualAccountClient.findByUserId(user.id).catch(() => null);
-        const shortage = MIN_WITHDRAWAL_NGN - Math.max(0, balance);
-        const lines = [
-          balance > 0
-            ? `Your wallet balance is ₦${balance.toLocaleString()}, but the minimum withdrawal is ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}.`
-            : 'Your wallet has no available balance to withdraw.',
-          '',
-          `Top up at least ₦${shortage.toLocaleString()} to withdraw.`,
-        ];
-        if (va) {
-          lines.push('', `Deposit to *${va.bankName}*`, `\`\`\`${va.accountNumber}\`\`\``);
-        }
         await clearBookingStage(deps.redisClient, user.id);
-        await sendWhatsappText(deps, phone, incomingMessage, lines.join('\n'));
+        await sendWhatsappText(
+          deps,
+          phone,
+          incomingMessage,
+          balance > 0
+            ? `Your wallet balance is ₦${balance.toLocaleString()} — too small for a bank transfer (banks need at least ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}).`
+            : 'Your wallet has no available balance to withdraw.',
+        );
         return;
       }
 
@@ -1823,7 +1820,7 @@ async function handleIncomingMetaMessage(
       const inlineAmount = parseWithdrawalAmount(incomingMessage);
       if (inlineAmount !== null) {
         if (inlineAmount < MIN_WITHDRAWAL_NGN) {
-          await sendWhatsappText(deps, phone, incomingMessage, `The minimum withdrawal amount is ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. How much do you want to withdraw?`);
+          await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. How much do you want to withdraw?`);
           return;
         }
         if (inlineAmount > balance) {
@@ -1836,7 +1833,7 @@ async function handleIncomingMetaMessage(
         return;
       }
 
-      const reply = `Your available wallet balance is ₦${balance.toLocaleString()}\n\nHow much do you want to withdraw? (Minimum ₦${MIN_WITHDRAWAL_NGN.toLocaleString()})\nSend an amount, e.g. *5000*.`;
+      const reply = `Your available wallet balance is ₦${balance.toLocaleString()}\n\nHow much do you want to withdraw? Any amount up to your balance.\nSend a number, e.g. *1500*.`;
       await sendWhatsappText(deps, phone, incomingMessage, reply);
       return;
     }
@@ -1884,11 +1881,11 @@ async function handleIncomingMetaMessage(
       if (bookingStage === 'awaiting_withdrawal_amount') {
         const amountNgn = parseWithdrawalAmount(incomingMessage);
         if (amountNgn === null) {
-          await sendWhatsappText(deps, phone, incomingMessage, 'Please send a valid withdrawal amount, e.g. *5000*.');
+          await sendWhatsappText(deps, phone, incomingMessage, 'Please send a valid withdrawal amount, e.g. *1500*.');
           return;
         }
         if (amountNgn < MIN_WITHDRAWAL_NGN) {
-          await sendWhatsappText(deps, phone, incomingMessage, `The minimum withdrawal amount is ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
+          await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
           return;
         }
 
@@ -1917,7 +1914,7 @@ async function handleIncomingMetaMessage(
         );
         if (correctedAmount !== null) {
           if (correctedAmount < MIN_WITHDRAWAL_NGN) {
-            await sendWhatsappText(deps, phone, incomingMessage, `The minimum withdrawal amount is ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
+            await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
             return;
           }
           const wallet = await walletClient.findByUserId(user.id).catch(() => null);

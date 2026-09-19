@@ -476,7 +476,7 @@ export async function handleCreateWalletWithdrawalRoute(
         availableBalanceNgn: roundNgn(decimalToNumber(wallet.balanceNgn) ?? 0),
       });
       sendJson(res, 400, {
-        error: `Minimum withdrawal is NGN ${MIN_WITHDRAWAL_NGN.toLocaleString("en-NG")}.`,
+        error: `Banks can't receive less than NGN ${MIN_WITHDRAWAL_NGN.toLocaleString("en-NG")}. Enter a higher amount.`,
         minimumNgn: MIN_WITHDRAWAL_NGN,
         requestedAmountNgn,
       });
