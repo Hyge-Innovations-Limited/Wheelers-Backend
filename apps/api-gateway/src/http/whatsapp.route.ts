@@ -6,6 +6,7 @@ import {
   calculateRideFees,
   validateRiderOffer,
   MIN_WITHDRAWAL_NGN,
+  depositNeededFor,
 } from '@wheleers/config';
 import {
   RideRequestedEvent,
@@ -2260,11 +2261,14 @@ async function handleIncomingMetaMessage(
             ``,
             `Your wallet has ₦${balance.toLocaleString()} and the ride costs ₦${agreedFare.toLocaleString()} — you need ₦${shortage.toLocaleString()} more.`,
           ];
+          // Deposit charges come off before the money lands. Quote the amount
+          // to SEND, or a rider who transfers exactly the shortfall is short again.
+          const toSend = depositNeededFor(shortage);
 
           if (va) {
             lines.push(
               ``,
-              `Top up your wallet:`,
+              `Send *₦${toSend.toLocaleString()}* or more to cover it (deposit charges included):`,
               `Bank: *${va.bankName}*`,
               `Account: \`\`\`${va.accountNumber}\`\`\``,
               `Name: *${va.accountName}*`,
@@ -2272,7 +2276,7 @@ async function handleIncomingMetaMessage(
               `Once it lands, reply *pay* and *${pendingAccept.driverName}* is yours.`,
             );
           } else {
-            lines.push(``, `Please top up your wallet, then reply *pay*.`);
+            lines.push(``, `Please top up at least ₦${toSend.toLocaleString()} (deposit charges included), then reply *pay*.`);
           }
 
           const reply = lines.join('\n');

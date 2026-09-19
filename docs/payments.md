@@ -22,14 +22,15 @@ refunds — is ledger-only.
 
 | Moment | What happens | Ledger rows |
 | --- | --- | --- |
-| Deposit of ₦A, Paystack keeps ₦P | User is credited ₦A − 20. Wheelers keeps a flat **₦20**. Paystack's cut ₦P comes out of the platform wallet. | `DEPOSIT` credit (user), `PLATFORM_FEE` credit (platform), `PROVIDER_FEE` debit (platform) |
+| Deposit of ₦A, Paystack keeps ₦P | User is credited ₦A − 20 − P. Wheelers keeps a flat **₦20** and always nets exactly that. | `DEPOSIT` credit (user), `PLATFORM_FEE` credit (platform) |
 | Withdrawal of ₦W | User is debited ₦W. No Wheelers fee, no minimum beyond ₦50. Paystack's transfer fee (₦10 / ₦25 / ₦50) comes out of the platform wallet at settlement. | `WITHDRAWAL` debit (user), `PROVIDER_FEE` debit (platform) |
 
-`DEPOSIT_PROVIDER_FEE_PAID_BY=user` makes the depositor carry Paystack's cut
-as well, so Wheelers always nets exactly ₦20. The default (`platform`) means a
-large deposit can cost Wheelers more than it earns: Paystack takes about 1%
-(capped), so a ₦10,000 deposit earns ₦20 and costs ₦100. The platform wallet is
-allowed to go negative so the books say so honestly.
+The depositor carries Paystack's cut (about 1%, capped) as well as the ₦20, so
+a ₦10,000 deposit credits ₦9,880. `DEPOSIT_PROVIDER_FEE_PAID_BY=platform` makes
+Wheelers absorb Paystack's cut instead: the user then loses only ₦20, and the
+cut is booked as a `PROVIDER_FEE` debit on the platform wallet — which is
+allowed to go negative, so the books say honestly when fees paid exceed fees
+earned. Transfer fees on withdrawals are always absorbed that way.
 
 ## Flow
 
@@ -64,7 +65,7 @@ Rules the code holds to:
 | `PAYSTACK_SECRET_KEY` | **Required** by api-gateway and payment-service. `sk_test_…` or `sk_live_…`. Also signs webhooks — there is no separate webhook secret. |
 | `PAYSTACK_DVA_BANK` | `wema-bank` (default) or `titan-paystack`. Ignored on a test key, which always uses Paystack's `test-bank`. |
 | `DEPOSIT_FEE_NGN` | Default `20`. |
-| `DEPOSIT_PROVIDER_FEE_PAID_BY` | `platform` (default) or `user`. |
+| `DEPOSIT_PROVIDER_FEE_PAID_BY` | `user` (default) or `platform`. |
 | `WITHDRAWAL_MIN_NGN` | Default `50`. |
 
 In the Paystack dashboard:

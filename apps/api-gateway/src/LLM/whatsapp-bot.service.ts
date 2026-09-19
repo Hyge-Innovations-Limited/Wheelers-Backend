@@ -1,4 +1,5 @@
 import { userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { DEPOSIT_FEE_NOTICE } from '@wheleers/config';
 import { createLocalAccessToken } from '../auth/local';
 import { GroqClient, type GroqClientConfig } from './groq.client';
 import { WHATSAPP_SYSTEM_PROMPT } from './whatsapp-system-prompt';
@@ -68,6 +69,9 @@ function buildContextMessage(context: WhatsappBotUserContext): string {
     lines.push(`  Bank: ${context.virtualAccountDetails.bankName}`);
     lines.push(`  Account Number: \`${context.virtualAccountDetails.accountNumber}\` (format with backticks so user can copy)`);
     lines.push(`  Account Name: ${context.virtualAccountDetails.accountName}`);
+    if (DEPOSIT_FEE_NOTICE) {
+      lines.push(`  Deposit charges (say this whenever you share the account, in one short line): ${DEPOSIT_FEE_NOTICE}`);
+    }
   }
 
   if (context.riderKycStatus !== 'VERIFIED' && context.kycLink) {

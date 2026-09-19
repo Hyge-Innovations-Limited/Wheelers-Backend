@@ -58,3 +58,15 @@ test('a zero fee setting credits the full deposit', () => {
   const split = splitDeposit(5_000, 50, 0, 'platform');
   assert.deepEqual(split, { userCreditNgn: 5_000, platformFeeNgn: 0, platformAbsorbsNgn: 50 });
 });
+
+test('the amount a rider is told to send really does cover the shortfall', () => {
+  const { depositNeededFor } = require('../packages/config/dist/index.js');
+  for (const shortfall of [1, 50, 480, 1_000, 2_600, 9_999, 29_000, 50_000, 250_000]) {
+    const toSend = depositNeededFor(shortfall);
+    const providerFee = Math.min(300, Math.round(toSend * 0.01 * 100) / 100);
+    const landed = splitDeposit(toSend, providerFee, 20, 'user').userCreditNgn;
+    assert.ok(landed >= shortfall, `send ₦${toSend} for ₦${shortfall} → only ₦${landed} lands`);
+    assert.ok(toSend - shortfall <= 20 + 300 + 10, `₦${toSend} is far too much for ₦${shortfall}`);
+    assert.equal(toSend % 10, 0);
+  }
+});

@@ -7,13 +7,13 @@
  * The payment provider ALSO takes a cut of every deposit before the cash
  * reaches us. Someone has to carry that, and it is a business decision:
  *
- *   DEPOSIT_PROVIDER_FEE_PAID_BY=platform  (default)
+ *   DEPOSIT_PROVIDER_FEE_PAID_BY=user  (default)
+ *     The provider's cut is taken from the deposit as well as the flat ₦20.
+ *     Wheelers always nets exactly ₦20, whatever the deposit size.
+ *   DEPOSIT_PROVIDER_FEE_PAID_BY=platform
  *     The user only ever loses the flat ₦20. The provider's cut is booked
- *     against the platform wallet, so on a large deposit Wheelers can net
- *     LESS than zero (₦20 earned, ₦100 paid on a ₦10,000 deposit).
- *   DEPOSIT_PROVIDER_FEE_PAID_BY=user
- *     The provider's cut is taken from the deposit as well. Wheelers always
- *     nets exactly ₦20.
+ *     against the platform wallet, so on a large deposit Wheelers nets LESS
+ *     than zero (₦20 earned, ₦100 paid on a ₦10,000 deposit).
  *
  * Either way every naira is booked, so the ledger total always equals the
  * cash the provider actually holds. That equality is the whole point: the
@@ -29,9 +29,9 @@ function readFee(): number {
 export const DEPOSIT_FEE_NGN = readFee();
 
 export const DEPOSIT_PROVIDER_FEE_PAID_BY: 'platform' | 'user' =
-  (process.env.DEPOSIT_PROVIDER_FEE_PAID_BY ?? 'platform').trim().toLowerCase() === 'user'
-    ? 'user'
-    : 'platform';
+  (process.env.DEPOSIT_PROVIDER_FEE_PAID_BY ?? 'user').trim().toLowerCase() === 'platform'
+    ? 'platform'
+    : 'user';
 
 export interface DepositSplit {
   /** Credited to the user's wallet. */
@@ -71,3 +71,34 @@ export function splitDeposit(
     platformAbsorbsNgn: providerFee,
   };
 }
+
+/**
+ * The provider's deposit cut, used ONLY to tell a user how much to send. What
+ * is actually deducted always comes from the provider's own figure for that
+ * transaction. Paystack dedicated accounts: 1%, capped at ₦300.
+ */
+const PROVIDER_DEPOSIT_RATE = Number(process.env.DEPOSIT_PROVIDER_FEE_RATE ?? 0.01);
+const PROVIDER_DEPOSIT_CAP_NGN = Number(process.env.DEPOSIT_PROVIDER_FEE_CAP_NGN ?? 300);
+
+/**
+ * How much someone must SEND for `netNgn` to land in their wallet. Rounded up
+ * to the next ₦10 so the rider gets a number they can type, and so a rounding
+ * kobo never leaves them ₦1 short of a ride.
+ */
+export function depositNeededFor(netNgn: number): number {
+  const net = Math.max(0, netNgn);
+  let gross = net + DEPOSIT_FEE_NGN;
+  if (DEPOSIT_PROVIDER_FEE_PAID_BY === 'user' && PROVIDER_DEPOSIT_RATE > 0 && PROVIDER_DEPOSIT_RATE < 1) {
+    const uncapped = gross / (1 - PROVIDER_DEPOSIT_RATE);
+    gross = uncapped * PROVIDER_DEPOSIT_RATE > PROVIDER_DEPOSIT_CAP_NGN ? gross + PROVIDER_DEPOSIT_CAP_NGN : uncapped;
+  }
+  return Math.ceil(gross / 10) * 10;
+}
+
+/** One honest sentence about deposit charges, for anywhere account details are shown. */
+export const DEPOSIT_FEE_NOTICE =
+  DEPOSIT_FEE_NGN <= 0 && DEPOSIT_PROVIDER_FEE_PAID_BY !== 'user'
+    ? ''
+    : DEPOSIT_PROVIDER_FEE_PAID_BY === 'user'
+      ? `Each deposit has a ₦${DEPOSIT_FEE_NGN} Wheelers fee plus the bank's processing charge (about ${Math.round(PROVIDER_DEPOSIT_RATE * 100)}%, max ₦${PROVIDER_DEPOSIT_CAP_NGN}) taken off before it reaches your wallet.`
+      : `Each deposit has a ₦${DEPOSIT_FEE_NGN} Wheelers fee taken off before it reaches your wallet.`;

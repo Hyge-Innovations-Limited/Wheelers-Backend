@@ -22,7 +22,14 @@ export type { McpEnv }          from './env/mcp.env';
 // Constants
 export { FEES }                        from './constants/fees';
 export { MIN_WITHDRAWAL_NGN } from './constants/withdrawal';
-export { DEPOSIT_FEE_NGN, DEPOSIT_PROVIDER_FEE_PAID_BY, splitDeposit, type DepositSplit } from './constants/deposit';
+export {
+  DEPOSIT_FEE_NGN,
+  DEPOSIT_FEE_NOTICE,
+  DEPOSIT_PROVIDER_FEE_PAID_BY,
+  depositNeededFor,
+  splitDeposit,
+  type DepositSplit,
+} from './constants/deposit';
 export { GPS }                         from './constants/gps';
 export { RIDE }                        from './constants/ride';
 export {

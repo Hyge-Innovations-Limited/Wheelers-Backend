@@ -58,7 +58,7 @@ export function buildTopUpData(params: {
       : 'Account: not set up yet — type "balance" in the chat',
     name_line: params.virtualAccount ? `Name: ${params.virtualAccount.accountName}` : '',
     note_line:
-      'Transfer at least the shortfall to this account (it credits your wallet in seconds), then tap the button below to book your driver.',
+      'Transfer a little more than the shortfall to this account — deposit charges come off first. It credits your wallet in seconds; then tap the button below to book your driver.',
     status_line: params.status ?? '',
     has_status: !!params.status,
   };
