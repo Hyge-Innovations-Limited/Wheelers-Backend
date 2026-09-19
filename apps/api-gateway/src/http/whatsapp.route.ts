@@ -3684,7 +3684,7 @@ async function handleIncomingMetaMessage(
         const editIntent = await parseRideIntent(groqForEdit, incomingMessage, recentMsgs);
 
         if (editIntent?.intent === 'edit_pickup' && editIntent.pickup?.address.trim()) {
-          const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.pickup.address);
+          const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.pickup.address, { spokenText: incomingMessage });
           if (!pickupGeo) {
             const reply = `${geocodeMissLine(editIntent.pickup.address)}\n\nPlease try a more specific pickup address.`;
             await appendWhatsappConversation(deps.redisClient, phone, [
@@ -3750,7 +3750,7 @@ async function handleIncomingMetaMessage(
         }
 
         if (editIntent?.intent === 'edit_destination' && editIntent.destination?.address.trim()) {
-          const destGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.destination.address);
+          const destGeo = await geocodeAddress(deps.googleMapsApiKey, editIntent.destination.address, { spokenText: incomingMessage });
           if (!destGeo) {
             const reply = `${geocodeMissLine(editIntent.destination.address)}\n\nPlease try a more specific destination address.`;
             await appendWhatsappConversation(deps.redisClient, phone, [
@@ -4099,10 +4099,10 @@ async function handleIncomingMetaMessage(
 
     if (rideIntent?.intent === 'group_ride_request') {
       const pickupGeo = rideIntent.pickup?.specific && rideIntent.pickup.address.trim()
-        ? await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup.address)
+        ? await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup.address, { spokenText: incomingMessage })
         : null;
       const destGeo = rideIntent.destination?.specific && rideIntent.destination.address.trim()
-        ? await geocodeAddress(deps.googleMapsApiKey, rideIntent.destination.address)
+        ? await geocodeAddress(deps.googleMapsApiKey, rideIntent.destination.address, { spokenText: incomingMessage })
         : null;
 
       await startGroupRideFlow(deps, user, phone, incomingMessage, {
@@ -4123,8 +4123,8 @@ async function handleIncomingMetaMessage(
       // ── Both pickup & destination typed → geocode both and plan route ──
       if (hasPickup && hasDestination) {
         const [pickupGeo, destGeo] = await Promise.all([
-          geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address),
-          geocodeAddress(deps.googleMapsApiKey, rideIntent.destination!.address),
+          geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage }),
+          geocodeAddress(deps.googleMapsApiKey, rideIntent.destination!.address, { spokenText: incomingMessage }),
         ]);
 
         if (!pickupGeo) {
@@ -4262,7 +4262,7 @@ async function handleIncomingMetaMessage(
 
       // ── Only pickup typed → save it, ask for destination ──
       if (hasPickup) {
-        const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address);
+        const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage });
         if (pickupGeo) {
           await setPendingLocation(deps.redisClient, user.id, {
             lat: pickupGeo.lat,

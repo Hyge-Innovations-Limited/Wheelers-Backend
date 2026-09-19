@@ -215,10 +215,50 @@ const GEOCODE_FALLBACK_COUNTRY = (process.env['GEOCODE_FALLBACK_COUNTRY'] ?? 'NG
  * So: bias first, and only fall back to the restriction when that finds
  * nothing at all.
  */
+export interface GeocodeOptions {
+  /**
+   * What the rider actually typed. When the address came from the language
+   * model, this is how we tell the rider's words from the model's guesses.
+   */
+  spokenText?: string;
+}
+
 export async function geocodeAddress(
   apiKey: string,
   address: string,
+  options: GeocodeOptions = {},
 ): Promise<GeocodeResult | null> {
+  const direct = await geocodeAsWritten(apiKey, address);
+  if (direct) return direct;
+
+  // The address as written found nothing. Two recoveries, in order:
+  //   1. Drop geography the rider never said. The model once turned "Caleb
+  //      University" into "Caleb University, Nasarawa State, Nigeria" — a
+  //      state it invented — and Google answered with Nasarawa State itself.
+  //   2. Ask Places. The address geocoder is built for streets; named places
+  //      (universities, malls, gates, bus stops) are what Places is for.
+  for (const simpler of simplerQueries(address, options.spokenText)) {
+    const viaPlaces = await findPlace(apiKey, simpler);
+    const found = viaPlaces ?? (await geocodeAsWritten(apiKey, simpler));
+    if (found) {
+      console.info('[geocoding] recovered with a simpler query', {
+        asked: address,
+        resolvedWith: simpler,
+        via: viaPlaces ? 'places' : 'geocoder',
+        resolvedTo: found.formattedAddress,
+      });
+      return found;
+    }
+  }
+
+  const viaPlaces = await findPlace(apiKey, address);
+  if (viaPlaces) {
+    console.info('[geocoding] resolved by place search', { address, resolvedTo: viaPlaces.formattedAddress });
+  }
+  return viaPlaces;
+}
+
+async function geocodeAsWritten(apiKey: string, address: string): Promise<GeocodeResult | null> {
   const biased = await geocodeOnce(apiKey, address, {
     ...(GEOCODE_REGION ? { region: GEOCODE_REGION } : {}),
   });
@@ -239,6 +279,129 @@ export async function geocodeAddress(
   return restricted;
 }
 
+const ADMINISTRATIVE_PART = /\b(state|nigeria|fct|federal capital territory)\b/i;
+
+/**
+ * Shorter versions of a comma-separated address, most specific first.
+ *
+ * With the rider's own text: every trailing part they did not say is treated
+ * as the model's guess and dropped ("Covenant University, Lagos" when the
+ * rider only typed "covenant university"). A part they DID say is kept — a
+ * rider who typed "Shoprite Ibadan" must never be quietly sent to Lagos.
+ *
+ * Without it: only purely administrative tails ("… State", "Nigeria") are
+ * dropped, since those carry no information a rider would miss.
+ */
+export function simplerQueries(address: string, spokenText?: string): string[] {
+  const parts = address.split(',').map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return [];
+  const [head, ...tail] = parts;
+
+  const spoken = spokenText?.toLowerCase();
+  const saidByRider = (part: string) =>
+    part
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 3 && !/^(state|nigeria)$/.test(word))
+      .some((word) => spoken!.includes(word));
+
+  const kept = spoken
+    ? tail.filter((part) => !ADMINISTRATIVE_PART.test(part) && saidByRider(part))
+    : tail.filter((part) => !ADMINISTRATIVE_PART.test(part));
+  if (kept.length === tail.length) return []; // nothing to drop
+
+  const core = [head, ...kept].join(', ');
+  const normalizedOriginal = parts.join(', ').toLowerCase();
+  return [`${core}, ${SERVICE_COUNTRY_NAME}`, core].filter(
+    (query, index, all) => query.toLowerCase() !== normalizedOriginal && all.indexOf(query) === index,
+  );
+}
+
+interface GooglePlacesResponse {
+  status: string;
+  error_message?: string;
+  candidates?: Array<{
+    name?: string;
+    formatted_address?: string;
+    types?: string[];
+    geometry?: { location?: { lat?: number; lng?: number } };
+  }>;
+}
+
+// Roughly Nigeria — a bias, not a filter; the service-area check still runs.
+const PLACES_LOCATION_BIAS = 'rectangle:4.0,2.6|14.0,14.8';
+let placesDisabled = false;
+
+/**
+ * Google Places "find place from text". Returns null for anything we could
+ * not route to: no match, a whole state or country, somewhere outside the
+ * service area, or a guess that shares no words with the question.
+ */
+export async function findPlace(apiKey: string, query: string): Promise<GeocodeResult | null> {
+  if (placesDisabled || !query.trim()) return null;
+  const params = new URLSearchParams({
+    input: query,
+    inputtype: 'textquery',
+    fields: 'name,formatted_address,geometry,types',
+    locationbias: PLACES_LOCATION_BIAS,
+    key: apiKey,
+  });
+
+  try {
+    const response = await fetch(`https://maps.googleapis.com/maps/api/place/findplacefromtext/json?${params.toString()}`);
+    if (!response.ok) return null;
+    const data = (await response.json()) as GooglePlacesResponse;
+
+    if (data.status === 'REQUEST_DENIED') {
+      // The key does not have the Places API enabled. Say so once, then stop
+      // paying a round-trip on every miss.
+      placesDisabled = true;
+      console.error('[geocoding] Places API is not enabled for GOOGLE_MAPS_API_KEY — named places will be found less often. Enable "Places API" in Google Cloud.', {
+        message: data.error_message,
+      });
+      return null;
+    }
+    const place = data.status === 'OK' ? data.candidates?.[0] : undefined;
+    const location = place?.geometry?.location;
+    if (!place || location?.lat == null || location?.lng == null) return null;
+
+    if (place.types?.some((type) => TOO_COARSE_TYPES.has(type))) return null;
+
+    const label = [place.name, place.formatted_address].filter(Boolean).join(', ');
+    if (!partialMatchLooksRelated(query, label)) {
+      console.warn('[geocoding] ignoring place — unrelated to query', { query, resolvedTo: label });
+      return null;
+    }
+
+    const inNigeria =
+      isWithinServiceBounds(location.lat, location.lng) &&
+      (!SERVICE_COUNTRY || SERVICE_COUNTRY !== 'NG' || /nigeria\s*$/i.test(place.formatted_address ?? SERVICE_COUNTRY_NAME));
+    if (!inNigeria) {
+      rememberOutsideMatch(query, label);
+      return null;
+    }
+
+    // Lead with the place's own name: "Caleb University, Imota…" tells the
+    // rider we understood them; a bare street address does not.
+    const formattedAddress =
+      place.name && !(place.formatted_address ?? '').toLowerCase().includes(place.name.toLowerCase())
+        ? label
+        : place.formatted_address ?? label;
+    return { lat: location.lat, lng: location.lng, formattedAddress, countryCode: SERVICE_COUNTRY || undefined };
+  } catch (error) {
+    console.warn('[geocoding] place search failed', {
+      query,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/** Test hook: forget that Places was ever refused. */
+export function resetPlacesAvailability(): void {
+  placesDisabled = false;
+}
+
 /**
  * All plausible matches for an ambiguous place name. "Aiyetoro Street" exists
  * in both Surulere and Akoka — assuming one silently books a ride to the
@@ -255,10 +418,17 @@ export async function geocodeAddressCandidates(
   }, limit);
   if (biased.length > 0) return biased;
 
-  if (!GEOCODE_FALLBACK_COUNTRY) return [];
-  return geocodeManyOnce(apiKey, address, {
-    components: `country:${GEOCODE_FALLBACK_COUNTRY}`,
-  }, limit);
+  if (GEOCODE_FALLBACK_COUNTRY) {
+    const restricted = await geocodeManyOnce(apiKey, address, {
+      components: `country:${GEOCODE_FALLBACK_COUNTRY}`,
+    }, limit);
+    if (restricted.length > 0) return restricted;
+  }
+
+  // A named place the address geocoder does not know (a school, a plaza, a
+  // church) — one confident answer from Places beats "could not find".
+  const place = await findPlace(apiKey, address);
+  return place ? [place] : [];
 }
 
 async function geocodeManyOnce(

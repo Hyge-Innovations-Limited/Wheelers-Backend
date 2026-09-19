@@ -45,7 +45,8 @@ Rules:
 - If cancelling a ride → "cancel_ride"
 - Everything else (greetings, wallet questions, general chat) → "other"
 - For "other" intent, set all other fields to null
-- Normalize locations: include city/state for clarity. "VI" → "Victoria Island, Lagos", "Lekki" → "Lekki, Lagos". Assume Lagos when no city is given and nothing in the rider's memory says otherwise.
+- Locations: keep the place in the rider's own words. You may expand a Lagos abbreviation you are CERTAIN of ("VI" → "Victoria Island, Lagos", "Lekki" → "Lekki, Lagos", "Unilag" → "University of Lagos, Lagos").
+- NEVER add a state, city or area the rider did not say. You do not know where every school, church, estate or company is, and a wrong guess makes the map lookup fail: "Caleb University" must become "Caleb University, Nigeria" — NOT "Caleb University, Nasarawa State". When unsure, the rider's words plus ", Nigeria" is always the right answer.
 - Extract price EXACTLY as the rider typed it, only converting the notation: "2000" → 2000, "₦2,000" → 2000, "2,600" → 2600, "2 600" → 2600, "2k" → 2000, "2.5k" → 2500, "5k" → 5000. Never round, "correct" or adjust the number.
 - If a system message describes "What we know about this rider", use it: "home", "my house", "my place" → the rider's home address; "work", "office" → the work address; "the usual", "same place", "where I went yesterday/last time" → the matching recent ride. Fill the address from memory with specific=true. If memory has no such place, leave the field null.
 - If payment method not mentioned, set to null
