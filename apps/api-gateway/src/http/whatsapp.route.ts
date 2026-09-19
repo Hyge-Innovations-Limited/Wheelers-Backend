@@ -6,7 +6,6 @@ import {
   calculateRideFees,
   validateRiderOffer,
   MIN_WITHDRAWAL_NGN,
-  POUCH_PAYOUT_FEE_NGN,
 } from '@wheleers/config';
 import {
   RideRequestedEvent,
@@ -14,9 +13,9 @@ import {
   RideOfferAcceptedEvent,
   FeedbackLoggedEvent,
 } from '@wheleers/kafka-schemas';
-import type { PayoutCreatedEvent } from '@wheleers/kafka-schemas';
-import { classifyPouchPayoutStatus } from '@wheleers/pouch-client';
-import type { PouchBankAccount, PouchLiquifiaClient } from '@wheleers/pouch-client';
+import type { PaymentBank, PaymentsClient } from '@wheleers/payments';
+import { getBanks } from '../payments/banks';
+import { submitWithdrawal, WithdrawalError } from '../payments/withdrawal';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser } from '../onboarding/user-onboarding';
 import {
@@ -100,7 +99,7 @@ import { readRawBody, sendJson } from './utils';
 export interface MetaWhatsappRouteDeps {
   jwtSecret: string;
   publisher: GatewayPublisher;
-  pouchLiquifiaClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   redisClient: RedisClient;
   routePlanner: GoogleMapsRoutePlanner;
   googleMapsApiKey: string;
@@ -115,7 +114,6 @@ export interface MetaWhatsappRouteDeps {
   driverKycStorage?: DriverKycStorage;
   groupRideFaceStorage?: GroupRideFaceStorage;
   /** Platform treasury VA — payouts draw from this float when configured. */
-  treasuryVirtualAccountId?: string;
   /** Published Meta Flow id for the booking form. Unset = chat-only booking. */
   whatsappFlowId?: string;
   whatsappOffersFlowId?: string;
@@ -788,10 +786,10 @@ function normalizeBankSearch(value: string): string {
 }
 
 async function findWithdrawalBank(
-  pouch: PouchLiquifiaClient,
+  deps: Pick<MetaWhatsappRouteDeps, 'paymentsClient' | 'redisClient'>,
   query: string,
-): Promise<{ bank: PouchBankAccount } | { matches: PouchBankAccount[] } | null> {
-  const banks = await pouch.listBanks('NG', 'NGN');
+): Promise<{ bank: PaymentBank } | { matches: PaymentBank[] } | null> {
+  const banks = await getBanks(deps.paymentsClient, deps.redisClient);
   const normalizedQuery = normalizeBankSearch(query);
   const compactQuery = normalizedQuery.replace(/\s+/g, '');
 
@@ -829,16 +827,6 @@ async function sendWhatsappText(
   await sendMetaReply(deps, phone, reply);
 }
 
-const WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE =
-  'Your withdrawal was submitted but the bank has not confirmed it yet. Your money stays reserved until it does — reply *withdraw status* to check. Your wallet balance is safe.';
-
-/** A provider error we cannot read as "definitely not processed". */
-function isAmbiguousProviderFailure(error: unknown): boolean {
-  const status = (error as { status?: unknown })?.status;
-  if (typeof status !== 'number') return true; // network error, timeout, abort
-  return status >= 500 || status === 408;
-}
-
 async function submitWhatsappWithdrawal(params: {
   deps: MetaWhatsappRouteDeps;
   userId: string;
@@ -855,147 +843,22 @@ async function submitWhatsappWithdrawal(params: {
     throw new Error('A withdrawal is already being processed. Please wait a moment.');
   }
 
-  let reservedRequestId: string | undefined;
-  let payoutMayExist = false;
   try {
-    // Defence in depth: the conversational stages check this too, but this is
-    // the only place that actually moves money, and it is a separate code path
-    // from the HTTP withdrawal route.
-    if (amountNgn < MIN_WITHDRAWAL_NGN) {
-      console.warn('[api-gateway][whatsapp-withdrawal] rejected: below minimum', {
-        userId,
-        amountNgn,
-        minimumNgn: MIN_WITHDRAWAL_NGN,
-      });
-      throw new Error(`Minimum withdrawal is ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}.`);
-    }
-
     const wallet = await walletClient.findByUserId(userId);
-    if (!wallet) throw new Error('No wallet found. Fund your account first.');
+    if (!wallet) throw new WithdrawalError('No wallet found. Fund your account first.', 'WITHDRAWAL_FAILED');
 
-    // With a treasury configured, payouts draw from the platform float and
-    // the user needs no personal VA.
-    const virtualAccount = await virtualAccountClient.findByUserId(userId).catch(() => null);
-    const payoutSourceVaId =
-      deps.treasuryVirtualAccountId ?? virtualAccount?.pouchVirtualAccountId;
-    if (!payoutSourceVaId) {
-      throw new Error('No deposit account found. Please complete wallet setup first.');
-    }
-
-    // Pouch pays out of the NAMED virtual account's own balance (confirmed
-    // in production) — pre-check that exact vault so the rider hears an
-    // honest sentence, not a raw provider rejection.
-    const vaBalance = await deps.pouchLiquifiaClient
-      .getVirtualAccountBalance(payoutSourceVaId)
-      .catch(() => null);
-    const vaBalanceNgn = vaBalance ? Number(vaBalance.balance ?? 0) / 100 : null;
-    if (vaBalanceNgn !== null && vaBalanceNgn < amountNgn + POUCH_PAYOUT_FEE_NGN) {
-      console.error('[api-gateway][whatsapp-withdrawal] LIQUIDITY MISMATCH — ledger balance not backed by virtual account', {
-        userId,
-        requestedNgn: amountNgn,
-        vaBalanceNgn,
-        feeNgn: POUCH_PAYOUT_FEE_NGN,
-      });
-      const withdrawableNgn = Math.floor(vaBalanceNgn - POUCH_PAYOUT_FEE_NGN);
-      throw new Error(
-        withdrawableNgn >= MIN_WITHDRAWAL_NGN
-          ? `You can withdraw up to ₦${withdrawableNgn.toLocaleString()} right now (a ₦${POUCH_PAYOUT_FEE_NGN} transfer fee applies). Your wallet balance is safe.`
-          : 'Withdrawals are temporarily unavailable for your account. Your wallet balance is safe — please try again later.',
-      );
-    }
-
-    const reserveResult = await withdrawalClient.reserve({
-      userId,
-      walletId: wallet.id,
-      amountNgn,
-      bankAccountNumber: accountNumber,
-      bankAccountName: accountName,
-      bankNetworkId: bankUuid,
-    });
-    reservedRequestId = reserveResult.request.id;
-
-    let payout;
-    try {
-      payout = await deps.pouchLiquifiaClient.createPayout({
-        virtualAccountId: payoutSourceVaId,
-        reference: reserveResult.request.id,
-        amount: amountNgn,
-        destinationAccount: accountNumber,
-        destinationBankUuid: bankUuid,
-        idempotencyKey: reserveResult.request.id,
-      });
-    } catch (payoutError) {
-      if (isAmbiguousProviderFailure(payoutError)) {
-        // Pouch may have taken the payout. Keep the money reserved; the
-        // reconciler resolves it by reference (= the request id).
-        payoutMayExist = true;
-        throw new Error(WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE);
-      }
-      throw payoutError;
-    }
-    payoutMayExist = classifyPouchPayoutStatus(payout.status) !== 'failed';
-
-    // Pouch reports rejections inside an HTTP 200 — a payout it already
-    // refused must not be recorded (and reported to the rider) as created.
-    if (classifyPouchPayoutStatus(payout.status) === 'failed') {
-      throw new Error(
-        `The bank transfer was rejected by the payment provider (${payout.status}). Your balance has not been deducted.`,
-      );
-    }
-
-    await withdrawalClient.attachPayout({
-      withdrawalRequestId: reserveResult.request.id,
-      pouchPayoutId: payout.id,
-      providerReference: payout.reference,
-    });
-
-    const payoutCreatedEvent: PayoutCreatedEvent = {
-      eventType: 'PAYOUT_CREATED',
-      userId,
-      pouchPayoutId: payout.id,
-      withdrawalId: reserveResult.request.id,
-      amountNgn,
-      bankAccountNumber: accountNumber,
-      bankAccountName: accountName,
-      bankNetworkId: bankUuid,
-      timestamp: new Date().toISOString(),
-    };
-    await deps.publisher.publishPaymentEvent(payoutCreatedEvent);
-
-    return {
-      id: reserveResult.request.id,
-      status: 'PAYOUT_CREATED',
-    };
+    const { requestId } = await submitWithdrawal(
+      { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
+      { userId, walletId: wallet.id, amountNgn, bankCode: bankUuid, accountNumber, accountName },
+    );
+    return { id: requestId, status: 'PAYOUT_CREATED' };
   } catch (error) {
     console.error('[api-gateway][whatsapp-withdrawal] withdrawal failed', {
       userId,
       amountNgn,
-      withdrawalRequestId: reservedRequestId ?? null,
-      fundsWereReserved: Boolean(reservedRequestId),
+      fundsStillReserved: error instanceof WithdrawalError ? error.fundsStillReserved : false,
       error: error instanceof Error ? error.message : String(error),
-      providerStatus: (error as { status?: number })?.status ?? null,
-      providerCode: (error as { code?: string })?.code ?? null,
     });
-
-    if (reservedRequestId && payoutMayExist) {
-      console.error('[api-gateway][whatsapp-withdrawal] payout may exist — reservation kept for reconciliation', {
-        userId,
-        withdrawalRequestId: reservedRequestId,
-      });
-    } else if (reservedRequestId) {
-      await withdrawalClient.releaseFailedRequest({
-        withdrawalRequestId: reservedRequestId,
-        failureReason: error instanceof Error ? error.message : 'Withdrawal creation failed.',
-        status: 'FAILED',
-      }).catch((releaseErr) => {
-        // This one matters: the reservation is still holding the rider's money.
-        console.error('[api-gateway][whatsapp-withdrawal] FAILED to release reservation — funds still locked', {
-          userId,
-          withdrawalRequestId: reservedRequestId,
-          error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
-        });
-      });
-    }
     throw error;
   } finally {
     await deps.redisClient.del(lockKey).catch(() => {});
@@ -1728,7 +1591,7 @@ async function handleIncomingMetaMessage(
       deps: {
         jwtSecret: deps.jwtSecret,
         publisher: deps.publisher,
-        pouchLiquifiaClient: deps.pouchLiquifiaClient,
+        paymentsClient: deps.paymentsClient,
       },
     });
 
@@ -2077,7 +1940,7 @@ async function handleIncomingMetaMessage(
         }
 
         try {
-          const result = await findWithdrawalBank(deps.pouchLiquifiaClient, bankQuery);
+          const result = await findWithdrawalBank(deps, bankQuery);
           if (!result) {
             await sendWhatsappText(deps, phone, incomingMessage, 'I could not find that bank. Please type the bank name again.');
             return;
@@ -2110,9 +1973,9 @@ async function handleIncomingMetaMessage(
         }
 
         try {
-          const verified = await deps.pouchLiquifiaClient.validateBankAccount({
+          const verified = await deps.paymentsClient.validateBankAccount({
             accountNumber,
-            bankUuid: withdrawal.bankUuid,
+            bankCode: withdrawal.bankUuid,
           });
           const verifiedAccountNumber = verified.account_number || accountNumber;
           const accountName = verified.account_name?.trim();
@@ -2121,7 +1984,7 @@ async function handleIncomingMetaMessage(
             return;
           }
 
-          const bankName = verified.bank_name || withdrawal.bankName || 'Selected bank';
+          const bankName = withdrawal.bankName || 'Selected bank';
           await storePendingWhatsappWithdrawal(deps.redisClient, user.id, {
             ...withdrawal,
             bankName,
@@ -2187,9 +2050,10 @@ async function handleIncomingMetaMessage(
             userId: user.id,
             error: error instanceof Error ? error.message : String(error),
           });
-          // Surface our own honest explanations; keep provider internals generic.
+          // A WithdrawalError is written for the rider; anything else is an
+          // internal failure and stays generic.
           const friendly =
-            error instanceof Error && /wallet balance is safe/i.test(error.message)
+            error instanceof WithdrawalError
               ? error.message
               : 'Withdrawal failed. Please try again later.\n\nYour wallet balance was not deducted.';
           await sendWhatsappText(deps, phone, incomingMessage, `${friendly}\n\nReply *withdraw* to retry.`);

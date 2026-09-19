@@ -17,7 +17,7 @@ model User {
   phone                      String?
   photoUrl                   String?
   email                      String?
-  pouchCustomerId            String?                     @unique
+  providerCustomerId         String?                     @unique
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
@@ -48,7 +48,7 @@ model User {
   @@index([privyDid])
   @@index([username])
   @@index([email])
-  @@index([pouchCustomerId])
+  @@index([providerCustomerId])
 }
 
 model UserConsent {
@@ -149,8 +149,11 @@ model Wallet {
 model VirtualAccount {
   id                    String   @id @default(uuid())
   userId                String   @unique
-  pouchCustomerId       String
-  pouchVirtualAccountId String   @unique
+  /// Which payment provider issued this account. Rows left over from the
+  /// retired Pouch integration say "pouch" and are replaced on next provision.
+  provider              String   @default("paystack")
+  providerCustomerId    String
+  providerAccountId     String   @unique
   bankName              String
   accountNumber         String
   accountName           String
@@ -161,7 +164,7 @@ model VirtualAccount {
   updatedAt             DateTime @updatedAt
   user                  User     @relation(fields: [userId], references: [id])
 
-  @@index([pouchVirtualAccountId])
+  @@index([providerAccountId])
 }
 
 model RideHold {
@@ -225,7 +228,7 @@ model WithdrawalRequest {
   userId             String
   walletId           String
   reservationId      String                  @unique
-  pouchPayoutId      String?                 @unique
+  providerPayoutId   String?                 @unique
   providerReference  String?                 @unique
   status             WithdrawalRequestStatus @default(PENDING)
   requestedAmountNgn Decimal                 @db.Decimal(18, 2)
@@ -233,6 +236,9 @@ model WithdrawalRequest {
   bankAccountNumber  String
   bankAccountName    String
   bankNetworkId      String
+  /// What the provider charged Wheelers for this transfer, booked against the
+  /// platform wallet at settlement.
+  providerFeeNgn     Decimal?                @db.Decimal(18, 2)
   failureReason      String?
   providerPayload    Json?
   expiresAt          DateTime?
@@ -683,6 +689,9 @@ enum TransactionType {
   PENALTY
   WITHDRAWAL
   PLATFORM_FEE
+  /// A payment-provider charge Wheelers absorbed (deposit cut, transfer fee).
+  /// Always a DEBIT on the platform wallet — never revenue.
+  PROVIDER_FEE
 }
 
 enum WalletReservationKind {

@@ -1,5 +1,5 @@
 {
-  "name": "@wheleers/pouch-client",
+  "name": "@wheleers/payments",
   "version": "0.0.1",
   "private": true,
   "main": "./dist/index.js",

@@ -19,7 +19,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SANDBOX, sandboxEnv } from './sandbox-env.mjs';
-import { startPouchStub } from './pouch-stub.mjs';
+import { startPaystackStub } from './paystack-stub.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
@@ -59,7 +59,7 @@ if (needsBuild) {
   run('npm', ['run', 'build']);
 }
 
-await startPouchStub(SANDBOX.pouchStubPort);
+await startPaystackStub(SANDBOX.paystackStubPort);
 
 const children = [];
 services.forEach((svc, index) => {

@@ -95,9 +95,7 @@ import {
   handleGetGroupRideMatchRequestRoute,
   handleListGroupRideMatchRequestsRoute,
 } from "./http/group-ride.route";
-import {
-  handlePouchWebhookRoute,
-} from "./http/pouch.route";
+import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -109,8 +107,7 @@ import {
   handleWalletTransactionsRoute,
   handleWalletDepositInfoRoute,
 } from "./http/wallet.route";
-import { PouchLiquifiaClient } from "@wheleers/pouch-client";
-import { startTreasurySweep } from "./treasury-sweep";
+import { PaymentsClient } from "@wheleers/payments";
 import {
   handleListInterstateRoutesRoute,
   handleInterstateCitiesRoute,
@@ -386,9 +383,14 @@ async function bootstrap(): Promise<void> {
 
   const publisher = new GatewayPublisher(producer);
 
-  const pouchLiquifiaClient = new PouchLiquifiaClient({
-    baseUrl: gatewayEnv.POUCH_LIQUIFIA_BASE_URL,
-    apiKey: gatewayEnv.POUCH_LIQUIFIA_API_KEY,
+  const paymentsClient = new PaymentsClient({
+    secretKey: gatewayEnv.PAYSTACK_SECRET_KEY,
+    baseUrl: gatewayEnv.PAYSTACK_BASE_URL,
+    dvaBank: gatewayEnv.PAYSTACK_DVA_BANK,
+    emailDomain: gatewayEnv.PAYSTACK_CUSTOMER_EMAIL_DOMAIN,
+  });
+  console.log("[api-gateway] payments: Paystack", {
+    mode: paymentsClient.isTestMode ? "TEST" : "LIVE",
   });
 
   const routePlanner = new GoogleMapsRoutePlanner(
@@ -464,17 +466,9 @@ async function bootstrap(): Promise<void> {
   const walletDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
     publisher,
-    pouchLiquifiaClient,
+    paymentsClient,
     redisClient: redisCommandClient,
-    treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
   };
-
-  // Deposits land in user VAs; withdrawals pay from the treasury VA. This
-  // job continuously bridges the two so float scales with deposits.
-  startTreasurySweep({
-    pouchLiquifiaClient,
-    treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
-  });
 
   const kycDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
@@ -515,7 +509,7 @@ async function bootstrap(): Promise<void> {
       await handleUsernamePasswordSignupRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         publisher,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
@@ -585,7 +579,7 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         appleBundleId: gatewayEnv.APPLE_BUNDLE_ID,
         googleClientId: gatewayEnv.GOOGLE_CLIENT_ID,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
@@ -602,7 +596,7 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         appleBundleId: gatewayEnv.APPLE_BUNDLE_ID,
         googleClientId: gatewayEnv.GOOGLE_CLIENT_ID,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
@@ -784,7 +778,7 @@ async function bootstrap(): Promise<void> {
           onboarding: {
             jwtSecret: gatewayEnv.JWT_SECRET,
             publisher,
-            pouchLiquifiaClient,
+            paymentsClient,
           },
         });
       }
@@ -820,7 +814,7 @@ async function bootstrap(): Promise<void> {
       const metaWhatsappDeps = {
         jwtSecret: gatewayEnv.JWT_SECRET,
         publisher,
-        pouchLiquifiaClient,
+        paymentsClient,
         redisClient: redisCommandClient,
         routePlanner,
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
@@ -836,7 +830,6 @@ async function bootstrap(): Promise<void> {
         groupRideFaceStorage: groupRideFaceStorage ?? undefined,
         whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
         whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
-        treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
       };
 
       if (req.method === "GET") {
@@ -917,7 +910,7 @@ async function bootstrap(): Promise<void> {
       await handleVerifyPhoneOtpRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
-        pouchLiquifiaClient,
+        paymentsClient,
         metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
         metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
         metaOtpTemplateName: gatewayEnv.META_OTP_TEMPLATE_NAME,
@@ -1849,15 +1842,15 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    if (url.pathname === "/webhooks/pouchpay") {
+    if (url.pathname === "/webhooks/paystack") {
       if (req.method !== "POST") {
         sendMethodNotAllowed(res);
         return;
       }
 
-      await handlePouchWebhookRoute(req, res, {
+      await handlePaystackWebhookRoute(req, res, {
         publisher,
-        webhookSecret: gatewayEnv.POUCH_WEBHOOK_SECRET,
+        paymentsClient,
         redisClient: redisCommandClient,
       });
 

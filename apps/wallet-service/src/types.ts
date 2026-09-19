@@ -9,5 +9,6 @@ export type WalletRepository = Pick<
   | 'completeRideHoldWithDriverPayout'
   | 'cancelRideHold'
   | 'credit'
+  | 'creditDeposit'
   | 'debit'
 >;

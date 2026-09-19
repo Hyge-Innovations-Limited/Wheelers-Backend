@@ -17,7 +17,7 @@
     "@wheleers/db": "0.0.1",
     "@wheleers/kafka-client": "0.0.1",
     "@wheleers/kafka-schemas": "0.0.1",
-    "@wheleers/pouch-client": "*",
+    "@wheleers/payments": "*",
     "@wheleers/ride-service": "0.0.1",
     "jimp": "^0.22.12",
     "ws": "^8.18.3"

@@ -5,8 +5,9 @@
  *
  *   node scripts/run-with-env.cjs node scripts/audit-money.mjs [settlementNgn]
  *
- * Pass the Pouch settlement-wallet balance (from the dashboard Ledger page)
- * as the argument to get the solvency verdict, e.g.:
+ * With PAYSTACK_SECRET_KEY set (it is, through run-with-env) the Paystack
+ * balance is read live, so the solvency verdict needs no argument. Pass a
+ * figure to override it, e.g. to audit against a number from the dashboard:
  *   node scripts/run-with-env.cjs node scripts/audit-money.mjs 23830
  *
  * Checks, per wallet:
@@ -19,12 +20,28 @@
  * Then globally:
  *   4. LIABILITIES vs CASH — what all wallets sum to (real users vs seed
  *      demo accounts) against the settlement balance you pass in, with
- *      cash-in/cash-out totals from the ledger for cross-checking Pouch.
+ *      cash-in/cash-out totals from the ledger for cross-checking the provider.
  */
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-const settlementNgn = process.argv[2] ? Number(process.argv[2]) : null;
+let settlementNgn = process.argv[2] ? Number(process.argv[2]) : null;
+let settlementSource = 'argument';
+if (settlementNgn === null && /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRET_KEY ?? '')) {
+  try {
+    const res = await fetch(`${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/balance`, {
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    });
+    const json = await res.json();
+    const ngn = (json.data ?? []).find((b) => b.currency === 'NGN');
+    if (res.ok && ngn) {
+      settlementNgn = Number(ngn.balance) / 100;
+      settlementSource = `Paystack ${process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_') ? 'TEST' : 'LIVE'} balance, read live`;
+    }
+  } catch {
+    // fall through: no verdict without a cash figure
+  }
+}
 const n = (d) => (d === null || d === undefined ? 0 : Number(d));
 const fmt = (v) => `₦${v.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`;
 
@@ -123,7 +140,7 @@ for (const r of realRows.sort((a, b) => (b.balance + b.locked) - (a.balance + a.
     `(${r.tx} tx, deposited ${fmt(r.walletIn)}, withdrew ${fmt(r.walletOut)})`,
   );
 }
-console.log(`platform fee wallet total: ${fmt(platformNgn)} (revenue — mostly fees from the SEEDED fictional rides)`);
+console.log(`platform wallet: ${fmt(platformNgn)} (fees earned minus provider fees absorbed — negative means Wheelers is subsidising)`);
 console.log(`liabilities (REAL users):  ${fmt(liabilitiesReal)}   ← must be covered by cash`);
 console.log(`liabilities (seed/demo):   ${fmt(liabilitiesSeed)}   (not real money)`);
 console.log(`REAL cash-in (deposits): ${fmt(cashIn)}`);
@@ -135,8 +152,15 @@ if (stuck.length) {
 }
 if (settlementNgn !== null) {
   const gap = settlementNgn - liabilitiesReal;
+  // Every deposit and transfer books the provider's fee, so the WHOLE ledger
+  // (users + platform) should equal the cash to the kobo. A difference here is
+  // money that moved without a ledger row, or a row without money.
+  const ledgerVsCash = (liabilitiesReal + platformNgn) - settlementNgn;
   console.log('──────────────────────────────────────────');
-  console.log(`Pouch settlement wallet:   ${fmt(settlementNgn)}`);
+  console.log(`provider cash:             ${fmt(settlementNgn)}   (${settlementSource})`);
+  console.log(Math.abs(ledgerVsCash) < 0.01
+    ? '✅ BOOKS MATCH CASH: users + platform equals the provider balance exactly'
+    : `⚠ books differ from cash by ${fmt(ledgerVsCash)} (ledger − cash)`);
   console.log(gap >= 0
     ? `✅ SOLVENT: cash covers real-user liabilities with ${fmt(gap)} platform margin`
     : `❌ SHORTFALL: real-user liabilities exceed cash by ${fmt(-gap)} — that money is promised but not backed`);

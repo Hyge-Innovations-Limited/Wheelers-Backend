@@ -54,7 +54,7 @@ That is `build:packages` then `build:apps`, in this order (the apps import the
 built packages, so the order is not optional):
 
 **Packages:** `config` → `kafka-schemas` → `kafka-client` → `db` →
-`multi-chain-wallet` → `pouch-client`
+`multi-chain-wallet` → `payments`
 
 **Apps:** `group-ride` → `notification-worker` → `analytics-worker` →
 `payment-service` → `ride-service` → `wallet-service` → `api-gateway` →
@@ -122,7 +122,7 @@ processes:
 | `api-gateway` | 3000 | HTTP + WebSocket. Everything the apps talk to. |
 | `ride-service` | — | Matching, bidding, the stale-ride sweep |
 | `group-ride` | — | Shared-ride matching |
-| `payment-service` | — | Pouch settlement |
+| `payment-service` | — | Paystack payout tracking + reconciliation |
 | `wallet-service` | — | Balances and holds |
 | `notification-worker` | — | Push and WhatsApp fan-out |
 | `analytics-worker` | — | Activity events the admin panel reads |
@@ -192,8 +192,8 @@ pm2 status
 | Script | When |
 | --- | --- |
 | `node scripts/seed-interstate-routes.mjs` | **Every deploy that changes routes, and once now.** Reference data, idempotent, safe. Without it Travel shows "No routes available". |
-| `node scripts/pouch-treasury.mjs create` | **Once, ever.** Creates the platform treasury customer + virtual account, prints the VA id for `POUCH_TREASURY_VIRTUAL_ACCOUNT_ID`. |
-| `node scripts/pouch-treasury.mjs balance` | Any time. Read-only — prints the treasury balance. |
+| `node scripts/run-with-env.cjs node scripts/audit-money.mjs` | Any time. Read-only — replays every wallet and compares the ledger to the live Paystack balance. |
+| `node scripts/run-with-env.cjs node scripts/provision-deposit-accounts.mjs` | Any time. Dry run by default — lists users without a Paystack deposit account; `--confirm` creates them. See `docs/payments.md`. |
 | `node scripts/meta-otp-template.mjs status` | When sign-in codes stop arriving. Prints the WABA id and template approval status. |
 | `node scripts/whatsapp-profile.mjs` | When the WhatsApp business profile or display name needs changing. |
 | `node scripts/mcp-smoke.mjs https://mcp.wheelersng.com` | After deploying the MCP server. Checks health, OAuth discovery and registration from outside. No login needed. |
@@ -202,9 +202,6 @@ pm2 status
 
 | Script | What it does |
 | --- | --- |
-| `node scripts/pouch-treasury.mjs payout 5000` | Pays out from the treasury. |
-| `node scripts/pouch-withdraw.mjs check` | **Read-only.** Lists every virtual account + balance and resolves the destination account name. Always run this first. |
-| `node scripts/pouch-withdraw.mjs send --yes` | Sweeps every positive balance to the fixed destination. Refuses to run without `--yes`. |
 
 ## Never on production
 

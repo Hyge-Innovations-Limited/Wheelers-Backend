@@ -1,7 +1,8 @@
 import { prisma }   from '../prisma';
 import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
-import { calculateRideFees } from '@wheleers/config';
+import { calculateRideFees, splitDeposit } from '@wheleers/config';
+import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
 
 // The type of the transactional client Prisma passes into $transaction callbacks
 type TxClient = Prisma.TransactionClient;
@@ -28,30 +29,8 @@ interface RideHoldWithPayoutResult {
   applied: boolean;
 }
 
-const PLATFORM_USER_ID = '00000000-0000-0000-0000-000000000001';
-
-async function ensurePlatformWallet(): Promise<string> {
-  const existing = await prisma.wallet.findUnique({ where: { userId: PLATFORM_USER_ID } });
-  if (existing) return existing.id;
-
-  // Create the platform user + wallet if they don't exist
-  await prisma.user.upsert({
-    where: { id: PLATFORM_USER_ID },
-    create: {
-      id: PLATFORM_USER_ID,
-      privyDid: 'platform:wheelers',
-      role: 'RIDER',
-      name: 'Wheelers Platform',
-    },
-    update: {},
-  });
-
-  const wallet = await prisma.wallet.create({
-    data: { userId: PLATFORM_USER_ID },
-  });
-
-  return wallet.id;
-}
+const ensurePlatformWallet = (): Promise<string> => ensurePlatformWalletId();
+void PLATFORM_USER_ID;
 
 export const walletClient = {
 
@@ -141,6 +120,91 @@ export const walletClient = {
         transaction: existing,
         applied: false,
       };
+    }
+  },
+
+  /**
+   * A bank deposit, booked in full and in one transaction:
+   *
+   *   user wallet      + (amount − Wheelers fee [− provider fee])   DEPOSIT
+   *   platform wallet  + Wheelers fee                               PLATFORM_FEE
+   *   platform wallet  − provider fee Wheelers absorbs              PROVIDER_FEE
+   *
+   * The three always sum to the cash that actually reached the provider
+   * balance, so ledger and bank cannot drift. Idempotent on the provider's
+   * transaction reference: the DEPOSIT row's unique key is the claim, and a
+   * replay changes nothing.
+   */
+  creditDeposit: async (params: {
+    walletId:        string;
+    amountNgn:       number;
+    providerFeeNgn:  number;
+    referenceId:     string;
+    metadata?:       Record<string, unknown>;
+  }): Promise<WalletMutationResult & { split: ReturnType<typeof splitDeposit> }> => {
+    const { walletId, amountNgn, providerFeeNgn, referenceId, metadata } = params;
+    const split = splitDeposit(amountNgn, providerFeeNgn);
+
+    try {
+      const result = await prisma.$transaction(async (tx: TxClient) => {
+        const wallet = await tx.wallet.update({
+          where: { id: walletId },
+          data:  { balanceNgn: { increment: split.userCreditNgn } },
+        });
+        const txn = await tx.transaction.create({
+          data: {
+            walletId,
+            type:            'DEPOSIT',
+            direction:       'CREDIT',
+            amountNgn:       split.userCreditNgn,
+            balanceAfterNgn: wallet.balanceNgn,
+            referenceId,
+            metadata: {
+              ...(metadata ?? {}),
+              grossAmountNgn: amountNgn,
+              wheelersFeeNgn: split.platformFeeNgn,
+              providerFeeNgn,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        if (split.platformFeeNgn > 0) {
+          const platformWalletId = await ensurePlatformWalletId(tx);
+          const platform = await tx.wallet.update({
+            where: { id: platformWalletId },
+            data:  { balanceNgn: { increment: split.platformFeeNgn } },
+          });
+          await tx.transaction.create({
+            data: {
+              walletId:        platformWalletId,
+              type:            'PLATFORM_FEE',
+              direction:       'CREDIT',
+              amountNgn:       split.platformFeeNgn,
+              balanceAfterNgn: platform.balanceNgn,
+              referenceId,
+              metadata: { kind: 'deposit_fee', depositWalletId: walletId } as Prisma.InputJsonValue,
+            },
+          });
+        }
+
+        await bookProviderFee(tx, {
+          amountNgn: split.platformAbsorbsNgn,
+          referenceId,
+          metadata: { kind: 'deposit_provider_fee', depositWalletId: walletId },
+        });
+
+        return { wallet, transaction: txn, applied: true as const };
+      });
+
+      return { ...result, split };
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+
+      const existing = await findExistingTransaction(walletId, 'DEPOSIT', 'CREDIT', referenceId);
+      const wallet = await prisma.wallet.findUniqueOrThrow({ where: { id: walletId } });
+      return { wallet, transaction: existing, applied: false, split };
     }
   },
 

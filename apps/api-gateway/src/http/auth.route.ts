@@ -9,17 +9,17 @@ import { createLocalAccessToken, hashPassword, verifyPassword } from '../auth/lo
 import type { GatewayRole } from '../types';
 import { getString, isRecord } from '../utils/object';
 import type { GatewayPublisher } from '../websocket/publisher';
-import type { PouchLiquifiaClient } from '@wheleers/pouch-client';
+import type { PaymentsClient } from '@wheleers/payments';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
-import { provisionPouchAccount } from '../onboarding/user-onboarding';
+import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { sendEmail } from '../email/resend';
 import { buildWelcomeDriverEmail } from '../email/templates';
 
 interface AuthRouteDeps {
   jwtSecret: string;
   publisher: GatewayPublisher;
-  pouchLiquifiaClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   resendApiKey?: string;
 }
 
@@ -224,8 +224,8 @@ export async function handleUsernamePasswordSignupRoute(
 
     await deps.publisher.publishUserEvent(event);
 
-    // Create wallet + Pouch virtual account in the background.
-    // Signup succeeds even if Pouch provisioning fails — user can retry later.
+    // Create wallet + deposit account in the background.
+    // Signup succeeds even if account provisioning fails — user can retry later.
     await walletClient.create(created.id).catch((walletError) => {
       console.warn('[auth] wallet creation failed', {
         userId: created.id,
@@ -233,9 +233,9 @@ export async function handleUsernamePasswordSignupRoute(
       });
     });
 
-    void provisionPouchAccount(deps.pouchLiquifiaClient, created.id, name).catch(
+    void provisionDepositAccount(deps.paymentsClient, created.id, name).catch(
       (provisionError) => {
-        console.warn('[auth] pouch provisioning failed (non-blocking)', {
+        console.warn('[auth] deposit account provisioning failed (non-blocking)', {
           userId: created.id,
           error:
             provisionError instanceof Error

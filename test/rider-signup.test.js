@@ -33,7 +33,7 @@ let sentMessages = [];
 let publishedEvents = [];
 
 /**
- * Signup publishes a USER_CREATED event and kicks off Pouch provisioning.
+ * Signup publishes a USER_CREATED event and kicks off deposit-account provisioning.
  * Neither belongs in this test's scope, so both are stubbed — but the publisher
  * records what it was given, so the test can assert the event still fires.
  */
@@ -43,8 +43,8 @@ const SIGNUP_DEPS = {
     publishUserEvent: async (event) => { publishedEvents.push(event); },
     publishCryptoWalletEvent: async () => {},
   },
-  pouchLiquifiaClient: {
-    // Unique per call: pouchCustomerId is a unique column, and a shared stub
+  paymentsClient: {
+    // Unique per call: providerCustomerId is a unique column, and a shared stub
     // id makes the background provisioning log a constraint error.
     createCustomer: async () => ({ id: `cus_${Math.random().toString(36).slice(2, 12)}` }),
     findCustomerByReference: async () => null,
@@ -376,7 +376,7 @@ const loginDeps = (redisClient) => ({
   onboarding: {
     jwtSecret: JWT_SECRET,
     publisher: SIGNUP_DEPS.publisher,
-    pouchLiquifiaClient: SIGNUP_DEPS.pouchLiquifiaClient,
+    paymentsClient: SIGNUP_DEPS.paymentsClient,
   },
 });
 

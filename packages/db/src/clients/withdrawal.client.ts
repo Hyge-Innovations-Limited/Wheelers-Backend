@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
+import { bookProviderFee } from './platform-wallet';
+
+/**
+ * Our payout reference IS the withdrawal request id, so a webhook or a
+ * reconciler can find the row before attachPayout has written anything.
+ */
+const byReference = (reference: string) => ({
+  OR: [{ providerReference: reference }, { id: reference }],
+});
 
 type TxClient = Prisma.TransactionClient;
 
@@ -74,7 +83,7 @@ export const withdrawalClient = {
 
   attachPayout: async (input: {
     withdrawalRequestId: string;
-    pouchPayoutId: string;
+    providerPayoutId: string;
     providerReference: string;
     providerPayload?: Record<string, unknown>;
     expiresAt?: Date;
@@ -88,7 +97,7 @@ export const withdrawalClient = {
         status: { in: ['PENDING', 'FUNDS_RESERVED'] },
       },
       data: {
-        pouchPayoutId: input.pouchPayoutId,
+        providerPayoutId: input.providerPayoutId,
         providerReference: input.providerReference,
         providerPayload: asJson(input.providerPayload),
         expiresAt: input.expiresAt,
@@ -100,7 +109,7 @@ export const withdrawalClient = {
       await prisma.withdrawalRequest.updateMany({
         where: { id: input.withdrawalRequestId },
         data: {
-          pouchPayoutId: input.pouchPayoutId,
+          providerPayoutId: input.providerPayoutId,
           providerReference: input.providerReference,
           providerPayload: asJson(input.providerPayload),
           expiresAt: input.expiresAt,
@@ -116,7 +125,7 @@ export const withdrawalClient = {
   markProcessing: async (providerReference: string) =>
     prisma.withdrawalRequest.updateMany({
       where: {
-        providerReference,
+        ...byReference(providerReference),
         status: {
           in: ['FUNDS_RESERVED', 'PAYOUT_CREATED', 'PENDING'],
         },
@@ -136,7 +145,7 @@ export const withdrawalClient = {
       const request = await tx.withdrawalRequest.findFirst({
         where: params.withdrawalRequestId
           ? { id: params.withdrawalRequestId }
-          : { providerReference: params.providerReference },
+          : byReference(params.providerReference ?? ''),
         include: {
           reservation: true,
           wallet: true,
@@ -179,11 +188,16 @@ export const withdrawalClient = {
       });
     }),
 
-  settle: async (providerReference: string) => {
+  /**
+   * `providerFeeNgn` is what the provider charged Wheelers for the transfer.
+   * It comes out of the platform wallet in the same transaction, so the
+   * ledger falls by exactly what the provider balance fell by.
+   */
+  settle: async (providerReference: string, opts: { providerFeeNgn?: number } = {}) => {
     try {
       return await prisma.$transaction(async (tx: TxClient) => {
         const request = await tx.withdrawalRequest.findFirst({
-          where: { providerReference },
+          where: byReference(providerReference),
           include: {
             reservation: true,
             wallet: true,
@@ -225,10 +239,17 @@ export const withdrawalClient = {
             referenceId: request.id,
             metadata: asJson({
               providerReference: request.providerReference,
-              pouchPayoutId: request.pouchPayoutId,
+              providerPayoutId: request.providerPayoutId,
               bankNetworkId: request.bankNetworkId,
             }),
           },
+        });
+
+        const providerFeeNgn = Math.max(0, Number(opts.providerFeeNgn ?? 0));
+        await bookProviderFee(tx, {
+          amountNgn: providerFeeNgn,
+          referenceId: request.id,
+          metadata: { kind: 'transfer_fee', withdrawalId: request.id },
         });
 
         return tx.withdrawalRequest.update({
@@ -237,6 +258,8 @@ export const withdrawalClient = {
             status: 'SETTLED',
             settledAt: new Date(),
             failureReason: null,
+            providerReference: request.providerReference ?? request.id,
+            providerFeeNgn,
           },
       });
       });
@@ -248,7 +271,7 @@ export const withdrawalClient = {
         error.code === 'P2002'
       ) {
         const settled = await prisma.withdrawalRequest.findFirst({
-          where: { providerReference },
+          where: byReference(providerReference),
         });
         if (settled?.status === 'SETTLED') return settled;
       }
@@ -257,17 +280,17 @@ export const withdrawalClient = {
   },
 
   /**
-   * In-flight withdrawals that have gone quiet — payout created or processing
-   * with no status change for a while. These are the rows a lost webhook
-   * leaves behind (rider's money locked, no resolution), so a periodic
-   * reconciliation sweep re-checks them against the provider.
+   * In-flight withdrawals that have gone quiet. Two kinds of row end up here:
+   * a payout whose webhook was lost, and a reservation whose create-payout
+   * call timed out before anything was recorded (FUNDS_RESERVED, no payout
+   * id). Both lock the user's money until someone asks the provider what
+   * really happened — the reference is the request id, so both can be asked.
    */
   findStaleInFlight: (olderThan: Date, limit = 50) =>
     prisma.withdrawalRequest.findMany({
       where: {
-        status: { in: ['PAYOUT_CREATED', 'PROCESSING'] },
+        status: { in: ['FUNDS_RESERVED', 'PAYOUT_CREATED', 'PROCESSING'] },
         updatedAt: { lt: olderThan },
-        pouchPayoutId: { not: null },
       },
       orderBy: { updatedAt: 'asc' },
       take: limit,
@@ -287,7 +310,7 @@ export const withdrawalClient = {
     }),
 
   findByProviderReference: (providerReference: string) =>
-    prisma.withdrawalRequest.findUnique({
-      where: { providerReference },
+    prisma.withdrawalRequest.findFirst({
+      where: byReference(providerReference),
     }),
 };

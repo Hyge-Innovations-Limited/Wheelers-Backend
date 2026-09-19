@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createPublicKey, createVerify } from 'crypto';
 import { UserRole, userClient, driverClient, walletClient } from '@wheleers/db';
-import type { PouchLiquifiaClient } from '@wheleers/pouch-client';
+import type { PaymentsClient } from '@wheleers/payments';
 import { createLocalAccessToken } from '../auth/local';
-import { provisionPouchAccount } from '../onboarding/user-onboarding';
+import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
@@ -14,7 +14,7 @@ interface SocialAuthDeps {
   jwtSecret: string;
   appleBundleId?: string;
   googleClientId?: string;
-  pouchLiquifiaClient?: PouchLiquifiaClient;
+  paymentsClient?: PaymentsClient;
   resendApiKey?: string;
 }
 
@@ -286,7 +286,7 @@ async function findOrCreateSocialUser(
   name?: string,
   emailVerified = true,
   jwtSecret?: string,
-  pouchLiquifiaClient?: PouchLiquifiaClient,
+  paymentsClient?: PaymentsClient,
   resendApiKey?: string,
   role: UserRole = UserRole.RIDER,
 ): Promise<{ accessToken: string; user: Record<string, unknown>; userId: string; isNewUser: boolean }> {
@@ -346,16 +346,16 @@ async function findOrCreateSocialUser(
   }
 
   // Provision virtual account in background (for both new and existing users)
-  if (pouchLiquifiaClient) {
-    void provisionPouchAccount(
-      pouchLiquifiaClient,
+  if (paymentsClient) {
+    void provisionDepositAccount(
+      paymentsClient,
       userId,
       name ?? userRecord.name ?? undefined,
     ).catch((error) => {
       const errorDetail = error instanceof Error
         ? { message: error.message, name: error.name, ...(error as any).status && { status: (error as any).status } }
         : error;
-      console.warn('[social-auth] pouch provisioning failed (non-blocking)', {
+      console.warn('[social-auth] deposit account provisioning failed (non-blocking)', {
         userId,
         error: JSON.stringify(errorDetail),
       });
@@ -425,7 +425,7 @@ export async function handleAppleAuthRoute(
       clientName ?? verified.name,
       true,
       deps.jwtSecret,
-      deps.pouchLiquifiaClient,
+      deps.paymentsClient,
       deps.resendApiKey,
       role,
     );
@@ -489,7 +489,7 @@ export async function handleGoogleAuthRoute(
       verified.name,
       verified.emailVerified ?? true,
       deps.jwtSecret,
-      deps.pouchLiquifiaClient,
+      deps.paymentsClient,
       deps.resendApiKey,
       role,
     );

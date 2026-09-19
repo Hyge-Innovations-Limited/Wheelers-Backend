@@ -6,7 +6,7 @@ import {
   registerShutdownHandlers,
 } from '@wheleers/kafka-client';
 import { TOPICS } from '@wheleers/kafka-schemas';
-import { PouchLiquifiaClient } from '@wheleers/pouch-client';
+import { PaymentsClient } from '@wheleers/payments';
 import { createPaymentEventsConsumer } from './consumers/payment-events.consumer';
 import { applyPaymentServiceDefaults, getPaymentServiceId } from './config/runtime';
 import { createPaymentEventsHandler } from './handlers/payment-events.handler';
@@ -33,9 +33,11 @@ export async function startPaymentService(): Promise<void> {
     await consumer.disconnect();
   });
 
-  const pouchClient = new PouchLiquifiaClient({
-    baseUrl: paymentEnv.POUCH_LIQUIFIA_BASE_URL,
-    apiKey: paymentEnv.POUCH_LIQUIFIA_API_KEY,
+  const paymentsClient = new PaymentsClient({
+    secretKey: paymentEnv.PAYSTACK_SECRET_KEY,
+    baseUrl: paymentEnv.PAYSTACK_BASE_URL,
+    dvaBank: paymentEnv.PAYSTACK_DVA_BANK,
+    emailDomain: paymentEnv.PAYSTACK_CUSTOMER_EMAIL_DOMAIN,
   });
 
   // Producer is wired up for other services (e.g. api-gateway) that may
@@ -43,7 +45,7 @@ export async function startPaymentService(): Promise<void> {
   createPaymentEventsProducer(producer);
 
   const paymentEventsHandler = createPaymentEventsHandler({
-    pouchClient,
+    paymentsClient,
     serviceId,
   });
   const paymentEventsConsumer = createPaymentEventsConsumer({
@@ -59,7 +61,7 @@ export async function startPaymentService(): Promise<void> {
     },
   );
 
-  const stopReconciliation = startPayoutReconciliation(pouchClient);
+  const stopReconciliation = startPayoutReconciliation(paymentsClient);
   onShutdown(async () => {
     stopReconciliation();
   });

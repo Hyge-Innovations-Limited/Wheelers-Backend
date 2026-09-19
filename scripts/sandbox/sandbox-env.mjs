@@ -1,7 +1,7 @@
 /**
  * The environment the sandbox runs under.
  *
- * The checked-in root `.env` holds LIVE credentials (Pouch/Liquifia money
+ * The checked-in root `.env` holds LIVE credentials (Paystack money
  * APIs, Meta WhatsApp, Twilio, R2) and every service auto-loads it via
  * loadWorkspaceEnv(), which only fills keys that are undefined in the process
  * env. So the sandbox works by OVERRIDING the dangerous keys in the child
@@ -9,7 +9,7 @@
  * still comes from `.env`.
  *
  * What is neutralised and why:
- *  - Pouch/Liquifia → pointed at the local stub (pouch-stub.mjs). This is the
+ *  - Paystack → pointed at the local stub (paystack-stub.mjs). This is the
  *    real-money path: signup provisions virtual accounts, wallet-service
  *    escrows ride funds. wallet-service gets an EMPTY key, which its
  *    truthiness check treats as "no client" → ledger-only, zero network.
@@ -26,7 +26,7 @@
 
 export const SANDBOX = {
   gatewayPort: 4000,
-  pouchStubPort: 4011,
+  paystackStubPort: 4011,
   databaseUrl: 'postgresql://postgres:postgres@localhost:55433/wheelers_sandbox',
   redisUrl: 'redis://localhost:56380/1',
   kafkaBrokers: 'localhost:29093',
@@ -50,9 +50,8 @@ export function sandboxEnv(service) {
     // A phone locked to a background tab shouldn't be dropped mid-test.
     WS_IDLE_TIMEOUT_MS: '600000',
     // Money: local stub instead of the live fiat API.
-    POUCH_LIQUIFIA_API_KEY: 'sandbox-stub-key',
-    POUCH_LIQUIFIA_BASE_URL: `http://127.0.0.1:${SANDBOX.pouchStubPort}`,
-    POUCH_WEBHOOK_SECRET: 'sandbox-webhook-secret',
+    PAYSTACK_SECRET_KEY: 'sk_test_sandbox_stub_key',
+    PAYSTACK_BASE_URL: `http://127.0.0.1:${SANDBOX.paystackStubPort}`,
     // Blank = undefined after these schemas' trim transform.
     RESEND_API_KEY: '',
     R2_ACCOUNT_ID: '',
@@ -61,13 +60,6 @@ export function sandboxEnv(service) {
     R2_BUCKET: '',
     KAFKAJS_NO_PARTITIONER_WARNING: '1',
   };
-
-  if (service === 'wallet-service') {
-    // Truthiness check in wallet-service: empty key → no Pouch client → cash
-    // escrow becomes a no-op and ride money stays a pure DB ledger.
-    env.POUCH_LIQUIFIA_API_KEY = '';
-    delete env.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID;
-  }
 
   return env;
 }

@@ -48,8 +48,8 @@ export const userClient = {
 
   // Phone is not unique in the schema (an app account can verify the same
   // number a WhatsApp account was created with), so callers decide precedence.
-  findByPouchCustomerId: (pouchCustomerId: string) =>
-    prisma.user.findUnique({ where: { pouchCustomerId } }),
+  findByProviderCustomerId: (providerCustomerId: string) =>
+    prisma.user.findUnique({ where: { providerCustomerId } }),
 
   findByPhone: (phone: string) =>
     prisma.user.findFirst({
@@ -112,10 +112,10 @@ export const userClient = {
       include: { wallet: true },
     }),
 
-  updatePouchCustomerId: (userId: string, pouchCustomerId: string) =>
+  updateProviderCustomerId: (userId: string, providerCustomerId: string) =>
     prisma.user.update({
       where: { id: userId },
-      data: { pouchCustomerId },
+      data: { providerCustomerId },
     }),
 
   updateBvn: (userId: string, bvn: string) =>

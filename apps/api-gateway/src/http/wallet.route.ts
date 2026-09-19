@@ -12,30 +12,26 @@ import { isRecord, pickNumber, pickString } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
 import type { GatewayPublisher } from "../websocket/publisher";
 import {
-  PouchLiquifiaClient,
-  classifyPouchPayoutStatus,
-  type PouchBankAccount,
-  type PouchPayout,
-  pouchNameParts,
-} from "@wheleers/pouch-client";
+  classifyPayoutStatus,
+  transferFeeNgn,
+  type PaymentBank,
+  type PaymentPayout,
+  type PaymentsClient,
+} from "@wheleers/payments";
+import { provisionDepositAccount } from "../onboarding/user-onboarding";
+import { submitWithdrawal, WithdrawalError } from "../payments/withdrawal";
+import { getBanks } from "../payments/banks";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
-import { MIN_WITHDRAWAL_NGN, POUCH_PAYOUT_FEE_NGN } from "@wheleers/config";
+import { MIN_WITHDRAWAL_NGN } from "@wheleers/config";
 
 // ─── Deps ──────────────────────────────────────────────────────────
 
 interface WalletRouteDeps {
   jwtSecret: string;
   publisher: GatewayPublisher;
-  pouchLiquifiaClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   redisClient?: RedisClient;
-  /**
-   * Platform treasury VA — the single funded Pouch account all payouts draw
-   * from. Without it, payouts fall back to the user's own virtual account,
-   * which for drivers is empty (earnings are ledger-only) and withdrawals
-   * cannot work.
-   */
-  treasuryVirtualAccountId?: string;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -144,7 +140,7 @@ function roundNgn(value: number): number {
 // ─── Bank network helpers ──────────────────────────────────────────
 
 function getBankCacheKey(country: string): string {
-  return `pouch-liquifia:banks:${country.toUpperCase()}`;
+  return `payments:banks:v1:${country.toUpperCase()}`;
 }
 
 function normalizeBankTerm(value: string): string {
@@ -171,9 +167,9 @@ function getBankSearchNeedles(query: string): string[] {
   return [...aliases];
 }
 
-function dedupeBanks(banks: PouchBankAccount[]): PouchBankAccount[] {
+function dedupeBanks(banks: PaymentBank[]): PaymentBank[] {
   const seen = new Set<string>();
-  const deduped: PouchBankAccount[] = [];
+  const deduped: PaymentBank[] = [];
 
   for (const bank of banks) {
     const name = typeof bank.name === "string" ? normalizeBankTerm(bank.name) : "";
@@ -190,7 +186,7 @@ function dedupeBanks(banks: PouchBankAccount[]): PouchBankAccount[] {
   return deduped;
 }
 
-function getPreferredBankPriority(bank: PouchBankAccount): number {
+function getPreferredBankPriority(bank: PaymentBank): number {
   const name = typeof bank.name === "string" ? normalizeBankTerm(bank.name) : "";
   if (!name) {
     return Number.MAX_SAFE_INTEGER;
@@ -200,7 +196,7 @@ function getPreferredBankPriority(bank: PouchBankAccount): number {
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
-function scoreBankMatch(bank: PouchBankAccount, query: string): number {
+function scoreBankMatch(bank: PaymentBank, query: string): number {
   const name = typeof bank.name === "string" ? normalizeBankTerm(bank.name) : "";
   const code = typeof bank.code === "string" ? normalizeBankTerm(bank.code) : "";
   const needles = getBankSearchNeedles(query);
@@ -234,7 +230,7 @@ function scoreBankMatch(bank: PouchBankAccount, query: string): number {
   return best;
 }
 
-function sortBanks(banks: PouchBankAccount[], query: string): PouchBankAccount[] {
+function sortBanks(banks: PaymentBank[], query: string): PaymentBank[] {
   const normalizedQuery = query.trim();
 
   return [...banks].sort((left, right) => {
@@ -261,56 +257,15 @@ function sortBanks(banks: PouchBankAccount[], query: string): PouchBankAccount[]
 
 async function getBanksFromCacheOrProvider(
   deps: WalletRouteDeps,
-  country: string,
-  currency: string,
-): Promise<PouchBankAccount[]> {
-  const cacheKey = getBankCacheKey(country);
-
-  if (deps.redisClient) {
-    const cached = await deps.redisClient.get(cacheKey).catch(() => null);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as { banks?: PouchBankAccount[] };
-        if (Array.isArray(parsed.banks)) {
-          console.log("[api-gateway][wallet] bank cache hit", {
-            country,
-            cacheKey,
-            count: parsed.banks.length,
-          });
-          return parsed.banks;
-        }
-      } catch {
-        // ignore bad cache payload and fall through to provider
-      }
-    }
-  }
-
-  const banks = dedupeBanks(
-    await deps.pouchLiquifiaClient.listBanks(country, currency),
-  );
-
-  console.log("[api-gateway][wallet] bank cache miss", {
-    country,
-    cacheKey,
-    count: banks.length,
-  });
-
-  if (deps.redisClient) {
-    await deps.redisClient
-      .set(
-        cacheKey,
-        JSON.stringify({ banks }),
-        BANK_NETWORKS_CACHE_TTL_SECONDS,
-      )
-      .catch(() => undefined);
-  }
-
-  return banks;
+  _country: string,
+  _currency: string,
+): Promise<PaymentBank[]> {
+  return dedupeBanks(await getBanks(deps.paymentsClient, deps.redisClient));
 }
 
 // ─── Mapping helpers ───────────────────────────────────────────────
 
-function mapBankAccount(bank: PouchBankAccount) {
+function mapBankAccount(bank: PaymentBank) {
   const uuid = typeof bank.uuid === "string" ? bank.uuid : "";
   return {
     id: uuid,
@@ -362,22 +317,25 @@ function mapWithdrawalRequest(
 
 async function syncPayoutStatus(
   deps: WalletRouteDeps,
-  pouchPayoutId: string,
-  providerReference: string,
-): Promise<PouchPayout> {
-  const payout = await deps.pouchLiquifiaClient.getPayout(pouchPayoutId);
-  const outcome = classifyPouchPayoutStatus(payout.status);
+  reference: string,
+  amountNgn: number,
+): Promise<PaymentPayout | null> {
+  const payout = await deps.paymentsClient.getPayout(reference);
+  if (!payout) return null;
+  const outcome = classifyPayoutStatus(payout.status);
 
   if (outcome === "settled") {
-    await withdrawalClient.settle(providerReference);
+    await withdrawalClient.settle(reference, {
+      providerFeeNgn: payout.feeNgn ?? transferFeeNgn(amountNgn),
+    });
   } else if (outcome === "failed") {
     await withdrawalClient.releaseFailedRequest({
-      providerReference,
-      failureReason: `Payout ${(payout.status ?? "failed").toLowerCase()}`,
+      providerReference: reference,
+      failureReason: payout.failureReason ?? `Payout ${(payout.status || "failed").toLowerCase()}`,
       status: "FAILED",
     });
   } else {
-    await withdrawalClient.markProcessing(providerReference);
+    await withdrawalClient.markProcessing(reference);
   }
 
   return payout;
@@ -472,7 +430,6 @@ export async function handleCreateWalletWithdrawalRoute(
   deps: WalletRouteDeps,
 ): Promise<void> {
   let reservedRequestId: string | undefined;
-  let payoutMayExist = false;
   let auditUserId: string | undefined;
   let auditAmountNgn: number | undefined;
 
@@ -507,8 +464,8 @@ export async function handleCreateWalletWithdrawalRoute(
     const requestedAmountNgn = roundNgn(amountNgn);
     auditAmountNgn = requestedAmountNgn;
 
-    // Below the provider's floor — reject before reserving funds, so we never
-    // lock the user's money for a payout the provider was always going to refuse.
+    // Reject before reserving funds, so money is never locked for a payout
+    // that was always going to be refused.
     if (requestedAmountNgn < MIN_WITHDRAWAL_NGN) {
       console.warn("[api-gateway][wallet-withdrawal] rejected: below minimum", {
         userId: user.id,
@@ -566,47 +523,6 @@ export async function handleCreateWalletWithdrawalRoute(
       return;
     }
 
-    // Look up user's virtual account for the payout source
-    // With a treasury configured, payouts draw from the platform float and
-    // the user needs no personal VA (drivers never have a funded one).
-    const virtualAccount = await virtualAccountClient.findByUserId(user.id).catch(() => null);
-    const payoutSourceVaId =
-      deps.treasuryVirtualAccountId ?? virtualAccount?.pouchVirtualAccountId;
-    if (!payoutSourceVaId) {
-      sendJson(res, 404, {
-        error: "Account not found. Please set up deposits first.",
-        code: "VIRTUAL_ACCOUNT_NOT_FOUND",
-      });
-      return;
-    }
-
-    // Pouch pays out of the NAMED virtual account's own balance (confirmed
-    // in production: a payout from an empty treasury VA fails with the
-    // provider's INSUFFICIENT_BALANCE). Pre-check that exact vault so the
-    // user gets an honest message before any ledger reservation.
-    const vaBalance = await deps.pouchLiquifiaClient
-      .getVirtualAccountBalance(payoutSourceVaId)
-      .catch(() => null);
-    const vaBalanceNgn = vaBalance ? Number(vaBalance.balance ?? 0) / 100 : null;
-    if (vaBalanceNgn !== null && vaBalanceNgn < requestedAmountNgn + POUCH_PAYOUT_FEE_NGN) {
-      console.error("[api-gateway][wallet-withdrawal] LIQUIDITY MISMATCH — ledger balance not backed by virtual account", {
-        userId: user.id,
-        requestedAmountNgn,
-        vaBalanceNgn,
-        feeNgn: POUCH_PAYOUT_FEE_NGN,
-      });
-      const withdrawableNgn = Math.floor(vaBalanceNgn - POUCH_PAYOUT_FEE_NGN);
-      sendJson(res, 400, {
-        error:
-          withdrawableNgn >= MIN_WITHDRAWAL_NGN
-            ? `You can withdraw up to NGN ${withdrawableNgn.toLocaleString("en-NG")} right now (a NGN ${POUCH_PAYOUT_FEE_NGN} transfer fee applies). Your wallet balance is untouched.`
-            : "Withdrawals are temporarily unavailable for your account. Your wallet balance is untouched — please try again later.",
-        code: "PAYOUT_ACCOUNT_SHORT",
-        withdrawableNgn: Math.max(0, withdrawableNgn),
-      });
-      return;
-    }
-
     const result = await runIdempotentJsonRequest({
       req,
       redisClient: deps.redisClient!,
@@ -614,89 +530,23 @@ export async function handleCreateWalletWithdrawalRoute(
       routeKey: "wallet:withdrawals:create",
       requestBody: rawBody,
       execute: async () => {
-        // Reserve funds on the wallet
-        const reserveResult = await withdrawalClient.reserve({
-          userId: user.id,
-          walletId: wallet.id,
-          amountNgn: requestedAmountNgn,
-          bankAccountNumber: accountNumber,
-          bankAccountName: accountName,
-          bankNetworkId: bankUuid,
-        });
-        reservedRequestId = reserveResult.request.id;
-
-        // Create payout via Pouch Liquifia (from the treasury when configured).
-        // A timeout or 5xx AFTER Pouch took the request is ambiguous: releasing
-        // the reservation then pays the user twice. Keep it for reconciliation.
-        let payout;
-        try {
-          payout = await deps.pouchLiquifiaClient.createPayout({
-            virtualAccountId: payoutSourceVaId,
-            reference: reserveResult.request.id,
-            amount: requestedAmountNgn,
-            destinationAccount: accountNumber,
-            destinationBankUuid: bankUuid,
-            idempotencyKey: reserveResult.request.id,
-          });
-        } catch (payoutError) {
-          const status = (payoutError as { status?: unknown })?.status;
-          if (typeof status !== 'number' || status >= 500 || status === 408) {
-            payoutMayExist = true;
-            throw new Error(
-              'Your withdrawal was submitted but the bank has not confirmed it yet. The amount stays reserved until it does. Your wallet balance is untouched otherwise.',
-            );
-          }
-          throw payoutError;
-        }
-        payoutMayExist = classifyPouchPayoutStatus(payout.status) !== "failed";
-
-        // Pouch reports rejections inside an HTTP 200 — a payout with
-        // status FAILED/REJECTED must not be recorded as created, or the
-        // rider is told "submitted" while their money sits locked forever.
-        if (classifyPouchPayoutStatus(payout.status) === "failed") {
-          throw new Error(
-            `The bank transfer was rejected by the payment provider (${payout.status}). Your balance has not been deducted — please check the account details and try again.`,
-          );
-        }
-
-        // Attach the payout to the withdrawal request
-        await withdrawalClient.attachPayout({
-          withdrawalRequestId: reserveResult.request.id,
-          pouchPayoutId: payout.id,
-          providerReference: payout.reference,
-        });
-
-        // Publish PAYOUT_CREATED event for payment-service to track lifecycle
-        const payoutCreatedEvent: PayoutCreatedEvent = {
-          eventType: 'PAYOUT_CREATED',
-          userId: user.id,
-          pouchPayoutId: payout.id,
-          withdrawalId: reserveResult.request.id,
-          amountNgn: requestedAmountNgn,
-          bankAccountNumber: accountNumber,
-          bankAccountName: accountName,
-          bankNetworkId: bankUuid,
-          timestamp: new Date().toISOString(),
-        };
-        await deps.publisher.publishPaymentEvent(payoutCreatedEvent);
-
-        console.log("[api-gateway][wallet-withdrawal] payout created", {
-          withdrawalRequestId: reserveResult.request.id,
-          pouchPayoutId: payout.id,
-          providerReference: payout.reference,
-          amountNgn: requestedAmountNgn,
-        });
-
-        const createdRequest = await withdrawalClient.findById(
-          reserveResult.request.id,
+        const { requestId } = await submitWithdrawal(
+          { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
+          {
+            userId: user.id,
+            walletId: wallet.id,
+            amountNgn: requestedAmountNgn,
+            bankCode: bankUuid,
+            accountNumber,
+            accountName,
+          },
         );
-
+        reservedRequestId = requestId;
+        const createdRequest = await withdrawalClient.findById(requestId);
         return {
           statusCode: 200,
           body: {
-            withdrawal: createdRequest
-              ? mapWithdrawalRequest(createdRequest)
-              : null,
+            withdrawal: createdRequest ? mapWithdrawalRequest(createdRequest) : null,
           },
         };
       },
@@ -714,38 +564,11 @@ export async function handleCreateWalletWithdrawalRoute(
     // no server-side trace at all, so provider rejections were invisible.
     console.error("[api-gateway][wallet-withdrawal] withdrawal failed", {
       withdrawalRequestId: reservedRequestId ?? null,
-      fundsWereReserved: Boolean(reservedRequestId),
+      fundsStillReserved: error instanceof WithdrawalError ? error.fundsStillReserved : false,
       error: error instanceof Error ? error.message : String(error),
       providerStatus: (error as { status?: number })?.status ?? null,
       providerCode: (error as { code?: string })?.code ?? null,
     });
-
-    if (reservedRequestId && payoutMayExist) {
-      console.error("[api-gateway][wallet-withdrawal] payout may exist — reservation kept for reconciliation", {
-        withdrawalRequestId: reservedRequestId,
-      });
-    } else if (reservedRequestId) {
-      await withdrawalClient
-        .releaseFailedRequest({
-          withdrawalRequestId: reservedRequestId,
-          failureReason:
-            error instanceof Error
-              ? error.message
-              : "Withdrawal creation failed.",
-          status: "FAILED",
-        })
-        .then(() => {
-          console.warn("[api-gateway][wallet-withdrawal] reservation released after failure", {
-            withdrawalRequestId: reservedRequestId,
-          });
-        })
-        .catch((releaseErr) => {
-          console.error('[api-gateway][wallet-withdrawal] failed to release reservation', {
-            withdrawalRequestId: reservedRequestId,
-            error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
-          });
-        });
-    }
 
     if (auditUserId) {
       logActivity({
@@ -763,7 +586,7 @@ export async function handleCreateWalletWithdrawalRoute(
         error instanceof Error
           ? error.message
           : "Could not create wallet withdrawal.",
-      code: "WITHDRAWAL_FAILED",
+      code: error instanceof WithdrawalError ? error.code : "WITHDRAWAL_FAILED",
     });
   }
 }
@@ -810,13 +633,16 @@ export async function handleGetWalletWithdrawalRoute(
       return;
     }
 
-    // If a payout was attached, check its latest status from the provider
-    if (request.pouchPayoutId && request.providerReference) {
-      await syncPayoutStatus(
-        deps,
-        request.pouchPayoutId,
-        request.providerReference,
-      );
+    // Ask the provider for the latest word on anything still in flight. The
+    // reference is the request id, so this works even if the payout was
+    // never recorded on our side.
+    if (["PAYOUT_CREATED", "PROCESSING"].includes(request.status)) {
+      await syncPayoutStatus(deps, request.id, Number(request.requestedAmountNgn)).catch((syncError) => {
+        console.warn("[api-gateway][wallet-withdrawal] status sync failed", {
+          withdrawalRequestId: request.id,
+          error: syncError instanceof Error ? syncError.message : String(syncError),
+        });
+      });
     }
 
     const latestRequest = await withdrawalClient.findById(withdrawalRequestId);
@@ -919,14 +745,21 @@ export async function handleVerifyWithdrawalBankAccountRoute(
       return;
     }
 
-    const verified = await deps.pouchLiquifiaClient.validateBankAccount({
-      accountNumber,
-      bankUuid,
-    });
+    // "bankUuid" is the bank CODE — the field name is kept so the apps did
+    // not need a release for the provider switch. The provider answers an
+    // unknown account with a 4xx; treat that as "not found", not as an outage.
+    const verified = await deps.paymentsClient
+      .validateBankAccount({ accountNumber, bankCode: bankUuid })
+      .catch((verifyError) => {
+        const status = (verifyError as { status?: number })?.status;
+        if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) {
+          return { account_number: accountNumber, account_name: "", bank_code: bankUuid };
+        }
+        throw verifyError;
+      });
 
-    // Pouch answers an unknown account with an empty body rather than an
-    // error. A missing account_name means the account could not be resolved —
-    // report that plainly instead of letting clients invent a placeholder name.
+    // A missing account_name means the account could not be resolved — report
+    // that plainly instead of letting clients invent a placeholder name.
     if (typeof verified.account_name !== "string" || !verified.account_name.trim()) {
       sendJson(res, 404, {
         error: "Account not found. Check the account number and bank.",
@@ -934,6 +767,12 @@ export async function handleVerifyWithdrawalBankAccountRoute(
       });
       return;
     }
+
+    // The provider's name check does not say which bank it was; the cached
+    // bank list does.
+    const resolvedBankName =
+      (await getBanks(deps.paymentsClient, deps.redisClient).catch(() => []))
+        .find((bank) => bank.code === bankUuid)?.name ?? null;
 
     sendJson(res, 200, {
       bankAccount: {
@@ -945,8 +784,7 @@ export async function handleVerifyWithdrawalBankAccountRoute(
           typeof verified.account_name === "string"
             ? verified.account_name
             : null,
-        bankName:
-          typeof verified.bank_name === "string" ? verified.bank_name : null,
+        bankName: resolvedBankName,
         networkId: bankUuid,
         bankUuid,
       },
@@ -1024,61 +862,25 @@ export async function handleProvisionVirtualAccountRoute(
       });
     }
 
-    // Fetch full user for name
+    // One provisioner for every entry point (signup, WhatsApp, phone verify,
+    // this route), so they cannot disagree about names or idempotency.
     const fullUser = await userClient.findById(user.id);
-    const { firstName, lastName } = pouchNameParts(fullUser?.name);
-
-    // Create or retrieve Pouch customer
-    let pouchCustomerId = fullUser?.pouchCustomerId;
-    if (!pouchCustomerId) {
-      const customer = await deps.pouchLiquifiaClient.createCustomer({
-        customerReference: user.id,
-        firstName,
-        lastName,
-      });
-      pouchCustomerId = customer.id;
-      await userClient.updatePouchCustomerId(user.id, pouchCustomerId);
-    }
-
-    // Create virtual account (idempotency key = userId to prevent duplicates on retry)
-    const va = await deps.pouchLiquifiaClient.createVirtualAccount(
-      pouchCustomerId,
-      { country: "NG", currency: "NGN", idempotencyKey: `va-provision-${user.id}` },
+    await provisionDepositAccount(
+      deps.paymentsClient,
+      user.id,
+      fullUser?.name ?? undefined,
+      fullUser?.phone ?? undefined,
     );
 
-    let created;
-    try {
-      created = await virtualAccountClient.create({
-        userId: user.id,
-        pouchCustomerId,
-        pouchVirtualAccountId: va.id,
-        bankName: va.bank_name,
-        accountNumber: va.account_number,
-        accountName: va.account_name,
-        currency: va.currency,
-        country: va.country,
+    const created = await virtualAccountClient.findByUserId(user.id);
+    if (!created) {
+      // The provider accepted the request and will announce the account by
+      // webhook. The app polls deposit-info, so tell it to come back.
+      sendJson(res, 202, {
+        pending: true,
+        message: "Your account number is being prepared. Check back in a moment.",
       });
-    } catch (dbError) {
-      // Concurrent provisioning race — another request already saved this VA
-      if (
-        dbError &&
-        typeof dbError === "object" &&
-        "code" in dbError &&
-        dbError.code === "P2002"
-      ) {
-        const raced = await virtualAccountClient.findByUserId(user.id);
-        if (raced) {
-          sendJson(res, 200, {
-            accountNumber: raced.accountNumber,
-            accountName: raced.accountName,
-            bankName: raced.bankName,
-            currency: raced.currency,
-            alreadyProvisioned: true,
-          });
-          return;
-        }
-      }
-      throw dbError;
+      return;
     }
 
     logActivity({

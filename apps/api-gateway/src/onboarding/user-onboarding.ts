@@ -9,12 +9,12 @@ import {
   virtualAccountClient,
   walletClient,
 } from '@wheleers/db';
-import { pouchNameParts, type PouchLiquifiaClient } from '@wheleers/pouch-client';
+import { PaymentsApiError, bankNameParts, type PaymentsClient } from '@wheleers/payments';
 import type { GatewayPublisher } from '../websocket/publisher';
 
 export interface UserOnboardingDeps {
   publisher: GatewayPublisher;
-  pouchLiquifiaClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   jwtSecret: string;
 }
 
@@ -68,98 +68,69 @@ async function ensureFiatWallet(userId: string): Promise<void> {
   });
 }
 
-export async function provisionPouchAccount(
-  pouch: PouchLiquifiaClient,
+/**
+ * Give the user a bank account number they can fund their wallet through.
+ * Safe to call any number of times: a live account short-circuits, and every
+ * provider call underneath is idempotent (the customer is keyed by a synthetic
+ * email derived from the user id, and a customer has exactly one account).
+ *
+ * The display name keeps its emoji; the provider only ever sees the
+ * letters-only version.
+ */
+export async function provisionDepositAccount(
+  payments: PaymentsClient,
   userId: string,
   name: string | undefined,
   phone?: string,
 ): Promise<void> {
-  const existingVirtualAccount = await virtualAccountClient.findByUserId(userId);
-  if (existingVirtualAccount) {
+  const existing = await virtualAccountClient.findByUserId(userId);
+  if (existing) {
     return;
   }
 
   const user = await userClient.findById(userId);
-  // The display name keeps its emoji; Pouch gets the letters-only version.
-  const { firstName, lastName } = pouchNameParts(name ?? user.name);
-  const contactPhone = phone ?? user.phone ?? undefined;
-  const contactEmail = user.email ?? undefined;
+  const { firstName, lastName } = bankNameParts(name ?? user.name);
 
-  // Pouch refuses to open a virtual account for a customer with neither a
-  // phone nor an email. Fail here, with a message that says so, instead of
-  // creating a contact-less Pouch customer that the VA call then rejects.
-  if (!contactPhone && !contactEmail) {
-    throw new Error('NO_CONTACT_INFO: user has no phone or email; provisioning will run once a phone is verified');
+  let customerId = user.providerCustomerId ?? undefined;
+  if (!customerId) {
+    const customer = await payments.createCustomer({
+      customerReference: userId,
+      firstName,
+      lastName,
+      phoneNumber: phone ?? user.phone ?? undefined,
+    });
+    customerId = customer.id;
+    await userClient.updateProviderCustomerId(userId, customerId);
   }
 
-  let pouchCustomerId = user.pouchCustomerId ?? undefined;
-  if (pouchCustomerId) {
-    // The customer was created on an earlier attempt — possibly before the
-    // user had any contact info. Patch it so the VA call below can succeed.
-    const remote = await pouch.getCustomer(pouchCustomerId).catch(() => null);
-    if (remote && !remote.phone_number && !remote.email) {
-      await pouch.updateCustomer(pouchCustomerId, { email: contactEmail, phoneNumber: contactPhone });
-    }
-  } else {
-    try {
-      const customer = await pouch.createCustomer({
-        customerReference: userId,
-        firstName,
-        lastName,
-        phoneNumber: contactPhone,
-        email: contactEmail,
-      });
-      pouchCustomerId = customer.id;
-    } catch (error) {
-      // If customer already exists on Pouch, fetch by reference
-      const isDuplicate = error instanceof Error && error.message.includes('DUPLICATE_CUSTOMER_REFERENCE');
-      if (!isDuplicate) throw error;
-
-      const existing = await pouch.findCustomerByReference(userId);
-      if (!existing) throw error;
-      pouchCustomerId = existing.id;
-
-      // Patch missing contact info so virtual account creation succeeds
-      const needsEmail = !existing.email && contactEmail;
-      const needsPhone = !existing.phone_number && contactPhone;
-      if (needsEmail || needsPhone) {
-        await pouch.updateCustomer(pouchCustomerId, {
-          email: needsEmail ? contactEmail : undefined,
-          phoneNumber: needsPhone ? contactPhone : undefined,
-        });
-      }
-    }
-
-    await userClient.updatePouchCustomerId(userId, pouchCustomerId);
-  }
-
-  const va = await pouch.createVirtualAccount(pouchCustomerId, {
-    country: 'NG',
-    currency: 'NGN',
-    idempotencyKey: `va-provision-${userId}`,
-  });
-
-  await virtualAccountClient.create({
-    userId,
-    pouchCustomerId,
-    pouchVirtualAccountId: va.id,
-    bankName: va.bank_name,
-    accountNumber: va.account_number,
-    accountName: va.account_name,
-    currency: va.currency,
-    country: va.country,
-  }).catch((error) => {
-    if (isUniqueConstraintError(error)) {
+  let account;
+  try {
+    account = await payments.createVirtualAccount(customerId);
+  } catch (error) {
+    // The provider may assign the account a moment later and announce it by
+    // webhook (dedicatedaccount.assign.success), which saves it then.
+    if (error instanceof PaymentsApiError && error.code === 'ACCOUNT_PENDING') {
+      console.info('[onboarding] deposit account assignment pending', { userId, customerId });
       return;
     }
-
     throw error;
+  }
+
+  await virtualAccountClient.upsertForUser(userId, {
+    providerCustomerId: customerId,
+    providerAccountId: account.id,
+    bankName: account.bank_name,
+    accountNumber: account.account_number,
+    accountName: account.account_name,
+    currency: account.currency,
+    country: account.country,
   });
 
-  console.info('[onboarding] pouch provisioning complete', {
+  console.info('[onboarding] deposit account ready', {
     userId,
-    pouchCustomerId,
-    accountNumber: va.account_number,
+    customerId,
+    bank: account.bank_name,
+    accountNumber: account.account_number,
   });
 }
 
@@ -193,13 +164,13 @@ export async function onboardWhatsappUser(params: {
       });
     });
 
-    void provisionPouchAccount(
-      params.deps.pouchLiquifiaClient,
+    void provisionDepositAccount(
+      params.deps.paymentsClient,
       existing.id,
       existing.name ?? name,
       existing.phone ?? params.phone,
     ).catch((error) => {
-      console.warn('[onboarding] pouch repair failed (non-blocking)', {
+      console.warn('[onboarding] deposit account repair failed (non-blocking)', {
         userId: existing.id,
         error: getErrorMessage(error),
       });
@@ -272,13 +243,13 @@ export async function onboardWhatsappUser(params: {
     });
   });
 
-  void provisionPouchAccount(
-    params.deps.pouchLiquifiaClient,
+  void provisionDepositAccount(
+    params.deps.paymentsClient,
     created.id,
     created.name ?? undefined,
     created.phone ?? undefined,
   ).catch((error) => {
-    console.warn('[onboarding] pouch provisioning failed (non-blocking)', {
+    console.warn('[onboarding] deposit account provisioning failed (non-blocking)', {
       userId: created.id,
       error: getErrorMessage(error),
     });

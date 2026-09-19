@@ -41,13 +41,14 @@ const GatewayEnvSchema = z.object({
   // delivers free-form text within 24h of the rider's last message).
   META_OTP_TEMPLATE_NAME: z.string().optional().transform(v => v?.trim() || undefined),
   META_OTP_TEMPLATE_LANGUAGE: z.string().min(2).default('en_US'),
-  // Pouch Liquifia Fiat Aggregator
-  POUCH_LIQUIFIA_API_KEY: z.string().min(1),
-  POUCH_LIQUIFIA_BASE_URL: z.string().url().default('https://fiat-api.pouchfinance.xyz/api/v1'),
-  POUCH_WEBHOOK_SECRET: z.string().min(1).optional(),
-  // Platform treasury VA: the single funded account all payouts draw from.
-  // Without it, payouts fall back to each user's own (usually empty) VA.
-  POUCH_TREASURY_VIRTUAL_ACCOUNT_ID: z.string().min(1).optional(),
+  // Paystack: dedicated deposit accounts, transfers, and the webhook that
+  // reports both. One secret key signs requests AND webhook bodies.
+  PAYSTACK_SECRET_KEY: z.string().regex(/^sk_(test|live)_/, 'must be a Paystack secret key (sk_test_… or sk_live_…)'),
+  PAYSTACK_BASE_URL: z.string().url().default('https://api.paystack.co'),
+  // Which bank issues deposit accounts on a LIVE key. Test keys always use
+  // Paystack's "test-bank", whatever this says.
+  PAYSTACK_DVA_BANK: z.enum(['wema-bank', 'titan-paystack']).default('wema-bank'),
+  PAYSTACK_CUSTOMER_EMAIL_DOMAIN: z.string().min(3).default('users.wheelersng.com'),
   GOOGLE_MAPS_API_KEY: z.string().min(1),
   GOOGLE_MAPS_BASE_URL: z.string().url().default('https://routes.googleapis.com'),
   GROUP_RIDE_FACE_S3_BUCKET: z.string().min(1).optional(),

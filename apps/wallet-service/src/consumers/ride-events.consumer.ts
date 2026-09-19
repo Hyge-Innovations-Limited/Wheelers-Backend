@@ -9,14 +9,11 @@ export function createRideEventsConsumer(params: {
   walletRepository: WalletRepository;
   walletEventsProducer: WalletEventsProducer;
   serviceId?: string;
-  /** Real-money escrow around the ride lifecycle (see cash-settlement.ts). */
-  cashEscrow?: import('../handlers/cash-settlement').CashEscrow;
 }) {
   const {
     walletRepository,
     walletEventsProducer,
     serviceId = 'wallet-service',
-    cashEscrow,
   } = params;
 
   return {
@@ -82,15 +79,9 @@ export function createRideEventsConsumer(params: {
             reason: 'ride_fare_hold',
           }, { key: event.rideId });
 
-          // Ledger held — now move the REAL cash into escrow so a mid-ride
-          // rider withdrawal can never drain the money backing this trip.
-          if (cashEscrow) {
-            await cashEscrow.escrowRideFunds({
-              rideId: event.rideId,
-              riderId: event.riderId,
-              totalNgn: fees.totalNgn,
-            });
-          }
+          // The ledger hold IS the escrow. All cash sits pooled in one
+          // provider balance, and a held naira cannot be withdrawn, so no
+          // real-money movement is needed to secure the trip.
         } catch (error) {
           // The ride is already matched at this point — it will run with no
           // escrow behind it, and settlement at completion will find no hold.
