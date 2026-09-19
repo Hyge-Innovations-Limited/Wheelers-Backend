@@ -21,6 +21,7 @@ import {
 import { provisionDepositAccount } from "../onboarding/user-onboarding";
 import { submitWithdrawal, WithdrawalError } from "../payments/withdrawal";
 import { getBanks } from "../payments/banks";
+import { WalletSecurityError } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
 import { MIN_WITHDRAWAL_NGN } from "@wheleers/config";
@@ -528,7 +529,9 @@ export async function handleCreateWalletWithdrawalRoute(
       redisClient: deps.redisClient!,
       userId: user.id,
       routeKey: "wallet:withdrawals:create",
-      requestBody: rawBody,
+      // Without the PIN: the fingerprint is a hash kept in Redis, and a hash of
+      // a 4-digit PIN alongside known fields can be reversed in 10,000 tries.
+      requestBody: { ...rawBody, pin: undefined },
       execute: async () => {
         const { requestId } = await submitWithdrawal(
           { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
@@ -539,6 +542,10 @@ export async function handleCreateWalletWithdrawalRoute(
             bankCode: bankUuid,
             accountNumber,
             accountName,
+            pin: rawBody["pin"],
+            // Transitional: a user WITH a PIN must give it here too; one
+            // without is let through until the app's PIN screens ship.
+            pinPolicy: "if_set",
           },
         );
         reservedRequestId = requestId;
@@ -586,7 +593,7 @@ export async function handleCreateWalletWithdrawalRoute(
         error instanceof Error
           ? error.message
           : "Could not create wallet withdrawal.",
-      code: error instanceof WithdrawalError ? error.code : "WITHDRAWAL_FAILED",
+      code: error instanceof WithdrawalError || error instanceof WalletSecurityError ? error.code : "WITHDRAWAL_FAILED",
     });
   }
 }

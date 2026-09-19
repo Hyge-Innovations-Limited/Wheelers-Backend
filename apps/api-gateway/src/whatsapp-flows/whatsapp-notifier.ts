@@ -11,7 +11,7 @@ export interface WhatsappNotifierDeps {
   flowTokenSecret?: string;
 }
 
-async function sendMetaWhatsappMessage(
+export async function sendMetaWhatsappMessage(
   deps: WhatsappNotifierDeps,
   to: string,
   body: string,

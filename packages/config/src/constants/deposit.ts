@@ -80,6 +80,12 @@ export function splitDeposit(
 const PROVIDER_DEPOSIT_RATE = Number(process.env.DEPOSIT_PROVIDER_FEE_RATE ?? 0.01);
 const PROVIDER_DEPOSIT_CAP_NGN = Number(process.env.DEPOSIT_PROVIDER_FEE_CAP_NGN ?? 300);
 
+/** The provider's likely cut of a deposit of this size — an ESTIMATE, for display. */
+export function estimateDepositProviderFee(sendNgn: number): number {
+  if (!(sendNgn > 0) || !(PROVIDER_DEPOSIT_RATE > 0)) return 0;
+  return Math.round(Math.min(PROVIDER_DEPOSIT_CAP_NGN, sendNgn * PROVIDER_DEPOSIT_RATE) * 100) / 100;
+}
+
 /**
  * How much someone must SEND for `netNgn` to land in their wallet. Rounded up
  * to the next ₦10 so the rider gets a number they can type, and so a rounding

@@ -12,6 +12,7 @@ export { walletClient }         from './clients/wallet.client';
 export { withdrawalClient }     from './clients/withdrawal.client';
 export { virtualAccountClient, ACTIVE_PAYMENT_PROVIDER } from './clients/virtual-account.client';
 export { PLATFORM_USER_ID, ensurePlatformWalletId } from './clients/platform-wallet';
+export { walletSecurityClient } from './clients/wallet-security.client';
 export { groupRideClient }      from './clients/group-ride.client';
 export { complianceClient }     from './clients/compliance.client';
 export { referralClient }       from './clients/referral.client';

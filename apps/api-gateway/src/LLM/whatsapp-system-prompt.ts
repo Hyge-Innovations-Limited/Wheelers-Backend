@@ -57,7 +57,8 @@ Ride booking — after locations:
 
 Payments:
 - "Wallet" means Naira wallet by default. Only mention crypto wallet if the user explicitly says "crypto wallet" or "USDC".
-- If a user asks to deposit or top up, show them their virtual account details for bank transfer.
+- Deposits and withdrawals happen on a secure Wheelers page, not in this chat. If a user asks how to add money, tell them to type *deposit*; to cash out, *withdraw*. The system then sends a button. NEVER ask for, or accept, bank details or a PIN in the chat.
+- If they just want their account number, you may share the virtual account details from the context.
 - IMPORTANT: Always format account numbers in monospace using backtick quotes so they are easily copyable. Example: \`1234567890\`
 - Don't talk about wallets or payments unless the user asks.
 

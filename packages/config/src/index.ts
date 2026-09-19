@@ -27,6 +27,7 @@ export {
   DEPOSIT_FEE_NOTICE,
   DEPOSIT_PROVIDER_FEE_PAID_BY,
   depositNeededFor,
+  estimateDepositProviderFee,
   splitDeposit,
   type DepositSplit,
 } from './constants/deposit';

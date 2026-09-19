@@ -18,6 +18,23 @@ model User {
   photoUrl                   String?
   email                      String?
   providerCustomerId         String?                     @unique
+  /// Wallet PIN (4 digits) — scrypt hash, never the PIN. Required to withdraw.
+  walletPinHash              String?
+  walletPinSetAt             DateTime?
+  /// Consecutive wrong PINs. Lives on the account, so a fresh link cannot reset it.
+  walletPinFailedAttempts    Int                         @default(0)
+  walletPinLockedUntil       DateTime?
+  /// No withdrawal before this moment (24h after an unverified PIN reset, or a
+  /// freeze the user or support asked for).
+  withdrawalsFrozenUntil     DateTime?
+  withdrawalsFrozenReason    String?
+  /// After an unverified reset: until this moment money may only go to a bank
+  /// account this user has already withdrawn to.
+  withdrawalsRestrictedUntil DateTime?
+  /// Only ever receives PIN-reset codes. Never signs anyone in, so it is
+  /// separate from `email` and carries no uniqueness rule.
+  recoveryEmail              String?
+  recoveryEmailVerifiedAt    DateTime?
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt

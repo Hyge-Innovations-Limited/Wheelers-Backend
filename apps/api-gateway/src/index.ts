@@ -96,6 +96,8 @@ import {
   handleListGroupRideMatchRequestsRoute,
 } from "./http/group-ride.route";
 import { handlePaystackWebhookRoute } from "./http/paystack.route";
+import { handleWalletPageRoute } from "./http/wallet-page.route";
+import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -139,6 +141,7 @@ import {
 import {
   handleAdminListUsersRoute,
   handleAdminGetUserRoute,
+  handleAdminWithdrawalFreezeRoute,
   handleAdminOverviewRoute,
   handleAdminTimeseriesRoute,
   handleAdminCancellationsRoute,
@@ -247,7 +250,18 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
 
   try {
     const data = await readFile(filePath);
-    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+      // These pages handle money: never framed by another site, never leak
+      // their address (the link token rides in the #fragment, which is not
+      // sent anyway), and only ever load their own scripts.
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy":
+        "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    });
     res.end(data);
   } catch {
     sendJson(res, 404, { error: "Not found" });
@@ -1435,6 +1449,22 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      const adminFreezeMatch = url.pathname.match(/^\/admin\/users\/([^/]+)\/withdrawals\/(freeze|unfreeze)$/);
+      if (adminFreezeMatch) {
+        if (req.method !== "POST") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminWithdrawalFreezeRoute(
+          req,
+          res,
+          adminDeps,
+          decodeURIComponent(adminFreezeMatch[1]),
+          adminFreezeMatch[2] as "freeze" | "unfreeze",
+        );
+        return;
+      }
+
       const adminUserMatch = url.pathname.match(/^\/admin\/users\/([^/]+)$/);
       if (adminUserMatch) {
         if (req.method !== "GET") {
@@ -1840,6 +1870,26 @@ async function bootstrap(): Promise<void> {
 
       sendMethodNotAllowed(res);
       return;
+    }
+
+    if (url.pathname.startsWith("/wallet-page/")) {
+      const handled = await handleWalletPageRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        paymentsClient,
+        publisher,
+        resendApiKey: gatewayEnv.RESEND_API_KEY,
+        notifyUser:
+          gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+            ? (phone, message) =>
+                sendMetaWhatsappMessage(
+                  { metaAccessToken: gatewayEnv.META_ACCESS_TOKEN!, metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID! },
+                  phone,
+                  message,
+                )
+            : undefined,
+      }, url);
+      if (handled) return;
     }
 
     if (url.pathname === "/webhooks/paystack") {

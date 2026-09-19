@@ -9,6 +9,7 @@ import {
 } from '@wheleers/payments';
 import type { PayoutCreatedEvent } from '@wheleers/kafka-schemas';
 import type { GatewayPublisher } from '../websocket/publisher';
+import { assertMayWithdraw, type PinPolicy } from '../wallet-security/wallet-pin';
 
 const TAG = '[api-gateway][withdrawal]';
 
@@ -43,6 +44,10 @@ export interface SubmitWithdrawalInput {
   bankCode: string;
   accountNumber: string;
   accountName: string;
+  /** The wallet PIN as typed. Never logged, never stored. */
+  pin?: unknown;
+  /** Defaults to 'required': a caller must opt OUT of the PIN, never into it. */
+  pinPolicy?: PinPolicy;
 }
 
 /**
@@ -70,6 +75,17 @@ export async function submitWithdrawal(
       'BELOW_MINIMUM',
     );
   }
+
+  // PIN, freeze and destination rules — checked here, inside the executor, so
+  // no route (present or future) can reach the money around them. A refusal
+  // throws WalletSecurityError before anything is reserved.
+  await assertMayWithdraw({
+    userId,
+    pin: input.pin,
+    policy: input.pinPolicy ?? 'required',
+    bankCode,
+    accountNumber,
+  });
 
   // Every transfer draws on ONE pooled provider balance. If that float cannot
   // cover this payout plus its fee, say so before touching the ledger. An

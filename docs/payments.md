@@ -90,3 +90,36 @@ In the Paystack dashboard:
 | --- | --- |
 | `npm run test:payments` | `DATABASE_URL` for the end-to-end ledger test; the unit tests need nothing. |
 | `PAYSTACK_SECRET_KEY=sk_test_… npm run test:payments:live` | A test key. Talks to Paystack's real test API; refuses a live key. |
+
+## Wallet pages and the PIN
+
+Deposits and withdrawals from WhatsApp happen on two Wheelers-branded pages
+(`apps/api-gateway/widget/wallet/`), opened inside WhatsApp from a button. The
+bot no longer takes bank details in chat: anything typed there stays in the
+chat history for whoever holds the phone.
+
+- **Links** carry a token that names one purpose (`deposit` or `withdraw`),
+  lives 15 minutes, and cannot be used as a login token. It rides in the URL
+  `#fragment`, which browsers never send to a server or a referrer; the page
+  wipes it from the address bar on load.
+- **PIN**: 4 digits, scrypt-hashed, required for every withdrawal. The check
+  lives inside `submitWithdrawal` and defaults to *required*, so no route can
+  reach the money around it. The mobile app uses the transitional `if_set`
+  policy until its PIN screens ship.
+- **Guessing**: 5 wrong PINs lock withdrawals for 30 minutes. The count is on
+  the account and incremented atomically, so neither a fresh link nor a burst
+  of parallel guesses gets under it.
+- **Forgot PIN**: with a verified recovery email, a code is emailed and there
+  is no delay. Without one, the reset is allowed but made worthless to a
+  thief: withdrawals pause 24 hours, then for 7 days money may only go to a
+  bank account that user has been paid at before. The rider is told on
+  WhatsApp and can reply **FREEZE** to lock withdrawals until support lifts it.
+- **Admin**: `POST /admin/users/:id/withdrawals/freeze` and `…/unfreeze`.
+
+## Capacity
+
+| Command | What it answers |
+| --- | --- |
+| `node scripts/load-test.mjs` | How fast is each endpoint? GET-only, safe on live. |
+| `node scripts/load-test.mjs --ramp` | How much traffic before it struggles? Stops itself at 2% errors or p95 > 3s. |
+| `node scripts/run-with-env.cjs node scripts/db-capacity.mjs` | Will Postgres keep up? Connection pools vs `max_connections`, locks, cache, unindexed scans. Read-only. |

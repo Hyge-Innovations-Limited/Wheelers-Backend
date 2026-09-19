@@ -1,11 +1,10 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverClient, groupRideClient, walletClient, virtualAccountClient, withdrawalClient, rideClient } from '@wheleers/db';
+import { driverClient, groupRideClient, walletClient, walletSecurityClient, virtualAccountClient, withdrawalClient, rideClient } from '@wheleers/db';
 import {
   GoogleMapsRoutePlanner,
   calculateRideFees,
   validateRiderOffer,
-  MIN_WITHDRAWAL_NGN,
   depositNeededFor,
 } from '@wheleers/config';
 import {
@@ -14,9 +13,8 @@ import {
   RideOfferAcceptedEvent,
   FeedbackLoggedEvent,
 } from '@wheleers/kafka-schemas';
-import type { PaymentBank, PaymentsClient } from '@wheleers/payments';
-import { getBanks } from '../payments/banks';
-import { submitWithdrawal, WithdrawalError } from '../payments/withdrawal';
+import type { PaymentsClient } from '@wheleers/payments';
+import { createWalletPageToken, type WalletPageScope } from '../auth/local';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser } from '../onboarding/user-onboarding';
 import {
@@ -78,8 +76,6 @@ import {
   storePendingAccept,
   getPendingAccept,
   clearPendingAccept,
-  storePendingWhatsappWithdrawal,
-  getPendingWhatsappWithdrawal,
   clearPendingWhatsappWithdrawal,
   storeLastRoute,
   getLastRoute,
@@ -769,52 +765,6 @@ function isWithdrawalStage(stage: string | null): boolean {
     || stage === 'awaiting_withdrawal_confirmation';
 }
 
-function parseWithdrawalAmount(message: string): number | null {
-  const normalized = message
-    .trim()
-    .replace(/^withdraw(?:al)?\s+/i, '')
-    .replace(/[₦,\s]/g, '');
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-
-  const amount = Number(normalized);
-  return Number.isFinite(amount) && amount > 0
-    ? Math.round(amount * 100) / 100
-    : null;
-}
-
-function normalizeBankSearch(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-async function findWithdrawalBank(
-  deps: Pick<MetaWhatsappRouteDeps, 'paymentsClient' | 'redisClient'>,
-  query: string,
-): Promise<{ bank: PaymentBank } | { matches: PaymentBank[] } | null> {
-  const banks = await getBanks(deps.paymentsClient, deps.redisClient);
-  const normalizedQuery = normalizeBankSearch(query);
-  const compactQuery = normalizedQuery.replace(/\s+/g, '');
-
-  const exact = banks.filter((bank) => {
-    const name = normalizeBankSearch(bank.name);
-    const code = normalizeBankSearch(bank.code);
-    return name === normalizedQuery
-      || code === normalizedQuery
-      || name.replace(/\s+/g, '') === compactQuery;
-  });
-  if (exact.length === 1) return { bank: exact[0] };
-
-  const matches = banks.filter((bank) => {
-    const name = normalizeBankSearch(bank.name);
-    const code = normalizeBankSearch(bank.code);
-    return name.includes(normalizedQuery)
-      || code.includes(normalizedQuery)
-      || normalizedQuery.includes(name);
-  });
-
-  if (matches.length === 1) return { bank: matches[0] };
-  return matches.length > 0 ? { matches: matches.slice(0, 6) } : null;
-}
-
 async function sendWhatsappText(
   deps: MetaWhatsappRouteDeps,
   phone: string,
@@ -828,42 +778,80 @@ async function sendWhatsappText(
   await sendMetaReply(deps, phone, reply);
 }
 
-async function submitWhatsappWithdrawal(params: {
-  deps: MetaWhatsappRouteDeps;
-  userId: string;
-  amountNgn: number;
-  bankUuid: string;
-  accountNumber: string;
-  accountName: string;
-}): Promise<{ id: string; status: string }> {
-  const { deps, userId, amountNgn, bankUuid, accountNumber, accountName } = params;
-  const lockKey = `whatsapp:user:${userId}:withdrawal_submit_lock`;
-  const lockToken = randomUUID();
-  const acquired = await deps.redisClient.setIfNotExists(lockKey, lockToken, 120);
-  if (!acquired) {
-    throw new Error('A withdrawal is already being processed. Please wait a moment.');
+/**
+ * A message with one tappable link button. WhatsApp opens it in its in-app
+ * browser, on top of the chat. If the interactive message is refused, the
+ * rider still gets the link as plain text — never silence.
+ */
+async function sendMetaLinkButton(
+  deps: MetaWhatsappRouteDeps,
+  to: string,
+  body: string,
+  buttonText: string,
+  url: string,
+): Promise<void> {
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) {
+    console.warn('[whatsapp] Cannot send link button — Meta credentials not configured');
+    return;
   }
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: to.replace(/^\+/, ''),
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        body: { text: body },
+        action: { name: 'cta_url', parameters: { display_text: buttonText.slice(0, 20), url } },
+      },
+    }),
+  }).catch(() => null);
 
-  try {
-    const wallet = await walletClient.findByUserId(userId);
-    if (!wallet) throw new WithdrawalError('No wallet found. Fund your account first.', 'WITHDRAWAL_FAILED');
-
-    const { requestId } = await submitWithdrawal(
-      { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
-      { userId, walletId: wallet.id, amountNgn, bankCode: bankUuid, accountNumber, accountName },
-    );
-    return { id: requestId, status: 'PAYOUT_CREATED' };
-  } catch (error) {
-    console.error('[api-gateway][whatsapp-withdrawal] withdrawal failed', {
-      userId,
-      amountNgn,
-      fundsStillReserved: error instanceof WithdrawalError ? error.fundsStillReserved : false,
-      error: error instanceof Error ? error.message : String(error),
+  if (!response?.ok) {
+    console.error('[whatsapp] link button failed — falling back to a text link', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
     });
-    throw error;
-  } finally {
-    await deps.redisClient.del(lockKey).catch(() => {});
+    await sendMetaReply(deps, to, `${body}\n\n${url}`);
   }
+}
+
+/**
+ * Money is handled on Wheelers' own page, not in the chat: bank details and a
+ * PIN typed into WhatsApp would sit in the chat history for anyone holding the
+ * phone. The link names one purpose and dies in 15 minutes; the token rides
+ * in the #fragment, which browsers never send to a server or a referrer.
+ */
+async function sendWalletPageButton(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  scope: WalletPageScope,
+): Promise<void> {
+  if (!deps.appBaseUrl) {
+    await sendWhatsappText(deps, phone, incomingMessage, 'That is not available right now. Please try again shortly.');
+    return;
+  }
+  const token = createWalletPageToken(user.id, scope, deps.jwtSecret);
+  const url = `${deps.appBaseUrl.replace(/\/+$/, '')}/widget/wallet/${scope === 'deposit' ? 'deposit' : 'withdraw'}.html#t=${encodeURIComponent(token)}`;
+  const body = scope === 'deposit'
+    ? '💳 *Add money to your wallet*\n\nSee exactly what lands in your wallet, and get your account number to transfer to.'
+    : '💸 *Withdraw to your bank*\n\nPick the amount and the account, then confirm with your wallet PIN.';
+  await sendMetaLinkButton(deps, phone, `${body}\n\n_This link is yours alone and works for 15 minutes._`, scope === 'deposit' ? 'Add money' : 'Withdraw', url);
+  await appendWhatsappConversation(deps.redisClient, phone, [
+    { role: 'user', content: incomingMessage },
+    { role: 'assistant', content: `[sent the ${scope} page button]` },
+  ]);
+}
+
+function isDepositCommand(message: string): boolean {
+  const m = message.trim();
+  if (m.length > 80) return false; // a long sentence is a conversation, not a command
+  return /^(?:i\s+(?:want|wan|wanna|need)\s+(?:to\s+)?)?(?:deposit|top\s*-?\s*up|fund(?:\s+(?:my\s+)?wallet)?|add\s+money|load\s+(?:my\s+)?wallet)\b/i.test(m);
 }
 
 /* ─── Group ride flow (plain chat — no Meta interactive flows) ─── */
@@ -1793,48 +1781,25 @@ async function handleIncomingMetaMessage(
       return;
     }
 
-    // ── Wallet withdrawal flow ────────────────────────────────────────────
-    if (isWithdrawalCommand(incomingMessage) && !isLocation && !activeRideId) {
-      await clearPendingWhatsappWithdrawal(deps.redisClient, user.id);
-      await setBookingStage(deps.redisClient, user.id, 'awaiting_withdrawal_amount');
+    // ── "FREEZE" — the reply we ask for when a PIN reset was not them ─────
+    if (/^freeze$/i.test(incomingMessage.trim()) && !isLocation) {
+      // Far future: only support lifts it (admin → unfreeze withdrawals).
+      await walletSecurityClient.freezeWithdrawals(user.id, new Date('2099-12-31T00:00:00Z'), 'user_freeze');
+      logActivity({ userId: user.id, eventType: 'withdrawals_frozen_by_user', source: 'whatsapp', metadata: {} });
+      await sendWhatsappText(deps, phone, incomingMessage,
+        '🔒 Withdrawals are now locked on your account. Nothing can leave your wallet.\n\nDeposits and rides still work. Contact Wheelers support to unlock it once your phone is safe.');
+      return;
+    }
 
-      const wallet = await walletClient.findByUserId(user.id).catch(() => null);
-      const balance = wallet ? Number(wallet.balanceNgn) : 0;
-
-      // Only an empty wallet is turned away. Any amount the rider holds can be
-      // withdrawn; the bank's own tiny floor is enforced where money moves.
-      if (!wallet || !Number.isFinite(balance) || balance < MIN_WITHDRAWAL_NGN) {
-        await clearBookingStage(deps.redisClient, user.id);
-        await sendWhatsappText(
-          deps,
-          phone,
-          incomingMessage,
-          balance > 0
-            ? `Your wallet balance is ₦${balance.toLocaleString()} — too small for a bank transfer (banks need at least ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}).`
-            : 'Your wallet has no available balance to withdraw.',
-        );
-        return;
-      }
-
-      // "withdraw 5000" — the amount is right there; asking again looped forever.
-      const inlineAmount = parseWithdrawalAmount(incomingMessage);
-      if (inlineAmount !== null) {
-        if (inlineAmount < MIN_WITHDRAWAL_NGN) {
-          await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. How much do you want to withdraw?`);
-          return;
-        }
-        if (inlineAmount > balance) {
-          await sendWhatsappText(deps, phone, incomingMessage, `You can withdraw up to ₦${balance.toLocaleString()}. How much do you want to withdraw?`);
-          return;
-        }
-        await storePendingWhatsappWithdrawal(deps.redisClient, user.id, { amountNgn: inlineAmount });
-        await setBookingStage(deps.redisClient, user.id, 'awaiting_withdrawal_bank');
-        await sendWhatsappText(deps, phone, incomingMessage, `₦${inlineAmount.toLocaleString()} — which bank should receive the money?\n\nType the bank name, e.g. *GTBank*, *Opay*, or *UBA*.`);
-        return;
-      }
-
-      const reply = `Your available wallet balance is ₦${balance.toLocaleString()}\n\nHow much do you want to withdraw? Any amount up to your balance.\nSend a number, e.g. *1500*.`;
-      await sendWhatsappText(deps, phone, incomingMessage, reply);
+    // ── Wallet: deposit + withdraw happen on the Wheelers page ────────────
+    if (!isLocation && !activeRideId && isWithdrawalCommand(incomingMessage)) {
+      await clearPendingWhatsappWithdrawal(deps.redisClient, user.id).catch(() => {});
+      if (isWithdrawalStage(bookingStage)) await clearBookingStage(deps.redisClient, user.id);
+      await sendWalletPageButton(deps, user, phone, incomingMessage, 'withdraw');
+      return;
+    }
+    if (!isLocation && isDepositCommand(incomingMessage)) {
+      await sendWalletPageButton(deps, user, phone, incomingMessage, 'deposit');
       return;
     }
 
@@ -1859,205 +1824,12 @@ async function handleIncomingMetaMessage(
     }
 
     if (isWithdrawalStage(bookingStage) && !activeRideId) {
-      const pending = await getPendingWhatsappWithdrawal(deps.redisClient, user.id);
-
-      if (isCancelCommand(incomingMessage)) {
-        await clearPendingWhatsappWithdrawal(deps.redisClient, user.id);
-        await clearBookingStage(deps.redisClient, user.id);
-        await sendWhatsappText(deps, phone, incomingMessage, 'Withdrawal cancelled. Your wallet balance was not changed.');
-        return;
-      }
-
-      if (!pending && bookingStage !== 'awaiting_withdrawal_amount') {
-        await clearBookingStage(deps.redisClient, user.id);
-        await sendWhatsappText(deps, phone, incomingMessage, 'This withdrawal session expired. Reply *withdraw* to start again.');
-        return;
-      }
-
-      // After the guard above, pending is guaranteed non-null for all stages
-      // except awaiting_withdrawal_amount (which doesn't use it).
-      const withdrawal = pending!;
-
-      if (bookingStage === 'awaiting_withdrawal_amount') {
-        const amountNgn = parseWithdrawalAmount(incomingMessage);
-        if (amountNgn === null) {
-          await sendWhatsappText(deps, phone, incomingMessage, 'Please send a valid withdrawal amount, e.g. *1500*.');
-          return;
-        }
-        if (amountNgn < MIN_WITHDRAWAL_NGN) {
-          await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
-          return;
-        }
-
-        const wallet = await walletClient.findByUserId(user.id).catch(() => null);
-        const balance = wallet ? Number(wallet.balanceNgn) : 0;
-        if (!wallet || !Number.isFinite(balance) || balance < amountNgn) {
-          await sendWhatsappText(
-            deps,
-            phone,
-            incomingMessage,
-            `You can withdraw up to ₦${Math.max(0, balance).toLocaleString()}. Please send a higher balance or top up first.`,
-          );
-          return;
-        }
-
-        await storePendingWhatsappWithdrawal(deps.redisClient, user.id, { amountNgn });
-        await setBookingStage(deps.redisClient, user.id, 'awaiting_withdrawal_bank');
-        await sendWhatsappText(deps, phone, incomingMessage, 'Which bank should receive the money?\n\nType the bank name, e.g. *GTBank*, *Opay*, or *UBA*.');
-        return;
-      }
-
-      if (bookingStage === 'awaiting_withdrawal_bank') {
-        // If the user sends a number (possibly prefixed with filler words), they're correcting the amount
-        const correctedAmount = parseWithdrawalAmount(
-          incomingMessage.trim().replace(/^(no|nah|wait|actually|i\s+meant?|not|sorry|change\s+to)\s+/i, ''),
-        );
-        if (correctedAmount !== null) {
-          if (correctedAmount < MIN_WITHDRAWAL_NGN) {
-            await sendWhatsappText(deps, phone, incomingMessage, `Banks can't receive less than ₦${MIN_WITHDRAWAL_NGN.toLocaleString()}. Please send a higher amount.`);
-            return;
-          }
-          const wallet = await walletClient.findByUserId(user.id).catch(() => null);
-          const balance = wallet ? Number(wallet.balanceNgn) : 0;
-          if (!wallet || !Number.isFinite(balance) || balance < correctedAmount) {
-            await sendWhatsappText(
-              deps, phone, incomingMessage,
-              `You can withdraw up to ₦${Math.max(0, balance).toLocaleString()}. Please send a higher balance or top up first.`,
-            );
-            return;
-          }
-          await storePendingWhatsappWithdrawal(deps.redisClient, user.id, { amountNgn: correctedAmount });
-          await sendWhatsappText(deps, phone, incomingMessage, `Amount updated to *₦${correctedAmount.toLocaleString()}*.\n\nWhich bank should receive the money?\nType the bank name, e.g. *GTBank*, *Opay*, or *UBA*.`);
-          return;
-        }
-
-        const bankQuery = incomingMessage.trim();
-        if (!bankQuery) {
-          await sendWhatsappText(deps, phone, incomingMessage, 'Please type the name of the bank that should receive the money.');
-          return;
-        }
-
-        try {
-          const result = await findWithdrawalBank(deps, bankQuery);
-          if (!result) {
-            await sendWhatsappText(deps, phone, incomingMessage, 'I could not find that bank. Please type the bank name again.');
-            return;
-          }
-
-          if ('matches' in result) {
-            const choices = result.matches.map((bank, index) => `${index + 1}. ${bank.name}`).join('\n');
-            await sendWhatsappText(deps, phone, incomingMessage, `I found more than one bank:\n${choices}\n\nPlease type the exact bank name.`);
-            return;
-          }
-
-          await storePendingWhatsappWithdrawal(deps.redisClient, user.id, {
-            ...withdrawal,
-            bankUuid: result.bank.uuid,
-            bankName: result.bank.name,
-          });
-          await setBookingStage(deps.redisClient, user.id, 'awaiting_withdrawal_account');
-          await sendWhatsappText(deps, phone, incomingMessage, `Bank selected: *${result.bank.name}*\n\nSend the 10-digit account number.`);
-        } catch {
-          await sendWhatsappText(deps, phone, incomingMessage, 'I could not load the bank list right now. Please try again in a moment.');
-        }
-        return;
-      }
-
-      if (bookingStage === 'awaiting_withdrawal_account') {
-        const accountNumber = incomingMessage.replace(/\D/g, '');
-        if (!/^\d{10}$/.test(accountNumber) || !withdrawal.bankUuid) {
-          await sendWhatsappText(deps, phone, incomingMessage, 'Please send a valid 10-digit bank account number.');
-          return;
-        }
-
-        try {
-          const verified = await deps.paymentsClient.validateBankAccount({
-            accountNumber,
-            bankCode: withdrawal.bankUuid,
-          });
-          const verifiedAccountNumber = verified.account_number || accountNumber;
-          const accountName = verified.account_name?.trim();
-          if (!accountName) {
-            await sendWhatsappText(deps, phone, incomingMessage, 'I could not verify that account. Check the number and try again.');
-            return;
-          }
-
-          const bankName = withdrawal.bankName || 'Selected bank';
-          await storePendingWhatsappWithdrawal(deps.redisClient, user.id, {
-            ...withdrawal,
-            bankName,
-            accountNumber: verifiedAccountNumber,
-            accountName,
-          });
-          await setBookingStage(deps.redisClient, user.id, 'awaiting_withdrawal_confirmation');
-
-          const reply = [
-            'Please confirm this withdrawal:',
-            '',
-            `Amount: *₦${withdrawal.amountNgn.toLocaleString()}*`,
-            `Bank: *${bankName}*`,
-            `Account: *${verifiedAccountNumber}*`,
-            `Name: *${accountName}*`,
-            '',
-            'Reply *yes* to submit or *cancel* to stop.',
-          ].join('\n');
-          await sendWhatsappText(deps, phone, incomingMessage, reply);
-        } catch {
-          await sendWhatsappText(deps, phone, incomingMessage, 'I could not verify that account. Check the bank and account number, then try again.');
-        }
-        return;
-      }
-
-      if (bookingStage === 'awaiting_withdrawal_confirmation') {
-        if (!/^(yes|confirm|proceed|submit)$/i.test(incomingMessage.trim())) {
-          await sendWhatsappText(deps, phone, incomingMessage, 'Reply *yes* to submit the withdrawal or *cancel* to stop.');
-          return;
-        }
-
-        if (!withdrawal.bankUuid || !withdrawal.accountNumber || !withdrawal.accountName) {
-          await clearPendingWhatsappWithdrawal(deps.redisClient, user.id);
-          await clearBookingStage(deps.redisClient, user.id);
-          await sendWhatsappText(deps, phone, incomingMessage, 'This withdrawal session is incomplete. Reply *withdraw* to start again.');
-          return;
-        }
-
-        try {
-          const submitted = await submitWhatsappWithdrawal({
-            deps,
-            userId: user.id,
-            amountNgn: withdrawal.amountNgn,
-            bankUuid: withdrawal.bankUuid,
-            accountNumber: withdrawal.accountNumber,
-            accountName: withdrawal.accountName,
-          });
-          await clearPendingWhatsappWithdrawal(deps.redisClient, user.id);
-          await clearBookingStage(deps.redisClient, user.id);
-
-          const reply = [
-            '✅ Withdrawal submitted successfully.',
-            '',
-            `Amount: *₦${withdrawal.amountNgn.toLocaleString()}*`,
-            `Account: *${withdrawal.accountNumber}*`,
-            `Status: *${submitted.status}*`,
-            '',
-            'Your funds are being sent to your bank account. Reply *withdraw status* to check progress.',
-          ].join('\n');
-          await sendWhatsappText(deps, phone, incomingMessage, reply);
-        } catch (error) {
-          console.error('[whatsapp] withdrawal submit error', {
-            userId: user.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // A WithdrawalError is written for the rider; anything else is an
-          // internal failure and stays generic.
-          const friendly =
-            error instanceof WithdrawalError
-              ? error.message
-              : 'Withdrawal failed. Please try again later.\n\nYour wallet balance was not deducted.';
-          await sendWhatsappText(deps, phone, incomingMessage, `${friendly}\n\nReply *withdraw* to retry.`);
-        }
-        return;
-      }
+      // Left over from the old in-chat withdrawal. Bank details are no longer
+      // taken in chat — clear the stale stage and hand over the page.
+      await clearPendingWhatsappWithdrawal(deps.redisClient, user.id).catch(() => {});
+      await clearBookingStage(deps.redisClient, user.id);
+      await sendWalletPageButton(deps, user, phone, incomingMessage, 'withdraw');
+      return;
     }
 
     // ══════════════════════════════════════════════════════════════════════

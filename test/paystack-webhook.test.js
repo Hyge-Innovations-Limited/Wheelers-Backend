@@ -177,7 +177,7 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
   });
 
   const { requestId } = await submitWithdrawal({ paymentsClient: payments, publisher }, {
-    userId, walletId, amountNgn: 1_500, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User',
+    userId, walletId, amountNgn: 1_500, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set',
   });
   assert.equal(createdWith.reference, requestId, 'the transfer reference must be the withdrawal id');
   let wallet = await userWallet();
@@ -219,7 +219,7 @@ test('an OTP-gated Paystack account fails loudly and gives the money back', asyn
     createPayout: async (params) => ({ id: 'TRF_OTP', reference: params.reference, amountNgn: params.amountNgn, feeNgn: null, status: 'otp', failureReason: null }),
   });
   await assert.rejects(
-    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 2_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User' }),
+    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 2_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set' }),
     (error) => error instanceof WithdrawalError && error.code === 'PAYOUTS_NOT_ENABLED' && !error.fundsStillReserved,
   );
   const wallet = await userWallet();
@@ -230,7 +230,7 @@ test('an OTP-gated Paystack account fails loudly and gives the money back', asyn
 test('a timeout keeps the money reserved; the reconciler releases it once the provider denies the transfer', async () => {
   const payments = makePayments({ createPayout: async () => { throw new Error('socket hang up'); } });
   await assert.rejects(
-    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 3_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User' }),
+    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 3_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set' }),
     (error) => error instanceof WithdrawalError && error.code === 'PENDING_CONFIRMATION' && error.fundsStillReserved,
   );
   let wallet = await userWallet();
@@ -248,7 +248,7 @@ test('a timeout keeps the money reserved; the reconciler releases it once the pr
 test('a float that cannot cover the payout refuses before touching the ledger', async () => {
   const payments = makePayments({ getBalanceNgn: async () => 100 });
   await assert.rejects(
-    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 5_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User' }),
+    submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 5_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set' }),
     (error) => error instanceof WithdrawalError && error.code === 'FLOAT_SHORT',
   );
   assert.equal(await prisma.withdrawalRequest.count({ where: { userId, requestedAmountNgn: 5_000 } }), 0);

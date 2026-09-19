@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { activityClient, adminMetricsClient, safetyAlertClient } from '@wheleers/db';
+import { activityClient, adminMetricsClient, safetyAlertClient, walletSecurityClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
@@ -358,5 +358,40 @@ export async function handleAdminResolveAlertRoute(
     sendJson(res, 200, { alert: serializeAdminAlert(alert) });
   } catch (error) {
     fail(res, error, 'could not resolve alert');
+  }
+}
+
+/**
+ * POST /admin/users/:id/withdrawals/freeze   — lock every withdrawal
+ * POST /admin/users/:id/withdrawals/unfreeze — lift a freeze AND any post-reset
+ *                                              destination restriction
+ *
+ * For the call that starts "my phone was stolen". A user can freeze themselves
+ * (replying FREEZE in chat); only an admin can undo it.
+ */
+export async function handleAdminWithdrawalFreezeRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps,
+  userId: string,
+  action: 'freeze' | 'unfreeze',
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+
+  try {
+    if (action === 'freeze') {
+      await walletSecurityClient.freezeWithdrawals(userId, new Date('2099-12-31T00:00:00Z'), 'admin_freeze');
+    } else {
+      await walletSecurityClient.unfreezeWithdrawals(userId);
+    }
+    const state = await walletSecurityClient.getState(userId);
+    console.info('[admin] withdrawals ' + action, { userId });
+    sendJson(res, 200, {
+      userId,
+      withdrawalsFrozenUntil: state.withdrawalsFrozenUntil?.toISOString() ?? null,
+      withdrawalsFrozenReason: state.withdrawalsFrozenReason,
+    });
+  } catch (error) {
+    fail(res, error, 'Could not change the withdrawal freeze');
   }
 }

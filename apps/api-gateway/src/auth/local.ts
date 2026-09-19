@@ -120,3 +120,76 @@ export function verifyLocalAccessToken(token: string, jwtSecret: string | undefi
 
   return parsed;
 }
+
+/* ── Scoped page tokens ───────────────────────────────────────────────────
+ * A link sent into a chat can be forwarded, screenshotted, or left open on a
+ * shared phone, so it must be worth very little: it names ONE purpose, lives
+ * for minutes, and — because its `typ` differs — can never be accepted where a
+ * login token is expected (nor the reverse).
+ */
+const PAGE_TOKEN_TYPE = 'wheelers.wallet.page';
+
+export type WalletPageScope = 'deposit' | 'withdraw';
+
+interface WalletPageTokenPayload {
+  sub: string;
+  typ: typeof PAGE_TOKEN_TYPE;
+  scope: WalletPageScope;
+  iat: number;
+  exp: number;
+}
+
+export const WALLET_PAGE_TOKEN_TTL_SECONDS = 15 * 60;
+
+export function createWalletPageToken(
+  userId: string,
+  scope: WalletPageScope,
+  jwtSecret: string | undefined,
+  ttlSeconds: number = WALLET_PAGE_TOKEN_TTL_SECONDS,
+): string {
+  const secret = requireSecret(jwtSecret);
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = base64UrlEncode(JSON.stringify({
+    sub: userId,
+    typ: PAGE_TOKEN_TYPE,
+    scope,
+    iat: now,
+    exp: now + ttlSeconds,
+  } satisfies WalletPageTokenPayload));
+  const unsigned = `${header}.${payload}`;
+  return `${unsigned}.${sign(unsigned, secret)}`;
+}
+
+export function verifyWalletPageToken(
+  token: string,
+  jwtSecret: string | undefined,
+): { userId: string; scope: WalletPageScope } {
+  const secret = requireSecret(jwtSecret);
+  const [header, payload, signature] = token.split('.');
+  if (!header || !payload || !signature) {
+    throw new Error('Invalid page token format.');
+  }
+  const unsigned = `${header}.${payload}`;
+  const expectedBuffer = Buffer.from(sign(unsigned, secret));
+  const signatureBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== signatureBuffer.length || !timingSafeEqual(expectedBuffer, signatureBuffer)) {
+    throw new Error('Page token signature verification failed.');
+  }
+
+  const parsed: unknown = JSON.parse(base64UrlDecode(payload).toString('utf8'));
+  if (!isRecord(parsed) || parsed.typ !== PAGE_TOKEN_TYPE) {
+    throw new Error('Page token type is invalid.');
+  }
+  const { sub, scope, exp } = parsed;
+  if (typeof sub !== 'string' || sub.length === 0) {
+    throw new Error('Page token is missing subject.');
+  }
+  if (scope !== 'deposit' && scope !== 'withdraw') {
+    throw new Error('Page token scope is invalid.');
+  }
+  if (typeof exp !== 'number' || exp <= Math.floor(Date.now() / 1000)) {
+    throw new Error('This link has expired.');
+  }
+  return { userId: sub, scope };
+}
