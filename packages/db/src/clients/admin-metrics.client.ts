@@ -313,6 +313,8 @@ export const adminMetricsClient = {
         role: user.role,
         riderKycStatus: user.riderKycStatus,
         kycVerifiedAt: user.kycVerifiedAt,
+        privacyConsent: user.privacyConsent,
+        privacyConsentAt: user.privacyConsentAt,
         photoUrl: user.photoUrl,
         createdAt: user.createdAt,
         referralCode: user.referralCode?.code ?? null,

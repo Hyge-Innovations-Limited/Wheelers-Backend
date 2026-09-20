@@ -97,13 +97,15 @@ function memoryRedis() {
 
 function makeDeps(redisClient) {
   const published = [];
+  const providerCalls = [];
   return {
     published,
+    providerCalls,
     deps: {
       jwtSecret: 'test-secret-that-is-at-least-32-characters-long',
       publisher: new Proxy({}, { get: (_t, name) => async (event) => { published.push({ via: String(name), event }); } }),
       paymentsClient: {
-        createCustomer: async () => ({ id: `cus_${Math.random().toString(36).slice(2, 12)}` }),
+        createCustomer: async (input) => { providerCalls.push(input); return { id: `cus_${Math.random().toString(36).slice(2, 12)}` }; },
         findCustomerByReference: async () => null,
         updateCustomer: async () => ({}),
         createVirtualAccount: async () => ({ id: `va_${Math.random().toString(36).slice(2, 12)}`, bank_name: 'Test Bank', account_number: String(Math.floor(1e9 + Math.random() * 9e9)), account_name: 'Test', currency: 'NGN', country: 'NG' }),
@@ -150,12 +152,20 @@ async function say(deps, who, text) {
 
 /** Put a rider exactly where the screenshots start: pickup set, destination asked for. */
 async function riderWithPickup(deps, redis, who) {
-  await say(deps, who, 'hi'); // onboards them
-  const user = await prisma.user.findFirstOrThrow({ where: { phone: { contains: who.phone.slice(-10) } } });
+  await say(deps, who, 'hi'); // onboards them (and meets the privacy question)
+  const found = await prisma.user.findFirstOrThrow({ where: { phone: { contains: who.phone.slice(-10) } } });
+  const user = await agree(redis, found);
   await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
   await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
   return user;
 }
+
+/** Skip the privacy question: this rider accepted it some other day. */
+async function agree(redis, user) {
+  await redis.del(`whatsapp:user:${user.id}:pre_consent_message`);
+  return prisma.user.update({ where: { id: user.id }, data: { privacyConsent: 'AGREED', privacyConsentAt: new Date() } });
+}
+const findRider = (who) => prisma.user.findFirstOrThrow({ where: { phone: { contains: who.phone.slice(-10) } } });
 
 const textOf = (message) => message?.text?.body ?? message?.interactive?.body?.text ?? '';
 const last = (sent) => sent.at(-1);
@@ -163,6 +173,87 @@ const last = (sent) => sent.at(-1);
 test.beforeEach(() => { if (!process.env.LOUD) console.log = console.info = console.warn = console.error = () => {}; resetPlacesAvailability(); });
 test.afterEach(() => { Object.assign(console, realConsole); global.fetch = realFetch; });
 test.after(async () => { await prisma.$disconnect(); });
+
+/* ── privacy consent comes first ───────────────────────────────────────── */
+
+const rideRequestModel = (_message, system) => (/part-way through booking/.test(system)
+  ? { intent: 'other' }
+  : {
+      intent: 'ride_request',
+      pickup: { address: '31 Emily Akinola, Akoka', area: 'Akoka', specific: true },
+      destination: { address: '7 Osaro Isokpan, Yaba', area: 'Yaba', specific: true },
+      offerNgn: null, paymentMethod: null, outsideNigeria: false,
+    });
+
+test('a first message meets the privacy question — and nothing reaches the payment provider before the answer', async () => {
+  const redis = memoryRedis();
+  const { deps, providerCalls } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: (q) => (/emily|akoka/i.test(q) ? AKOKA : YABA), places: () => null, intent: rideRequestModel });
+  const who = rider();
+
+  await say(deps, who, 'take me from 31 emily akinola akoka to 7 osaro isokpan yaba');
+  const question = last(sent);
+  assert.equal(question.type, 'interactive');
+  assert.deepEqual(question.interactive.action.buttons.map((b) => b.reply.title), ['Continue', 'Not now']);
+  assert.match(textOf(question), /https:\/\/wheelersng\.com\/privacy/);
+  assert.doesNotMatch(textOf(question), /Suggested fare/, 'no booking before consent');
+
+  const before = await findRider(who);
+  assert.equal(before.privacyConsent, 'PENDING');
+  assert.equal(before.privacyConsentAt, null);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(providerCalls.length, 0, 'their name and phone have gone nowhere');
+
+  // Continue = agree. The trip they asked for is answered without asking again.
+  await say(deps, who, 'Continue');
+  const after = await findRider(who);
+  assert.equal(after.privacyConsent, 'AGREED');
+  assert.ok(after.privacyConsentAt);
+  assert.match(textOf(last(sent)), /Destination: \*7 Osaro Isokpan St, Yaba/, 'their first message was not thrown away');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(providerCalls.length, 1, 'the deposit account is opened only now');
+
+  // And never asked again.
+  const count = sent.length;
+  await say(deps, who, '2,000');
+  assert.ok(sent.slice(count).every((m) => !/privacy/.test(textOf(m))));
+});
+
+test('"Not now" means not agreed: recorded, nothing set up, and the door stays open', async () => {
+  const redis = memoryRedis();
+  const { deps, providerCalls } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: rideRequestModel });
+  const who = rider();
+
+  await say(deps, who, 'hello');
+  await say(deps, who, 'Not now');
+  const declined = await findRider(who);
+  assert.equal(declined.privacyConsent, 'DECLINED');
+  assert.ok(declined.privacyConsentAt);
+  assert.match(textOf(last(sent)), /nothing has been set up/);
+  assert.equal(providerCalls.length, 0);
+
+  // Any later message offers the choice again — it does not start booking.
+  await say(deps, who, 'i need a ride');
+  assert.equal(last(sent).type, 'interactive');
+  assert.match(textOf(last(sent)), /Welcome back/);
+
+  await say(deps, who, 'Continue');
+  assert.equal((await findRider(who)).privacyConsent, 'AGREED');
+});
+
+test('FREEZE never waits for a privacy form', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+
+  await say(deps, who, 'FREEZE');
+  assert.match(textOf(last(sent)), /Withdrawals are now locked/);
+  const user = await findRider(who);
+  assert.ok(user.withdrawalsFrozenUntil > new Date());
+  assert.equal(user.privacyConsent, 'PENDING');
+});
 
 /* ── searching near the pickup ─────────────────────────────────────────── */
 
@@ -262,6 +353,8 @@ test('the whole trip in one message gets the same care: destination searched nea
   });
 
   const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
   await say(deps, who, 'take me from 31 emily akinola akoka to no 7 osaro isokpan');
   assert.match(textOf(last(sent)), /Destination: \*7 Osaro Isokpan St, Yaba/);
   const destinationLookup = calls.geocode.find((call) => /isokpan/i.test(call.address));
@@ -270,6 +363,8 @@ test('the whole trip in one message gets the same care: destination searched nea
   // Same message, but nothing of that name near Lagos: ask, do not quote.
   placesNearby = null;
   const other = rider();
+  await say(deps, other, 'hi');
+  await agree(redis, await findRider(other));
   await say(deps, other, 'take me from 31 emily akinola akoka to no 7 osaro isokpan');
   assert.match(textOf(last(sent)), /in another city/);
   assert.doesNotMatch(textOf(last(sent)), /Suggested fare/);

@@ -183,7 +183,9 @@ export async function onboardWhatsappUser(params: {
       });
     });
 
-    void provisionDepositAccount(
+    // Opening a bank account sends their name and phone to the payment
+    // provider — not before they have accepted the privacy policy.
+    if (existing.privacyConsent === 'AGREED') void provisionDepositAccount(
       params.deps.paymentsClient,
       existing.id,
       existing.name ?? name,
@@ -262,17 +264,8 @@ export async function onboardWhatsappUser(params: {
     });
   });
 
-  void provisionDepositAccount(
-    params.deps.paymentsClient,
-    created.id,
-    created.name ?? undefined,
-    created.phone ?? undefined,
-  ).catch((error) => {
-    console.warn('[onboarding] deposit account provisioning failed (non-blocking)', {
-      userId: created.id,
-      error: getErrorMessage(error),
-    });
-  });
+  // No deposit account yet: a brand-new rider has not seen the privacy policy.
+  // The WhatsApp consent step opens it the moment they tap Continue.
 
   return {
     id: created.id,

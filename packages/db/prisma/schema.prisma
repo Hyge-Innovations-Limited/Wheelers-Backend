@@ -35,6 +35,11 @@ model User {
   /// separate from `email` and carries no uniqueness rule.
   recoveryEmail              String?
   recoveryEmailVerifiedAt    DateTime?
+  /// WhatsApp riders are asked once, before anything else, to accept the
+  /// privacy policy. Until AGREED nothing about them goes to a third party
+  /// (no bank account is opened) and the bot books nothing.
+  privacyConsent             PrivacyConsent              @default(PENDING)
+  privacyConsentAt           DateTime?
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
@@ -663,6 +668,12 @@ model AdminUser {
 }
 
 // ─── Enums ───────────────────────────────────────────────────────
+
+enum PrivacyConsent {
+  PENDING
+  AGREED
+  DECLINED
+}
 
 enum UserRole {
   RIDER

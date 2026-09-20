@@ -224,6 +224,18 @@ export const userClient = {
    * Soft-delete a user account by anonymizing PII and clearing auth credentials.
    * The row stays for referential integrity but is no longer usable.
    */
+  getPrivacyConsent: async (userId: string) => {
+    const row = await prisma.user.findUnique({ where: { id: userId }, select: { privacyConsent: true } });
+    return row?.privacyConsent ?? 'PENDING';
+  },
+
+  setPrivacyConsent: (userId: string, consent: 'AGREED' | 'DECLINED') =>
+    prisma.user.update({
+      where: { id: userId },
+      data: { privacyConsent: consent, privacyConsentAt: new Date() },
+      select: { id: true, privacyConsent: true, privacyConsentAt: true },
+    }),
+
   softDelete: (userId: string) =>
     prisma.$transaction([
       // Anonymize user PII
