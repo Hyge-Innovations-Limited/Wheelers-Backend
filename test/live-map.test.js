@@ -278,24 +278,31 @@ test('old history is pruned, recent history is kept', async () => {
 /* ── dispatch ─────────────────────────────────────────────────────────── */
 
 test('dispatch ranks who to ring: on shift first, then nearest; never someone on a trip', async () => {
-  const ride = await makeRide(LAGOS);
+  // Its own patch of map, so drivers left behind by earlier runs or other tests
+  // can never crowd the shortlist.
+  const HERE = { lat: 10 + Math.random() * 3, lng: 5 + Math.random() * 5 };
+  const ride = await makeRide(HERE);
   const far = await makeDriver({ status: 'ONLINE', name: 'Dispatch Far Online' });
-  await driverClient.updateLocation(far.driverId, LAGOS.lat + 0.03, LAGOS.lng);
+  await driverClient.updateLocation(far.driverId, HERE.lat + 0.03, HERE.lng);
   const close = await makeDriver({ name: 'Dispatch Close Standby' });
   await driverLocationClient.setStandby(close.driverId, true);
-  await driverLocationClient.updateStandbyLocation(close.driverId, NEARBY.lat, NEARBY.lng);
+  await driverLocationClient.updateStandbyLocation(close.driverId, HERE.lat + 0.01, HERE.lng);
   const busy = await makeDriver({ status: 'ON_RIDE', name: 'Dispatch Busy' });
-  await driverClient.updateLocation(busy.driverId, LAGOS.lat, LAGOS.lng);
+  await driverClient.updateLocation(busy.driverId, HERE.lat, HERE.lng);
+  const otherCity = await makeDriver({ status: 'ONLINE', name: 'Dispatch Other City' });
+  await driverClient.updateLocation(otherCity.driverId, HERE.lat + 2, HERE.lng);
 
   const unverified = await makeDriver({ status: 'ONLINE', name: 'Dispatch Unverified' });
   await prisma.driver.update({ where: { id: unverified.driverId }, data: { kycStatus: 'SUBMITTED' } });
-  await driverClient.updateLocation(unverified.driverId, LAGOS.lat, LAGOS.lng);
+  await driverClient.updateLocation(unverified.driverId, HERE.lat, HERE.lng);
 
   const result = await admin(liveMap.handleLiveDispatchRoute, 'GET');
   assert.equal(result.status, 200);
   const row = result.body.rides.find((r) => r.id === ride.id);
   assert.ok(row, 'the unmatched ride is in the queue');
   const ids = row.nearest.map((d) => d.id);
+  assert.deepEqual(ids, [far.driverId, close.driverId], 'exactly the two reachable, verified, nearby drivers — online first');
+  assert.ok(!ids.includes(otherCity.driverId), 'an online driver 200 km away is not "nearby"');
   assert.ok(!ids.includes(busy.driverId), 'a driver on a trip is not offered');
   assert.ok(!ids.includes(unverified.driverId), 'a driver who is not KYC-approved is never offered a rider');
   assert.ok(ids.indexOf(far.driverId) < ids.indexOf(close.driverId), 'already online beats closer-but-off-shift');

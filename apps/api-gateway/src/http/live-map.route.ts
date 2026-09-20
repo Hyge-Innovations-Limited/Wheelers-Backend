@@ -35,6 +35,8 @@ const FRESH_STANDBY_MS = 45 * 60_000;
 const NUDGE_COOLDOWN_MS = 2 * 60_000;
 const DISPATCH_LOOKBACK_MS = 60 * 60_000;
 const NEAREST_PER_RIDE = 6;
+/** Beyond this a driver is not "nearby", however available they are. */
+const MAX_DISPATCH_KM = 30;
 const MAX_TRAIL_MINUTES = 14 * 24 * 60;
 
 const CALL_OUTCOMES = new Set(['accepted', 'declined', 'no_answer', 'unreachable']);
@@ -268,6 +270,9 @@ export async function handleLiveDispatchRoute(
       rides: rides.map((ride) => {
         const nearest = reachable
           .map((driver) => ({ driver, km: haversineKm(ride.pickupLat, ride.pickupLng, driver.lat, driver.lng) }))
+          // Distance gates first, availability ranks second: an online driver in
+          // another city must never outrank an off-shift one round the corner.
+          .filter(({ km }) => km <= MAX_DISPATCH_KM)
           .sort((a, b) => rankPresence(a.driver.presence) - rankPresence(b.driver.presence) || a.km - b.km)
           .slice(0, NEAREST_PER_RIDE)
           .map(({ driver, km }) => ({
