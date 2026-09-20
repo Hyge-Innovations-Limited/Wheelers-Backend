@@ -98,6 +98,7 @@ import {
 import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
+import { attachRequestLog } from "./http/request-log";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import {
   handleCreateWalletWithdrawalRoute,
@@ -297,34 +298,6 @@ function getSafePathForLog(url: URL): string {
     : url.pathname;
 }
 
-function logHttpRequestStart(req: IncomingMessage, url: URL): void {
-  console.info("[http] request", {
-    method: req.method ?? null,
-    path: getSafePathForLog(url),
-    origin: getHeaderValue(req, "origin"),
-    ip: getClientIp(req),
-    userAgent: getHeaderValue(req, "user-agent"),
-  });
-}
-
-function attachHttpResponseLogger(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  startedAt: number,
-): void {
-  res.on("finish", () => {
-    console.info("[http] response", {
-      method: req.method ?? null,
-      path: getSafePathForLog(url),
-      statusCode: res.statusCode,
-      durationMs: Date.now() - startedAt,
-      origin: getHeaderValue(req, "origin"),
-      ip: getClientIp(req),
-    });
-  });
-}
-
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
 
@@ -506,8 +479,7 @@ async function bootstrap(): Promise<void> {
   const server = createServer(async (req, res) => {
     const startedAt = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
-    attachHttpResponseLogger(req, res, url, startedAt);
-    logHttpRequestStart(req, url);
+    attachRequestLog(req, res, getSafePathForLog(url), url.pathname, getClientIp(req), startedAt);
 
     try {
       applyCorsHeaders(req, res, allowedOrigins);
