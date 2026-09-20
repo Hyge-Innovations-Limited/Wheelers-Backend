@@ -789,6 +789,64 @@ export async function clearPendingGeoChoices(
   await redis.del(geoChoicesKey(userId));
 }
 
+// ── A place in another city, waiting for the rider to say "yes, really" ────
+
+/**
+ * The bot found the place the rider typed — hundreds of kilometres from the
+ * other end of the trip. It is held here, not applied, until they confirm.
+ */
+export interface PendingFarPlace {
+  field: 'pickup' | 'destination';
+  lat: number;
+  lng: number;
+  address: string;
+  distanceKm: number;
+}
+
+function farPlaceKey(userId: string): string {
+  return `whatsapp:user:${userId}:far_place`;
+}
+
+export async function storePendingFarPlace(redis: RedisClient, userId: string, data: PendingFarPlace): Promise<void> {
+  await redis.set(farPlaceKey(userId), JSON.stringify(data), 600);
+}
+
+export async function getPendingFarPlace(redis: RedisClient, userId: string): Promise<PendingFarPlace | null> {
+  const raw = await redis.get(farPlaceKey(userId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingFarPlace;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingFarPlace(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(farPlaceKey(userId));
+}
+
+// ── Not getting anywhere ───────────────────────────────────────────────────
+
+function bookingMissKey(userId: string): string {
+  return `whatsapp:user:${userId}:booking_misses`;
+}
+
+/**
+ * Count one reply the booking flow could not use. Read-then-write is fine: one
+ * rider sends one message at a time, and an off-by-one only changes which
+ * reply first shows the way out.
+ */
+export async function noteBookingMiss(redis: RedisClient, userId: string): Promise<number> {
+  const current = Number(await redis.get(bookingMissKey(userId))) || 0;
+  const next = current + 1;
+  await redis.set(bookingMissKey(userId), String(next), 600);
+  return next;
+}
+
+export async function clearBookingMisses(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(bookingMissKey(userId));
+}
+
 // ── Group seat bidding (per-rider negotiation on shared rides) ────────────
 
 export interface GroupSeatInfo {

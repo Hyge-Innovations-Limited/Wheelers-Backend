@@ -221,6 +221,34 @@ export interface GeocodeOptions {
    * model, this is how we tell the rider's words from the model's guesses.
    */
   spokenText?: string;
+  /**
+   * Where the other end of the trip is. A rider who gave a pickup in Akoka and
+   * then types "7 Osaro Isokpan" means the one in Lagos — without this, Google
+   * answered with Isokpan Street in Benin City, 311 km away, and the bot quoted
+   * ₦97,100 for it. A lean, never a filter: a rider really going to Benin still can.
+   */
+  near?: GeoPoint;
+}
+
+export interface GeoPoint { lat: number; lng: number }
+
+/** Beyond this, two points are in different cities, not different streets. */
+export const SAME_CITY_KM = 100;
+/** Half-width of the box we ask Google to favour around `near` (~55 km). */
+const NEAR_BOX_DEGREES = 0.5;
+const NEAR_PLACES_RADIUS_M = 50_000;
+
+export function kmBetween(a: GeoPoint, b: GeoPoint): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+function boundsAround(near: GeoPoint): string {
+  const d = NEAR_BOX_DEGREES;
+  return `${near.lat - d},${near.lng - d}|${near.lat + d},${near.lng + d}`;
 }
 
 export async function geocodeAddress(
@@ -228,8 +256,8 @@ export async function geocodeAddress(
   address: string,
   options: GeocodeOptions = {},
 ): Promise<GeocodeResult | null> {
-  const direct = await geocodeAsWritten(apiKey, address);
-  if (direct) return direct;
+  const direct = await geocodeAsWritten(apiKey, address, options.near);
+  if (direct) return preferNearby(apiKey, address, direct, options.near);
 
   // The address as written found nothing. Two recoveries, in order:
   //   1. Drop geography the rider never said. The model once turned "Caleb
@@ -258,9 +286,30 @@ export async function geocodeAddress(
   return viaPlaces;
 }
 
-async function geocodeAsWritten(apiKey: string, address: string): Promise<GeocodeResult | null> {
+/** A match in another city gets one second opinion from Places, around `near`. */
+async function preferNearby(
+  apiKey: string,
+  address: string,
+  found: GeocodeResult,
+  near?: GeoPoint,
+): Promise<GeocodeResult> {
+  if (!near || kmBetween(near, found) <= SAME_CITY_KM) return found;
+  const nearby = await findPlace(apiKey, address, near);
+  if (nearby && kmBetween(near, nearby) <= SAME_CITY_KM) {
+    console.info('[geocoding] preferred a match near the other end of the trip', {
+      address,
+      insteadOf: found.formattedAddress,
+      resolvedTo: nearby.formattedAddress,
+    });
+    return nearby;
+  }
+  return found;
+}
+
+async function geocodeAsWritten(apiKey: string, address: string, near?: GeoPoint): Promise<GeocodeResult | null> {
   const biased = await geocodeOnce(apiKey, address, {
     ...(GEOCODE_REGION ? { region: GEOCODE_REGION } : {}),
+    ...(near ? { bounds: boundsAround(near) } : {}),
   });
   if (biased) return biased;
 
@@ -337,13 +386,13 @@ let placesDisabled = false;
  * not route to: no match, a whole state or country, somewhere outside the
  * service area, or a guess that shares no words with the question.
  */
-export async function findPlace(apiKey: string, query: string): Promise<GeocodeResult | null> {
+export async function findPlace(apiKey: string, query: string, near?: GeoPoint): Promise<GeocodeResult | null> {
   if (placesDisabled || !query.trim()) return null;
   const params = new URLSearchParams({
     input: query,
     inputtype: 'textquery',
     fields: 'name,formatted_address,geometry,types',
-    locationbias: PLACES_LOCATION_BIAS,
+    locationbias: near ? `circle:${NEAR_PLACES_RADIUS_M}@${near.lat},${near.lng}` : PLACES_LOCATION_BIAS,
     key: apiKey,
   });
 
@@ -412,9 +461,40 @@ export async function geocodeAddressCandidates(
   apiKey: string,
   address: string,
   limit = 3,
+  options: Pick<GeocodeOptions, 'near'> = {},
+): Promise<GeocodeResult[]> {
+  const found = await geocodeCandidatesAnywhere(apiKey, address, limit, options.near);
+  const near = options.near;
+  if (!near || found.length === 0) return found;
+
+  // Same-city matches first. Google's own order is kept within each group.
+  const close = found.filter((c) => kmBetween(near, c) <= SAME_CITY_KM);
+  if (close.length > 0) return close;
+
+  // Every match is in another city. Before believing that, ask Places for the
+  // same words around the pickup — street geocoding favours the best-known
+  // street of that name nationally, Places favours what is nearby.
+  const nearby = await findPlace(apiKey, address, near);
+  if (nearby && kmBetween(near, nearby) <= SAME_CITY_KM) {
+    console.info('[geocoding] preferred a match near the other end of the trip', {
+      address,
+      insteadOf: found[0]?.formattedAddress,
+      resolvedTo: nearby.formattedAddress,
+    });
+    return [nearby];
+  }
+  return found;
+}
+
+async function geocodeCandidatesAnywhere(
+  apiKey: string,
+  address: string,
+  limit: number,
+  near?: GeoPoint,
 ): Promise<GeocodeResult[]> {
   const biased = await geocodeManyOnce(apiKey, address, {
     ...(GEOCODE_REGION ? { region: GEOCODE_REGION } : {}),
+    ...(near ? { bounds: boundsAround(near) } : {}),
   }, limit);
   if (biased.length > 0) return biased;
 
