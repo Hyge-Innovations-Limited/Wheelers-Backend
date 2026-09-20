@@ -9,7 +9,7 @@
 <meta name="format-detection" content="telephone=no">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Space+Mono:wght@700&family=Syne:wght@700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;900&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@500;700&display=swap">
 <link rel="stylesheet" href="wallet.css">
 <title>Withdraw · Wheelers</title>
 </head>
@@ -18,32 +18,33 @@
   <header class="top"><svg viewBox="0 0 83 83" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wheelers"><rect width="82.1161" height="82.1161" rx="12.3174" fill="#FF7700"/><path d="M48.1453 10.712C55.4632 10.6823 63.0012 10.6475 70.3102 10.7158C70.3425 14.5644 69.819 20.9519 69.414 24.7845C68.29 35.4206 65.0334 61.6465 57.1527 69.1636C55.9543 70.3069 54.1021 71.529 52.1862 71.6441C51.0682 71.712 50.0534 71.3748 49.2163 70.788C44.8701 67.7427 43.7239 58.0597 43.3432 53.5894C43.0982 54.878 42.9843 56.1865 42.7604 57.4792C42.1116 61.2236 40.8286 66.7673 37.8116 69.6735C36.9608 70.4926 35.8496 71.1383 34.4932 71.2219C32.8028 71.3254 31.1915 70.5331 29.9485 69.6818C28.2278 68.5035 26.8756 67.0395 25.7523 65.4678C17.4396 53.8334 13.1833 24.2477 11.8042 10.5071C19.7275 10.4106 28.0154 10.5036 35.9579 10.5048L33.8437 51.2213L33.2895 61.1681C33.2117 62.5438 33.054 64.11 33.0973 65.4808C33.106 65.755 33.2493 65.9071 33.4972 66.0607C33.8241 66.0757 34.0237 65.9873 34.122 65.718C36.0987 60.2969 37.1336 54.2556 38.0324 48.6728C39.2915 40.4598 40.289 32.2215 41.0236 23.9666C41.2161 22.0475 41.3849 20.1269 41.5299 18.205C41.6071 17.2019 41.5805 13.8985 42.4905 13.3078C43.2328 13.1019 43.6119 13.637 43.7041 14.1503C43.9854 15.7175 44.1943 17.2963 44.422 18.8695L45.6615 27.4075L49.5476 54.5675C49.6724 55.4544 50.3389 61.4347 50.6468 61.7905C50.776 61.9399 50.899 61.9947 51.1158 62.0317C51.1967 62.0091 51.3164 61.992 51.3729 61.9406C51.9271 61.4313 51.6494 57.8692 51.6354 57.0905C51.3506 46.4589 50.6426 35.8376 49.5124 25.243C49.3139 23.8255 49.195 22.2791 49.0402 20.8488L48.1453 10.712Z" fill="#FFF8EC"/></svg><span class="brand">Wheelers</span><span class="where">Wallet</span></header>
 
   <section data-view="loading">
-    <h1>Withdraw</h1>
-    <div class="card"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+    <p class="eyebrow">Withdraw</p>
+    <div class="skeleton tall"></div><div class="skeleton"></div><div class="skeleton"></div>
   </section>
 
-  <section data-view="fatal" hidden>
-    <div class="done fail"><div class="tick">!</div><h1>Link problem</h1><p class="lede" id="fatal-message"></p></div>
-    <p class="foot">Go back to WhatsApp and type <b>withdraw</b> for a fresh link.</p>
+  <section data-view="fatal" class="step-in" hidden>
+    <div class="done fail"><div class="tick">!</div><h1>Link <em>problem</em></h1><p class="lede" id="fatal-message"></p></div>
+    <p class="foot">Go back to WhatsApp and ask to withdraw again for a fresh link.</p>
   </section>
 
   <!-- 1 · amount -->
-  <section data-view="amount" hidden>
-    <h1>Withdraw</h1>
-    <p class="lede">Send money from your wallet to any Nigerian bank account.</p>
+  <section data-view="amount" class="step-in" hidden>
+    <p class="eyebrow">Withdraw</p>
+    <h1>How much are you <em>taking out?</em></h1>
+    <p class="lede">Straight to any Nigerian bank account. No Wheelers fee.</p>
     <div class="notice warn" id="frozen-notice" hidden></div>
-    <div class="card balance"><span class="label">Available</span><span class="value" id="balance">₦0</span></div>
-    <div class="card">
-      <label class="amount" for="amount"><span class="naira">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount in naira"></label>
-      <div class="chips"><button type="button" id="max">Withdraw all</button></div>
-      <p class="fine" id="amount-hint">No Wheelers fee on withdrawals.</p>
-    </div>
-    <button class="btn" type="button" id="to-bank" disabled>Continue</button>
+
+    <label class="amount" for="amount"><span class="naira">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount in naira"></label>
+    <div class="under"><span id="amount-hint">Available</span><b id="balance">₦0</b></div>
+    <div class="chips one"><button type="button" id="max">Withdraw everything</button></div>
+
+    <button class="btn" type="button" id="to-bank" disabled>Continue <span class="arrow" aria-hidden="true">→</span></button>
   </section>
 
   <!-- 2 · destination -->
-  <section data-view="bank" hidden>
-    <h1>Where to?</h1>
+  <section data-view="bank" class="step-in" hidden>
+    <p class="eyebrow">Step 2 of 3</p>
+    <h1>Where is it <em>going?</em></h1>
     <p class="lede" id="bank-lede"></p>
     <div id="bank-search">
       <div class="field"><label for="bank-q">Bank</label><input id="bank-q" autocomplete="off" placeholder="Search — GTBank, Opay, Kuda…"></div>
@@ -52,28 +53,31 @@
     <div class="picked" id="bank-picked" hidden><span id="bank-name"></span><button type="button" id="bank-change">Change</button></div>
     <div class="field" id="acct-field" hidden><label for="acct">Account number</label><input id="acct" class="mono" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="0123456789"></div>
     <div class="resolved" id="resolved" hidden></div>
-    <button class="btn" type="button" id="to-confirm" disabled>Continue</button>
+    <button class="btn" type="button" id="to-confirm" disabled>Continue <span class="arrow" aria-hidden="true">→</span></button>
     <button class="btn quiet" type="button" data-back="amount">Back</button>
   </section>
 
-  <!-- 3a · create PIN (first withdrawal) -->
-  <section data-view="create-pin" hidden>
+  <!-- 3a · create PIN (first withdrawal, or after a reset) -->
+  <section data-view="create-pin" class="step-in" hidden>
+    <p class="eyebrow">Wallet PIN</p>
     <h1 id="create-title">Create your wallet PIN</h1>
     <p class="lede" id="create-lede">Four digits. You’ll enter it every time you withdraw, so nobody else can move your money.</p>
     <div class="pin"><div class="dots" id="create-dots"><i></i><i></i><i></i><i></i></div><p class="pinmsg" id="create-msg"></p><div class="pad" data-pad="create"></div></div>
   </section>
 
   <!-- 3b · optional recovery email -->
-  <section data-view="email" hidden>
-    <h1>Add a recovery email?</h1>
-    <p class="lede">If you ever forget your PIN, we’ll email you a code and you can reset it straight away. Without one, a reset pauses withdrawals for 24 hours.</p>
-    <div class="field"><label for="email">Email address (optional)</label><input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"></div>
+  <section data-view="email" class="step-in" hidden>
+    <p class="eyebrow">Optional</p>
+    <h1>Add a recovery <em>email?</em></h1>
+    <p class="lede">Forget your PIN and we’ll email a code so you can reset it at once. Without one, a reset pauses withdrawals for 24 hours.</p>
+    <div class="field"><label for="email">Email address</label><input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"></div>
     <div class="resolved err" id="email-err" hidden></div>
     <button class="btn" type="button" id="email-send">Send me a code</button>
     <button class="btn quiet" type="button" id="email-skip">Skip for now</button>
   </section>
-  <section data-view="email-code" hidden>
-    <h1>Check your email</h1>
+  <section data-view="email-code" class="step-in" hidden>
+    <p class="eyebrow">Recovery email</p>
+    <h1>Check your <em>email</em></h1>
     <p class="lede" id="email-code-lede"></p>
     <div class="field"><label for="email-code">6-digit code</label><input id="email-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></div>
     <div class="resolved err" id="email-code-err" hidden></div>
@@ -82,40 +86,46 @@
   </section>
 
   <!-- 4 · confirm + PIN -->
-  <section data-view="confirm" hidden>
-    <h1>Confirm</h1>
-    <div class="card"><ul class="rows">
-      <li><span class="k">Amount</span><span class="v" id="c-amount"></span></li>
-      <li><span class="k">To</span><span class="v" id="c-name"></span></li>
-      <li><span class="k">Account</span><span class="v" id="c-acct"></span></li>
-      <li><span class="k">Wheelers fee</span><span class="v">₦0</span></li>
-      <li class="total"><span class="k">They receive</span><span class="v" id="c-total"></span></li>
-    </ul></div>
-    <div class="pin"><p class="lede">Enter your wallet PIN</p><div class="dots" id="pin-dots"><i></i><i></i><i></i><i></i></div><p class="pinmsg" id="pin-msg"></p><div class="pad" data-pad="pin"></div></div>
+  <section data-view="confirm" class="step-in" hidden>
+    <p class="eyebrow">Step 3 of 3</p>
+    <h1>Confirm and <em>send</em></h1>
+    <div class="receipt">
+      <ul class="rows">
+        <li><span class="k">To</span><span class="v" id="c-name"></span></li>
+        <li><span class="k">Bank</span><span class="v" id="c-bank"></span></li>
+        <li><span class="k">Account</span><span class="v mono-v" id="c-acct"></span></li>
+        <li><span class="k">Amount</span><span class="v" id="c-amount"></span></li>
+        <li><span class="k">Wheelers fee</span><span class="v">₦0</span></li>
+      </ul>
+      <div class="total"><span class="k">They receive</span><span class="v" id="c-total"></span></div>
+    </div>
+    <div class="pin"><span class="label">Enter your wallet PIN</span><div class="dots" id="pin-dots"><i></i><i></i><i></i><i></i></div><p class="pinmsg" id="pin-msg"></p><div class="pad" data-pad="pin"></div></div>
     <button class="btn quiet" type="button" id="forgot">Forgot PIN?</button>
     <button class="btn quiet" type="button" data-back="bank">Back</button>
   </section>
 
   <!-- forgot PIN -->
-  <section data-view="reset-warn" hidden>
-    <h1>Reset your PIN</h1>
-    <div class="notice warn"><b>Withdrawals pause for 24 hours</b>You have no recovery email, so to keep your money safe we pause withdrawals for a day after a reset. Deposits and rides keep working. We’ll also tell you on WhatsApp.</div>
-    <button class="btn" type="button" id="reset-go">I understand — reset my PIN</button>
+  <section data-view="reset-warn" class="step-in" hidden>
+    <p class="eyebrow">Forgot PIN</p>
+    <h1>Reset your <em>PIN</em></h1>
+    <div class="notice warn"><b>Withdrawals pause for 24 hours</b>You have no recovery email, so to keep your money safe we pause withdrawals for a day after a reset. Deposits and rides keep working, and we’ll tell you on WhatsApp.</div>
+    <button class="btn ink" type="button" id="reset-go">I understand — reset my PIN</button>
     <button class="btn quiet" type="button" data-back="confirm">Cancel</button>
   </section>
-  <section data-view="reset-code" hidden>
-    <h1>Check your email</h1>
+  <section data-view="reset-code" class="step-in" hidden>
+    <p class="eyebrow">Forgot PIN</p>
+    <h1>Check your <em>email</em></h1>
     <p class="lede" id="reset-code-lede"></p>
     <div class="field"><label for="reset-code">6-digit code</label><input id="reset-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></div>
-    <button class="btn" type="button" id="reset-code-next" disabled>Continue</button>
+    <button class="btn" type="button" id="reset-code-next" disabled>Continue <span class="arrow" aria-hidden="true">→</span></button>
     <button class="btn quiet" type="button" data-back="confirm">Cancel</button>
   </section>
 
-  <section data-view="sending" hidden>
-    <div class="done"><div class="waiting"><span class="pulse"></span><span>Sending your money…</span></div><p class="lede">Don’t close this page.</p></div>
+  <section data-view="sending" class="step-in" hidden>
+    <div class="done"><div class="waiting"><span class="pulse"></span><span>Sending your money</span></div><p class="lede">Don’t close this page.</p></div>
   </section>
 
-  <section data-view="result" hidden>
+  <section data-view="result" class="step-in" hidden>
     <div class="done" id="result-box"><div class="tick" id="result-tick">✓</div><h1 id="result-title"></h1><p class="lede" id="result-text"></p></div>
     <button class="btn ghost" type="button" id="result-again" hidden>Try again</button>
     <p class="foot">We’ll message you on WhatsApp as it moves. You can close this page.</p>

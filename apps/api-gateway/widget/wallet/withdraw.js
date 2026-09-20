@@ -94,10 +94,10 @@
 
   function checkAmount() {
     var amount = W.parseAmount(W.$('amount').value);
-    var hint = 'No Wheelers fee on withdrawals.';
+    var hint = 'Available';
     var ok = amount > 0;
-    if (amount > session.balanceNgn) { ok = false; hint = 'You can withdraw up to ' + W.naira(session.balanceNgn) + '.'; }
-    else if (amount > 0 && amount < session.minWithdrawalNgn) { ok = false; hint = 'Banks can’t receive less than ' + W.naira(session.minWithdrawalNgn) + '.'; }
+    if (amount > session.balanceNgn) { ok = false; hint = 'More than you have — available'; }
+    else if (amount > 0 && amount < session.minWithdrawalNgn) { ok = false; hint = 'Banks need at least ' + W.naira(session.minWithdrawalNgn) + ' — available'; }
     W.$('amount-hint').textContent = hint;
     W.$('to-bank').disabled = !ok || Boolean(session.frozenUntil);
     draft.amountNgn = amount;
@@ -108,7 +108,7 @@
     checkAmount();
   });
   W.$('to-bank').addEventListener('click', function () {
-    W.$('bank-lede').textContent = 'Sending ' + W.naira(draft.amountNgn) + '.';
+    W.$('bank-lede').textContent = 'You’re sending ' + W.naira(draft.amountNgn) + '. Pick the bank, then the account.';
     W.showOnly('bank');
   });
 
@@ -191,7 +191,8 @@
     W.$('c-amount').textContent = W.naira(draft.amountNgn);
     W.$('c-total').textContent = W.naira(draft.amountNgn);
     W.$('c-name').textContent = draft.accountName;
-    W.$('c-acct').textContent = draft.bankName + ' · ' + draft.accountNumber;
+    W.$('c-bank').textContent = draft.bankName;
+    W.$('c-acct').textContent = draft.accountNumber;
     if (session.hasPin) { pinEntry.clear(); W.showOnly('confirm'); }
     else startPinChoice('create');
   });
