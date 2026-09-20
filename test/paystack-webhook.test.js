@@ -101,6 +101,11 @@ test.before(async () => {
   baseline = await ledgerTotal();
 });
 
+// Provider references are globally unique, and the platform's fee entry is keyed
+// on them — so a fixed reference makes this file pass once per database and
+// fail on every re-run. One per run, shared by the deposit and its replay.
+const DEPOSIT_REF = `dep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
 test.after(async () => { await prisma.$disconnect(); });
 
 test('an unsigned or wrongly signed webhook is refused and moves nothing', async () => {
@@ -122,7 +127,7 @@ test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactl
   // The webhook body lies about the amount (₦0.01). Only the verified figure counts.
   const deps = { publisher, paymentsClient: makePayments({ verifyTransaction: async (ref) => verifiedDeposit(ref, 10_000, 100) }) };
 
-  const res = await postWebhook(deps, depositBody('dep-10000'));
+  const res = await postWebhook(deps, depositBody(DEPOSIT_REF));
   assert.equal(res.statusCode, 200);
   assert.equal(publisher.events.length, 1);
   assert.equal(publisher.events[0].amountNgn, 10_000);
@@ -134,7 +139,7 @@ test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactl
 
   assert.equal(Number((await userWallet()).balanceNgn), 9_880);
   assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, 20);
-  const rows = await prisma.transaction.findMany({ where: { referenceId: 'dep-10000' }, orderBy: { createdAt: 'asc' } });
+  const rows = await prisma.transaction.findMany({ where: { referenceId: DEPOSIT_REF }, orderBy: { createdAt: 'asc' } });
   assert.deepEqual(rows.map((r) => `${r.type}:${r.direction}:${Number(r.amountNgn)}`).sort(), [
     'DEPOSIT:CREDIT:9880', 'PLATFORM_FEE:CREDIT:20',
   ]);
@@ -148,12 +153,12 @@ test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactl
 test('the same deposit delivered again — by webhook retry or Kafka redelivery — credits nothing', async () => {
   const publisher = makePublisher();
   const deps = { publisher, paymentsClient: makePayments({ verifyTransaction: async (ref) => verifiedDeposit(ref, 10_000, 100) }) };
-  await postWebhook(deps, depositBody('dep-10000'));
+  await postWebhook(deps, depositBody(DEPOSIT_REF));
   for (const event of publisher.events) await consumer.handle(event, CTX);
   await consumer.handle(publisher.events[0], CTX);
 
   assert.equal(Number((await userWallet()).balanceNgn), 9_880);
-  assert.equal(await prisma.transaction.count({ where: { referenceId: 'dep-10000' } }), 2);
+  assert.equal(await prisma.transaction.count({ where: { referenceId: DEPOSIT_REF } }), 2);
   await assertBooksMatchCash('after replay');
 });
 
