@@ -9,7 +9,7 @@ import type {
 } from '@wheleers/config';
 import type { GroupRideMatchCancelledEvent } from '@wheleers/kafka-schemas';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
-import { GroqClient } from '../LLM/groq.client';
+import { createLlm } from '../LLM/llm';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { authenticateHttpUser } from './authenticate';
 import { runIdempotentJsonRequest } from './idempotency';
@@ -460,11 +460,7 @@ export async function handleGroupRideFaceCheckRoute(
       return;
     }
 
-    const groq = new GroqClient({
-      apiKey: deps.groqApiKey,
-      model: deps.groqModel,
-      timeoutMs: deps.groqTimeoutMs,
-    });
+    const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
     const verdict = await verifySelfiePhoto(groq, buffer, mimeType);
 
     sendJson(res, 200, {
@@ -600,11 +596,7 @@ export async function handleCompleteGroupRideFaceUploadRoute(
     // Look at the photo. Confirming the bytes exist says nothing about whether
     // they show a person — the same guardrail the WhatsApp flow applies has to
     // apply here, or the app is the way around it.
-    const groq = new GroqClient({
-      apiKey: deps.groqApiKey,
-      model: deps.groqModel,
-      timeoutMs: deps.groqTimeoutMs,
-    });
+    const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
     const download = await storage.download({
       bucket: request.faceVerification.bucket,
       objectKey: request.faceVerification.objectKey,

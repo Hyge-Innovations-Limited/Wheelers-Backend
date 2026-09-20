@@ -1,4 +1,4 @@
-import type { GroqClient } from './groq.client';
+import type { LlmClient } from './llm';
 import type { WhatsappConversationMessage } from './types';
 
 /**
@@ -148,7 +148,7 @@ const WAY_OUT_BUTTONS: Record<string, BookingIntent> = {
 };
 
 export async function classifyBookingIntent(
-  groq: GroqClient,
+  groq: LlmClient,
   input: {
     step: BookingStep;
     message: string;

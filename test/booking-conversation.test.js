@@ -19,6 +19,10 @@ const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js')
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
 
+// The "model" in this file is a stub behind Groq's URL. A GEMINI_API_KEY in the
+// developer's shell would send these calls to a provider the stub does not play.
+delete process.env.GEMINI_API_KEY;
+
 const prisma = new PrismaClient();
 const realFetch = global.fetch;
 const realConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };

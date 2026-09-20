@@ -101,6 +101,7 @@ import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
+import { describeLlm } from "./LLM/llm";
 import {
   handleLiveDriversRoute,
   handleLiveDriverDetailRoute,
@@ -402,6 +403,13 @@ async function bootstrap(): Promise<void> {
   console.log("[api-gateway] payments: Paystack", {
     mode: paymentsClient.isTestMode ? "TEST" : "LIVE",
   });
+  // Who answers the bot's questions — so "why is the bot slow/dumb today?" is
+  // one glance at the boot log, not a guess.
+  console.log("[api-gateway] language model:", describeLlm({
+    groqApiKey: gatewayEnv.GROQ_API_KEY,
+    groqModel: gatewayEnv.GROQ_MODEL,
+    timeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
+  }));
 
   const routePlanner = new GoogleMapsRoutePlanner(
     gatewayEnv.GOOGLE_MAPS_BASE_URL,

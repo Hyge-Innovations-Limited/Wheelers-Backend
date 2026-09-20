@@ -1,4 +1,4 @@
-import type { GroqClient } from './groq.client';
+import type { LlmClient } from './llm';
 import type { WhatsappConversationMessage } from './types';
 
 export type WalletIntent = 'deposit' | 'withdraw' | 'none';
@@ -63,7 +63,7 @@ function fallbackWalletIntent(message: string): WalletIntent {
 }
 
 export async function classifyWalletIntent(
-  groq: GroqClient,
+  groq: LlmClient,
   message: string,
   recentMessages: WhatsappConversationMessage[] = [],
 ): Promise<WalletIntent> {

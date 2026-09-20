@@ -1,7 +1,8 @@
 import { userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { DEPOSIT_FEE_NOTICE } from '@wheleers/config';
 import { createLocalAccessToken } from '../auth/local';
-import { GroqClient, type GroqClientConfig } from './groq.client';
+import type { GroqClientConfig } from './groq.client';
+import { createLlm, type LlmClient } from './llm';
 import { WHATSAPP_SYSTEM_PROMPT } from './whatsapp-system-prompt';
 import { loadRiderMemory, rememberExchange, renderRiderMemory } from './rider-memory';
 import type {
@@ -94,12 +95,12 @@ function clampWhatsappReply(reply: string): string {
 }
 
 export class WhatsappBotService {
-  private readonly groq: GroqClient;
+  private readonly groq: LlmClient;
   private readonly jwtSecret: string;
   private readonly appBaseUrl: string | undefined;
 
   constructor(config: WhatsappBotConfig) {
-    this.groq = new GroqClient(config);
+    this.groq = createLlm({ groqApiKey: config.apiKey, groqModel: config.model, timeoutMs: config.timeoutMs });
     this.jwtSecret = config.jwtSecret;
     this.appBaseUrl = config.appBaseUrl;
   }

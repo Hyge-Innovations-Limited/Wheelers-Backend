@@ -22,7 +22,8 @@ import {
   getWhatsappConversation,
 } from '../LLM/conversation-store';
 import { WhatsappBotService } from '../LLM/whatsapp-bot.service';
-import { GroqClient } from '../LLM/groq.client';
+import { createLlm } from '../LLM/llm';
+import type { LlmClient } from '../LLM/llm';
 import { geocodeMissLine, isPinInsideServiceArea, outsideServiceAreaMatch, OUTSIDE_SERVICE_AREA_LINE } from '../LLM/geocoding';
 import { parseRideIntent } from '../LLM/ride-intent-parser';
 import { classifyWalletIntent, mightConcernMoney, walletIntentModel } from '../LLM/wallet-intent';
@@ -974,9 +975,9 @@ async function requirePrivacyConsent(
 
 // ── Reading the rider, not just the reply ────────────────────────────────
 
-/** Same small, separately-metered model as the wallet intent. */
-function bookingIntentGroq(deps: MetaWhatsappRouteDeps): GroqClient {
-  return new GroqClient({ apiKey: deps.groqApiKey, model: walletIntentModel(deps.groqModel), timeoutMs: deps.groqTimeoutMs });
+/** The small, fast model: Gemini flash-lite, with Groq's 20b as its backup. */
+function bookingIntentGroq(deps: MetaWhatsappRouteDeps): LlmClient {
+  return createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs }, 'intent');
 }
 
 function isAffirmativeReply(message: string): boolean {
@@ -1589,11 +1590,7 @@ async function handleGroupSelfie(
   }
 
   // Guardrail: a real human face, not a pet, meme, or screenshot.
-  const groq = new GroqClient({
-    apiKey: deps.groqApiKey,
-    model: deps.groqModel,
-    timeoutMs: deps.groqTimeoutMs,
-  });
+  const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
   const verdict = await verifySelfiePhoto(groq, media.buffer, media.mimeType);
   if (!verdict.accepted) {
     const attempts = (pending.faceAttempts ?? 0) + 1;
@@ -2106,7 +2103,7 @@ async function handleIncomingMetaMessage(
       mightConcernMoney(incomingMessage)
     ) {
       const walletIntent = await classifyWalletIntent(
-        new GroqClient({ apiKey: deps.groqApiKey, model: walletIntentModel(deps.groqModel), timeoutMs: deps.groqTimeoutMs }),
+        createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs }, 'intent'),
         incomingMessage,
         await getWhatsappConversation(deps.redisClient, phone).catch(() => []),
       );
@@ -4028,11 +4025,7 @@ async function handleIncomingMetaMessage(
 
     const recentMessages = await getWhatsappConversation(deps.redisClient, phone);
 
-    const groq = new GroqClient({
-      apiKey: deps.groqApiKey,
-      model: deps.groqModel,
-      timeoutMs: deps.groqTimeoutMs,
-    });
+    const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
 
     // Try to parse ride intent — with what we remember about this rider, so
     // "take me home" and "same place as last time" resolve to real addresses.

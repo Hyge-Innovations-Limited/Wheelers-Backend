@@ -1,4 +1,4 @@
-import type { GroqClient } from './groq.client';
+import type { LlmClient } from './llm';
 import type { WhatsappConversationMessage } from './types';
 
 export interface RideLocation {
@@ -110,7 +110,7 @@ function fallbackRideIntent(message: string): RideIntent | null {
 }
 
 export async function parseRideIntent(
-  groq: GroqClient,
+  groq: LlmClient,
   message: string,
   recentMessages: WhatsappConversationMessage[],
   riderMemoryContext?: string,

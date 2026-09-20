@@ -14,6 +14,11 @@ const GatewayEnvSchema = z.object({
   TWILIO_AUTH_TOKEN:  z.string().min(1).optional(),
   TWILIO_FROM_NUMBER: z.string().min(1).optional(),
   GROQ_API_KEY:       z.string().min(1).optional(),
+  // Gemini is the bot's primary model when set; Groq then only answers when
+  // Gemini cannot. Unset = Groq only, exactly as before.
+  GEMINI_API_KEY:      z.string().min(1).optional(),
+  GEMINI_MODEL:        z.string().min(1).optional(),
+  GEMINI_INTENT_MODEL: z.string().min(1).optional(),
   // llama-3.3-70b-versatile was decommissioned by Groq — every ride-intent
   // parse failed with "model does not exist" and silently fell back to regex,
   // so "take me from Ikeja to Lekki" was only understood when it matched a

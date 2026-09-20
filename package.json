@@ -57,6 +57,7 @@
     "test:whatsapp-amounts": "npm -w @wheleers/api-gateway run build && node --test test/whatsapp-amounts.test.js",
     "test:rider-memory": "npm -w @wheleers/api-gateway run build && node --test test/rider-memory.test.js",
     "test:wallet-intent": "npm -w @wheleers/api-gateway run build && node --test test/wallet-intent.test.js",
+    "test:llm": "npm -w @wheleers/api-gateway run build && node --test test/llm-provider.test.js",
     "test:booking": "npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/booking-conversation.test.js",
     "test:live-map": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/live-map.test.js",
     "test:wallet-pin": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/wallet-pin.test.js",
