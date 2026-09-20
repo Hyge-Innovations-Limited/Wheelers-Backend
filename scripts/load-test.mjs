@@ -40,6 +40,8 @@ const SAMPLES = Number(args.samples ?? 15);
 const TIMEOUT_MS = Number(args.timeout ?? 10_000);
 const ERROR_LIMIT = 0.02;
 const P95_LIMIT_MS = 3_000;
+/** The unluckiest 1% matter: a server can queue politely, fail nothing, and still be unusable. */
+const P99_LIMIT_MS = 3_000;
 
 if (MAX > 50 && !OWNED && !/localhost|127\.0\.0\.1/.test(BASE)) {
   console.error(`Refusing to send ${MAX} concurrent requests to ${BASE} without --i-own-this-server.`);
@@ -132,6 +134,7 @@ console.log(`${'concurrent'.padStart(10)} ${'req/s'.padStart(8)} ${'p50'.padStar
 
 let lastHealthy = null;
 let stoppedBecause = null;
+const measured = [];
 for (const concurrency of stages) {
   const results = [];
   const deadline = performance.now() + STEP_SECONDS * 1000;
@@ -147,10 +150,14 @@ for (const concurrency of stages) {
   const p95 = pct(times, 95);
   console.log(`${String(concurrency).padStart(10)} ${rps.toFixed(1).padStart(8)} ${ms(pct(times, 50))} ${ms(p95)} ${ms(pct(times, 99))} ${`${(errorRate * 100).toFixed(1)}%`.padStart(8)}`);
 
-  if (errorRate > ERROR_LIMIT || p95 > P95_LIMIT_MS) {
+  const p99 = pct(times, 99);
+  measured.push({ concurrency, rps, p50: pct(times, 50), p95, p99 });
+  if (errorRate > ERROR_LIMIT || p95 > P95_LIMIT_MS || p99 > P99_LIMIT_MS) {
     const kinds = {};
     for (const e of errors) kinds[e.status || e.error] = (kinds[e.status || e.error] ?? 0) + 1;
-    stoppedBecause = errorRate > ERROR_LIMIT ? `errors reached ${(errorRate * 100).toFixed(1)}% ${JSON.stringify(kinds)}` : `p95 reached ${Math.round(p95)}ms`;
+    stoppedBecause = errorRate > ERROR_LIMIT
+      ? `errors reached ${(errorRate * 100).toFixed(1)}% ${JSON.stringify(kinds)}`
+      : p95 > P95_LIMIT_MS ? `p95 reached ${Math.round(p95)}ms` : `the slowest 1% waited ${Math.round(p99)}ms`;
     break;
   }
   lastHealthy = { concurrency, rps, p95 };
@@ -159,15 +166,34 @@ for (const concurrency of stages) {
 
 console.log('');
 if (stoppedBecause) console.log(`Stopped: ${stoppedBecause}.`);
-if (lastHealthy) {
-  // A booking rider makes a request every few seconds; an online driver pings
-  // about every 30s. These are planning figures, not promises.
-  const riders = Math.floor(lastHealthy.rps / 0.25);
-  const drivers = Math.floor(lastHealthy.rps / 0.05);
-  console.log(`Healthy up to ${lastHealthy.concurrency} concurrent requests ≈ ${lastHealthy.rps.toFixed(0)} req/s at p95 ${Math.round(lastHealthy.p95)}ms.`);
-  console.log(`That is roughly ${riders.toLocaleString()} riders actively booking at once, or ${drivers.toLocaleString()} drivers online — if the database keeps up.`);
-  console.log(stoppedBecause ? 'The step after that is where it began to struggle.' : `It never struggled up to ${MAX}. Raise --max to find the real ceiling.`);
-} else {
+
+if (measured.length === 0 || (!lastHealthy && measured.length === 1)) {
   console.log('It struggled at the very first step — check the server before adding traffic.');
+} else {
+  // THROUGHPUT is the ceiling, not concurrency. Once requests/sec stops
+  // climbing, every extra user only makes everyone wait longer — so the
+  // honest capacity is where throughput first reaches (90% of) its peak.
+  const peak = Math.max(...measured.map((m) => m.rps));
+  const knee = measured.find((m) => m.rps >= peak * 0.9);
+  const last = measured.at(-1);
+  console.log(`Throughput tops out at about ${Math.round(peak)} req/s, first reached at ${knee.concurrency} concurrent (typical response ${Math.round(knee.p50)}ms).`);
+  if (last.concurrency > knee.concurrency) {
+    console.log(`Beyond that it only queues: at ${last.concurrency} concurrent the typical response is ${Math.round(last.p50)}ms and the slowest 1% wait ${Math.round(last.p99)}ms — with no more work getting done.`);
+  } else {
+    console.log(`It was still climbing at ${last.concurrency}. Raise --max to find the ceiling.`);
+  }
+
+  const dbWork = rampEndpoints.some((e) => e.auth === 'login' || e.name === 'page: session');
+  // A booking rider makes a request every few seconds; an online driver pings
+  // about every 30s. Planning figures, not promises.
+  const usable = dbWork ? peak * 0.7 : peak * 0.7 / 3;
+  console.log('');
+  if (!dbWork) {
+    console.log('⚠ NO DATABASE WORK WAS MEASURED (no --token). Real requests run queries and cost roughly 3× more,');
+    console.log('  so the planning figures below already divide by three. Pass --token=… to measure instead of guess.');
+  }
+  console.log(`Plan on ~${Math.round(usable)} req/s (70% of the ceiling${dbWork ? '' : ', ÷3 for database work'}) so there is headroom for spikes:`);
+  console.log(`  ≈ ${Math.floor(usable / 0.25).toLocaleString()} riders actively booking at the same moment, or`);
+  console.log(`  ≈ ${Math.floor(usable / 0.05).toLocaleString()} drivers online at the same moment.`);
 }
 console.log('Now run  node scripts/run-with-env.cjs node scripts/db-capacity.mjs  ON the server: the database is usually the first thing to run out.\n');
