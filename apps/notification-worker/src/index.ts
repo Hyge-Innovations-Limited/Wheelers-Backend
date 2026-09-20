@@ -19,9 +19,6 @@ async function bootstrap(): Promise<void> {
   process.env['DATABASE_URL'] ??= 'postgresql://postgres:postgres@localhost:5432/wheelers';
   process.env['REDIS_URL'] ??= 'redis://localhost:6379';
 
-  // Dev placeholders for required notification env
-  process.env['EXPO_ACCESS_TOKEN'] ??= 'dev';
-
   validateSharedEnv();
   const notificationEnv = validateNotificationEnv();
 
@@ -57,7 +54,7 @@ async function bootstrap(): Promise<void> {
     console.log(`[${SERVICE_ID}] ${event.eventType} -> user=${event.userId}`);
   });
 
-  console.log(`[${SERVICE_ID}] consuming`);
+  console.log(`[${SERVICE_ID}] consuming — Expo pushes ${notificationEnv.EXPO_ACCESS_TOKEN ? 'WITH an access token' : 'without an access token (fine unless Expo enhanced security is on)'}`);
 }
 
 function categoryToDb(category: string): any {
@@ -81,7 +78,7 @@ function categoryToDb(category: string): any {
 
 async function handlePushSend(
   event: PushSendEvent,
-  expoAccessToken: string,
+  expoAccessToken: string | undefined,
 ): Promise<void> {
   const devices = await userClient.listActiveNotificationDevices(event.userId);
   if (devices.length === 0) {
@@ -101,8 +98,11 @@ async function handlePushSend(
     method: 'POST',
     headers: {
       accept: 'application/json',
-      authorization: `Bearer ${expoAccessToken}`,
       'content-type': 'application/json',
+      // Only a REAL token. This used to default to "Bearer dev", which Expo
+      // rejects outright — so with no token configured, every push to every
+      // driver and rider failed with 401. No header at all is accepted.
+      ...(expoAccessToken ? { authorization: `Bearer ${expoAccessToken}` } : {}),
     },
     body: JSON.stringify(messages),
   });

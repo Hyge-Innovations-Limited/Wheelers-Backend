@@ -86,6 +86,9 @@ const poolSize = Number(/[?&]connection_limit=(\d+)/.exec(file.DATABASE_URL ?? '
 if (Number.isFinite(poolSize) && services * poolSize > 97) {
   warnings.push(`DATABASE_URL connection_limit=${poolSize} × ${services} services = ${services * poolSize} connections; Postgres accepts ~97 by default. Run scripts/db-capacity.mjs for the exact figure.`);
 }
+if (file.EXPO_ACCESS_TOKEN === 'dev') {
+  warnings.push('EXPO_ACCESS_TOKEN=dev is a placeholder; it is ignored (a fake token makes Expo reject every push). Remove the line, or set a real token from expo.dev → Access tokens.');
+}
 for (const key of ['META_ACCESS_TOKEN', 'META_PHONE_NUMBER_ID', 'GROQ_API_KEY', 'GOOGLE_MAPS_API_KEY', 'JWT_SECRET', 'RESEND_API_KEY']) {
   if (!file[key]) warnings.push(`${key} is empty — ${key === 'RESEND_API_KEY' ? 'PIN recovery emails cannot be sent' : 'a feature that depends on it will be off'}.`);
 }
