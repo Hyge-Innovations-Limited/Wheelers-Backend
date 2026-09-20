@@ -250,12 +250,10 @@ test('the page API: scoped links, honest previews, and a full first withdrawal',
   assert.equal(session.body.hasPin, false);
   assert.equal(JSON.stringify(session.body).includes('walletPinHash'), false);
 
-  // send ₦10,000 → the bank keeps 1%, Wheelers ₦20
-  const send = await call(deps, 'GET', '/wallet-page/deposit-preview?mode=send&amount=10000', { token: depositLink });
-  assert.deepEqual([send.body.sendNgn, send.body.bankChargeNgn, send.body.wheelersFeeNgn, send.body.walletGetsNgn], [10_000, 100, 20, 9_880]);
-  // want ₦5,000 in the wallet → the quoted amount really covers it
-  const want = await call(deps, 'GET', '/wallet-page/deposit-preview?mode=receive&amount=5000', { token: depositLink });
-  assert.ok(want.body.walletGetsNgn >= 5_000 && want.body.sendNgn - 5_000 < 100, JSON.stringify(want.body));
+  // "I want ₦2,000 in my wallet" → one figure to send, and no itemised charges anywhere
+  const want = await call(deps, 'GET', '/wallet-page/deposit-preview?amount=2000', { token: depositLink });
+  assert.deepEqual(want.body, { walletGetsNgn: 2_000, sendNgn: 2_051 }, '(2000 + 30) / 0.99, in whole naira');
+  assert.equal(/fee|charge/i.test(JSON.stringify(want.body) + JSON.stringify(session.body)), false, 'the page is never handed a breakdown');
   assert.equal((await call(deps, 'GET', '/wallet-page/deposit-preview?amount=-5', { token: depositLink })).status, 400);
 
   const resolved = await call(deps, 'POST', '/wallet-page/resolve-account', { token: withdrawLink, body: { bankCode: '057', accountNumber: '0000000000' } });

@@ -1,11 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
-  DEPOSIT_FEE_NGN,
-  DEPOSIT_FEE_NOTICE,
   MIN_WITHDRAWAL_NGN,
   depositNeededFor,
-  estimateDepositProviderFee,
-  splitDeposit,
 } from '@wheleers/config';
 import { virtualAccountClient, walletClient, walletSecurityClient, withdrawalClient } from '@wheleers/db';
 import type { PaymentsClient } from '@wheleers/payments';
@@ -109,12 +105,10 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, deps: Wa
     needsPhone,
     ...summary,
     minWithdrawalNgn: MIN_WITHDRAWAL_NGN,
-    depositFeeNgn: DEPOSIT_FEE_NGN,
-    depositFeeNotice: DEPOSIT_FEE_NOTICE,
   });
 }
 
-/* ── GET /wallet-page/deposit-preview?amount=&mode=send|receive ───────── */
+/* ── GET /wallet-page/deposit-preview?amount= ─────────────────────────── */
 
 function handleDepositPreview(req: IncomingMessage, res: ServerResponse, deps: WalletPageRouteDeps, url: URL): void {
   authenticate(req, deps, 'deposit');
@@ -122,18 +116,12 @@ function handleDepositPreview(req: IncomingMessage, res: ServerResponse, deps: W
   if (!Number.isFinite(amount) || amount <= 0 || amount > 10_000_000) {
     throw new PageError('Enter an amount.', 400, 'AMOUNT_INVALID');
   }
-  // "receive" = I want ₦X in my wallet → how much do I send?
-  const sendNgn = url.searchParams.get('mode') === 'receive' ? depositNeededFor(amount) : Math.round(amount * 100) / 100;
-  const bankChargeNgn = estimateDepositProviderFee(sendNgn);
-  const split = splitDeposit(sendNgn, bankChargeNgn);
-  sendJson(res, 200, {
-    sendNgn,
-    bankChargeNgn: Math.round((sendNgn - split.platformFeeNgn - split.userCreditNgn) * 100) / 100,
-    wheelersFeeNgn: split.platformFeeNgn,
-    walletGetsNgn: split.userCreditNgn,
-    // The bank's cut is an estimate until the transfer really lands.
-    estimated: true,
-  });
+  // The rider says what they want IN their wallet; we say what to send. The
+  // charges are worked out here and folded into that one figure — the page
+  // shows "send ₦2,051 → ₦2,000 lands", never an itemised list.
+  const walletGetsNgn = Math.floor(amount);
+  if (walletGetsNgn < 1) throw new PageError('Enter an amount.', 400, 'AMOUNT_INVALID');
+  sendJson(res, 200, { walletGetsNgn, sendNgn: depositNeededFor(walletGetsNgn) });
 }
 
 /* ── GET /wallet-page/banks?q= ────────────────────────────────────────── */

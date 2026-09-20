@@ -40,22 +40,13 @@
     syncAmount();
   });
 
-  /** The server owns the fee maths. Ask once, when they commit to an amount. */
+  /** They say what they want in the wallet; the server says what to send. */
   W.$('continue').addEventListener('click', function () {
     var button = this;
     var amount = W.parseAmount(W.$('amount').value);
     button.disabled = true;
-    W.api('GET', '/wallet-page/deposit-preview?mode=send&amount=' + encodeURIComponent(amount)).then(function (p) {
-      if (!(p.walletGetsNgn > 0)) {
-        W.$('amount-err').textContent = 'That’s too small to cover the charges. Try a larger amount.';
-        W.show(W.$('amount-err'), true);
-        return;
-      }
+    W.api('GET', '/wallet-page/deposit-preview?amount=' + encodeURIComponent(amount)).then(function (p) {
       W.$('pay-amount').textContent = W.naira(p.sendNgn);
-      W.$('row-send').textContent = W.naira(p.sendNgn);
-      W.$('row-bank').textContent = '− ' + W.naira(p.bankChargeNgn);
-      W.show(W.$('row-bank-line'), p.bankChargeNgn > 0);
-      W.$('row-fee').textContent = '− ' + W.naira(p.wheelersFeeNgn);
       W.$('row-gets').textContent = W.naira(p.walletGetsNgn);
       W.showOnly('pay');
       watchForTransfer();

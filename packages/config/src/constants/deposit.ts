@@ -1,19 +1,20 @@
 /**
  * Deposit fee.
  *
- * Wheelers keeps a flat ₦20 from every deposit, whatever its size. The user's
- * wallet is credited with the rest and the ₦20 lands in the platform wallet.
+ * Wheelers keeps a flat ₦30 from every deposit, whatever its size (set
+ * DEPOSIT_FEE_NGN to change it). The user's wallet is credited with the rest
+ * and the fee lands in the platform wallet.
  *
  * The payment provider ALSO takes a cut of every deposit before the cash
  * reaches us. Someone has to carry that, and it is a business decision:
  *
  *   DEPOSIT_PROVIDER_FEE_PAID_BY=user  (default)
- *     The provider's cut is taken from the deposit as well as the flat ₦20.
- *     Wheelers always nets exactly ₦20, whatever the deposit size.
+ *     The provider's cut is taken from the deposit as well as the flat fee.
+ *     Wheelers always nets exactly its fee, whatever the deposit size.
  *   DEPOSIT_PROVIDER_FEE_PAID_BY=platform
- *     The user only ever loses the flat ₦20. The provider's cut is booked
+ *     The user only ever loses the flat fee. The provider's cut is booked
  *     against the platform wallet, so on a large deposit Wheelers nets LESS
- *     than zero (₦20 earned, ₦100 paid on a ₦10,000 deposit).
+ *     than zero (₦30 earned, ₦100 paid on a ₦10,000 deposit).
  *
  * Either way every naira is booked, so the ledger total always equals the
  * cash the provider actually holds. That equality is the whole point: the
@@ -21,9 +22,9 @@
  */
 function readFee(): number {
   const raw = process.env.DEPOSIT_FEE_NGN;
-  if (raw === undefined || raw === '') return 20;
+  if (raw === undefined || raw === '') return 30;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30;
 }
 
 export const DEPOSIT_FEE_NGN = readFee();
@@ -87,9 +88,11 @@ export function estimateDepositProviderFee(sendNgn: number): number {
 }
 
 /**
- * How much someone must SEND for `netNgn` to land in their wallet. Rounded up
- * to the next ₦10 so the rider gets a number they can type, and so a rounding
- * kobo never leaves them ₦1 short of a ride.
+ * How much someone must SEND for `netNgn` to land in their wallet — the one
+ * number the deposit page and the chat both quote ("you want ₦2,000 → send
+ * ₦2,051"). Whole naira, the smallest that still lands at least `netNgn` even
+ * if the provider rounds its cut up a kobo, so nobody ends up ₦1 short of a
+ * ride and nobody is asked for more than they need.
  */
 export function depositNeededFor(netNgn: number): number {
   const net = Math.max(0, netNgn);
@@ -98,7 +101,15 @@ export function depositNeededFor(netNgn: number): number {
     const uncapped = gross / (1 - PROVIDER_DEPOSIT_RATE);
     gross = uncapped * PROVIDER_DEPOSIT_RATE > PROVIDER_DEPOSIT_CAP_NGN ? gross + PROVIDER_DEPOSIT_CAP_NGN : uncapped;
   }
-  return Math.ceil(gross / 10) * 10;
+  let send = Math.ceil(gross);
+  const lands = (amount: number) =>
+    splitDeposit(
+      amount,
+      // One kobo of slack for the provider rounding up — but never past its cap.
+      DEPOSIT_PROVIDER_FEE_PAID_BY === 'user' ? Math.min(PROVIDER_DEPOSIT_CAP_NGN, estimateDepositProviderFee(amount) + 0.01) : 0,
+    ).userCreditNgn;
+  while (send < net + DEPOSIT_FEE_NGN + PROVIDER_DEPOSIT_CAP_NGN + 2 && lands(send) < net) send += 1;
+  return send;
 }
 
 /** One honest sentence about deposit charges, for anywhere account details are shown. */

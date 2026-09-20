@@ -121,7 +121,7 @@ test('an unsigned or wrongly signed webhook is refused and moves nothing', async
   assert.equal(publisher.events.length, 0);
 });
 
-test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactly ₦20', async () => {
+test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactly ₦30', async () => {
   const platformBefore = Number((await platformWallet())?.balanceNgn ?? 0);
   const publisher = makePublisher();
   // The webhook body lies about the amount (₦0.01). Only the verified figure counts.
@@ -137,15 +137,15 @@ test('a ₦10,000 deposit: the depositor carries both fees, Wheelers nets exactl
   await consumer.handle(publisher.events[0], CTX);
   cash += 10_000 - 100;
 
-  assert.equal(Number((await userWallet()).balanceNgn), 9_880);
-  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, 20);
+  assert.equal(Number((await userWallet()).balanceNgn), 9_870);
+  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, 30);
   const rows = await prisma.transaction.findMany({ where: { referenceId: DEPOSIT_REF }, orderBy: { createdAt: 'asc' } });
   assert.deepEqual(rows.map((r) => `${r.type}:${r.direction}:${Number(r.amountNgn)}`).sort(), [
-    'DEPOSIT:CREDIT:9880', 'PLATFORM_FEE:CREDIT:20',
+    'DEPOSIT:CREDIT:9870', 'PLATFORM_FEE:CREDIT:30',
   ]);
   const deposit = rows.find((r) => r.type === 'DEPOSIT');
   assert.equal(deposit.metadata.grossAmountNgn, 10_000);
-  assert.equal(deposit.metadata.wheelersFeeNgn, 20);
+  assert.equal(deposit.metadata.wheelersFeeNgn, 30);
   assert.equal(deposit.metadata.providerFeeNgn, 100);
   await assertBooksMatchCash('after deposit');
 });
@@ -157,7 +157,7 @@ test('the same deposit delivered again — by webhook retry or Kafka redelivery 
   for (const event of publisher.events) await consumer.handle(event, CTX);
   await consumer.handle(publisher.events[0], CTX);
 
-  assert.equal(Number((await userWallet()).balanceNgn), 9_880);
+  assert.equal(Number((await userWallet()).balanceNgn), 9_870);
   assert.equal(await prisma.transaction.count({ where: { referenceId: DEPOSIT_REF } }), 2);
   await assertBooksMatchCash('after replay');
 });
@@ -186,7 +186,7 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
   });
   assert.equal(createdWith.reference, requestId, 'the transfer reference must be the withdrawal id');
   let wallet = await userWallet();
-  assert.equal(Number(wallet.balanceNgn), 8_380);
+  assert.equal(Number(wallet.balanceNgn), 8_370);
   assert.equal(Number(wallet.lockedNgn), 1_500);
   await assertBooksMatchCash('while reserved');
 
@@ -195,7 +195,7 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
   cash -= 1_500 + 10;
 
   wallet = await userWallet();
-  assert.equal(Number(wallet.balanceNgn), 8_380);
+  assert.equal(Number(wallet.balanceNgn), 8_370);
   assert.equal(Number(wallet.lockedNgn), 0);
   assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, -10);
   const request = await prisma.withdrawalRequest.findUniqueOrThrow({ where: { id: requestId } });
@@ -215,7 +215,7 @@ test('a settled withdrawal the bank later reverses is refunded exactly once', as
   await postWebhook(deps, { event: 'transfer.reversed', data: { reference: settled.id } });
   await postWebhook(deps, { event: 'transfer.reversed', data: { reference: settled.id } });
   cash += 1_500;
-  assert.equal(Number((await userWallet()).balanceNgn), 9_880);
+  assert.equal(Number((await userWallet()).balanceNgn), 9_870);
   await assertBooksMatchCash('after reversal');
 });
 
@@ -228,7 +228,7 @@ test('an OTP-gated Paystack account fails loudly and gives the money back', asyn
     (error) => error instanceof WithdrawalError && error.code === 'PAYOUTS_NOT_ENABLED' && !error.fundsStillReserved,
   );
   const wallet = await userWallet();
-  assert.equal(Number(wallet.balanceNgn), 9_880);
+  assert.equal(Number(wallet.balanceNgn), 9_870);
   assert.equal(Number(wallet.lockedNgn), 0);
 });
 
@@ -245,7 +245,7 @@ test('a timeout keeps the money reserved; the reconciler releases it once the pr
   const resolution = await resolvePayout(payments, { id: stuck.id, amountNgn: 3_000, neverRecorded: true }, 'test');
   assert.equal(resolution, 'released');
   wallet = await userWallet();
-  assert.equal(Number(wallet.balanceNgn), 9_880);
+  assert.equal(Number(wallet.balanceNgn), 9_870);
   assert.equal(Number(wallet.lockedNgn), 0);
   await assertBooksMatchCash('after reconciliation');
 });

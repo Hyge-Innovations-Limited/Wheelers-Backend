@@ -2352,7 +2352,7 @@ async function handleIncomingMetaMessage(
           if (va) {
             lines.push(
               ``,
-              `Send *₦${toSend.toLocaleString()}* or more to cover it (deposit charges included):`,
+              `Send *₦${toSend.toLocaleString()}* to cover it:`,
               `Bank: *${va.bankName}*`,
               `Account: \`\`\`${va.accountNumber}\`\`\``,
               `Name: *${va.accountName}*`,
@@ -2360,7 +2360,7 @@ async function handleIncomingMetaMessage(
               `Once it lands, reply *pay* and *${pendingAccept.driverName}* is yours.`,
             );
           } else {
-            lines.push(``, `Please top up at least ₦${toSend.toLocaleString()} (deposit charges included), then reply *pay*.`);
+            lines.push(``, `Please top up at least ₦${toSend.toLocaleString()}, then reply *pay*.`);
           }
 
           const reply = lines.join('\n');

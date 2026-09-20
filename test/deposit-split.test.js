@@ -63,10 +63,15 @@ test('the amount a rider is told to send really does cover the shortfall', () =>
   const { depositNeededFor } = require('../packages/config/dist/index.js');
   for (const shortfall of [1, 50, 480, 1_000, 2_600, 9_999, 29_000, 50_000, 250_000]) {
     const toSend = depositNeededFor(shortfall);
-    const providerFee = Math.min(300, Math.round(toSend * 0.01 * 100) / 100);
-    const landed = splitDeposit(toSend, providerFee, 20, 'user').userCreditNgn;
+    // Even if the provider rounds its cut UP a kobo, the rider is not left short.
+    const providerFee = Math.min(300, Math.ceil(toSend * 0.01 * 100) / 100);
+    const landed = splitDeposit(toSend, providerFee, 30, 'user').userCreditNgn;
     assert.ok(landed >= shortfall, `send ₦${toSend} for ₦${shortfall} → only ₦${landed} lands`);
-    assert.ok(toSend - shortfall <= 20 + 300 + 10, `₦${toSend} is far too much for ₦${shortfall}`);
-    assert.equal(toSend % 10, 0);
+    assert.equal(toSend, Math.round(toSend), 'a whole-naira figure they can type');
+    // …and not a naira more than needed: one less would fall short.
+    const oneLess = splitDeposit(toSend - 1, Math.min(300, Math.ceil((toSend - 1) * 0.01 * 100) / 100), 30, 'user').userCreditNgn;
+    assert.ok(oneLess < shortfall + 1, `₦${toSend} is more than ₦${shortfall} needs`);
   }
+  assert.equal(depositNeededFor(2_000), 2_051);
+  assert.equal(depositNeededFor(50_000), 50_330, 'past the cap the provider takes a flat ₦300');
 });

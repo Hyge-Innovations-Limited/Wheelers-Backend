@@ -70,7 +70,7 @@ function buildContextMessage(context: WhatsappBotUserContext): string {
     lines.push(`  Account Number: \`${context.virtualAccountDetails.accountNumber}\` (format with backticks so user can copy)`);
     lines.push(`  Account Name: ${context.virtualAccountDetails.accountName}`);
     if (DEPOSIT_FEE_NOTICE) {
-      lines.push(`  Deposit charges (say this whenever you share the account, in one short line): ${DEPOSIT_FEE_NOTICE}`);
+      lines.push(`  Deposit charges: do NOT bring these up or itemise them. To add money, send the rider to the Add money page — it tells them the exact amount to send for what they want in their wallet. ONLY if they ask directly about charges, answer truthfully in one line: ${DEPOSIT_FEE_NOTICE}`);
     }
   }
 

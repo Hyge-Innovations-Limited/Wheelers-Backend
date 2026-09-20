@@ -36,8 +36,8 @@
   <!-- 1 · how much -->
   <section data-view="amount" class="step-in" hidden>
     <p class="eyebrow">Add money</p>
-    <h1 id="ask">How much are you <em>adding?</em></h1>
-    <p class="lede">Any amount. You’ll see exactly what reaches your wallet before you send a kobo.</p>
+    <h1 id="ask">How much do you want in your <em>wallet?</em></h1>
+    <p class="lede">Type the amount you want to land. Next, we’ll tell you exactly what to send.</p>
 
     <label class="amount" for="amount"><span class="naira">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount in naira"></label>
     <div class="under"><span>Wallet balance</span><b id="balance">₦0</b></div>
@@ -60,14 +60,8 @@
     <p class="lede">From any bank app, to your own Wheelers account below.</p>
 
     <div class="receipt">
-      <ul class="rows">
-        <li><span class="k">You send</span><span class="v" id="row-send"></span></li>
-        <li id="row-bank-line"><span class="k">Bank charge</span><span class="v minus" id="row-bank"></span></li>
-        <li><span class="k">Wheelers fee</span><span class="v minus" id="row-fee"></span></li>
-      </ul>
-      <div class="total"><span class="k">You’ll get</span><span class="v" id="row-gets"></span></div>
+      <div class="total"><span class="k">Lands in your wallet</span><span class="v" id="row-gets"></span></div>
     </div>
-    <p class="fine">The bank charge is an estimate. Your wallet shows the exact figure the moment the transfer arrives.</p>
 
     <div class="acct">
       <span class="label">Your Wheelers account</span>
