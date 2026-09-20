@@ -115,11 +115,27 @@ npm run pm2:restart
 ```
 
 > **`.env` is the single source of truth.** pm2 is given nothing from it:
-> every service reads `.env` itself at boot, so ANY restart picks up an edit.
-> (It used to bake a copy of `.env` into pm2's saved state, and that stale
-> copy silently beat the file — an edited `APP_BASE_URL` or `DATABASE_URL`
-> never applied.) If a process was started before that change, clear its saved
-> env once: `pm2 delete all && npm run pm2:start && pm2 save`.
+> every service reads `.env` itself at boot, so ANY restart picks up an edit,
+> and no secret is stored in `~/.pm2/dump.pm2`. pm2 runs `node dist/index.js`
+> directly (not through npm), backs off and never gives up on a crashing
+> service, and recycles one that leaks memory.
+>
+> | To… | Run |
+> | --- | --- |
+> | apply a change to `.env` | `npm run pm2:restart` — validates `.env` first and refuses if any service would fail to boot |
+> | apply a change to `ecosystem.config.cjs` | `npm run pm2:reload` — recreates the processes, then `pm2 save` |
+> | see what production will run with | `npm run env:check` — read-only, secrets masked |
+> | see what a RUNNING process really has | `pm2 env 0` |
+>
+> One-time, on the server:
+> ```bash
+> pm2 install pm2-logrotate            # logs otherwise grow until the disk is full
+> pm2 set pm2-logrotate:max_size 20M
+> pm2 set pm2-logrotate:retain 14
+> pm2 set pm2-logrotate:compress true
+> pm2 startup                          # run the line it prints, so a reboot brings everything back
+> pm2 save
+> ```
 
 That is `pm2 restart ecosystem.config.cjs --update-env`, covering all nine
 processes:
