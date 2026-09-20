@@ -1,4 +1,5 @@
 import { prisma }   from '../prisma';
+import { driverLocationClient } from './driver-location.client';
 import type { DriverStatus, KycStatus } from '@prisma/client';
 
 export const driverClient = {
@@ -104,11 +105,16 @@ export const driverClient = {
 
   // Called every time driver goes online or sends a GPS ping during availability.
   // Live ride GPS is handled separately — this is just "driver is at this location".
-  updateLocation: (driverId: string, lat: number, lng: number) =>
-    prisma.driver.update({
+  // Both callers (socket ping, HTTP heartbeat) come through here, so the admin
+  // map's trail is fed from this one place. recordPoint never throws.
+  updateLocation: async (driverId: string, lat: number, lng: number) => {
+    const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { lat, lng, lastSeenAt: new Date() },
-    }),
+    });
+    await driverLocationClient.recordPoint(driverId, lat, lng, 'online');
+    return driver;
+  },
 
   updateKycStatus: (driverId: string, kycStatus: KycStatus) =>
     prisma.driver.update({

@@ -59,6 +59,8 @@ const GatewayEnvSchema = z.object({
   // "if_set": a user who never set a PIN may still withdraw without one; only
   // for the window while old builds are still in drivers' hands.
   APP_WITHDRAWAL_PIN_POLICY: z.enum(['required', 'if_set']).default('required'),
+  // How long the admin map keeps a driver's trail before the nightly cleanup drops it.
+  LOCATION_HISTORY_DAYS: z.coerce.number().int().positive().default(14),
   GOOGLE_MAPS_API_KEY: z.string().min(1),
   GOOGLE_MAPS_BASE_URL: z.string().url().default('https://routes.googleapis.com'),
   GROUP_RIDE_FACE_S3_BUCKET: z.string().min(1).optional(),

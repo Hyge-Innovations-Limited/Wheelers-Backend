@@ -61,6 +61,8 @@ import {
   handleGetDriverRideHistoryRoute,
   handleGetDriverActiveRideRoute,
   handlePostDriverLocationRoute,
+  handleDriverStandbyRoute,
+  handlePostDriverStandbyLocationRoute,
   handleGetDriverBidsRoute,
 } from "./http/driver.route";
 import {
@@ -99,6 +101,15 @@ import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
+import {
+  handleLiveDriversRoute,
+  handleLiveDriverDetailRoute,
+  handleLiveDriverTrailRoute,
+  handleLiveDispatchRoute,
+  handleLiveNudgeRoute,
+  handleLiveContactRoute,
+  startLocationHistoryCleanup,
+} from "./http/live-map.route";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import {
   handleCreateWalletWithdrawalRoute,
@@ -961,6 +972,28 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname === "/drivers/me/standby") {
+      if (req.method !== "GET" && req.method !== "PUT") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleDriverStandbyRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
+    if (url.pathname === "/drivers/me/standby-location") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handlePostDriverStandbyLocationRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
     if (url.pathname === "/drivers/me/bids") {
       if (req.method !== "GET") {
         sendMethodNotAllowed(res);
@@ -1424,6 +1457,33 @@ async function bootstrap(): Promise<void> {
         adminApiKey: process.env.ADMIN_API_KEY ?? '',
         jwtSecret: gatewayEnv.JWT_SECRET,
       };
+
+      // ── Live map + dispatch ──
+      if (url.pathname.startsWith("/admin/live/")) {
+        const liveDeps = { ...adminDeps, publisher };
+        const liveDriver = url.pathname.match(/^\/admin\/live\/drivers\/([^/]+)(?:\/(trail|nudge|contacts))?$/);
+        const expectPost = liveDriver?.[2] === "nudge" || liveDriver?.[2] === "contacts";
+        if (req.method !== (expectPost ? "POST" : "GET")) {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        if (url.pathname === "/admin/live/drivers") {
+          await handleLiveDriversRoute(req, res, liveDeps);
+          return;
+        }
+        if (url.pathname === "/admin/live/dispatch") {
+          await handleLiveDispatchRoute(req, res, liveDeps);
+          return;
+        }
+        if (liveDriver) {
+          const driverId = decodeURIComponent(liveDriver[1]);
+          if (liveDriver[2] === "trail") await handleLiveDriverTrailRoute(req, res, liveDeps, driverId, url);
+          else if (liveDriver[2] === "nudge") await handleLiveNudgeRoute(req, res, liveDeps, driverId);
+          else if (liveDriver[2] === "contacts") await handleLiveContactRoute(req, res, liveDeps, driverId);
+          else await handleLiveDriverDetailRoute(req, res, liveDeps, driverId);
+          return;
+        }
+      }
 
       if (url.pathname === "/admin/users") {
         if (req.method !== "GET") {
@@ -2087,6 +2147,8 @@ async function bootstrap(): Promise<void> {
   const port = Number(gatewayEnv.PORT);
 
   await new Promise<void>((resolve) => {
+    startLocationHistoryCleanup(gatewayEnv.LOCATION_HISTORY_DAYS);
+
     server.listen(port, () => {
       console.log(`[api-gateway] listening on :${port}`);
       resolve();

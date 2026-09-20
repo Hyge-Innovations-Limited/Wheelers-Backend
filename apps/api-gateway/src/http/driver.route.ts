@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
+import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
 import { authenticateHttpUser, HttpAuthError } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
 import { loadDriverActiveRideSnapshot } from '../websocket/driver-ride-sync';
@@ -220,6 +220,85 @@ export async function handlePostDriverLocationRoute(
     sendJson(res, 200, { ok: true });
   } catch (error) {
     sendDriverRouteError(res, 'POST /drivers/me/location', error, 'Could not update location.');
+  }
+}
+
+function readLatLng(body: unknown): { lat: number; lng: number } | null {
+  const record = (body ?? {}) as Record<string, unknown>;
+  const lat = typeof record.lat === 'number' ? record.lat : Number(record.lat);
+  const lng = typeof record.lng === 'number' ? record.lng : Number(record.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}
+
+function serialiseStandby(state: { standbyEnabled: boolean; standbyConsentAt: Date | null; standbySeenAt: Date | null }) {
+  return {
+    enabled: state.standbyEnabled,
+    consentAt: state.standbyConsentAt?.toISOString() ?? null,
+    lastSentAt: state.standbySeenAt?.toISOString() ?? null,
+  };
+}
+
+// GET /drivers/me/standby  — is "Nearby ride alerts" on?
+// PUT /drivers/me/standby  — { enabled }. Off also erases the stored position.
+export async function handleDriverStandbyRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: DriverRouteDeps,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const driver = await driverClient.findByUserId(user.id);
+    if (!driver) {
+      sendJson(res, 404, { error: 'No driver profile found.' });
+      return;
+    }
+    if (req.method === 'GET') {
+      const state = await driverLocationClient.getStandby(driver.id);
+      sendJson(res, 200, serialiseStandby(state ?? { standbyEnabled: false, standbyConsentAt: null, standbySeenAt: null }));
+      return;
+    }
+    const body = (await readJsonBody(req).catch(() => null)) as Record<string, unknown> | null;
+    if (typeof body?.enabled !== 'boolean') {
+      sendJson(res, 400, { error: 'enabled must be true or false.' });
+      return;
+    }
+    const state = await driverLocationClient.setStandby(driver.id, body.enabled);
+    console.info('[driver] nearby ride alerts ' + (body.enabled ? 'on' : 'off'), { driverId: driver.id });
+    sendJson(res, 200, serialiseStandby(state));
+  } catch (error) {
+    sendDriverRouteError(res, 'PUT /drivers/me/standby', error, 'Could not update nearby ride alerts.');
+  }
+}
+
+// POST /drivers/me/standby-location — rough position while OFF shift. Never
+// touches lat/lng/lastSeenAt, so it cannot make an offline driver matchable.
+// 409 STANDBY_OFF tells the app to stop its background task.
+export async function handlePostDriverStandbyLocationRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: DriverRouteDeps,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const driver = await driverClient.findByUserId(user.id);
+    if (!driver) {
+      sendJson(res, 404, { error: 'No driver profile found.' });
+      return;
+    }
+    const point = readLatLng(await readJsonBody(req).catch(() => null));
+    if (!point) {
+      sendJson(res, 400, { error: 'lat and lng are required numbers.' });
+      return;
+    }
+    const stored = await driverLocationClient.updateStandbyLocation(driver.id, point.lat, point.lng);
+    if (!stored) {
+      sendJson(res, 409, { error: 'Nearby ride alerts are off.', code: 'STANDBY_OFF' });
+      return;
+    }
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendDriverRouteError(res, 'POST /drivers/me/standby-location', error, 'Could not update location.');
   }
 }
 
