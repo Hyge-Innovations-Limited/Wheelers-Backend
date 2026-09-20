@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Where the API and its hosted pages live in production. */
+export const PUBLIC_BASE_URL_DEFAULT = 'https://app.wheelersng.com';
+
 const GatewayEnvSchema = z.object({
   PORT:               z.string().default('3000'),
   AWS_REGION:         z.string().min(1).optional(),
@@ -17,7 +20,9 @@ const GatewayEnvSchema = z.object({
   // hard-coded pattern. Measured ~0.8-2.2s, inside GROQ_TIMEOUT_MS.
   GROQ_MODEL:         z.string().min(1).default('openai/gpt-oss-120b'),
   GROQ_TIMEOUT_MS:    z.coerce.number().int().positive().default(6000),
-  APP_BASE_URL:       z.string().url().optional(),
+  // The PUBLIC address riders are sent to (wallet pages, KYC). It ends up in
+  // links inside WhatsApp, so it must be the real domain.
+  APP_BASE_URL:       z.string().url().default(PUBLIC_BASE_URL_DEFAULT),
   TWILIO_WHATSAPP_NUMBER: z.string().min(1).optional(),
   // Twilio Verify issues and checks the code itself — no template approval on
   // either side, which is the wall Meta's AUTHENTICATION category puts up.
@@ -73,11 +78,37 @@ const GatewayEnvSchema = z.object({
 
 export type GatewayEnv = z.infer<typeof GatewayEnvSchema>;
 
+/**
+ * A development tunnel in APP_BASE_URL is fine on a laptop and a disaster on
+ * the server: riders were sent wallet links on an ngrok address — a domain
+ * they have never seen, that dies when the tunnel does, asking for their PIN.
+ * In production a tunnel or localhost address is refused and the real domain
+ * is used instead, loudly.
+ */
+const TUNNEL_OR_LOCAL = /(^|\.)(ngrok(-free)?\.(io|app|dev)|ngrok\.com|trycloudflare\.com|loca\.lt|localtunnel\.me|serveo\.net)$|^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i;
+
+export function resolvePublicBaseUrl(configured: string, nodeEnv: string | undefined): string {
+  let host = '';
+  try {
+    host = new URL(configured).hostname;
+  } catch {
+    return PUBLIC_BASE_URL_DEFAULT;
+  }
+  if (nodeEnv === 'production' && TUNNEL_OR_LOCAL.test(host)) {
+    console.error(
+      `[config] APP_BASE_URL points at "${host}", a tunnel/local address, while NODE_ENV=production. ` +
+      `Riders would be sent links on that domain. Using ${PUBLIC_BASE_URL_DEFAULT} instead — fix APP_BASE_URL in .env.`,
+    );
+    return PUBLIC_BASE_URL_DEFAULT;
+  }
+  return configured.replace(/\/+$/, '');
+}
+
 export function validateGatewayEnv(): GatewayEnv {
   const result = GatewayEnvSchema.safeParse(process.env);
   if (!result.success) {
     console.error('[config] api-gateway env errors:\n', result.error.format());
     process.exit(1);
   }
-  return result.data;
+  return { ...result.data, APP_BASE_URL: resolvePublicBaseUrl(result.data.APP_BASE_URL, process.env.NODE_ENV) };
 }
