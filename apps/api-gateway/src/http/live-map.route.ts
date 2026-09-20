@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
-import { driverLocationClient } from '@wheleers/db';
+import { driverLocationClient, userClient } from '@wheleers/db';
 import type { ActiveRide, MapDriverRow } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
@@ -257,8 +257,10 @@ export async function handleLiveDispatchRoute(
       driverLocationClient.contactsSince(since),
     ]);
 
+    // Only drivers who are cleared to drive: an unverified account can have a
+    // position (they opened the app) but must never be offered a rider.
     const reachable = drivers.filter(
-      (driver) => driver.phone && (driver.presence === 'online' || driver.presence === 'standby' || driver.presence === 'offline'),
+      (driver) => driver.kycStatus === 'APPROVED' && driver.phone && (driver.presence === 'online' || driver.presence === 'standby' || driver.presence === 'offline'),
     );
 
     sendJson(res, 200, {
@@ -330,6 +332,17 @@ export async function handleLiveNudgeRoute(
     }
     if (row.status === 'ON_RIDE') {
       sendJson(res, 409, { error: 'This driver is on a trip.', code: 'ON_TRIP' });
+      return;
+    }
+
+    // "Sent" must mean it can arrive. No registered phone → say so, and the
+    // operator picks up the phone instead of waiting on a push that went nowhere.
+    const devices = await userClient.listActiveNotificationDevices(row.userId);
+    if (devices.length === 0) {
+      sendJson(res, 409, {
+        error: 'This driver has notifications off on their phone. Call them instead.',
+        code: 'NO_PUSH_DEVICE',
+      });
       return;
     }
 

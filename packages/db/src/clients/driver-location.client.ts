@@ -14,6 +14,10 @@ import { prisma } from '../prisma';
 
 export type LocationSource = 'online' | 'standby';
 
+/** In-trip pings arrive every few seconds; the driver's row needs far fewer writes. */
+const TRIP_ROW_INTERVAL_MS = 15_000;
+const lastTripRowWrite = new Map<string, number>();
+
 /** A new history row needs this much time OR this much movement since the last. */
 const MIN_INTERVAL_MS = 30_000;
 const MIN_MOVE_METRES = 50;
@@ -111,8 +115,34 @@ export const driverLocationClient = {
     }
   },
 
+  /**
+   * A GPS ping sent DURING a trip. Those go to the trip telemetry stream, which
+   * never touched the driver's own row — so a driver on a trip looked like a
+   * dead signal on the map, trips left no trail, and lastSeenAt was stale the
+   * moment the trip ended. Throttled, and never throws: trip telemetry must not
+   * wait on, or fail because of, the admin map.
+   */
+  noteTripPosition: async (driverId: string, lat: number, lng: number): Promise<void> => {
+    const now = Date.now();
+    if (now - (lastTripRowWrite.get(driverId) ?? 0) < TRIP_ROW_INTERVAL_MS) return;
+    if (lastTripRowWrite.size >= MAX_TRACKED_DRIVERS) lastTripRowWrite.clear();
+    lastTripRowWrite.set(driverId, now);
+    try {
+      await prisma.driver.update({ where: { id: driverId }, data: { lat, lng, lastSeenAt: new Date(now) } });
+      await driverLocationClient.recordPoint(driverId, lat, lng, 'online');
+    } catch (error) {
+      console.warn('[driver-location] could not note trip position', {
+        driverId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
   /** Test hook: forget what was written so throttling starts fresh. */
-  resetThrottle: (): void => lastWritten.clear(),
+  resetThrottle: (): void => {
+    lastWritten.clear();
+    lastTripRowWrite.clear();
+  },
 
   // ── Standby ("Nearby ride alerts") ─────────────────────────────────────────
 

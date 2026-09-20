@@ -35,6 +35,12 @@ async function makeDriver({ status = 'OFFLINE', name = 'Test Driver', phone = '+
   return { userId, driverId: driver.id, token: local.createLocalAccessToken(userId, JWT_SECRET) };
 }
 
+async function registerPhone(userId) {
+  await prisma.notificationDevice.create({
+    data: { userId, expoPushToken: `ExponentPushToken[${randomUUID()}]`, platform: 'android' },
+  });
+}
+
 async function makeRide(pickup = LAGOS) {
   const riderId = randomUUID();
   await prisma.user.create({ data: { id: riderId, privyDid: `local:${riderId}`, role: 'RIDER', name: 'Rider' } });
@@ -121,6 +127,22 @@ test('heartbeats feed the trail once, not once per ping', async () => {
 
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   assert.equal(driver.lat, NEARBY.lat, 'the live position still follows every ping');
+});
+
+test('pings sent during a trip keep the driver on the map and leave a trail', async () => {
+  const { driverId } = await makeDriver({ status: 'ON_RIDE' });
+  await driverLocationClient.noteTripPosition(driverId, LAGOS.lat, LAGOS.lng);
+  await driverLocationClient.noteTripPosition(driverId, NEARBY.lat, NEARBY.lng); // seconds later: throttled
+
+  const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+  assert.equal(driver.lat, LAGOS.lat, 'the row is written, but not on every few-second ping');
+  assert.ok(driver.lastSeenAt, 'so the map shows "on a trip", not "signal lost"');
+  assert.equal(await prisma.driverLocationPoint.count({ where: { driverId } }), 1);
+
+  await assert.doesNotReject(
+    driverLocationClient.noteTripPosition(randomUUID(), LAGOS.lat, LAGOS.lng),
+    'an unknown driver must not break trip telemetry',
+  );
 });
 
 /* ── nearby ride alerts (standby) ─────────────────────────────────────── */
@@ -265,12 +287,17 @@ test('dispatch ranks who to ring: on shift first, then nearest; never someone on
   const busy = await makeDriver({ status: 'ON_RIDE', name: 'Dispatch Busy' });
   await driverClient.updateLocation(busy.driverId, LAGOS.lat, LAGOS.lng);
 
+  const unverified = await makeDriver({ status: 'ONLINE', name: 'Dispatch Unverified' });
+  await prisma.driver.update({ where: { id: unverified.driverId }, data: { kycStatus: 'SUBMITTED' } });
+  await driverClient.updateLocation(unverified.driverId, LAGOS.lat, LAGOS.lng);
+
   const result = await admin(liveMap.handleLiveDispatchRoute, 'GET');
   assert.equal(result.status, 200);
   const row = result.body.rides.find((r) => r.id === ride.id);
   assert.ok(row, 'the unmatched ride is in the queue');
   const ids = row.nearest.map((d) => d.id);
   assert.ok(!ids.includes(busy.driverId), 'a driver on a trip is not offered');
+  assert.ok(!ids.includes(unverified.driverId), 'a driver who is not KYC-approved is never offered a rider');
   assert.ok(ids.indexOf(far.driverId) < ids.indexOf(close.driverId), 'already online beats closer-but-off-shift');
   const closeRow = row.nearest.find((d) => d.id === close.driverId);
   assert.equal(closeRow.presence, 'standby');
@@ -281,6 +308,13 @@ test('a nudge pushes the driver, is logged, and cannot be spammed', async () => 
   const ride = await makeRide();
   const { driverId, userId } = await makeDriver();
   const { deps, pushes } = adminDeps();
+
+  const noPhone = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [driverId], body: {} });
+  assert.equal(noPhone.status, 409, '"sent" must never be claimed for a push that cannot arrive');
+  assert.equal(noPhone.body.code, 'NO_PUSH_DEVICE');
+  assert.equal(pushes.length, 0);
+  assert.equal(await prisma.dispatchContact.count({ where: { driverId } }), 0, 'and nothing is logged as sent');
+  await registerPhone(userId);
 
   const sent = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [driverId], body: { rideId: ride.id } });
   assert.equal(sent.status, 200);
@@ -300,6 +334,7 @@ test('a nudge pushes the driver, is logged, and cannot be spammed', async () => 
   assert.equal(log[0].adminName, 'api-key');
 
   const onTrip = await makeDriver({ status: 'ON_RIDE' });
+  await registerPhone(onTrip.userId);
   const busy = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [onTrip.driverId], body: {} });
   assert.equal(busy.status, 409);
 });

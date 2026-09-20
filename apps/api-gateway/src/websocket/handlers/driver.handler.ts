@@ -1,4 +1,4 @@
-import { driverClient } from '@wheleers/db';
+import { driverClient, driverLocationClient } from '@wheleers/db';
 import {
   DriverOfflineEvent,
   DriverOnlineEvent,
@@ -123,6 +123,8 @@ export async function handleDriverMessage(
     });
 
     await publisher.publishGpsEvent(event);
+    // Keep the driver's own row and trail current too — see noteTripPosition.
+    void driverLocationClient.noteTripPosition(driverId, lat, lng);
 
     return {
       type: 'driver:gps:accepted',
