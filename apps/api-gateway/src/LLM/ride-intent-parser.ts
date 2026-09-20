@@ -8,7 +8,7 @@ export interface RideLocation {
 }
 
 export interface RideIntent {
-  intent: 'ride_request' | 'group_ride_request' | 'ride_status' | 'cancel_ride' | 'edit_pickup' | 'edit_destination' | 'other';
+  intent: 'ride_request' | 'group_ride_request' | 'ride_status' | 'cancel_ride' | 'edit_pickup' | 'edit_destination' | 'deposit' | 'withdraw' | 'other';
   pickup: RideLocation | null;
   destination: RideLocation | null;
   offerNgn: number | null;
@@ -20,7 +20,7 @@ export interface RideIntent {
 const RIDE_INTENT_SYSTEM_PROMPT = `
 You extract ride request details from WhatsApp messages.
 Return ONLY a JSON object with these fields:
-- "intent": "ride_request" | "group_ride_request" | "ride_status" | "cancel_ride" | "edit_pickup" | "edit_destination" | "other"
+- "intent": "ride_request" | "group_ride_request" | "ride_status" | "cancel_ride" | "edit_pickup" | "edit_destination" | "deposit" | "withdraw" | "other"
 - "pickup": { "address": string, "area": string, "specific": boolean } | null
 - "destination": { "address": string, "area": string, "specific": boolean } | null
 - "offerNgn": number | null
@@ -43,6 +43,10 @@ Rules:
   Set "destination" to the NEW destination location. Set "pickup" to null (do NOT fill pickup from history).
 - If asking about an ongoing ride status → "ride_status"
 - If cancelling a ride → "cancel_ride"
+- If they want to PUT money INTO their Wheelers wallet, or ask how to (top up, fund, add money, "where do I send money", "give me my account number") — in any wording, Pidgin or typos → "deposit"
+- If they want to TAKE money OUT to a bank account, or ask how to (withdraw, cash out, "I wan collect my money") → "withdraw"
+  NOT these: paying for a ride, a fare offer, asking their balance, or a complaint about a past transaction — those stay "other".
+  For "deposit" and "withdraw", set all other fields to null.
 - Everything else (greetings, wallet questions, general chat) → "other"
 - For "other" intent, set all other fields to null
 - Locations: keep the place in the rider's own words. You may expand a Lagos abbreviation you are CERTAIN of ("VI" → "Victoria Island, Lagos", "Lekki" → "Lekki, Lagos", "Unilag" → "University of Lagos, Lagos").
@@ -133,7 +137,7 @@ export async function parseRideIntent(
     if (!result) return null;
 
     const intent = result as unknown as RideIntent;
-    if (!intent.intent || !['ride_request', 'group_ride_request', 'ride_status', 'cancel_ride', 'edit_pickup', 'edit_destination', 'other'].includes(intent.intent)) {
+    if (!intent.intent || !['ride_request', 'group_ride_request', 'ride_status', 'cancel_ride', 'edit_pickup', 'edit_destination', 'deposit', 'withdraw', 'other'].includes(intent.intent)) {
       return null;
     }
 

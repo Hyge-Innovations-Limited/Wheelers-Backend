@@ -25,6 +25,7 @@ import { WhatsappBotService } from '../LLM/whatsapp-bot.service';
 import { GroqClient } from '../LLM/groq.client';
 import { geocodeMissLine, isPinInsideServiceArea, outsideServiceAreaMatch, OUTSIDE_SERVICE_AREA_LINE } from '../LLM/geocoding';
 import { parseRideIntent } from '../LLM/ride-intent-parser';
+import { classifyWalletIntent, mightConcernMoney, walletIntentModel } from '../LLM/wallet-intent';
 import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
 import { geocodeAddress, geocodeAddressCandidates, reverseGeocode } from '../LLM/geocoding';
 import { verifySelfiePhoto } from '../LLM/face-check';
@@ -743,17 +744,6 @@ function parseCancellationReason(message: string): string | null {
   return normalized.slice(0, 240);
 }
 
-function isWithdrawalCommand(message: string): boolean {
-  const m = message.trim();
-  if (isCancelCommand(m)) return false;
-  if (isWithdrawalStatusCommand(m)) return false;
-  return /^(withdraw|withdrawal|cash\s*out|cashout)$/i.test(m)
-    || /\b(i\s+)?(want|wanna|need|like)\s+(to\s+)?(withdraw|cash\s*out)\b/i.test(m)
-    || /^(withdraw|withdrawal|cash\s*out|cashout)\b/i.test(m)
-    || /\b(send|move|transfer)\s+(?:₦?\d[\d,.]*\s*k?|money|funds|cash|my\s+(?:balance|earnings|wallet|money))\b.*\b(bank|account)\b/i.test(m)
-    || /\b(send|move|transfer)\s+(?:it|everything|all)\s+to\s+(?:my\s+)?(bank|account)\b/i.test(m);
-}
-
 function isWithdrawalStatusCommand(message: string): boolean {
   return /^(withdrawal?\s+status|withdrawals)$/i.test(message.trim());
 }
@@ -846,12 +836,6 @@ async function sendWalletPageButton(
     { role: 'user', content: incomingMessage },
     { role: 'assistant', content: `[sent the ${scope} page button]` },
   ]);
-}
-
-function isDepositCommand(message: string): boolean {
-  const m = message.trim();
-  if (m.length > 80) return false; // a long sentence is a conversation, not a command
-  return /^(?:i\s+(?:want|wan|wanna|need)\s+(?:to\s+)?)?(?:deposit|top\s*-?\s*up|fund(?:\s+(?:my\s+)?wallet)?|add\s+money|load\s+(?:my\s+)?wallet)\b/i.test(m);
 }
 
 /* ─── Group ride flow (plain chat — no Meta interactive flows) ─── */
@@ -1791,16 +1775,29 @@ async function handleIncomingMetaMessage(
       return;
     }
 
-    // ── Wallet: deposit + withdraw happen on the Wheelers page ────────────
-    if (!isLocation && !activeRideId && isWithdrawalCommand(incomingMessage)) {
-      await clearPendingWhatsappWithdrawal(deps.redisClient, user.id).catch(() => {});
-      if (isWithdrawalStage(bookingStage)) await clearBookingStage(deps.redisClient, user.id);
-      await sendWalletPageButton(deps, user, phone, incomingMessage, 'withdraw');
-      return;
-    }
-    if (!isLocation && isDepositCommand(incomingMessage)) {
-      await sendWalletPageButton(deps, user, phone, incomingMessage, 'deposit');
-      return;
+    // ── Wallet: the MODEL reads the intent; the page does the work ────────
+    // No accepted-phrases list. Whatever the rider typed, in whatever
+    // wording, the model says deposit / withdraw / neither — at any point in
+    // the conversation, mid-booking or mid-ride included. The cheap guard in
+    // front only spares a model call for an address or a bare number.
+    if (
+      !isLocation &&
+      !msgInfo.isImage &&
+      !isWithdrawalStatusCommand(incomingMessage) &&
+      !isCancelCommand(incomingMessage) &&
+      mightConcernMoney(incomingMessage)
+    ) {
+      const walletIntent = await classifyWalletIntent(
+        new GroqClient({ apiKey: deps.groqApiKey, model: walletIntentModel(deps.groqModel), timeoutMs: deps.groqTimeoutMs }),
+        incomingMessage,
+        await getWhatsappConversation(deps.redisClient, phone).catch(() => []),
+      );
+      if (walletIntent !== 'none') {
+        await clearPendingWhatsappWithdrawal(deps.redisClient, user.id).catch(() => {});
+        if (isWithdrawalStage(bookingStage)) await clearBookingStage(deps.redisClient, user.id);
+        await sendWalletPageButton(deps, user, phone, incomingMessage, walletIntent);
+        return;
+      }
     }
 
     if (isWithdrawalStatusCommand(incomingMessage) && !isLocation) {
@@ -3856,6 +3853,12 @@ async function handleIncomingMetaMessage(
     if (rideIntent && rideIntent.intent !== 'other') {
       // Learn from booking messages too — the general-chat path does its own.
       rememberExchange(groq, user.id, incomingMessage, null);
+    }
+
+    // ── Money, caught by the general parser too (no guard in front of this one) ──
+    if (rideIntent?.intent === 'deposit' || rideIntent?.intent === 'withdraw') {
+      await sendWalletPageButton(deps, user, phone, incomingMessage, rideIntent.intent);
+      return;
     }
 
     // ── Edit pickup/destination with no pending route → tell user to start fresh ──

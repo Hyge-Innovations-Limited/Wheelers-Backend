@@ -112,7 +112,23 @@ export class GroqClient {
     }
   }
 
+  /**
+   * One polite retry on a rate limit. Groq says exactly how long to wait
+   * ("try again in 269ms"); when that is short, waiting beats falling back to
+   * a dumber answer. A long wait is not worth holding a rider's reply for.
+   */
   private async chat(messages: LlmChatMessage[], jsonMode: boolean): Promise<string | null> {
+    try {
+      return await this.chatOnce(messages, jsonMode);
+    } catch (error) {
+      const wait = rateLimitWaitMs(error);
+      if (wait === null || wait > 2_500) throw error;
+      await new Promise((resolve) => setTimeout(resolve, wait + 150));
+      return this.chatOnce(messages, jsonMode);
+    }
+  }
+
+  private async chatOnce(messages: LlmChatMessage[], jsonMode: boolean): Promise<string | null> {
     if (!this.config.apiKey) {
       return null;
     }
@@ -166,3 +182,13 @@ export class GroqClient {
   }
 }
 
+
+/** "…Please try again in 269.99ms." / "…in 3.2s." → milliseconds, or null if this is not a rate limit. */
+export function rateLimitWaitMs(error: unknown): number | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/rate limit/i.test(message)) return null;
+  const match = /try again in ([\d.]+)\s*(ms|s)\b/i.exec(message);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? Math.ceil(match[2].toLowerCase() === 's' ? value * 1000 : value) : null;
+}
