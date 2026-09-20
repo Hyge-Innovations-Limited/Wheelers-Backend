@@ -99,8 +99,24 @@ export async function handleAdminGetUserRoute(
       .listByUser(userId, { limit: 40 })
       .catch(() => ({ items: [], nextCursor: null }));
 
+    // Never the hash — only whether a PIN exists and what is blocking withdrawals.
+    const security = await walletSecurityClient.getState(userId).catch(() => null);
+    const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
+    const active = (value: Date | null | undefined) => Boolean(value && value.getTime() > Date.now());
+
     sendJson(res, 200, {
       ...detail,
+      security: security
+        ? {
+            hasPin: Boolean(security.walletPinHash),
+            withdrawalsFrozen: active(security.withdrawalsFrozenUntil),
+            withdrawalsRestricted: active(security.withdrawalsRestrictedUntil),
+            pinLockedUntil: iso(security.walletPinLockedUntil),
+            withdrawalsFrozenUntil: iso(security.withdrawalsFrozenUntil),
+            withdrawalsFrozenReason: security.withdrawalsFrozenReason,
+            withdrawalsRestrictedUntil: iso(security.withdrawalsRestrictedUntil),
+          }
+        : null,
       activity: {
         items: activity.items.map((row) => ({
           id: row.id,
