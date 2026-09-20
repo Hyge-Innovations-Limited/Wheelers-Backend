@@ -114,6 +114,13 @@ node scripts/seed-interstate-routes.mjs --routes-only # skip the schedule
 npm run pm2:restart
 ```
 
+> **`.env` is the single source of truth.** pm2 is given nothing from it:
+> every service reads `.env` itself at boot, so ANY restart picks up an edit.
+> (It used to bake a copy of `.env` into pm2's saved state, and that stale
+> copy silently beat the file — an edited `APP_BASE_URL` or `DATABASE_URL`
+> never applied.) If a process was started before that change, clear its saved
+> env once: `pm2 delete all && npm run pm2:start && pm2 save`.
+
 That is `pm2 restart ecosystem.config.cjs --update-env`, covering all nine
 processes:
 

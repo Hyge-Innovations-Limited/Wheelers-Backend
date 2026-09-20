@@ -35,21 +35,36 @@ const mergedEnv = {
   ...process.env,
 };
 
+/**
+ * What pm2 is given — deliberately NOT the contents of .env.
+ *
+ * This file used to spread every .env value into each app's pm2 env. pm2
+ * SAVES that, and every service only reads a key from .env when it is not
+ * already set — so pm2's stale copy silently beat the file. Editing .env and
+ * restarting changed nothing: a development ngrok address kept being sent to
+ * riders, and a lowered connection_limit never applied.
+ *
+ * Every service calls loadWorkspaceEnv() at boot and reads .env itself. So
+ * pm2 carries only what .env does NOT say; the file is the single source of
+ * truth, and ANY restart picks up an edit.
+ */
+const fallbackEnv = {};
+
 if (!workspaceEnv.DATABASE_URL && !process.env.DATABASE_URL) {
   const user = mergedEnv.POSTGRES_USER || "postgres";
   const password = mergedEnv.POSTGRES_PASSWORD || "postgres";
   const database = mergedEnv.POSTGRES_DB || "wheelers";
-  mergedEnv.DATABASE_URL = `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(
+  fallbackEnv.DATABASE_URL = mergedEnv.DATABASE_URL = `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(
     password,
   )}@localhost:5432/${encodeURIComponent(database)}`;
 }
 
 if (!workspaceEnv.REDIS_URL && !process.env.REDIS_URL) {
-  mergedEnv.REDIS_URL = "redis://localhost:6379";
+  fallbackEnv.REDIS_URL = mergedEnv.REDIS_URL = "redis://localhost:6379";
 }
 
 if (!workspaceEnv.KAFKA_BROKERS && !process.env.KAFKA_BROKERS) {
-  mergedEnv.KAFKA_BROKERS = "localhost:29092";
+  fallbackEnv.KAFKA_BROKERS = mergedEnv.KAFKA_BROKERS = "localhost:29092";
 }
 
 function app(name, args, extraEnv = {}) {
@@ -62,9 +77,11 @@ function app(name, args, extraEnv = {}) {
     max_restarts: 10,
     restart_delay: 3000,
     env: {
+      // This IS the production process manager. It used to be listed first and
+      // then overridden by a "development" left in .env.
       NODE_ENV: "production",
       KAFKAJS_NO_PARTITIONER_WARNING: "1",
-      ...mergedEnv,
+      ...fallbackEnv,
       ...extraEnv,
     },
   };
@@ -72,9 +89,7 @@ function app(name, args, extraEnv = {}) {
 
 module.exports = {
   apps: [
-    app("api-gateway", "run start:api-gateway", {
-      PORT: mergedEnv.PORT || "3000",
-    }),
+    app("api-gateway", "run start:api-gateway", workspaceEnv.PORT ? {} : { PORT: "3000" }),
     app("ride-service", "run start:ride-service"),
     app("group-ride", "run start:group-ride"),
     app("payment-service", "run start:payment-service"),
@@ -82,10 +97,10 @@ module.exports = {
     app("notification-worker", "run start:notification-worker"),
     app("analytics-worker", "run start:analytics-worker"),
     app("mcp-server", "run start:mcp-server", {
-      MCP_PORT: mergedEnv.MCP_PORT || "3020",
-      MCP_GATEWAY_BASE_URL:
-        mergedEnv.MCP_GATEWAY_BASE_URL ||
-        `http://127.0.0.1:${mergedEnv.PORT || "3000"}`,
+      ...(workspaceEnv.MCP_PORT ? {} : { MCP_PORT: "3020" }),
+      ...(workspaceEnv.MCP_GATEWAY_BASE_URL
+        ? {}
+        : { MCP_GATEWAY_BASE_URL: `http://127.0.0.1:${mergedEnv.PORT || "3000"}` }),
     }),
   ],
 };
