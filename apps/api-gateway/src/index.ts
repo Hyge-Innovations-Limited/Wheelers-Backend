@@ -97,6 +97,7 @@ import {
 } from "./http/group-ride.route";
 import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
+import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import {
   handleCreateWalletWithdrawalRoute,
@@ -403,6 +404,17 @@ async function bootstrap(): Promise<void> {
     dvaBank: gatewayEnv.PAYSTACK_DVA_BANK,
     emailDomain: gatewayEnv.PAYSTACK_CUSTOMER_EMAIL_DOMAIN,
   });
+  // "Your PIN was changed" goes to the rider's WhatsApp, whichever surface did it.
+  const notifyUserOnWhatsapp =
+    gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+      ? (phone: string, message: string) =>
+          sendMetaWhatsappMessage(
+            { metaAccessToken: gatewayEnv.META_ACCESS_TOKEN!, metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID! },
+            phone,
+            message,
+          )
+      : undefined;
+
   console.log("[api-gateway] payments: Paystack", {
     mode: paymentsClient.isTestMode ? "TEST" : "LIVE",
   });
@@ -482,6 +494,7 @@ async function bootstrap(): Promise<void> {
     publisher,
     paymentsClient,
     redisClient: redisCommandClient,
+    pinPolicy: gatewayEnv.APP_WITHDRAWAL_PIN_POLICY,
   };
 
   const kycDeps = {
@@ -1879,15 +1892,17 @@ async function bootstrap(): Promise<void> {
         paymentsClient,
         publisher,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
-        notifyUser:
-          gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
-            ? (phone, message) =>
-                sendMetaWhatsappMessage(
-                  { metaAccessToken: gatewayEnv.META_ACCESS_TOKEN!, metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID! },
-                  phone,
-                  message,
-                )
-            : undefined,
+        notifyUser: notifyUserOnWhatsapp,
+      }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname === "/wallet/security" || url.pathname.startsWith("/wallet/pin")) {
+      const handled = await handleWalletSecurityRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        resendApiKey: gatewayEnv.RESEND_API_KEY,
+        notifyUser: notifyUserOnWhatsapp,
       }, url);
       if (handled) return;
     }

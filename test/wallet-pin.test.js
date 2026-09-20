@@ -314,7 +314,7 @@ test('the page API: with a recovery email, the reset demands the emailed code', 
 
   // No way around the email: completing with no code, or a wrong one, fails.
   assert.equal((await call(deps, 'POST', '/wallet-page/pin-reset/complete', { token: link, body: { newPin: '8302' } })).body.code, 'CODE_EXPIRED');
-  redis.store.set(`wallet-page:pin-reset:${user.id}`, JSON.stringify({ email: 'rider@example.com', codeHash: require('node:crypto').createHash('sha256').update('424242').digest('hex'), tries: 0 }));
+  redis.store.set(`wallet:pin-reset:${user.id}`, JSON.stringify({ email: 'rider@example.com', codeHash: require('node:crypto').createHash('sha256').update('424242').digest('hex'), tries: 0 }));
   assert.equal((await call(deps, 'POST', '/wallet-page/pin-reset/complete', { token: link, body: { newPin: '8302', code: '000000' } })).body.code, 'CODE_WRONG');
   await pinService.verifyPin(user.id, '7291'); // untouched so far
 
@@ -323,4 +323,75 @@ test('the page API: with a recovery email, the reset demands the emailed code', 
   assert.equal(done.body.frozenUntil, null, 'proven by email → no pause');
   await pinService.verifyPin(user.id, '8302');
   assert.equal((await call(deps, 'POST', '/wallet-page/pin-reset/complete', { token: link, body: { newPin: '9413', code: '424242' } })).body.code, 'CODE_EXPIRED', 'a code works once');
+});
+
+/* ── the mobile app's PIN endpoints (login token, same rules) ─────────── */
+
+const { handleWalletSecurityRoute } = require('../apps/api-gateway/dist/http/wallet-security.route.js');
+
+async function appCall(deps, method, path, { token, body } = {}) {
+  const raw = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+  const req = {
+    method,
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' },
+    async *[Symbol.asyncIterator]() { for (const c of raw) yield c; },
+  };
+  const res = { statusCode: 0, body: null, headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(t) { this.body = JSON.parse(t); } };
+  const handled = await handleWalletSecurityRoute(req, res, deps, new URL(`http://x${path}`));
+  return { handled, status: res.statusCode, body: res.body };
+}
+
+test('the app API: status, first PIN, and a page link is NOT a login', async () => {
+  const user = await makeUser(5_000);
+  const deps = { jwtSecret: JWT_SECRET, redisClient: memoryRedis() };
+  const login = local.createLocalAccessToken(user.id, JWT_SECRET);
+
+  assert.equal((await appCall(deps, 'GET', '/wallet/security')).status, 401);
+  const pageLink = local.createWalletPageToken(user.id, 'withdraw', JWT_SECRET);
+  assert.equal((await appCall(deps, 'GET', '/wallet/security', { token: pageLink })).status, 401, 'a chat link must not work as an app login');
+  assert.equal((await appCall(deps, 'GET', '/wallet/nothing-here', { token: login })).handled, false);
+
+  const before = await appCall(deps, 'GET', '/wallet/security', { token: login });
+  assert.equal(before.status, 200);
+  assert.deepEqual([before.body.hasPin, before.body.resetEmail, before.body.frozenUntil], [false, null, null]);
+  assert.ok(!JSON.stringify(before.body).toLowerCase().includes('hash'));
+
+  assert.equal((await appCall(deps, 'POST', '/wallet/pin', { token: login, body: { pin: '1234' } })).body.code, 'PIN_TOO_GUESSABLE');
+  assert.equal((await appCall(deps, 'POST', '/wallet/pin', { token: login, body: { pin: '7291' } })).status, 200);
+  assert.equal((await appCall(deps, 'POST', '/wallet/pin', { token: login, body: { pin: '8302' } })).body.code, 'PIN_ALREADY_SET');
+  assert.equal((await appCall(deps, 'GET', '/wallet/security', { token: login })).body.hasPin, true);
+});
+
+test('the app API: a user who signs in with an email must reset through that email', async () => {
+  const user = await makeUser(5_000);
+  await prisma.user.update({ where: { id: user.id }, data: { email: `driver-${user.id.slice(0, 8)}@example.com` } });
+  await pinService.setInitialPin(user.id, '7291');
+  const redis = memoryRedis();
+  const deps = { jwtSecret: JWT_SECRET, redisClient: redis };
+  const login = local.createLocalAccessToken(user.id, JWT_SECRET);
+
+  const status = await appCall(deps, 'GET', '/wallet/security', { token: login });
+  assert.match(status.body.resetEmail, /^d•+@example\.com$/, 'masked, never the full address');
+
+  // With no mail provider configured the start fails closed — it must NOT fall back to the pause path.
+  assert.equal((await appCall(deps, 'POST', '/wallet/pin/reset/start', { token: login, body: {} })).body.code, 'EMAIL_UNAVAILABLE');
+  assert.equal((await appCall(deps, 'POST', '/wallet/pin/reset/complete', { token: login, body: { newPin: '8302' } })).body.code, 'CODE_EXPIRED');
+  await pinService.verifyPin(user.id, '7291');
+
+  redis.store.set(`wallet:pin-reset:${user.id}`, JSON.stringify({ email: 'x', codeHash: require('node:crypto').createHash('sha256').update('135790').digest('hex'), tries: 0 }));
+  const done = await appCall(deps, 'POST', '/wallet/pin/reset/complete', { token: login, body: { newPin: '8302', code: '135790' } });
+  assert.equal(done.status, 200);
+  assert.equal(done.body.frozenUntil, null, 'proven by email → no pause');
+  await pinService.verifyPin(user.id, '8302');
+});
+
+test('the app API: no email on file → warned of the pause, then paused', async () => {
+  const user = await makeUser(5_000);
+  await pinService.setInitialPin(user.id, '7291');
+  const deps = { jwtSecret: JWT_SECRET, redisClient: memoryRedis() };
+  const login = local.createLocalAccessToken(user.id, JWT_SECRET);
+  assert.deepEqual((await appCall(deps, 'POST', '/wallet/pin/reset/start', { token: login, body: {} })).body, { method: 'pause', pauseHours: 24 });
+  const done = await appCall(deps, 'POST', '/wallet/pin/reset/complete', { token: login, body: { newPin: '8302' } });
+  assert.ok(done.body.frozenUntil);
+  assert.equal((await appCall(deps, 'GET', '/wallet/security', { token: login })).body.frozenReason, 'pin_reset');
 });

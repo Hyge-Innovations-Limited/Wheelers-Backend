@@ -1,4 +1,3 @@
-import { createHash, randomInt, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   DEPOSIT_FEE_NGN,
@@ -11,18 +10,21 @@ import {
 import { virtualAccountClient, walletClient, walletSecurityClient, withdrawalClient } from '@wheleers/db';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken, type WalletPageScope } from '../auth/local';
-import { sendEmail } from '../email/resend';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { getBanks } from '../payments/banks';
 import { submitWithdrawal, WithdrawalError } from '../payments/withdrawal';
 import type { RedisClient } from '../redis/client';
 import { isRecord, pickNumber, pickString } from '../utils/object';
 import {
-  WalletSecurityError,
-  resetPin,
-  setInitialPin,
-  verifyPin,
-} from '../wallet-security/wallet-pin';
+  PinFlowError,
+  completePinReset,
+  consumeCode,
+  getSecuritySummary,
+  maskEmail,
+  sendCode,
+  startPinReset,
+} from '../wallet-security/pin-flows';
+import { WalletSecurityError, setInitialPin, verifyPin } from '../wallet-security/wallet-pin';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { extractBearerToken } from './authenticate';
 import { runIdempotentJsonRequest } from './idempotency';
@@ -30,8 +32,6 @@ import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
 
 const TAG = '[api-gateway][wallet-page]';
-const CODE_TTL_SECONDS = 10 * 60;
-const CODE_MAX_TRIES = 5;
 
 export interface WalletPageRouteDeps {
   jwtSecret: string;
@@ -73,55 +73,8 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   return body;
 }
 
-const hashCode = (code: string) => createHash('sha256').update(code).digest('hex');
-const newCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
-
-function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  if (!local || !domain) return '••••';
-  return `${local.slice(0, 1)}${'•'.repeat(Math.max(2, Math.min(6, local.length - 1)))}@${domain}`;
-}
-
 function firstNameOf(name: string | null | undefined): string {
   return name?.trim().split(/\s+/)[0] ?? '';
-}
-
-/** One stored code: what it is for, who it went to, how many guesses remain. */
-async function storeCode(deps: WalletPageRouteDeps, key: string, email: string): Promise<string> {
-  const code = newCode();
-  await deps.redisClient.set(key, JSON.stringify({ email, codeHash: hashCode(code), tries: 0 }), CODE_TTL_SECONDS);
-  return code;
-}
-
-async function consumeCode(deps: WalletPageRouteDeps, key: string, code: unknown): Promise<string> {
-  const raw = await deps.redisClient.get(key).catch(() => null);
-  if (!raw) throw new PageError('That code has expired. Request a new one.', 400, 'CODE_EXPIRED');
-  const stored = JSON.parse(raw) as { email: string; codeHash: string; tries: number };
-  if (stored.tries >= CODE_MAX_TRIES) {
-    await deps.redisClient.del(key).catch(() => {});
-    throw new PageError('Too many wrong codes. Request a new one.', 429, 'CODE_LOCKED');
-  }
-  const given = Buffer.from(hashCode(typeof code === 'string' ? code.trim() : ''));
-  const expected = Buffer.from(stored.codeHash);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
-    await deps.redisClient.set(key, JSON.stringify({ ...stored, tries: stored.tries + 1 }), CODE_TTL_SECONDS);
-    throw new PageError('That code is not right. Check the email and try again.', 400, 'CODE_WRONG');
-  }
-  await deps.redisClient.del(key).catch(() => {});
-  return stored.email;
-}
-
-async function emailCode(deps: WalletPageRouteDeps, to: string, code: string, purpose: string): Promise<void> {
-  if (!deps.resendApiKey) throw new PageError('Email is not available right now. Please try again later.', 503, 'EMAIL_UNAVAILABLE');
-  await sendEmail({
-    to,
-    subject: `${code} is your Wheelers code`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:24px;background:#FFF8EC;border-radius:16px">
-  <p style="font-size:15px;color:#3A2A1A;margin:0 0 12px">Use this code to ${purpose}:</p>
-  <p style="font-size:34px;font-weight:700;letter-spacing:8px;color:#FF7700;margin:0 0 16px">${code}</p>
-  <p style="font-size:13px;color:#8A7A6A;margin:0">It expires in 10 minutes. If you did not ask for this, ignore this email — your PIN has not changed.</p>
-</div>`,
-  }, deps.resendApiKey);
 }
 
 /* ── GET /wallet-page/session ─────────────────────────────────────────── */
@@ -146,8 +99,7 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, deps: Wa
     account = await virtualAccountClient.findByUserId(userId);
   }
 
-  const now = Date.now();
-  const future = (d: Date | null) => (d && d.getTime() > now ? d.toISOString() : null);
+  const summary = await getSecuritySummary(userId);
   sendJson(res, 200, {
     scope,
     firstName: firstNameOf(security.name),
@@ -155,12 +107,7 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, deps: Wa
     lockedNgn: wallet ? Number(wallet.lockedNgn) : 0,
     account: account ? { bankName: account.bankName, accountNumber: account.accountNumber, accountName: account.accountName } : null,
     needsPhone,
-    hasPin: Boolean(security.walletPinHash),
-    recoveryEmail: security.recoveryEmail && security.recoveryEmailVerifiedAt ? maskEmail(security.recoveryEmail) : null,
-    pinLockedUntil: future(security.walletPinLockedUntil),
-    frozenUntil: future(security.withdrawalsFrozenUntil),
-    frozenReason: future(security.withdrawalsFrozenUntil) ? security.withdrawalsFrozenReason : null,
-    restrictedUntil: future(security.withdrawalsRestrictedUntil),
+    ...summary,
     minWithdrawalNgn: MIN_WITHDRAWAL_NGN,
     depositFeeNgn: DEPOSIT_FEE_NGN,
     depositFeeNotice: DEPOSIT_FEE_NOTICE,
@@ -251,7 +198,7 @@ async function handleRecoveryEmailStart(req: IncomingMessage, res: ServerRespons
     throw new PageError('That does not look like an email address.', 400, 'EMAIL_INVALID');
   }
   await walletSecurityClient.setRecoveryEmail(userId, email);
-  await emailCode(deps, email, await storeCode(deps, recoveryKey(userId), email), 'confirm your Wheelers recovery email');
+  await sendCode(deps, recoveryKey(userId), email, 'confirm your Wheelers recovery email');
   sendJson(res, 200, { sentTo: maskEmail(email) });
 }
 
@@ -267,48 +214,15 @@ async function handleRecoveryEmailVerify(req: IncomingMessage, res: ServerRespon
 
 /* ── POST /wallet-page/pin-reset/{start,complete} ─────────────────────── */
 
-const resetKey = (userId: string) => `wallet-page:pin-reset:${userId}`;
-
 async function handlePinResetStart(req: IncomingMessage, res: ServerResponse, deps: WalletPageRouteDeps): Promise<void> {
   const { userId } = authenticate(req, deps, 'withdraw');
-  const state = await walletSecurityClient.getState(userId);
-  if (state.recoveryEmail && state.recoveryEmailVerifiedAt) {
-    await emailCode(deps, state.recoveryEmail, await storeCode(deps, resetKey(userId), state.recoveryEmail), 'reset your Wheelers wallet PIN');
-    sendJson(res, 200, { method: 'email', sentTo: maskEmail(state.recoveryEmail) });
-    return;
-  }
-  // No second factor on file: the reset is allowed, and made worthless to a
-  // thief by the pause that follows. Say so BEFORE they commit to it.
-  sendJson(res, 200, { method: 'pause', pauseHours: 24 });
+  sendJson(res, 200, await startPinReset(deps, userId));
 }
 
 async function handlePinResetComplete(req: IncomingMessage, res: ServerResponse, deps: WalletPageRouteDeps): Promise<void> {
   const { userId } = authenticate(req, deps, 'withdraw');
   const body = await readBody(req);
-  const state = await walletSecurityClient.getState(userId);
-  const hasEmail = Boolean(state.recoveryEmail && state.recoveryEmailVerifiedAt);
-
-  // An account WITH a recovery email must use it — otherwise a thief would
-  // simply choose the no-email path and its 24h wait.
-  let verifiedByEmail = false;
-  if (hasEmail) {
-    await consumeCode(deps, resetKey(userId), body.code);
-    verifiedByEmail = true;
-  }
-  const outcome = await resetPin(userId, body.newPin, verifiedByEmail);
-  logActivity({ userId, eventType: 'wallet_pin_reset', metadata: { verifiedByEmail } });
-
-  if (state.phone && deps.notifyUser) {
-    const message = verifiedByEmail
-      ? '🔐 Your Wheelers wallet PIN was just changed.\n\nIf this was not you, reply *FREEZE* right now to pause withdrawals.'
-      : '🔐 Your Wheelers wallet PIN was just reset.\n\nFor your safety, withdrawals are paused for 24 hours. Deposits and rides work as normal.\n\nIf this was not you, reply *FREEZE* right now and we will keep withdrawals locked.';
-    void deps.notifyUser(state.phone, message).catch(() => {});
-  }
-  sendJson(res, 200, {
-    ok: true,
-    frozenUntil: outcome.frozenUntil?.toISOString() ?? null,
-    restrictedUntil: outcome.restrictedUntil?.toISOString() ?? null,
-  });
+  sendJson(res, 200, { ok: true, ...(await completePinReset(deps, userId, { code: body.code, newPin: body.newPin })) });
 }
 
 /* ── POST /wallet-page/withdraw ───────────────────────────────────────── */
@@ -386,7 +300,7 @@ export async function handleWalletPageRoute(
   try {
     await route.run(req, res, deps, url);
   } catch (error) {
-    if (error instanceof PageError) {
+    if (error instanceof PageError || error instanceof PinFlowError) {
       sendJson(res, error.status, { error: error.message, code: error.code });
     } else if (error instanceof WalletSecurityError) {
       const status = error.code === 'PIN_LOCKED' ? 429 : error.code === 'WITHDRAWALS_FROZEN' || error.code === 'DESTINATION_RESTRICTED' ? 403 : 400;

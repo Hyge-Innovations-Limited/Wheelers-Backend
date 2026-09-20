@@ -21,7 +21,7 @@ import {
 import { provisionDepositAccount } from "../onboarding/user-onboarding";
 import { submitWithdrawal, WithdrawalError } from "../payments/withdrawal";
 import { getBanks } from "../payments/banks";
-import { WalletSecurityError } from "../wallet-security/wallet-pin";
+import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
 import { MIN_WITHDRAWAL_NGN } from "@wheleers/config";
@@ -32,6 +32,8 @@ interface WalletRouteDeps {
   jwtSecret: string;
   publisher: GatewayPublisher;
   paymentsClient: PaymentsClient;
+  /** See APP_WITHDRAWAL_PIN_POLICY. Defaults to "required". */
+  pinPolicy?: PinPolicy;
   redisClient?: RedisClient;
 }
 
@@ -543,9 +545,7 @@ export async function handleCreateWalletWithdrawalRoute(
             accountNumber,
             accountName,
             pin: rawBody["pin"],
-            // Transitional: a user WITH a PIN must give it here too; one
-            // without is let through until the app's PIN screens ship.
-            pinPolicy: "if_set",
+            pinPolicy: deps.pinPolicy ?? "required",
           },
         );
         reservedRequestId = requestId;
