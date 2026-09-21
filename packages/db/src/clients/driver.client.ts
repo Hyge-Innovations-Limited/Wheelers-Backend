@@ -103,6 +103,19 @@ export const driverClient = {
       data:  { status: 'OFFLINE', lastSeenAt: new Date() },
     }),
 
+  /**
+   * "Still here": a driver ON SHIFT whose socket just answered a ping. Presence
+   * must not depend on the phone producing a GPS fix or on a JS timer firing —
+   * a parked driver with the app open was shown as "signal lost" and dropped
+   * from matching while their connection was perfectly alive. Off-shift rows
+   * are never touched (see standby: it must not look like being online).
+   */
+  touchOnShift: (userId: string) =>
+    prisma.driver.updateMany({
+      where: { userId, status: { in: ['ONLINE', 'ON_RIDE'] } },
+      data: { lastSeenAt: new Date() },
+    }),
+
   // Called every time driver goes online or sends a GPS ping during availability.
   // Live ride GPS is handled separately — this is just "driver is at this location".
   // Both callers (socket ping, HTTP heartbeat) come through here, so the admin

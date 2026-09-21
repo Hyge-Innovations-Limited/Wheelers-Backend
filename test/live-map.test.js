@@ -277,6 +277,22 @@ test('old history is pruned, recent history is kept', async () => {
 
 /* ── dispatch ─────────────────────────────────────────────────────────── */
 
+test('a live socket IS presence: an on-shift driver who answers a ping stops reading "signal lost" — an off-shift one is never made to look online', async () => {
+  const longAgo = new Date(Date.now() - 10 * 60_000);
+  const parked = await makeDriver({ status: 'ONLINE', name: 'Parked But Connected' });
+  const offShift = await makeDriver({ status: 'OFFLINE', name: 'Off Shift' });
+  await prisma.driver.updateMany({ where: { id: { in: [parked.driverId, offShift.driverId] } }, data: { lat: LAGOS.lat, lng: LAGOS.lng, lastSeenAt: longAgo } });
+
+  const presenceOf = async (driverId) => liveMap.resolvePosition(await prisma.driver.findUniqueOrThrow({ where: { id: driverId } }), Date.now())?.presence;
+  assert.equal(await presenceOf(parked.driverId), 'stale', 'no GPS fix for ten minutes used to mean "signal lost", connected or not');
+
+  await driverClient.touchOnShift(parked.userId);          // what a pong on their socket does
+  await driverClient.touchOnShift(offShift.userId);
+  assert.equal(await presenceOf(parked.driverId), 'online');
+  const untouched = await prisma.driver.findUniqueOrThrow({ where: { id: offShift.driverId } });
+  assert.equal(untouched.lastSeenAt.getTime(), longAgo.getTime(), 'off shift is off shift');
+});
+
 test('dispatch ranks who to ring: on shift first, then nearest; never someone on a trip', async () => {
   // Its own patch of map — and, because a random patch only makes a clash
   // UNLIKELY (it failed about one run in four once enough runs had piled up),

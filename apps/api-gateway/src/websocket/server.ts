@@ -267,9 +267,16 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
       }
     }, Math.max(10_000, Math.floor(deps.idleTimeoutMs / 2)));
 
+    // A pong proves the phone is there. For a driver on shift that IS presence,
+    // so it is written down — at most every 30 s, whatever the ping rate.
+    let presenceNotedAt = 0;
     socket.on('pong', () => {
       pongsSeen += 1;
       touch();
+      const auth = deps.registry.getAuthContext(socket);
+      if (auth?.role !== 'DRIVER' || Date.now() - presenceNotedAt < 30_000) return;
+      presenceNotedAt = Date.now();
+      void driverClient.touchOnShift(auth.userId).catch(() => undefined);
     });
 
     socket.on('message', async (raw) => {
