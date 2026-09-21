@@ -9,6 +9,7 @@ import { readRawBody, sendJson } from '../http/utils';
 import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encryption';
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { META_FLOWS_ENABLED } from './flow-toggle';
+import { handleEditTripFlow, type EditTripFlowDeps } from './edit-trip-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
 import type { FlowRequestBody } from './encryption';
@@ -60,6 +61,8 @@ export interface WhatsappFlowEndpointDeps {
   kycStorage?: DriverKycStorage;
   /** When set, Find Drivers drops a 'Check offers' re-entry button in chat. */
   notifier?: WhatsappNotifierDeps;
+  /** The Edit-trip form saved a trip: send the updated card to the rider's chat. */
+  onTripSaved?: EditTripFlowDeps['onTripSaved'];
 }
 
 const POLL_INTERVAL_MS = 1_000;
@@ -182,6 +185,16 @@ async function handleFlowAction(
   }
 
   const { rideId, userId } = tokenData;
+
+  // ── The Edit-trip form (token `edit:<userId>`) is its own small flow ───
+  if (rideId === 'edit') {
+    return handleEditTripFlow(body, userId, {
+      redisClient: deps.redisClient,
+      googleMapsApiKey: deps.googleMapsApiKey,
+      routePlanner: deps.routePlanner,
+      onTripSaved: deps.onTripSaved,
+    });
+  }
 
   // ── INIT — show appropriate screen based on ride state ────────────────
 

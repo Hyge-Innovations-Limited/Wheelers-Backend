@@ -87,7 +87,13 @@ async function call(deps, userId, method, path, body, token) {
 
 test.beforeEach(() => { console.log = console.info = console.warn = console.error = () => {}; });
 test.afterEach(() => { Object.assign(console, realConsole); global.fetch = realFetch; });
-test.after(async () => { await prisma.$disconnect(); });
+// Searches this file left open would sit in the admin dispatch queue (the 50 OLDEST unmatched rides)
+// for a day and crowd another file's ride out of it. Close them.
+const startedAt = new Date();
+test.after(async () => {
+  await prisma.ride.updateMany({ where: { status: { in: ['REQUESTED', 'MATCHING'] }, createdAt: { gte: startedAt } }, data: { status: 'CANCELLED' } }).catch(() => {});
+  await prisma.$disconnect();
+});
 
 /* ── the link ─────────────────────────────────────────────────────────── */
 

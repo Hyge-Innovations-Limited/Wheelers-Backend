@@ -96,7 +96,7 @@ import type { PendingGeoChoices, PendingRouteData, RouteStop } from '../whatsapp
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
-import { META_FLOWS_ENABLED } from '../whatsapp-flows/flow-toggle';
+import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED } from '../whatsapp-flows/flow-toggle';
 import {
   CHANGE_PRICE_REPLY_ID,
   formatBidList,
@@ -129,6 +129,8 @@ export interface MetaWhatsappRouteDeps {
   /** Published Meta Flow id for the booking form. Unset = chat-only booking. */
   whatsappFlowId?: string;
   whatsappOffersFlowId?: string;
+  /** Published "Edit trip" form. Unset = Edit trip opens the chat's Choose sheet. */
+  whatsappEditTripFlowId?: string;
 }
 
 /* ─── Meta Cloud API helpers ─── */
@@ -501,6 +503,10 @@ function parseMetaMessage(
             replyId: typeof buttonReply?.id === 'string' ? buttonReply.id : undefined,
           };
         }
+        // A Flow that was closed with its last button. Whatever the form did, it
+        // already told the chat (the Edit-trip form sends the updated card when
+        // it saves) — answering this too would be a second message about nothing.
+        if (interactive?.type === 'nfm_reply') return null;
         if (interactive?.type === 'list_reply') {
           const listReply = interactive.list_reply as Record<string, unknown>;
           return {
@@ -1986,6 +1992,54 @@ async function sendTripEditMenu(deps: MetaWhatsappRouteDeps, phone: string, trip
   return body;
 }
 
+/**
+ * "Edit trip" / "Add a stop" as ONE form instead of a conversation: a message
+ * whose button opens the Edit-trip flow, filled with the trip as it stands.
+ * (A reply button cannot open a form — only a flow message's own button can —
+ * which is why tapping Edit sends this rather than opening it directly.)
+ * False when the form is not available, so the caller carries on in the chat.
+ */
+async function sendEditTripForm(deps: MetaWhatsappRouteDeps, userId: string, phone: string, addingStop: boolean): Promise<boolean> {
+  if (!EDIT_TRIP_FLOW_ENABLED || !deps.whatsappEditTripFlowId) return false;
+  return sendInteractive(deps, phone, {
+    type: 'flow',
+    body: {
+      text: addingStop
+        ? '🔸 *Add your stop* — tap below, type it in a Stop box and continue. You can change the pickup or destination there too.\n\n_Form not opening? Just type it here, e.g._ add a stop at Yaba market'
+        : '✏️ *Edit your trip* — pickup, stops and destination, all in one place.\n\n_Form not opening? Just type the change here, e.g._ pick me at Unilag gate',
+    },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: deps.whatsappEditTripFlowId,
+        flow_token: signFlowToken(`edit:${userId}`, deps.jwtSecret),
+        flow_cta: addingStop ? 'Add a stop' : 'Edit trip',
+        // data_exchange: opening calls our endpoint's INIT, so the boxes arrive filled in.
+        flow_action: 'data_exchange',
+      },
+    },
+  });
+}
+
+/** The Edit-trip form saved a trip: the chat gets the updated card, once, with Confirm trip on it. */
+export function createTripCardSender(deps: MetaWhatsappRouteDeps) {
+  return async (userId: string, trip: PendingRouteData, headline: string): Promise<void> => {
+    const phone = (await userClient.findById(userId).catch(() => null))?.phone;
+    if (!phone) return;
+    await Promise.all([
+      clearPendingGeoChoices(deps.redisClient, userId),
+      clearPendingFarPlace(deps.redisClient, userId),
+      clearBookingMisses(deps.redisClient, userId),
+    ].map((step) => step.catch(() => undefined)));
+    const said = await sendTripConfirmation(deps, { id: userId }, phone, trip, headline);
+    await appendWhatsappConversation(deps.redisClient, phone, [
+      { role: 'user', content: '[changed the trip in the Edit trip form]' },
+      { role: 'assistant', content: said },
+    ]);
+  };
+}
+
 /** One interactive message. False when it could not be sent, so the caller can say it in text. */
 async function sendInteractive(deps: MetaWhatsappRouteDeps, to: string, interactive: Record<string, unknown>): Promise<boolean> {
   if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return false;
@@ -2195,6 +2249,16 @@ async function handleTripTap(
   await clearPendingGeoChoices(deps.redisClient, user.id).catch(() => undefined);
 
   if (replyId === TRIP_CONFIRM_ID) return confirmTripAndQuote(deps, user, phone, incomingMessage, trip);
+
+  // Edit / Add a stop: the form when there is one — every change in one place, one message back.
+  if ((replyId === TRIP_EDIT_ID || replyId === TRIP_ADD_STOP_ID) && await sendEditTripForm(deps, user.id, phone, replyId === TRIP_ADD_STOP_ID)) {
+    await setBookingStage(deps.redisClient, user.id, 'awaiting_trip_confirm');     // typing still works while the form is open
+    await appendWhatsappConversation(deps.redisClient, phone, [
+      { role: 'user', content: incomingMessage },
+      { role: 'assistant', content: '[sent the Edit trip form]' },
+    ]);
+    return;
+  }
   if (replyId === TRIP_ADD_STOP_ID) return askForStop(deps, user, phone, incomingMessage, trip);
   if (replyId === TRIP_EDIT_PICKUP_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'pickup');
   if (replyId === TRIP_EDIT_DESTINATION_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'destination');
@@ -4621,6 +4685,10 @@ async function handleIncomingMetaMessage(
         return;
       }
       if (/^edit(\s+(my\s+)?trip)?[\s!.]*$/i.test(incomingMessage.trim())) {
+        if (await sendEditTripForm(deps, user.id, phone, false)) {
+          await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: '[sent the Edit trip form]' }]);
+          return;
+        }
         const said = await sendTripEditMenu(deps, phone, trip);
         await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
         return;
@@ -4662,8 +4730,11 @@ async function handleIncomingMetaMessage(
         return;
       }
       if (wanted.intent === 'add_stop') {
+        // They named it → add it right here. They did not → the form is the shortest way to say where.
         if (wanted.address) await addStopToTrip(deps, user, phone, incomingMessage, trip, wanted.address);
-        else await askForStop(deps, user, phone, incomingMessage, trip);
+        else if (await sendEditTripForm(deps, user.id, phone, true)) {
+          await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: '[sent the Edit trip form]' }]);
+        } else await askForStop(deps, user, phone, incomingMessage, trip);
         return;
       }
       if (wanted.intent === 'remove_stop') {

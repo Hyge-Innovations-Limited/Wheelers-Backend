@@ -12,3 +12,15 @@
  * in .env, and redeploy.
  */
 export const META_FLOWS_ENABLED = false;
+
+/**
+ * The ONE flow that is on: the "Edit trip" form (pickup, up to three stops and
+ * the destination on one screen — see edit-trip-flow.ts). It has its own switch
+ * because it replaces five chat messages with one form and touches no money,
+ * while the booking and offers flows above stay off.
+ *
+ * It also needs WHATSAPP_EDIT_TRIP_FLOW_ID in .env (written there by
+ * `npm run flow:push:edit-trip`). Without the id, or with this false, "Edit
+ * trip" opens the chat's Choose sheet exactly as before.
+ */
+export const EDIT_TRIP_FLOW_ENABLED = true;

@@ -285,6 +285,9 @@ test('dispatch ranks who to ring: on shift first, then nearest; never someone on
     where: { user: { name: { startsWith: 'Dispatch ' } } },
     data: { lat: null, lng: null, lastSeenAt: null, standbyLat: null, standbyLng: null, standbySeenAt: null },
   });
+  // Same for rides: the queue is the 50 OLDEST unmatched rides, so searches left open by
+  // earlier runs (this file's or another's) would push this test's ride off the end of it.
+  await prisma.ride.updateMany({ where: { status: { in: ['REQUESTED', 'MATCHING'] } }, data: { status: 'CANCELLED' } });
   const HERE = { lat: 10 + Math.random() * 3, lng: 5 + Math.random() * 5 };
   const ride = await makeRide(HERE);
   const far = await makeDriver({ status: 'ONLINE', name: 'Dispatch Far Online' });

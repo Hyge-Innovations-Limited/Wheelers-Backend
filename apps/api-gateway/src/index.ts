@@ -175,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripCardSender } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -533,6 +533,7 @@ async function bootstrap(): Promise<void> {
     groupRideFaceStorage: groupRideFaceStorage ?? undefined,
     whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
     whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+    whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
   });
 
   const server = createServer(async (req, res) => {
@@ -899,6 +900,7 @@ async function bootstrap(): Promise<void> {
         groupRideFaceStorage: groupRideFaceStorage ?? undefined,
         whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
         whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+        whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
       };
 
       if (req.method === "GET") {
@@ -932,6 +934,7 @@ async function bootstrap(): Promise<void> {
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
         routePlanner,
         kycStorage: driverKycStorage ?? undefined,
+        onTripSaved: createTripCardSender(buildMetaWhatsappDeps()),
         notifier:
           gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
             ? {
