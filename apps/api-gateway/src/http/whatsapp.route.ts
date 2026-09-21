@@ -91,7 +91,7 @@ import {
   getLastCompletedRide,
   clearLastCompletedRide,
 } from '../whatsapp-flows/bid-state';
-import type { PendingRouteData } from '../whatsapp-flows/bid-state';
+import type { PendingGeoChoices, PendingRouteData } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
@@ -499,7 +499,10 @@ function parseMetaMessage(
             messageId: wamid,
             phone,
             profileName,
-            messageBody: (listReply?.title as string) ?? '',
+            // A place-picker row answers with its position ("2"), exactly as if
+            // the rider had typed the number. Its title is cut to 24 characters
+            // by WhatsApp, so it must never be read back as an address.
+            messageBody: placeChoiceReply(listReply?.id) ?? (listReply?.title as string) ?? '',
             isLocation: false,
           };
         }
@@ -973,6 +976,129 @@ async function requirePrivacyConsent(
   return true;
 }
 
+// ── "Which one did you mean?" — a tap, not a typed number ────────────────
+
+const PLACE_CHOICE_ID = /^place_choice_(\d+|none)$/;
+const NONE_OF_THESE = 'None of these';
+
+/** list_reply id → what the rider "said": the option's number, or none of them. */
+function placeChoiceReply(id: unknown): string | null {
+  const match = typeof id === 'string' ? PLACE_CHOICE_ID.exec(id) : null;
+  if (!match) return null;
+  return match[1] === 'none' ? NONE_OF_THESE : match[1]!;
+}
+
+function clip(text: string, max: number): string {
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > max * 0.5 ? cut.slice(0, lastSpace) : cut).replace(/[\s,·-]+$/, '')}…`;
+}
+
+/**
+ * Row labels for the picker. WhatsApp allows 24 characters for a row's title
+ * and 72 for the line under it — "Admiralty Way, Lekki, Nigeria" used to be
+ * dumped into the title and arrive as "Admiralty Way, Lekki, Ni".
+ *
+ * The title carries WHAT DIFFERS between the options: the street or place name
+ * when those differ, the area when the name is the same everywhere ("Aiyetoro
+ * Street" in Surulere and in Akoka). The full address always sits underneath.
+ */
+export function placeChoiceRows(addresses: string[]): Array<{ id: string; title: string; description: string }> {
+  const parsed = addresses.map((address) => {
+    const parts = address.split(',').map((part) => part.replace(/\b\d{5,6}\b/g, '').trim()).filter(Boolean);
+    const withoutCountry = parts.filter((part, index) => !(index === parts.length - 1 && /^nigeria$/i.test(part)));
+    return { address, name: withoutCountry[0] ?? address, area: withoutCountry[1] ?? '', rest: withoutCountry.slice(1).join(', ') };
+  });
+  const names = new Set(parsed.map((place) => place.name.toLowerCase()));
+  const namesDiffer = names.size === parsed.length;
+
+  const titles = parsed.map((place) => clip(namesDiffer || !place.area ? place.name : place.area, 24));
+  const timesUsed = (title: string) => titles.filter((other) => other.toLowerCase() === title.toLowerCase()).length;
+
+  return parsed.map((place, index) => ({
+    id: `place_choice_${index + 1}`,
+    // Still identical (same street AND same area)? Number them so they can be told apart.
+    title: timesUsed(titles[index]!) > 1 ? clip(`${index + 1}. ${titles[index]}`, 24) : titles[index]!,
+    description: clip(namesDiffer ? (place.rest || place.address) : place.address, 72),
+  }));
+}
+
+/**
+ * Ask which place they meant with ONE message and a button. Tapping it opens
+ * WhatsApp's own picker; the tap comes back as the option's number. If the
+ * list cannot be sent, the same question goes out as numbered text — typing
+ * the number has always worked and still does.
+ */
+async function sendPlaceChoices(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  input: {
+    context: PendingGeoChoices['context'];
+    field: 'pickup' | 'destination';
+    typed: string;
+    candidates: Array<{ lat: number; lng: number; formattedAddress: string }>;
+  },
+): Promise<void> {
+  const options = input.candidates.slice(0, 9).map((c) => ({ lat: c.lat, lng: c.lng, address: c.formattedAddress }));
+  await storePendingGeoChoices(deps.redisClient, user.id, { context: input.context, options });
+
+  const rows = placeChoiceRows(options.map((option) => option.address));
+  const body = `I found ${options.length} places matching "${clip(input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`;
+  const asText = [
+    `Found a few places matching "${input.typed}" — which one did you mean?`,
+    ``,
+    ...options.map((option, index) => `*${index + 1}.* ${option.address}`),
+    ``,
+    `Reply with the number.`,
+  ].join('\n');
+
+  await appendWhatsappConversation(deps.redisClient, phone, [
+    { role: 'user', content: incomingMessage },
+    { role: 'assistant', content: asText },
+  ]);
+
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) {
+    await sendMetaReply(deps, phone, asText);
+    return;
+  }
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone.replace(/^\+/, ''),
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        body: { text: body },
+        action: {
+          button: 'Choose',
+          sections: [{
+            title: input.field === 'pickup' ? 'Pick the right pickup' : 'Pick the destination',
+            rows: [
+              ...rows,
+              { id: 'place_choice_none', title: NONE_OF_THESE, description: 'Type the address again with the area or a landmark' },
+            ],
+          }],
+        },
+      },
+    }),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    console.error('[whatsapp] place picker failed — falling back to numbered text', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    await sendMetaReply(deps, phone, asText);
+  }
+}
+
 // ── Reading the rider, not just the reply ────────────────────────────────
 
 /** The small, fast model: Gemini flash-lite, with Groq's 20b as its backup. */
@@ -1363,17 +1489,12 @@ async function handleGroupStageText(
     // Ambiguous place name ("Aiyetoro" exists in Surulere AND Akoka) — ask
     // instead of assuming. A query that pins the area returns one candidate.
     if (candidates.length > 1) {
-      await storePendingGeoChoices(deps.redisClient, user.id, {
+      await sendPlaceChoices(deps, user, phone, incomingMessage, {
         context: stage === 'group_awaiting_pickup' ? 'group_pickup' : 'group_destination',
-        options: candidates.map((c) => ({ lat: c.lat, lng: c.lng, address: c.formattedAddress })),
+        field: stage === 'group_awaiting_pickup' ? 'pickup' : 'destination',
+        typed,
+        candidates,
       });
-      await replyAndLog(deps, phone, incomingMessage, [
-        `Found a few places matching "${typed}" — which one did you mean?`,
-        ``,
-        ...candidates.map((c, i) => `*${i + 1}.* ${c.formattedAddress}`),
-        ``,
-        `Reply with the number.`,
-      ].join('\n'));
       return;
     }
 
@@ -1896,6 +2017,18 @@ async function handleIncomingMetaMessage(
         preview: incomingMessage.slice(0, 160),
       },
     });
+
+    // ── "None of these" on a place picker ─────────────────────────────────
+    if (!isLocation && incomingMessage.trim().toLowerCase() === NONE_OF_THESE.toLowerCase()) {
+      const offered = await getPendingGeoChoices(deps.redisClient, user.id);
+      if (offered) {
+        await clearPendingGeoChoices(deps.redisClient, user.id);
+        const field = offered.context === 'pickup' || offered.context === 'group_pickup' ? 'pickup' : 'destination';
+        await replyAndLog(deps, phone, incomingMessage,
+          `No problem. Type the ${field} again with the area or a nearby landmark — e.g. *"Admiralty Way, Lekki Phase 1"* — or share a location pin 📍`);
+        return;
+      }
+    }
 
     // ── Privacy consent comes first ───────────────────────────────────────
     // Two things never wait for it: a live trip (never interrupt one), and
@@ -3076,6 +3209,17 @@ async function handleIncomingMetaMessage(
       const hint = await getPendingAreaHint(deps.redisClient, user.id);
       const answer = incomingMessage.trim();
 
+      // A tap on the picker (or a typed number) answers "which pickup did you mean?".
+      let pickedPickup: { lat: number; lng: number; formattedAddress: string } | null = null;
+      if (/^[1-9]$/.test(answer)) {
+        const choices = await getPendingGeoChoices(deps.redisClient, user.id);
+        const pick = choices?.context === 'pickup' ? choices.options[Number(answer) - 1] : undefined;
+        if (pick) {
+          await clearPendingGeoChoices(deps.redisClient, user.id);
+          pickedPickup = { lat: pick.lat, lng: pick.lng, formattedAddress: pick.address };
+        }
+      }
+
       // The question was "whereabouts in X?", so the expected answer is a
       // landmark. Riders often restate the whole trip instead ("I wanna go
       // from Allen"), and geocoding that verbatim asks Google to find a
@@ -3099,8 +3243,20 @@ async function handleIncomingMetaMessage(
         ? [`${hint.area} ${answer}`, `${answer}, ${hint.area}`, answer]
         : [answer];
 
-      let pickupGeo = null;
-      for (const candidate of candidates) {
+      // A name that exists in several places ("Admiralty" Way AND Road, "Aiyetoro"
+      // in Surulere AND Akoka): ask, never assume. Only for a plain answer — when
+      // they are answering "whereabouts in Lekki?", the area already narrows it.
+      if (!pickedPickup && !hint?.area && !looksLikeConversation(answer)) {
+        const matches = await geocodeAddressCandidates(deps.googleMapsApiKey, answer);
+        if (matches.length > 1) {
+          await sendPlaceChoices(deps, user, phone, incomingMessage, { context: 'pickup', field: 'pickup', typed: answer, candidates: matches });
+          return;
+        }
+        if (matches.length === 1) pickedPickup = matches[0]!;
+      }
+
+      let pickupGeo = pickedPickup;
+      for (const candidate of pickedPickup ? [] : candidates) {
         pickupGeo = await geocodeAddress(deps.googleMapsApiKey, candidate);
         if (pickupGeo) break;
       }
@@ -3282,22 +3438,12 @@ async function handleIncomingMetaMessage(
         // Ambiguous place ("Aiyetoro" is in Surulere AND Akoka) — ask, don't
         // assume. A query that pins the area returns a single candidate.
         if (candidates.length > 1) {
-          await storePendingGeoChoices(deps.redisClient, user.id, {
+          await sendPlaceChoices(deps, user, phone, incomingMessage, {
             context: 'destination',
-            options: candidates.map((c) => ({ lat: c.lat, lng: c.lng, address: c.formattedAddress })),
+            field: 'destination',
+            typed: typedDestination,
+            candidates,
           });
-          const reply = [
-            `Found a few places matching "${typedDestination}" — which one did you mean?`,
-            ``,
-            ...candidates.map((c, i) => `*${i + 1}.* ${c.formattedAddress}`),
-            ``,
-            `Reply with the number.`,
-          ].join('\n');
-          await appendWhatsappConversation(deps.redisClient, phone, [
-            { role: 'user', content: incomingMessage },
-            { role: 'assistant', content: reply },
-          ]);
-          await sendMetaReply(deps, phone, reply);
           return;
         }
 

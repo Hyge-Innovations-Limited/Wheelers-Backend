@@ -753,7 +753,7 @@ export async function clearGroupRequestRider(
 
 export interface PendingGeoChoices {
   /** Which field the answer fills. */
-  context: 'group_pickup' | 'group_destination' | 'destination';
+  context: 'group_pickup' | 'group_destination' | 'pickup' | 'destination';
   options: Array<{ lat: number; lng: number; address: string }>;
 }
 

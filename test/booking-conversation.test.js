@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -55,14 +55,18 @@ function installWorld(world) {
     const href = String(url);
     if (href.includes('graph.facebook.com')) {
       const body = JSON.parse(init.body);
+      if (world.refuseLists && body.interactive?.type === 'list') {
+        return { ok: false, status: 400, json: async () => ({}), text: async () => 'list rejected' };
+      }
       if (body.type === 'text' || body.type === 'interactive') sent.push(body);
       return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
     }
     if (href.includes('/maps/api/geocode/')) {
       const params = new URL(href).searchParams;
       calls.geocode.push({ address: params.get('address'), bounds: params.get('bounds') });
-      const place = world.geocode(params.get('address'), params);
-      return { ok: true, json: async () => (place ? { status: 'OK', results: [geocodeResult(place)] } : { status: 'ZERO_RESULTS', results: [] }) };
+      const found = world.geocode(params.get('address'), params);
+      const places = Array.isArray(found) ? found : found ? [found] : [];
+      return { ok: true, json: async () => (places.length ? { status: 'OK', results: places.map((place) => geocodeResult(place)) } : { status: 'ZERO_RESULTS', results: [] }) };
     }
     if (href.includes('/maps/api/place/')) {
       const params = new URL(href).searchParams;
@@ -146,6 +150,22 @@ async function say(deps, who, text) {
     entry: [{ changes: [{ value: {
       contacts: [{ profile: { name: who.name }, wa_id: who.phone }],
       messages: [{ id: `wamid.test.${Date.now()}.${messageCounter}`, from: who.phone, type: 'text', text: { body: text } }],
+    } }] }],
+  };
+  const raw = Buffer.from(JSON.stringify(payload));
+  const req = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield raw; } };
+  const res = { statusCode: 0, setHeader() {}, writeHead() { return this; }, end() {} };
+  await handleMetaWhatsappWebhookRoute(req, res, deps);
+}
+
+/** Tap a row in WhatsApp's list picker. The title is what WhatsApp shows — cut short. */
+async function tap(deps, who, rowId, title) {
+  messageCounter += 1;
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ value: {
+      contacts: [{ profile: { name: who.name }, wa_id: who.phone }],
+      messages: [{ id: `wamid.tap.${Date.now()}.${messageCounter}`, from: who.phone, type: 'interactive', interactive: { type: 'list_reply', list_reply: { id: rowId, title } } }],
     } }] }],
   };
   const raw = Buffer.from(JSON.stringify(payload));
@@ -257,6 +277,122 @@ test('FREEZE never waits for a privacy form', async () => {
   const user = await findRider(who);
   assert.ok(user.withdrawalsFrozenUntil > new Date());
   assert.equal(user.privacyConsent, 'PENDING');
+});
+
+/* ── one name, several places: a tap, not a typed number ───────────────── */
+
+const ADMIRALTY_WAY = { lat: 6.4474, lng: 3.4723, address: 'Admiralty Way, Lekki, Nigeria' };
+const ADMIRALTY_ROAD = { lat: 6.4391, lng: 3.4586, address: 'Admiralty Road, Lekki, Nigeria' };
+const LEKKI_PICKUP = { lat: 6.4500, lng: 3.4700, address: 'Lekki Phase 1 Gate, Lekki, Lagos, Nigeria' };
+const admiraltyWorld = (extra = {}) => ({
+  geocode: (query) => (/admiralty/i.test(query) ? [ADMIRALTY_WAY, ADMIRALTY_ROAD] : YABA),
+  places: () => null,
+  intent: () => ({ intent: 'other' }),
+  ...extra,
+});
+
+async function riderInLekki(deps, redis, who) {
+  const user = await riderWithPickup(deps, redis, who);
+  await bidState.setPendingLocation(redis, user.id, { ...LEKKI_PICKUP, savedAt: new Date().toISOString() });
+  return user;
+}
+
+test('the labels fit WhatsApp\'s limits and lead with what differs', () => {
+  // The screenshot: "Admiralty Way, Lekki, Nigeria" was cut to "Admiralty Way, Lekki, Ni".
+  const rows = placeChoiceRows([ADMIRALTY_WAY.address, ADMIRALTY_ROAD.address]);
+  assert.deepEqual(rows.map((r) => r.title), ['Admiralty Way', 'Admiralty Road']);
+  assert.deepEqual(rows.map((r) => r.description), ['Lekki', 'Lekki']);
+  assert.deepEqual(rows.map((r) => r.id), ['place_choice_1', 'place_choice_2']);
+
+  // Same street name in two districts: the DISTRICT is what tells them apart.
+  const same = placeChoiceRows(['Aiyetoro Street, Surulere, Lagos 101241, Lagos, Nigeria', 'Aiyetoro Street, Akoka, Lagos 100001, Lagos, Nigeria']);
+  assert.deepEqual(same.map((r) => r.title), ['Surulere', 'Akoka']);
+  assert.match(same[0].description, /^Aiyetoro Street, Surulere/);
+
+  // Nothing ever exceeds the limits, and twins are numbered rather than identical.
+  const long = placeChoiceRows([
+    'The Very Long Named International Conference Centre Annex, Victoria Island, Lagos, Nigeria',
+    'Shoprite, Ikeja, Lagos, Nigeria', 'Shoprite, Ikeja, Lagos, Nigeria',
+  ]);
+  for (const row of long) { assert.ok(row.title.length <= 24, row.title); assert.ok(row.description.length <= 72, row.description); }
+  assert.equal(new Set(long.map((r) => r.title)).size, 3);
+});
+
+test('SCREENSHOT — two places called Admiralty: one message with a Choose button, and a tap picks it', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(admiraltyWorld());
+  const who = rider();
+  const user = await riderInLekki(deps, redis, who);
+
+  const before = sent.length;
+  await say(deps, who, 'admiralty');
+  assert.equal(sent.length - before, 1, 'one message, not a wall of text');
+  const picker = last(sent);
+  assert.equal(picker.interactive.type, 'list');
+  assert.equal(picker.interactive.action.button, 'Choose');
+  assert.match(textOf(picker), /I found 2 places matching "admiralty"/);
+  assert.doesNotMatch(textOf(picker), /Reply with the number/);
+  const rows = picker.interactive.action.sections[0].rows;
+  assert.deepEqual(rows.map((r) => r.title), ['Admiralty Way', 'Admiralty Road', 'None of these']);
+
+  // WhatsApp hands back the row's id. The title is only what was on screen.
+  await tap(deps, who, 'place_choice_2', 'Admiralty Road');
+  assert.match(textOf(last(sent)), /Destination: \*Admiralty Road, Lekki, Nigeria\*/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getPendingGeoChoices(redis, user.id), null, 'the question is closed');
+});
+
+test('typing the number still works, and "None of these" asks again instead of guessing', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(admiraltyWorld());
+  const who = rider();
+  const user = await riderInLekki(deps, redis, who);
+
+  await say(deps, who, 'admiralty');
+  await tap(deps, who, 'place_choice_none', 'None of these');
+  assert.match(textOf(last(sent)), /Type the destination again with the area or a nearby landmark/);
+  assert.equal(await bidState.getPendingGeoChoices(redis, user.id), null);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination', 'still on the destination step');
+
+  await say(deps, who, 'admiralty');
+  await say(deps, who, '1');
+  assert.match(textOf(last(sent)), /Destination: \*Admiralty Way, Lekki, Nigeria\*/);
+});
+
+test('the pickup gets the same picker', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(admiraltyWorld());
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  await bidState.setBookingStage(redis, user.id, 'awaiting_pickup');
+
+  await say(deps, who, 'admiralty');
+  assert.equal(last(sent).interactive.type, 'list');
+  assert.match(textOf(last(sent)), /pick the right pickup/);
+
+  await tap(deps, who, 'place_choice_1', 'Admiralty Way');
+  assert.match(textOf(last(sent)), /Pickup: \*Admiralty Way, Lekki, Nigeria\*/);
+  assert.match(textOf(last(sent)), /Where are you going\?/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination');
+});
+
+test('if WhatsApp refuses the list, the question still goes out — as numbered text', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(admiraltyWorld({ refuseLists: true }));
+  const who = rider();
+  await riderInLekki(deps, redis, who);
+
+  await say(deps, who, 'admiralty');
+  assert.equal(last(sent).type, 'text');
+  assert.match(textOf(last(sent)), /\*1\.\* Admiralty Way, Lekki, Nigeria/);
+  assert.match(textOf(last(sent)), /Reply with the number/);
+  await say(deps, who, '2');
+  assert.match(textOf(last(sent)), /Destination: \*Admiralty Road/);
 });
 
 /* ── searching near the pickup ─────────────────────────────────────────── */
