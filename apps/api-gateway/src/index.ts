@@ -242,6 +242,21 @@ const MIME_TYPES: Record<string, string> = {
   ".ttf": "font/ttf",
 };
 
+// The live-trip map draws its pictures from a tile server; that host — and only
+// that host — may be loaded as images. Derived from the same MAP_TILE_URL the
+// page is told to use, so changing map provider is one setting, not two.
+const MAP_TILE_ORIGIN = (() => {
+  const template = (process.env.MAP_TILE_URL ?? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").trim();
+  try {
+    const url = new URL(template.replace("{s}", "a").replace(/\{[^}]+\}/g, "0"));
+    return `${url.protocol}//${template.includes("{s}") ? url.host.replace(/^a\./, "*.") : url.host}`;
+  } catch {
+    return "https://*.tile.openstreetmap.org";
+  }
+})();
+const WIDGET_CSP =
+  `default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: ${MAP_TILE_ORIGIN}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
   const ext = extname(pathname);
@@ -276,8 +291,7 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
       "X-Frame-Options": "DENY",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy":
-        "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "Content-Security-Policy": WIDGET_CSP,
     });
     res.end(data);
   } catch {

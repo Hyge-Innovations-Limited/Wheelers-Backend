@@ -7,6 +7,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#FEFAEF">
 <meta name="format-detection" content="telephone=no">
+<link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="ride.css">
 <title>Your ride · Wheelers</title>
 </head>
@@ -95,8 +96,15 @@
 
   <!-- 3 · confirmed -->
   <section data-view="confirmed" hidden>
-    <p class="eyebrow ok">Ride confirmed</p>
-    <h1>Your driver is <em>on the way</em></h1>
+    <p class="eyebrow ok" id="trip-eyebrow">Ride confirmed</p>
+    <h1 id="trip-title">Your driver is <em>on the way</em></h1>
+
+    <div class="map-card" id="map-card" hidden>
+      <div id="map" class="map" aria-label="Live map of your trip"></div>
+      <div class="map-badge" id="map-eta" hidden></div>
+      <button class="map-recentre" type="button" id="map-recentre" aria-label="Centre the map on your driver">◎</button>
+    </div>
+    <p class="hint stale" id="map-stale" hidden></p>
     <div class="card driver">
       <div class="avatar" id="d-initial"></div>
       <div class="who"><strong id="d-name"></strong><span id="d-meta"></span></div>
@@ -154,6 +162,7 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <div id="toast" hidden></div>
+<script src="vendor/leaflet.js"></script>
 <script src="../wallet/common.js"></script>
 <script src="ride.js"></script>
 </body>

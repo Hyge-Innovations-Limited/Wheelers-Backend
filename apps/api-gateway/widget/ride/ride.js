@@ -8,7 +8,8 @@
 (function () {
   'use strict';
   var W = window.Wheelers;
-  var POLL_MS = 3000;
+  var POLL_MS = 3000;        // while bidding: offers should feel instant
+  var TRACK_MS = 5000;       // while tracking: a car does not move far in five seconds
 
   var state = null;          // the last thing the server told us
   var known = null;          // offers by key, as last drawn — null until the first draw
@@ -437,9 +438,86 @@
     }).then(function () { busy = false; });
   });
 
-  /* ── 3 · confirmed ────────────────────────────────────────────────────── */
+  /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
+
+  var map = null, carMarker = null, followCar = true, mapFitted = false;
+
+  var TRIP_COPY = {
+    DRIVER_ASSIGNED: ['Ride confirmed', 'Your driver is ', 'on the way'],
+    DRIVER_EN_ROUTE: ['Ride confirmed', 'Your driver is ', 'on the way'],
+    ARRIVED: ['Your driver is here', 'Your driver has ', 'arrived'],
+    IN_PROGRESS: ['Trip in progress', 'You’re ', 'on your way']
+  };
+
+  function pin(className, html) {
+    return L.divIcon({ className: '', html: '<span class="pin ' + className + '">' + (html || '') + '</span>', iconSize: [42, 42], iconAnchor: [21, 21] });
+  }
+  function smallPin(className) {
+    return L.divIcon({ className: '', html: '<span class="pin ' + className + '"></span>', iconSize: [18, 18], iconAnchor: [9, 9] });
+  }
+
+  function drawTrip(trip) {
+    var copy = TRIP_COPY[trip.status] || TRIP_COPY.DRIVER_ASSIGNED;
+    W.$('trip-eyebrow').textContent = copy[0];
+    var title = W.$('trip-title');
+    title.innerHTML = '';
+    title.appendChild(document.createTextNode(copy[1]));
+    title.appendChild(el('em', '', copy[2]));
+
+    // No Leaflet (an ancient browser, a blocked script)? The card below still says everything.
+    if (typeof L === 'undefined') return;
+    W.show(W.$('map-card'), true);
+
+    if (!map) {
+      map = L.map('map', { zoomControl: false, attributionControl: true }).setView([trip.pickup.lat, trip.pickup.lng], 14);
+      L.tileLayer(trip.map.tileUrl, { attribution: trip.map.attribution, maxZoom: 19 }).addTo(map);
+      L.marker([trip.pickup.lat, trip.pickup.lng], { icon: smallPin('pin-pickup'), keyboard: false }).addTo(map).bindTooltip('Pickup');
+      L.marker([trip.destination.lat, trip.destination.lng], { icon: smallPin('pin-dest'), keyboard: false }).addTo(map).bindTooltip('Destination');
+      // Once they move the map themselves, stop dragging it back to the car.
+      map.on('dragstart', function () { followCar = false; });
+    }
+
+    var position = trip.driverPosition;
+    if (position) {
+      if (!carMarker) {
+        carMarker = L.marker([position.lat, position.lng], { icon: pin('pin-car', '🚗'), keyboard: false, zIndexOffset: 1000 }).addTo(map);
+        if (carMarker._icon) carMarker._icon.className += ' car-marker';
+      } else {
+        carMarker.setLatLng([position.lat, position.lng]);
+      }
+      var carIcon = carMarker._icon && carMarker._icon.querySelector('.pin-car');
+      if (carIcon) carIcon.className = 'pin pin-car' + (trip.positionFresh ? '' : ' stale');
+
+      if (!mapFitted) {
+        // Open on the car AND where it is heading, so the first look answers "how far?".
+        var goal = trip.status === 'IN_PROGRESS' ? trip.destination : trip.pickup;
+        map.fitBounds(L.latLngBounds([[position.lat, position.lng], [goal.lat, goal.lng]]), { padding: [50, 50], maxZoom: 16 });
+        mapFitted = true;
+      } else if (followCar) {
+        map.panTo([position.lat, position.lng], { animate: true, duration: 1 });
+      }
+    }
+
+    var badge = W.$('map-eta');
+    var badgeText = trip.status === 'ARRIVED' ? 'Driver is outside'
+      : trip.etaMin ? (trip.status === 'IN_PROGRESS' ? 'Arriving in ' : 'Pickup in ') + minutes(trip.etaMin) : '';
+    badge.textContent = badgeText;
+    W.show(badge, Boolean(badgeText));
+
+    var stale = W.$('map-stale');
+    var showStale = Boolean(position) && !trip.positionFresh && trip.positionAgeSeconds !== null;
+    W.show(stale, showStale);
+    if (showStale) stale.textContent = 'Your driver’s signal is weak — this position is from ' + Math.max(1, Math.round(trip.positionAgeSeconds / 60)) + ' min ago.';
+    if (!position) { W.show(stale, true); stale.textContent = 'Waiting for your driver’s location…'; }
+  }
+
+  W.$('map-recentre').addEventListener('click', function () {
+    followCar = true;
+    if (map && carMarker) map.setView(carMarker.getLatLng(), Math.max(map.getZoom(), 15), { animate: true });
+  });
 
   function drawConfirmed(s) {
+    if (s.trip) drawTrip(s.trip);
     var driver = s.driver || {};
     W.$('d-initial').textContent = (driver.name || '?').trim().charAt(0).toUpperCase();
     W.$('d-name').textContent = driver.name || 'Your driver';
@@ -447,7 +525,7 @@
     W.$('d-fare').textContent = W.naira(driver.fareNgn || s.offerNgn);
     W.$('d-vehicle').textContent = driver.vehicle || '—';
     W.$('d-plate').textContent = driver.plate || '—';
-    W.$('d-eta').textContent = driver.etaMin ? minutes(driver.etaMin) : '—';
+    W.$('d-eta').textContent = s.trip && s.trip.status === 'ARRIVED' ? 'Here now' : driver.etaMin ? minutes(driver.etaMin) : '—';
     var call = W.$('d-call');
     W.show(call, Boolean(driver.phone));
     if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);
@@ -460,32 +538,48 @@
     state = next;
     W.$('balance').textContent = W.naira(next.balanceNgn);
     checkTopup(next.balanceNgn);
-
-    if (next.phase === 'price') drawPrice(next);
-    else if (next.phase === 'offers') drawOffers(next);
-    else if (next.phase === 'confirmed') drawConfirmed(next);
-
     if (next.phase !== 'offers') known = null;
+
+    // Switch the view FIRST: the map measures its box when it is created, and a
+    // hidden box measures zero.
     if (before !== next.phase) {
       if (next.phase !== 'offers' && next.phase !== 'price') closeSheets();
       if (before === 'offers' && next.phase === 'idle') {
         W.$('idle-text').textContent = 'This search has ended. Send your trip to the Wheelers bot to look again — you can name a higher price this time.';
       }
+      if (before === 'confirmed' && next.phase === 'idle') {
+        W.$('idle-text').textContent = 'This trip has ended. Thanks for riding with Wheelers! Your receipt is in the chat.';
+      }
       W.showOnly(next.phase);
     }
+
+    if (next.phase === 'price') drawPrice(next);
+    else if (next.phase === 'offers') drawOffers(next);
+    else if (next.phase === 'confirmed') drawConfirmed(next);
   }
 
   function refresh() {
     return W.api('GET', '/ride-page/state').then(apply).catch(function (error) {
-      if (error.status === 401) { clearInterval(polling); W.fatal(error.message); }
+      if (error.status === 401) { stopped = true; clearTimeout(polling); W.fatal(error.message); }
       // Anything else — a dropped connection, a slow server — just waits for the next tick.
     });
   }
 
-  refresh().then(function () {
-    polling = setInterval(function () { if (!document.hidden && !busy) refresh(); }, POLL_MS);
+  var stopped = false;
+  function loop() {
+    if (stopped) return;
+    var wait = state && state.phase === 'confirmed' ? TRACK_MS : POLL_MS;
+    polling = setTimeout(function () {
+      if (document.hidden || busy) return loop();
+      refresh().then(loop);
+    }, wait);
+  }
+  refresh().then(loop);
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    refresh();
+    if (map) setTimeout(function () { map.invalidateSize(); }, 50);   // the map was sized while hidden
   });
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
 
   W.$('balance-pill').addEventListener('click', function () {
     if (state) say('Wallet balance: ' + W.naira(state.balanceNgn));

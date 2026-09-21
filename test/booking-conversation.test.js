@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -930,6 +930,42 @@ test('the quote comes with a "Set your price" button; typing a price still works
   assert.equal(searching.interactive.action.parameters.display_text, 'View offers');
   assert.match(textOf(searching), /Finding you a driver/);
   assert.ok(published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
+});
+
+test('ride confirmed: the driver\'s photo, then the car\'s, then every detail with a Track live trip button — in that order', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  deps.driverKycStorage = { getSignedUrl: async (key) => `https://files.test/${key}` };
+  const order = [];
+  global.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    order.push({ type: body.type, at: Date.now(), body });
+    return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+  };
+  const driverUser = await prisma.user.create({ data: { privyDid: `local:${Date.now()}-${Math.random()}`, role: 'DRIVER', name: 'Chinedu Okafor' } });
+  const driver = await prisma.driver.create({ data: { userId: driverUser.id, kycStatus: 'APPROVED' } });
+  await prisma.driverKycSubmission.create({ data: { driverId: driver.id, selfieKey: 'selfie.jpg', vehicleImageKeys: ['car.jpg'] } });
+
+  await createRidePageChatNotifier(deps)({
+    kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001',
+    ride: { rideId: 'r1', fareNgn: 6200, driverId: driver.id, driverName: 'Chinedu Okafor', driverPhone: '+2348031234567', driverRating: 4.9, totalRides: 412, vehicleModel: 'Toyota Corolla', vehiclePlate: 'LND-174XA', etaSeconds: 240 },
+  });
+
+  const details = order.at(-1);
+  assert.deepEqual(order.map((m) => m.type), ['image', 'image', 'interactive']);
+  assert.match(order[0].body.image.link, /selfie\.jpg$/);
+  assert.match(order[0].body.image.caption, /Your driver: \*Chinedu Okafor\*/);
+  assert.match(order[1].body.image.link, /car\.jpg$/);
+  assert.match(order[1].body.image.caption, /Toyota Corolla · \*LND-174XA\*/);
+  assert.ok(details.at - order[1].at >= 1400, 'the details wait for the photos to land first');
+  assert.equal(details.body.interactive.type, 'cta_url');
+  assert.equal(details.body.interactive.action.parameters.display_text, 'Track live trip');
+  assert.match(details.body.interactive.action.parameters.url, /\/widget\/ride\/ride\.html#t=/);
+  const text = details.body.interactive.body.text;
+  for (const must of ['Ride confirmed', 'Chinedu Okafor', '4.9', '412 rides', '+2348031234567', 'Toyota Corolla', 'LND-174XA', '₦6,200 held', 'about 4 min', 'Track live trip']) {
+    assert.ok(text.includes(must), `the details message carries "${must}"`);
+  }
 });
 
 /* ── always a way out ──────────────────────────────────────────────────── */

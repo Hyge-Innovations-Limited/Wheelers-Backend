@@ -876,6 +876,66 @@ async function sendSearchStarted(
   return text;
 }
 
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * "Your ride is confirmed", the same from the chat's *pay* and the page's Accept:
+ *
+ *   1. the driver's photo
+ *   2. the vehicle's photo
+ *   3. every detail in ONE message, ending in a "Track live trip" button
+ *
+ * In that order on purpose — the face and the car first, then the message the
+ * rider keeps coming back to, last, so it sits at the bottom of the chat with
+ * the button under it. WhatsApp delivers in the order it finishes processing,
+ * and pictures take longer than text: each send is awaited and followed by a
+ * short pause, or the details routinely landed ABOVE the photos.
+ */
+async function sendRideConfirmation(
+  deps: MetaWhatsappRouteDeps,
+  userId: string,
+  phone: string,
+  ride: {
+    driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
+    vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
+  },
+): Promise<string> {
+  if (deps.driverKycStorage) {
+    try {
+      const kyc = await driverClient.findKycSubmission(ride.driverId);
+      if (kyc?.selfieKey) {
+        await sendMetaImageMessage(deps, phone, await deps.driverKycStorage.getSignedUrl(kyc.selfieKey), `Your driver: *${ride.driverName}*`);
+        await pause(900);
+      }
+      if (kyc?.vehicleImageKeys?.length) {
+        await sendMetaImageMessage(deps, phone, await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!), `${ride.vehicleModel} · *${ride.vehiclePlate}*`);
+        await pause(1500);
+      }
+    } catch {
+      // Non-critical — the details still go out.
+    }
+  }
+
+  const url = ridePageUrl(deps, userId);
+  const text = [
+    `✅ *Ride confirmed & paid!*`,
+    ``,
+    `👤 *${ride.driverName}*`,
+    `⭐ ${ride.driverRating.toFixed(1)} · ${ride.totalRides.toLocaleString()} rides`,
+    ...(ride.driverPhone ? [`📞 ${ride.driverPhone}`] : []),
+    `🚗 ${ride.vehicleModel} · *${ride.vehiclePlate}*`,
+    `💰 ₦${ride.fareNgn.toLocaleString()} held from your wallet — paid when the trip ends`,
+    `⏱ Arriving in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
+    ``,
+    url
+      ? `Tap *Track live trip* to watch your driver on the map. Check the plate before you get in. 🚗`
+      : `Your driver is on the way! Check the plate before you get in. 🚗`,
+  ].join('\n');
+  if (url) await sendMetaLinkButton(deps, phone, text, 'Track live trip', url);
+  else await sendMetaReply(deps, phone, text);
+  return text;
+}
+
 /**
  * What happened on the bidding page, told to the chat. The page is where the
  * rider acts; the chat is the record — and where the driver's details need to
@@ -905,35 +965,11 @@ export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
     }
 
     const ride = event.ride;
-    if (deps.driverKycStorage) {
-      try {
-        const kyc = await driverClient.findKycSubmission(ride.driverId);
-        const images: Promise<void>[] = [];
-        if (kyc?.selfieKey) images.push(sendMetaImageMessage(deps, event.phone, await deps.driverKycStorage.getSignedUrl(kyc.selfieKey), ride.driverName));
-        if (kyc?.vehicleImageKeys?.length) images.push(sendMetaImageMessage(deps, event.phone, await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!), `${ride.vehicleModel} (${ride.vehiclePlate})`));
-        await Promise.all(images);
-      } catch {
-        // Non-critical — the confirmation still goes out.
-      }
-    }
-    const text = [
-      `✅ *Ride confirmed & paid!*`,
-      ``,
-      `💰 ₦${ride.fareNgn.toLocaleString()} held from your wallet`,
-      ``,
-      `Driver: *${ride.driverName}*`,
-      `Vehicle: ${ride.vehicleModel} (${ride.vehiclePlate})`,
-      `Rating: ${ride.driverRating.toFixed(1)}★ · ${ride.totalRides} rides`,
-      ...(ride.driverPhone ? [`Phone: ${ride.driverPhone}`] : []),
-      `ETA: ${Math.ceil(ride.etaSeconds / 60)} min`,
-      ``,
-      `Your driver is on the way! 🚗`,
-    ].join('\n');
+    const text = await sendRideConfirmation(deps, event.userId, event.phone, ride);
     await appendWhatsappConversation(deps.redisClient, event.phone, [
       { role: 'user', content: `[accepted ${ride.driverName}'s offer on the offers page]` },
       { role: 'assistant', content: text },
     ]);
-    await sendMetaReply(deps, event.phone, text);
   };
 }
 
@@ -2828,40 +2864,18 @@ async function handleIncomingMetaMessage(
           fareNgn: agreedFare,
         });
 
-        // Send driver selfie + vehicle photo now that they've paid
-        if (deps.driverKycStorage) {
-          try {
-            const kyc = await driverClient.findKycSubmission(pendingAccept.driverId);
-            if (kyc) {
-              const imagePromises: Promise<void>[] = [];
-              if (kyc.selfieKey) {
-                const selfieUrl = await deps.driverKycStorage.getSignedUrl(kyc.selfieKey);
-                imagePromises.push(sendMetaImageMessage(deps, phone, selfieUrl, `${pendingAccept.driverName}`));
-              }
-              if (kyc.vehicleImageKeys?.length) {
-                const vehicleUrl = await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]);
-                imagePromises.push(sendMetaImageMessage(deps, phone, vehicleUrl, `${pendingAccept.vehicleModel} (${pendingAccept.vehiclePlate})`));
-              }
-              await Promise.all(imagePromises);
-            }
-          } catch {
-            // Non-critical — confirmation message still goes out
-          }
-        }
-
-        const etaMin = Math.ceil(pendingAccept.etaSeconds / 60);
-        const reply = [
-          `✅ *Ride confirmed & paid!*`,
-          ``,
-          `💰 ₦${agreedFare.toLocaleString()} deducted from your wallet`,
-          ``,
-          `Driver: *${pendingAccept.driverName}*`,
-          `Vehicle: ${pendingAccept.vehicleModel} (${pendingAccept.vehiclePlate})`,
-          `Rating: ${pendingAccept.driverRating.toFixed(1)}★ · ${pendingAccept.totalRides} rides`,
-          `ETA: ${etaMin} min`,
-          ``,
-          `Your driver is on the way! 🚗`,
-        ].join('\n');
+        // Photo, photo, then every detail with the Track live trip button.
+        const reply = await sendRideConfirmation(deps, user.id, phone, {
+          driverId: pendingAccept.driverId,
+          driverName: pendingAccept.driverName,
+          driverPhone: pendingAccept.driverPhone,
+          driverRating: pendingAccept.driverRating,
+          totalRides: pendingAccept.totalRides,
+          vehicleModel: pendingAccept.vehicleModel,
+          vehiclePlate: pendingAccept.vehiclePlate,
+          etaSeconds: pendingAccept.etaSeconds,
+          fareNgn: agreedFare,
+        });
 
         // Clear pending accept so rider can't accidentally pay twice
         await clearPendingAccept(deps.redisClient, user.id);
@@ -2870,7 +2884,6 @@ async function handleIncomingMetaMessage(
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
         ]);
-        await sendMetaReply(deps, phone, reply);
         return;
       }
 

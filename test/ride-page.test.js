@@ -299,6 +299,60 @@ test('one rider cannot touch another rider\'s search', async () => {
   assert.equal((await call(deps, stranger, 'POST', '/ride-page/offer', { amountNgn: 9000 })).status, 409);
 });
 
+/* ── track live trip ──────────────────────────────────────────────────── */
+
+async function assignedRide(riderId, driver, status) {
+  return prisma.ride.create({ data: {
+    riderId, driverId: driver.driverId, status, agreedFareNgn: 6200,
+    pickupLat: QUOTE.pickupLat, pickupLng: QUOTE.pickupLng, pickupAddress: QUOTE.pickupAddress,
+    destLat: QUOTE.destLat, destLng: QUOTE.destLng, destAddress: QUOTE.destAddress, distanceKm: 16.9, durationSeconds: 2220,
+  } });
+}
+
+test('once a driver is assigned the page tracks the trip — from the database, so it outlives the chat\'s 15-minute keys', async () => {
+  const { deps } = world();          // an EMPTY Redis: nothing of this ride is left in the chat's state
+  const rider = await makeRider(3800);
+  const driver = await makeDriver({ seenSecondsAgo: 12 });
+  const ride = await assignedRide(rider, driver, 'DRIVER_EN_ROUTE');
+
+  const state = (await call(deps, rider, 'GET', '/ride-page/state')).body;
+  assert.equal(state.phase, 'confirmed');
+  assert.equal(state.trip.status, 'DRIVER_EN_ROUTE');
+  assert.deepEqual(state.trip.driverPosition, { lat: 6.62, lng: 3.51 });
+  assert.equal(state.trip.positionFresh, true);
+  assert.deepEqual(state.trip.pickup, { lat: QUOTE.pickupLat, lng: QUOTE.pickupLng });
+  assert.ok(state.trip.etaMin >= 1, 'minutes to the PICKUP before the trip starts');
+  assert.match(state.trip.map.tileUrl, /\{z\}\/\{x\}\/\{y\}/);
+  assert.deepEqual([state.driver.name, state.driver.plate, state.driver.phone, state.driver.fareNgn], ['Chinedu Okafor', 'LND-174XA', '+2348031234567', 6200]);
+
+  // Arrived: no countdown. In progress: the countdown is to the DESTINATION.
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'ARRIVED' } });
+  assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.trip.etaMin, null);
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'IN_PROGRESS' } });
+  await prisma.driver.update({ where: { id: driver.driverId }, data: { lat: QUOTE.destLat + 0.02, lng: QUOTE.destLng, lastSeenAt: new Date(Date.now() - 5 * 60_000) } });
+  const inTrip = (await call(deps, rider, 'GET', '/ride-page/state')).body.trip;
+  assert.ok(inTrip.etaMin >= 1 && inTrip.etaMin <= 15, 'about 2 km from the destination');
+  assert.equal(inTrip.positionFresh, false, 'a five-minute-old fix is shown, but labelled old');
+  assert.ok(inTrip.positionAgeSeconds >= 290);
+
+  // The trip ends → the driver's position is nobody's business any more.
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED' } });
+  const after = (await call(deps, rider, 'GET', '/ride-page/state')).body;
+  assert.equal(after.phase, 'idle');
+  assert.equal(JSON.stringify(after).includes('6.6'), false);
+});
+
+test('a driver\'s position is shown to THEIR rider only', async () => {
+  const { deps } = world();
+  const rider = await makeRider(0);
+  const stranger = await makeRider(0);
+  await assignedRide(rider, await makeDriver(), 'IN_PROGRESS');
+
+  const theirs = (await call(deps, stranger, 'GET', '/ride-page/state')).body;
+  assert.equal(theirs.phase, 'idle');
+  assert.equal(theirs.trip, undefined);
+});
+
 /* ── cancel ───────────────────────────────────────────────────────────── */
 
 test('cancel stops the search; once a driver is confirmed the page sends them to the chat instead', async () => {

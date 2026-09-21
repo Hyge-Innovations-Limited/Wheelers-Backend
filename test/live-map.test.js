@@ -278,8 +278,13 @@ test('old history is pruned, recent history is kept', async () => {
 /* ── dispatch ─────────────────────────────────────────────────────────── */
 
 test('dispatch ranks who to ring: on shift first, then nearest; never someone on a trip', async () => {
-  // Its own patch of map, so drivers left behind by earlier runs or other tests
-  // can never crowd the shortlist.
+  // Its own patch of map — and, because a random patch only makes a clash
+  // UNLIKELY (it failed about one run in four once enough runs had piled up),
+  // the drivers this test left behind on earlier runs are taken off the map.
+  await prisma.driver.updateMany({
+    where: { user: { name: { startsWith: 'Dispatch ' } } },
+    data: { lat: null, lng: null, lastSeenAt: null, standbyLat: null, standbyLng: null, standbySeenAt: null },
+  });
   const HERE = { lat: 10 + Math.random() * 3, lng: 5 + Math.random() * 5 };
   const ride = await makeRide(HERE);
   const far = await makeDriver({ status: 'ONLINE', name: 'Dispatch Far Online' });

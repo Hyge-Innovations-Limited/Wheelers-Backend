@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
@@ -10,6 +10,7 @@ import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
+import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import {
   getAcceptedBid,
   getActiveRide,
@@ -100,10 +101,90 @@ async function balanceOf(userId: string): Promise<number> {
   return wallet ? Number(wallet.balanceNgn) : 0;
 }
 
+/* ── live trip ─────────────────────────────────────────────────────────── */
+
+// Where the map's pictures come from. OpenStreetMap needs no key; a paid tile
+// service can replace it with one setting when traffic grows.
+const MAP_TILE_URL = (process.env['MAP_TILE_URL'] ?? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').trim();
+const MAP_ATTRIBUTION = (process.env['MAP_ATTRIBUTION'] ?? '© OpenStreetMap contributors').trim();
+
+const TRIP_STATUSES = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
+/** A position older than this is shown, but labelled as old. */
+const POSITION_FRESH_MS = 90_000;
+
+/**
+ * The rider's live trip, from the DATABASE — not from the chat's Redis keys,
+ * which expire in minutes while a trip can last an hour. Only while a driver is
+ * assigned to THIS rider's ride: a driver's position is nobody else's business,
+ * and stops being this rider's the moment the trip ends.
+ */
+async function liveTripFor(userId: string) {
+  const active = await rideClient.findActiveByRider(userId).catch(() => null);
+  if (!active || !active.driverId || !TRIP_STATUSES.includes(active.status)) return null;
+  const ride = await rideClient.findWithDriver(active.id).catch(() => null);
+  const driver = ride?.driver;
+  if (!ride || !driver) return null;
+
+  const hasPosition = driver.lat != null && driver.lng != null;
+  const seenMsAgo = driver.lastSeenAt ? Date.now() - driver.lastSeenAt.getTime() : null;
+  const inTrip = ride.status === 'IN_PROGRESS';
+  const target = inTrip ? { lat: ride.destLat, lng: ride.destLng } : { lat: ride.pickupLat, lng: ride.pickupLng };
+  const kmToGo = hasPosition ? haversineKm(driver.lat!, driver.lng!, target.lat, target.lng) : null;
+
+  return {
+    rideId: ride.id,
+    status: ride.status,
+    fareNgn: Number(ride.agreedFareNgn ?? ride.riderOfferNgn ?? ride.fareEstimateNgn ?? 0),
+    route: {
+      pickupAddress: ride.pickupAddress,
+      destAddress: ride.destAddress,
+      distanceKm: ride.distanceKm ?? 0,
+      durationMin: Math.ceil((ride.durationSeconds ?? 0) / 60),
+    },
+    pickup: { lat: ride.pickupLat, lng: ride.pickupLng },
+    destination: { lat: ride.destLat, lng: ride.destLng },
+    driver: {
+      name: driver.user?.name ?? 'Your driver',
+      phone: driver.user?.phone ?? '',
+      rating: driver.rating,
+      totalRides: driver.totalRides,
+      vehicle: [driver.vehicleMake, driver.vehicleModel].filter(Boolean).join(' ') || '',
+      plate: driver.vehiclePlate ?? '',
+      position: hasPosition ? { lat: driver.lat!, lng: driver.lng! } : null,
+      positionAgeSeconds: seenMsAgo === null ? null : Math.round(seenMsAgo / 1000),
+      positionFresh: seenMsAgo !== null && seenMsAgo <= POSITION_FRESH_MS,
+    },
+    // Minutes to the pickup before the trip starts, to the destination during it.
+    etaMin: kmToGo === null || ride.status === 'ARRIVED' ? null : Math.max(1, Math.round(estimateEtaSeconds(kmToGo) / 60)),
+    map: { tileUrl: MAP_TILE_URL, attribution: MAP_ATTRIBUTION },
+  };
+}
+
 /* ── GET /ride-page/state ─────────────────────────────────────────────── */
 
 async function buildState(deps: RidePageRouteDeps, userId: string) {
-  const [rideId, balanceNgn] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId)]);
+  const [rideId, balanceNgn, trip] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId), liveTripFor(userId)]);
+
+  // A driver is assigned: this is the tracking page now.
+  if (trip) {
+    return {
+      phase: 'confirmed' as const, rideId: trip.rideId, balanceNgn, route: trip.route, offerNgn: trip.fareNgn,
+      driver: {
+        name: trip.driver.name, phone: trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
+        vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
+      },
+      trip: {
+        status: trip.status,
+        pickup: trip.pickup,
+        destination: trip.destination,
+        driverPosition: trip.driver.position,
+        positionAgeSeconds: trip.driver.positionAgeSeconds,
+        positionFresh: trip.driver.positionFresh,
+        etaMin: trip.etaMin,
+        map: trip.map,
+      },
+    };
+  }
 
   if (rideId) {
     const [meta, state, bids] = await Promise.all([
@@ -124,6 +205,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         const accepted = await getAcceptedBid(deps.redisClient, rideId);
         return {
           phase: 'confirmed' as const, rideId, balanceNgn, route, offerNgn: meta.offerNgn,
+          trip: null,
           driver: accepted ? {
             name: accepted.driverName,
             phone: accepted.driverPhone,

@@ -243,3 +243,38 @@ h2 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* live trip map */
+.map-card {
+  position: relative; height: 46vh; min-height: 280px; max-height: 420px; margin-bottom: 14px;
+  border: var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden; background: var(--orange-light);
+  isolation: isolate;
+}
+.map { position: absolute; inset: 0; font-family: inherit; }
+.map-badge {
+  position: absolute; z-index: 500; left: 12px; top: 12px; padding: 8px 14px;
+  border: var(--border); border-radius: 999px; background: var(--ink); color: var(--paper);
+  font-weight: 700; font-size: 14.5px; box-shadow: 3px 3px 0 var(--orange);
+}
+.map-recentre {
+  position: absolute; z-index: 500; right: 12px; bottom: 12px; width: 44px; height: 44px;
+  border: var(--border); border-radius: 14px; background: var(--white); box-shadow: var(--shadow-sm);
+  font-size: 22px; line-height: 1; font-weight: 700;
+}
+.map-recentre:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+.hint.stale { color: var(--red); font-weight: 600; margin-top: -4px; }
+.leaflet-container { background: var(--orange-light); }
+.leaflet-control-attribution { font-family: inherit; font-size: 10px; }
+
+/* pins: the same shapes the trip card uses, so they need no legend */
+.pin { display: block; border: var(--border); box-shadow: 2px 2px 0 var(--ink); }
+.pin-pickup { width: 18px; height: 18px; border-radius: 50%; background: var(--green); }
+.pin-dest { width: 18px; height: 18px; border-radius: 5px; background: var(--orange); }
+.pin-car {
+  display: flex; align-items: center; justify-content: center; width: 42px; height: 42px;
+  border-radius: 14px; background: var(--ink); color: var(--paper); font-size: 22px; box-shadow: 3px 3px 0 var(--orange);
+}
+.pin-car.stale { opacity: .55; }
+/* the car glides between fixes instead of jumping */
+.leaflet-marker-icon.car-marker { transition: transform 1.2s linear; }
+.leaflet-zoom-anim .leaflet-marker-icon.car-marker { transition: none; }
