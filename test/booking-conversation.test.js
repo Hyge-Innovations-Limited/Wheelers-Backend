@@ -50,6 +50,7 @@ function geocodeResult(place, extra = {}) {
  */
 function installWorld(world) {
   const sent = [];
+  const placeById = new Map();
   const calls = { geocode: [], places: [], groq: 0 };
   global.fetch = async (url, init) => {
     const href = String(url);
@@ -68,8 +69,38 @@ function installWorld(world) {
       const places = Array.isArray(found) ? found : found ? [found] : [];
       return { ok: true, json: async () => (places.length ? { status: 'OK', results: places.map((place) => geocodeResult(place)) } : { status: 'ZERO_RESULTS', results: [] }) };
     }
-    if (href.includes('places.googleapis.com')) {
+    if (href.includes('places.googleapis.com') && init?.method !== 'POST') {
+      // "Where is this suggestion?" — the location-only lookup after autocomplete.
+      const place = placeById.get(decodeURIComponent(new URL(href).pathname.split('/').pop()));
+      return { ok: Boolean(place), status: place ? 200 : 404, json: async () => (place ? { location: { latitude: place.lat, longitude: place.lng } } : {}) };
+    }
+    if (href.includes('places:autocomplete')) {
       const asked = JSON.parse(init.body);
+      const circle = asked.locationBias?.circle;
+      const bias = circle ? `circle:${circle.radius}@${circle.center.latitude},${circle.center.longitude}` : 'rectangle';
+      calls.places.push({ input: asked.input, bias });
+      if (world.placesOff) return { ok: false, status: 403, json: async () => ({ error: { status: 'PERMISSION_DENIED', message: 'not enabled' } }) };
+      const found = world.places?.(asked.input, bias) ?? null;
+      const list = Array.isArray(found) ? found : found ? [found] : [];
+      return {
+        ok: true, status: 200,
+        json: async () => ({ suggestions: list.map((place) => {
+          const id = `pid_${placeById.size}`;
+          placeById.set(id, place);
+          const name = place.name ?? place.address.split(',')[0];
+          const where = place.name ? place.address : place.address.split(',').slice(1).join(',').trim();
+          return { placePrediction: { placeId: id, structuredFormat: { mainText: { text: name }, secondaryText: { text: `${where}, Nigeria` } }, types: ['point_of_interest', 'establishment'] } };
+        }) }),
+      };
+    }
+    if (href.includes('places.googleapis.com')) {
+      // Whole-name text search: only the "spots in an area" question uses it in these worlds.
+      const asked = JSON.parse(init.body);
+      if (world.spots) {
+        const spots = world.spots(asked.textQuery) ?? [];
+        return { ok: true, status: 200, json: async () => ({ places: spots.map((place) => ({ displayName: { text: place.name }, formattedAddress: `${place.address}, Nigeria`, shortFormattedAddress: place.address, location: { latitude: place.lat, longitude: place.lng }, types: ['bus_station'] })) }) };
+      }
+      if (!world.textSearch) return { ok: true, status: 200, json: async () => ({ places: [] }) };
       const circle = asked.locationBias?.circle;
       const bias = circle ? `circle:${circle.radius}@${circle.center.latitude},${circle.center.longitude}` : 'rectangle';
       calls.places.push({ input: asked.textQuery, bias });
@@ -409,7 +440,8 @@ const IKORODU_GARAGE = { lat: 6.6194, lng: 3.5105, name: 'Ikorodu Garage', addre
 const CALEB = [
   { lat: 6.6018, lng: 3.4800, name: 'Caleb University College of Law', address: 'Magodo, Lagos' },
   { lat: 6.6583, lng: 3.7420, name: 'Caleb University', address: 'Ibadan-Ijebu Ode Rd, Imota' },
-  { lat: 6.6570, lng: 3.7400, name: 'Caleb University Admissions', address: 'Imota, Lagos' },
+  // Far enough from the main gate to be its own destination, as in Google's real data.
+  { lat: 6.6480, lng: 3.7300, name: 'Caleb University Admissions', address: 'Imota, Lagos' },
   { lat: 6.6420, lng: 3.7390, name: 'Caleb University staff residence', address: 'Isiu' },
 ];
 const calebWorld = (extra = {}) => ({
@@ -447,12 +479,13 @@ test('THE CHAT — "from ikorodu garage to Caleb University" offers the Caleb Un
 
   const rows = picker.interactive.action.sections[0].rows;
   // "Caleb University …" does not fit 24 characters, so the shared words come off.
-  assert.deepEqual(rows.map((r) => r.title), ['College of Law', 'Caleb University', 'Admissions', 'Staff residence', 'None of these']);
-  assert.match(rows[0].description, /^Caleb University College of Law, Magodo, Lagos · 3\.\d km$/);
-  assert.match(rows[1].description, /^Caleb University, Ibadan-Ijebu Ode Rd, Imota · 2\d km$/);
+  // The place whose name is exactly what they typed leads; its namesakes elsewhere follow.
+  assert.deepEqual(rows.map((r) => r.title), ['Caleb University', 'College of Law', 'Admissions', 'Staff residence', 'None of these']);
+  assert.match(rows[0].description, /^Caleb University, Ibadan-Ijebu Ode Rd, Imota · 2\d km$/);
+  assert.match(rows[1].description, /^Caleb University College of Law, Magodo, Lagos · 3\.\d km$/);
   for (const row of rows) { assert.ok(row.title.length <= 24); assert.ok(row.description.length <= 72); }
 
-  await tap(deps, who, 'place_choice_1', 'College of Law');
+  await tap(deps, who, 'place_choice_2', 'College of Law');
   const quote = textOf(last(sent));
   assert.match(quote, /Pickup: \*Ikorodu Garage/);
   assert.match(quote, /Destination: \*Caleb University College of Law, Magodo, Lagos\*/);
@@ -468,7 +501,7 @@ test('THE CHAT, part 2 — "No Caleb law" at the price step lands on the College
   await say(deps, who, 'hi');
   await agree(redis, await findRider(who));
   await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
-  await tap(deps, who, 'place_choice_2', 'Caleb University'); // they picked the main campus first
+  await tap(deps, who, 'place_choice_1', 'Caleb University'); // they picked the main campus first
 
   await say(deps, who, 'No Caleb law');
   const requote = textOf(last(sent));
@@ -489,7 +522,7 @@ test('a correction that is itself ambiguous gets the picker too', async () => {
   await say(deps, who, 'hi');
   const user = await agree(redis, await findRider(who));
   await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
-  await tap(deps, who, 'place_choice_2', 'Caleb University');
+  await tap(deps, who, 'place_choice_1', 'Caleb University');
 
   await say(deps, who, 'not that caleb university, the other one');
   assert.equal(last(sent).interactive.type, 'list');
@@ -507,6 +540,88 @@ test('with Places switched off in Google Cloud, the bot still works — it just 
   await agree(redis, await findRider(who));
   await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
   assert.match(textOf(last(sent)), /Suggested fare/, 'today\'s behaviour: the geocoder\'s single answer');
+});
+
+const IKORODU_SPOTS = [
+  { lat: 6.6190, lng: 3.5100, name: 'Agric Bus Terminal', address: 'Ikorodu Rd, Ikorodu' },
+  { lat: 6.6160, lng: 3.5060, name: 'Benson Busstop (Eco Bank) Ikorodu', address: 'Ikorodu' },
+  { lat: 6.6210, lng: 3.5020, name: 'Aruna bus stop', address: '6/8 Solebo Str, Ikorodu' },
+];
+
+test('THE CHAT, part 3 — "I want to go from ikorodu" asks whereabouts WITH spots to tap', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({
+    geocode: () => null,
+    places: () => [],
+    spots: (q) => (/ikorodu/i.test(q) ? IKORODU_SPOTS : []),
+    intent: (_m, system) => (/part-way through booking/.test(system) ? { intent: 'other' }
+      : { intent: 'ride_request', pickup: { address: 'Ikorodu, Lagos', area: 'Ikorodu', specific: false }, destination: null, offerNgn: null, paymentMethod: null, outsideNigeria: false }),
+  });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+
+  const before = sent.length;
+  await say(deps, who, 'I want to go from ikorodu');
+  assert.equal(sent.length - before, 1);
+  const picker = last(sent);
+  assert.equal(picker.interactive.type, 'list');
+  assert.match(textOf(picker), /Whereabouts in \*Ikorodu\* should the driver pick you up\?/);
+  assert.match(textOf(picker), /or type a landmark or street, or share a location pin/, 'typing still works');
+  const titles = picker.interactive.action.sections[0].rows.map((r) => r.title);
+  assert.deepEqual(titles, ['Agric Bus Terminal', 'Benson Busstop (Eco…', 'Aruna bus stop', 'None of these']);
+
+  await tap(deps, who, 'place_choice_1', 'Agric Bus Terminal');
+  assert.match(textOf(last(sent)), /Pickup: \*Agric Bus Terminal, Ikorodu Rd, Ikorodu\*/);
+  assert.match(textOf(last(sent)), /Where are you going\?/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination');
+});
+
+test('no spots found for an area → the plain question, exactly as before', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({
+    geocode: () => null, places: () => [], spots: () => [],
+    intent: (_m, system) => (/part-way through booking/.test(system) ? { intent: 'other' }
+      : { intent: 'ride_request', pickup: { address: 'Ikorodu, Lagos', area: 'Ikorodu', specific: false }, destination: null, offerNgn: null, paymentMethod: null, outsideNigeria: false }),
+  });
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'I want to go from ikorodu');
+  assert.equal(last(sent).type, 'text');
+  assert.match(textOf(last(sent)), /Tell me a landmark, street or bus stop/);
+});
+
+test('"from unilag gate to lekki": the "Lekki" they said is kept, and its spots are offered (it used to be thrown away)', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const UNILAG = { lat: 6.5158, lng: 3.3898, name: 'University of Lagos Main Gate', address: 'Akoka, Lagos' };
+  const LEKKI_SPOTS = [
+    { lat: 6.4478, lng: 3.4723, name: 'Lekki Phase 1 Gate (Bus Park)', address: 'Lekki' },
+    { lat: 6.4360, lng: 3.5200, name: 'Ikate Bus Stop', address: 'Lagos-Epe Express Rd, Lekki' },
+  ];
+  const { sent } = installWorld({
+    geocode: () => null,
+    places: (q) => (/unilag|university of lagos/i.test(q) ? [UNILAG] : []),
+    spots: (q) => (/lekki/i.test(q) ? LEKKI_SPOTS : []),
+    intent: (_m, system) => (/part-way through booking/.test(system) ? { intent: 'other' }
+      : { intent: 'ride_request', pickup: { address: 'University of Lagos Main Gate', area: 'Akoka', specific: true }, destination: { address: 'Lekki, Lagos', area: 'Lekki', specific: false }, offerNgn: null, paymentMethod: null, outsideNigeria: false }),
+  });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+
+  await say(deps, who, 'from unilag gate to lekki');
+  assert.match(textOf(last(sent)), /Pickup: \*University of Lagos Main Gate, Akoka, Lagos\*/);
+  assert.match(textOf(last(sent)), /Whereabouts in \*Lekki\* are you headed\?/);
+  assert.ok(await bidState.getPendingLocation(redis, user.id), 'the pickup is remembered');
+
+  await tap(deps, who, 'place_choice_2', 'Ikate Bus Stop');
+  assert.doesNotMatch(textOf(last(sent)), /Session expired/);
+  assert.match(textOf(last(sent)), /Destination: \*Ikate Bus Stop/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
 });
 
 /* ── searching near the pickup ─────────────────────────────────────────── */

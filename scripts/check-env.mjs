@@ -105,8 +105,12 @@ for (const [label, value] of [
   ['kafka', file.KAFKA_BROKERS || '— not set'],
   ['paystack', `${paystackMode}  ${mask(file.PAYSTACK_SECRET_KEY)}`],
   ['paystack account bank', file.PAYSTACK_DVA_BANK || 'wema-bank (default)'],
-  ['deposit fee', `₦${file.DEPOSIT_FEE_NGN || 20}, bank charge paid by ${file.DEPOSIT_PROVIDER_FEE_PAID_BY || 'user'}`],
-  ['AI model', `${file.GROQ_MODEL || 'openai/gpt-oss-120b'} · intent ${file.GROQ_INTENT_MODEL ?? 'openai/gpt-oss-20b'}`],
+  // Defaults here MUST match the code's (packages/config constants/deposit.ts,
+  // apps/api-gateway LLM/llm.ts) — this printed "₦20" for a server charging ₦30.
+  ['deposit fee', `₦${file.DEPOSIT_FEE_NGN || 30}${file.DEPOSIT_FEE_NGN ? '' : ' (default)'}, bank charge paid by ${file.DEPOSIT_PROVIDER_FEE_PAID_BY || 'user'}`],
+  ['AI model', file.GEMINI_API_KEY
+    ? `Gemini ${file.GEMINI_MODEL || 'gemini-3.8-flash'} · intent ${file.GEMINI_INTENT_MODEL || 'gemini-3.5-flash-lite'} — backup: ${file.GROQ_API_KEY ? `Groq ${file.GROQ_MODEL || 'openai/gpt-oss-120b'}` : 'NONE'}`
+    : `Groq only: ${file.GROQ_MODEL || 'openai/gpt-oss-120b'} · intent ${file.GROQ_INTENT_MODEL ?? 'openai/gpt-oss-20b'}  ⚠ GEMINI_API_KEY is not set — the free Groq tier allows ~8 intent reads a minute`],
 ]) console.log(`  ${label.padEnd(32)} ${value}`);
 
 console.log('');

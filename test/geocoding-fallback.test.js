@@ -20,13 +20,27 @@ function stubGoogle({ geocoder = {}, places = {}, placesDenied = false }) {
   global.fetch = async (url, init) => {
     const u = new URL(url);
     const isPlaces = u.hostname === 'places.googleapis.com';
-    const query = isPlaces ? JSON.parse(init.body).textQuery : u.searchParams.get('address');
-    calls.push(`${isPlaces ? 'places' : 'geocode'}:${query}`);
+    // Where a suggestion is: the lookup that follows autocomplete.
+    if (isPlaces && init?.method !== 'POST') {
+      const hit = places[decodeURIComponent(u.pathname.split('/').pop())];
+      return { ok: Boolean(hit), status: hit ? 200 : 404, json: async () => (hit ? { location: { latitude: hit.geometry.location.lat, longitude: hit.geometry.location.lng } } : {}) };
+    }
+    const asked = isPlaces ? JSON.parse(init.body) : null;
+    const query = isPlaces ? (asked.input ?? asked.textQuery) : u.searchParams.get('address');
+    if (!isPlaces || asked.input !== undefined) calls.push(`${isPlaces ? 'places' : 'geocode'}:${query}`);
     if (isPlaces) {
       if (placesDenied) {
         return { ok: false, status: 403, json: async () => ({ error: { status: 'PERMISSION_DENIED', message: 'Places API (New) has not been used in this project.' } }) };
       }
       const hit = places[query];
+      if (asked.input !== undefined) {
+        // Autocomplete: names and ids, no coordinates. The id here is simply the query.
+        const parts = hit ? hit.formatted_address.split(',') : [];
+        const suggestions = hit && !(hit.types ?? []).some((t) => /^administrative_area|^country$|^locality$/.test(t))
+          ? [{ placePrediction: { placeId: query, structuredFormat: { mainText: { text: hit.name }, secondaryText: { text: parts.slice(hit.formatted_address.startsWith(hit.name) ? 1 : 0).join(',').trim() } }, types: hit.types } }]
+          : [];
+        return { ok: true, status: 200, json: async () => ({ suggestions }) };
+      }
       // Fixtures are written in Google's classic shape; serve them the way Places API (New) does.
       const asNew = hit ? [{ displayName: { text: hit.name }, formattedAddress: hit.formatted_address, location: { latitude: hit.geometry.location.lat, longitude: hit.geometry.location.lng }, types: hit.types }] : [];
       return { ok: true, status: 200, json: async () => ({ places: asNew }) };

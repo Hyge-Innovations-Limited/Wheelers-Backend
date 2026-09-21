@@ -30,7 +30,7 @@ import { classifyWalletIntent, mightConcernMoney, walletIntentModel } from '../L
 import { classifyBookingIntent, mightNotBeAnAddress } from '../LLM/booking-intent';
 import type { BookingIntentResult } from '../LLM/booking-intent';
 import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
-import { geocodeAddress, reverseGeocode, findPlaceOptions, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
+import { geocodeAddress, reverseGeocode, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { downloadMetaMedia } from '../whatsapp-flows/meta-media';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
@@ -1020,7 +1020,10 @@ export function placeChoiceRows(choices: Array<PlaceChoice | string>): Array<{ i
     return { name, area, label: parts.join(', ') || option.address, distanceKm: option.distanceKm };
   });
 
-  const namesDiffer = new Set(parsed.map((place) => place.name.toLowerCase())).size === parsed.length;
+  const distinctNames = new Set(parsed.map((place) => place.name.toLowerCase())).size;
+  // Every option has the SAME name ("Shoprite" ×5, "Aiyetoro Street" ×2): the
+  // area is what tells them apart. Otherwise the name leads, even if two repeat.
+  const namesDiffer = distinctNames > 1 || parsed.length === 1;
   let titles: string[];
   if (namesDiffer) {
     // Names that fit are shown whole ("Admiralty Way" / "Admiralty Road"). Only
@@ -1033,21 +1036,31 @@ export function placeChoiceRows(choices: Array<PlaceChoice | string>): Array<{ i
       while (words.every((w) => w.length > shared) && new Set(words.map((w) => w[shared]!.toLowerCase())).size === 1) shared += 1;
     }
     titles = words.map((w, index) => {
+      // Only a name that does not fit gives up the shared words — "Shoprite
+      // Shopping mall" fits and stays whole; "Caleb University College of Law"
+      // does not, and becomes "College of Law".
+      if (parsed[index]!.name.length <= 24) return parsed[index]!.name;
       const rest = w.slice(shared).join(' ');
       return rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : parsed[index]!.name;
     });
   } else {
     titles = parsed.map((place) => place.area || place.name);
   }
-  titles = titles.map((title) => clip(title, 24));
-  const timesUsed = (title: string) => titles.filter((other) => other.toLowerCase() === title.toLowerCase()).length;
+  // Two rows may still read the same ("Ikorodu Garage" twice). The second one
+  // becomes "Ikorodu Garage 2" — the line underneath says where each one is.
+  const seen = new Map<string, number>();
+  titles = titles.map((title) => {
+    const key = clip(title, 24).toLowerCase();
+    const count = (seen.get(key) ?? 0) + 1;
+    seen.set(key, count);
+    return count === 1 ? clip(title, 24) : `${clip(title, 22)} ${count}`;
+  });
 
   return parsed.map((place, index) => {
     const distance = place.distanceKm != null ? ` · ${place.distanceKm < 10 ? place.distanceKm.toFixed(1) : Math.round(place.distanceKm)} km` : '';
     return {
       id: `place_choice_${index + 1}`,
-      // Still identical? Number them so they can be told apart.
-      title: timesUsed(titles[index]!) > 1 ? clip(`${index + 1}. ${titles[index]}`, 24) : titles[index]!,
+      title: titles[index]!,
       description: `${clip(place.label, 72 - distance.length)}${distance}`,
     };
   });
@@ -1087,6 +1100,8 @@ async function sendPlaceChoices(
     candidates: Array<{ lat: number; lng: number; formattedAddress: string; name?: string; distanceKm?: number }>;
     /** A line to lead with, e.g. the pickup that is already settled. */
     intro?: string;
+    /** Replaces "I found N places matching …" — for a question that is not about a typed name. */
+    question?: string;
   },
 ): Promise<void> {
   const shown = input.candidates.slice(0, 9);
@@ -1094,7 +1109,7 @@ async function sendPlaceChoices(
   await storePendingGeoChoices(deps.redisClient, user.id, { context: input.context, options });
 
   const rows = placeChoiceRows(shown.map((c) => ({ address: c.formattedAddress, name: c.name, distanceKm: c.distanceKm })));
-  const body = `${input.intro ? `${input.intro}\n\n` : ''}I found ${options.length} places matching "${clip(input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`;
+  const body = `${input.intro ? `${input.intro}\n\n` : ''}${input.question ?? `I found ${options.length} places matching "${clip(input.typed.split(',')[0] ?? input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`}`;
   const asText = [
     `Found a few places matching "${input.typed}" — which one did you mean?`,
     ``,
@@ -4512,9 +4527,22 @@ async function handleIncomingMetaMessage(
         return;
       }
 
-      // ── Only pickup typed → save it, ask for destination ──
+      // ── Pickup typed, destination missing or only an area ("… to Lekki") ──
       if (hasPickup) {
-        const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage });
+        const destinationAreaText = rideIntent.destination?.address?.trim() || undefined;
+        const destinationArea = rideIntent.destination?.area?.trim() || destinationAreaText;
+
+        const pickupMatches = await findPlaceOptions(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage });
+        if (pickupMatches.length > 1) {
+          await setPendingAreaHint(deps.redisClient, user.id, { kind: 'pickup', area: '', counterpartAddress: destinationAreaText });
+          await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
+          await sendPlaceChoices(deps, user, phone, incomingMessage, {
+            context: 'pickup', field: 'pickup', typed: rideIntent.pickup!.address, candidates: pickupMatches,
+          });
+          return;
+        }
+
+        const pickupGeo = pickupMatches[0];
         if (pickupGeo) {
           await setPendingLocation(deps.redisClient, user.id, {
             lat: pickupGeo.lat,
@@ -4524,7 +4552,28 @@ async function handleIncomingMetaMessage(
           });
           await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
 
-          const reply = `📍 Pickup: *${pickupGeo.formattedAddress}*\n\nNow send your *destination* — type the address or share a location pin 📍`;
+          // They named an area to go to ("Lekki"): keep it — a one-word answer
+          // resolves against it — and offer its well-known spots to tap.
+          if (destinationArea && destinationAreaText) {
+            await setPendingAreaHint(deps.redisClient, user.id, {
+              kind: 'destination',
+              area: destinationAreaText,
+              counterpartAddress: rideIntent.pickup!.address.trim(),
+            });
+            const spots = await findAreaSpots(deps.googleMapsApiKey, destinationArea, pickupGeo).catch(() => []);
+            if (spots.length >= 2) {
+              await sendPlaceChoices(deps, user, phone, incomingMessage, {
+                context: 'destination', field: 'destination', typed: destinationArea, candidates: spots,
+                intro: `📍 Pickup: *${pickupGeo.formattedAddress}*`,
+                question: `Whereabouts in *${destinationArea}* are you headed?\n\nTap *Choose* for well-known spots — or type a landmark or street, or share a location pin 📍`,
+              });
+              return;
+            }
+          }
+
+          const reply = destinationArea
+            ? `📍 Pickup: *${pickupGeo.formattedAddress}*\n\nWhereabouts in *${destinationArea}* are you headed? A landmark, street or building works — or share a location pin 📍`
+            : `📍 Pickup: *${pickupGeo.formattedAddress}*\n\nNow send your *destination* — type the address or share a location pin 📍`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -4549,7 +4598,6 @@ async function handleIncomingMetaMessage(
       // about the area they actually said, and remember it so a one-word
       // answer ("roundabout") can be resolved against it.
       const vaguePickup = rideIntent.pickup?.address?.trim();
-      const vagueDestination = rideIntent.destination?.address?.trim();
 
       if (vaguePickup && !hasPickup) {
         await setPendingAreaHint(deps.redisClient, user.id, {
@@ -4562,29 +4610,21 @@ async function handleIncomingMetaMessage(
         await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
 
         const areaName = rideIntent.pickup?.area?.trim() || vaguePickup;
+
+        // "Ikorodu" is a town, not a pickup. Offer the spots riders actually
+        // name there; typing a landmark or sharing a pin still works.
+        const pickupSpots = await findAreaSpots(deps.googleMapsApiKey, areaName).catch(() => []);
+        if (pickupSpots.length >= 2) {
+          await sendPlaceChoices(deps, user, phone, incomingMessage, {
+            context: 'pickup', field: 'pickup', typed: areaName, candidates: pickupSpots,
+            question: `Whereabouts in *${areaName}* should the driver pick you up?\n\nTap *Choose* for well-known spots — or type a landmark or street, or share a location pin 📍`,
+          });
+          return;
+        }
+
         const reply =
           `Whereabouts in *${areaName}* should the driver pick you up?\n\n` +
           `Tell me a landmark, street or bus stop — e.g. "${areaName} roundabout" — or share a location pin 📍`;
-        await appendWhatsappConversation(deps.redisClient, phone, [
-          { role: 'user', content: incomingMessage },
-          { role: 'assistant', content: reply },
-        ]);
-        await sendMetaReply(deps, phone, reply);
-        return;
-      }
-
-      if (vagueDestination && !hasDestination && hasPickup) {
-        await setPendingAreaHint(deps.redisClient, user.id, {
-          kind: 'destination',
-          area: vagueDestination,
-          counterpartAddress: rideIntent.pickup!.address.trim(),
-        });
-        await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
-
-        const areaName = rideIntent.destination?.area?.trim() || vagueDestination;
-        const reply =
-          `Whereabouts in *${areaName}* are you headed?\n\n` +
-          `A landmark, street or building works — e.g. "${areaName} mall" — or share a location pin 📍`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
