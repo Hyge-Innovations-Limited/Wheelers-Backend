@@ -624,6 +624,96 @@ test('"from unilag gate to lekki": the "Lekki" they said is kept, and its spots 
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
 });
 
+/* ── one message, one answer — whichever way the model reads it ──────────── */
+
+const { repairFromOnly } = require('../apps/api-gateway/dist/LLM/ride-intent-parser.js');
+
+test('"from X" with no "to" is a pickup, even when the model files it under destination', () => {
+  const misread = (message) => {
+    const intent = { intent: 'ride_request', pickup: null, destination: { address: 'Caleb University, Nigeria', area: '', specific: true }, offerNgn: null, paymentMethod: null };
+    repairFromOnly(intent, message);
+    return intent;
+  };
+  for (const message of ['I want to go from Caleb University', 'from caleb university', 'pick me from Caleb University abeg', 'I wan comot from caleb university', 'I need to leave from Caleb University']) {
+    const fixed = misread(message);
+    assert.equal(fixed.pickup?.address, 'Caleb University, Nigeria', message);
+    assert.equal(fixed.destination, null, message);
+  }
+  // A real destination is left alone.
+  for (const message of ['take me to Caleb University', 'I want to go to Caleb University', 'from my house to Caleb University', 'Caleb University']) {
+    const kept = misread(message);
+    assert.equal(kept.pickup, null, message);
+    assert.equal(kept.destination.address, 'Caleb University, Nigeria', message);
+  }
+});
+
+test('with no model answering at all, a clearly stated trip is still understood', async () => {
+  const { tripFromGrammar } = require('../apps/api-gateway/dist/LLM/ride-intent-parser.js');
+  const ends = (message) => { const t = tripFromGrammar(message); return t ? [t.pickup?.address ?? null, t.destination?.address ?? null] : null; };
+  assert.deepEqual(ends('I want to book a ride from ikorodu garage to Caleb University'), ['ikorodu garage', 'Caleb University']);
+  assert.deepEqual(ends('I want to go from Caleb University'), ['Caleb University', null]);
+  assert.deepEqual(ends('abeg take me to unilag main gate please'), [null, 'unilag main gate']);
+  assert.deepEqual(ends('I dey go to yaba'), [null, 'yaba']);
+  for (const notATrip of ['hello', 'I want to pay', 'how much to top up', '2,600', 'cancel my ride', 'I want to withdraw']) {
+    assert.equal(ends(notATrip), null, notATrip);
+  }
+
+  // End to end: the model is down, the rider still gets their picker.
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({ intent: () => 'down' }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
+  assert.equal(last(sent).interactive?.type, 'list');
+  assert.match(textOf(last(sent)), /Pickup: \*Ikorodu Garage/);
+  assert.match(textOf(last(sent)), /places matching "Caleb University"/);
+});
+
+test('THE CHAT, part 4 — "I want to go from Caleb University" gets the picker even when the model misreads it', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({
+    // What Groq's model answered 3 times out of 5, live.
+    intent: (_m, system) => (/part-way through booking/.test(system) ? { intent: 'other' }
+      : { intent: 'ride_request', pickup: null, destination: { address: 'Caleb University, Nigeria', area: '', specific: true }, offerNgn: null, paymentMethod: null, outsideNigeria: false }),
+  }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+
+  await say(deps, who, 'I want to go from Caleb University');
+  assert.doesNotMatch(textOf(last(sent)), /To book a ride, type your pickup and destination/);
+  assert.equal(last(sent).interactive?.type, 'list');
+  assert.match(textOf(last(sent)), /pick the right pickup/);
+});
+
+test('only a destination given: it is remembered, the pickup is asked for, and the trip carries on by itself', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({
+    intent: (_m, system) => (/part-way through booking/.test(system) ? { intent: 'other' }
+      : { intent: 'ride_request', pickup: null, destination: { address: 'Caleb law', area: '', specific: true }, offerNgn: null, paymentMethod: null, outsideNigeria: false }),
+  }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+
+  await say(deps, who, 'take me to caleb law');
+  assert.match(textOf(last(sent)), /Heading to \*Caleb law\* — got it/);
+  assert.match(textOf(last(sent)), /Where should we pick you up\?/);
+  assert.doesNotMatch(textOf(last(sent)), /To book a ride, type/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
+
+  // They answer with the pickup — and are NOT asked for the destination again.
+  await say(deps, who, 'ikorodu garage');
+  const quote = textOf(last(sent));
+  assert.match(quote, /Pickup: \*Ikorodu Garage/);
+  assert.match(quote, /Destination: \*Caleb University College of Law/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+});
+
 /* ── searching near the pickup ─────────────────────────────────────────── */
 
 test('a destination search leans towards the pickup, and asks Places before believing another city', async () => {

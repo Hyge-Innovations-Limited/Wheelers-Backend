@@ -94,6 +94,24 @@ Examples:
 {"intent":"other","pickup":null,"destination":null,"offerNgn":null,"paymentMethod":null}
 `.trim();
 
+/**
+ * "I want to go from Caleb University" names a PICKUP. Measured live, one model
+ * filed it under destination in 3 runs out of 5 — so the same message got a
+ * place picker one minute and a useless template the next. This is grammar, not
+ * a guess at wording: the rider said "from" and never said "to", so the one
+ * place they named is where they are.
+ */
+export function repairFromOnly(intent: RideIntent, message: string): void {
+  if (intent.intent !== 'ride_request' || intent.pickup || !intent.destination) return;
+  const lower = ` ${message.toLowerCase()} `;
+  if (!/\sfrom\s/.test(lower)) return;
+  // "to" as a direction ("… to Yaba"), not as part of "want to go" / "going to leave from".
+  const withoutVerbs = lower.replace(/\b(want|wanna|need|like|trying|going|have|got)\s+to\s+(go|leave|move|travel|book|get|be|come)\b/g, ' ');
+  if (/\sto\s/.test(withoutVerbs)) return;
+  intent.pickup = intent.destination;
+  intent.destination = null;
+}
+
 /** Regex fallback for critical intents when Groq is unavailable. */
 function fallbackRideIntent(message: string): RideIntent | null {
   const lower = message.toLowerCase().trim();
@@ -106,6 +124,40 @@ function fallbackRideIntent(message: string): RideIntent | null {
   if (/\b(ride\s*status|where.*driver|how\s*far)\b/.test(lower)) {
     return { intent: 'ride_status', pickup: null, destination: null, offerNgn: null, paymentMethod: null };
   }
+  return tripFromGrammar(message);
+}
+
+/**
+ * The shape of a trip request, read without a model: "from X to Y", "from X",
+ * "take me to Y". Not a list of things riders might say — just the two words
+ * that mark the ends of a journey in English and Pidgin alike.
+ *
+ * It exists because a model that does not answer (a rate limit, an outage)
+ * used to mean the rider's clearly-stated trip was thrown away. Measured live
+ * on the free tier: "from ikorodu garage to Caleb University" came back empty
+ * 3 times in 4. The place names are passed on exactly as typed; the place
+ * search and the picker do the rest.
+ */
+export function tripFromGrammar(message: string): RideIntent | null {
+  const text = message.trim().replace(/\s+/g, ' ').replace(/[.!?]+$/, '');
+  const place = (raw: string | undefined) => {
+    const address = (raw ?? '').replace(/\b(please|pls|abeg|now|asap|thanks?|thank you)\b/gi, ' ').replace(/\s+/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '');
+    return address.length >= 3 ? { address, area: '', specific: true } : null;
+  };
+  const trip = (pickup: ReturnType<typeof place>, destination: ReturnType<typeof place>): RideIntent | null =>
+    pickup || destination ? { intent: 'ride_request', pickup, destination, offerNgn: null, paymentMethod: null } : null;
+
+  // "… from X to Y" — the last " to " splits the ends, so "from want-to-go road to Yaba" still works.
+  const both = /\bfrom\s+(.+)\s+to\s+(.+)$/i.exec(text);
+  if (both) return trip(place(both[1]), place(both[2]));
+
+  const fromOnly = /\bfrom\s+(.+)$/i.exec(text);
+  if (fromOnly) return trip(place(fromOnly[1]), null);
+
+  const toOnly = /\b(?:take|carry|drop|drive)\s+me\s+(?:to|at|off at)\s+(.+)$/i.exec(text)
+    ?? /\b(?:going|heading|headed|go|travel(?:ling|ing)?)\s+to\s+(.+)$/i.exec(text);
+  if (toOnly) return trip(null, place(toOnly[1]));
+
   return null;
 }
 
@@ -134,13 +186,14 @@ export async function parseRideIntent(
 
   try {
     const result = await groq.completeJson(messages);
-    if (!result) return null;
+    if (!result) return fallbackRideIntent(message);
 
     const intent = result as unknown as RideIntent;
     if (!intent.intent || !['ride_request', 'group_ride_request', 'ride_status', 'cancel_ride', 'edit_pickup', 'edit_destination', 'deposit', 'withdraw', 'other'].includes(intent.intent)) {
       return null;
     }
 
+    repairFromOnly(intent, message);
     intent.outsideNigeria = intent.outsideNigeria === true;
     if (typeof intent.offerNgn === 'string') {
       const parsed = Number(String(intent.offerNgn).replace(/[^0-9.]/g, ''));

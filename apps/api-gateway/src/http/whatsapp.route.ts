@@ -3273,6 +3273,7 @@ async function handleIncomingMetaMessage(
           return;
         }
         // ── FIRST location pin = PICKUP ──
+        const rememberedDestination = (await getPendingAreaHint(deps.redisClient, user.id).catch(() => null))?.counterpartAddress?.trim();
         await clearPendingAreaHint(deps.redisClient, user.id).catch(() => {});
         await setPendingLocation(deps.redisClient, user.id, {
           lat: locationLat,
@@ -3281,6 +3282,17 @@ async function handleIncomingMetaMessage(
           savedAt: new Date().toISOString(),
         });
         await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
+
+        // They already told us where they are going: answer the destination
+        // step with it instead of asking again.
+        if (rememberedDestination) {
+          await appendWhatsappConversation(deps.redisClient, phone, [
+            { role: 'user', content: `[Shared pickup location: ${address}]` },
+            { role: 'assistant', content: `📍 Pickup: ${address}` },
+          ]);
+          await handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', isLocation: false, locationLat: undefined, locationLng: undefined, messageBody: rememberedDestination });
+          return;
+        }
 
         const reply = `📍 Pickup: *${address}*\n\nNow share your *destination* location pin! 📍`;
         await appendWhatsappConversation(deps.redisClient, phone, [
@@ -4689,6 +4701,20 @@ async function handleIncomingMetaMessage(
           { role: 'assistant', content: reply },
         ]);
         await sendMetaReply(deps, phone, reply);
+        return;
+      }
+
+      // ── Only a destination ("take me to Caleb University") ──
+      // This used to fall through to the template below and throw away what
+      // they said. Remember where they are going; the moment the pickup is
+      // settled the destination step is answered with it.
+      const knownDestination = rideIntent.destination?.address?.trim();
+      if (knownDestination && !rideIntent.pickup?.address?.trim()) {
+        await setPendingAreaHint(deps.redisClient, user.id, { kind: 'pickup', area: '', counterpartAddress: knownDestination });
+        await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
+        const goingTo = (rideIntent.destination?.area?.trim() && !rideIntent.destination?.specific ? rideIntent.destination.area : knownDestination).split(',')[0];
+        await replyAndLog(deps, phone, incomingMessage,
+          `Heading to *${goingTo}* — got it. 👍\n\nWhere should we pick you up? Type the address or a landmark, or share a location pin 📍`);
         return;
       }
 
