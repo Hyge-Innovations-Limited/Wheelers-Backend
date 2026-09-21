@@ -61,8 +61,8 @@ export interface WhatsappFlowEndpointDeps {
   kycStorage?: DriverKycStorage;
   /** When set, Find Drivers drops a 'Check offers' re-entry button in chat. */
   notifier?: WhatsappNotifierDeps;
-  /** The Edit-trip form saved a trip: send the updated card to the rider's chat. */
-  onTripSaved?: EditTripFlowDeps['onTripSaved'];
+  /** The trip was confirmed in the Edit-trip form: send the price step to the rider's chat. */
+  onTripConfirmed?: EditTripFlowDeps['onTripConfirmed'];
 }
 
 const POLL_INTERVAL_MS = 1_000;
@@ -192,7 +192,7 @@ async function handleFlowAction(
       redisClient: deps.redisClient,
       googleMapsApiKey: deps.googleMapsApiKey,
       routePlanner: deps.routePlanner,
-      onTripSaved: deps.onTripSaved,
+      onTripConfirmed: deps.onTripConfirmed,
     });
   }
 

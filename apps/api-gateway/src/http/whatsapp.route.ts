@@ -1945,6 +1945,25 @@ async function sendTripConfirmation(
   headline?: string,
 ): Promise<string> {
   await setBookingStage(deps.redisClient, user.id, 'awaiting_trip_confirm');
+
+  // WhatsApp allows a message reply buttons OR one form button — never both. With
+  // the form published, the card is ONE message with ONE button: confirming,
+  // editing and stops all happen in the form, and the price step follows it.
+  if (EDIT_TRIP_FLOW_ENABLED && deps.whatsappEditTripFlowId) {
+    const formCard = [
+      headline ?? '🧾 *Check your trip*',
+      ``,
+      ...tripLines(trip),
+      ``,
+      `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}`,
+      ``,
+      `Tap *${TRIP_FORM_CTA}* — confirm it as it is, change the pickup or destination, or add a stop. All in one place.`,
+      ``,
+      `_Form not opening? Reply_ *yes* _to confirm, or just type the change, e.g._ add a stop at Yaba market`,
+    ].join('\n');
+    if (await sendTripForm(deps, user.id, phone, formCard, TRIP_FORM_CTA)) return formCard;
+  }
+
   const canAddStop = (trip.stops?.length ?? 0) < MAX_CHAT_STOPS;
   const body = [
     headline ?? '🧾 *Check your trip*',
@@ -1992,29 +2011,26 @@ async function sendTripEditMenu(deps: MetaWhatsappRouteDeps, phone: string, trip
   return body;
 }
 
+/** 20 characters — WhatsApp's limit for a form button. */
+const TRIP_FORM_CTA = 'Confirm or edit trip';
+
 /**
- * "Edit trip" / "Add a stop" as ONE form instead of a conversation: a message
- * whose button opens the Edit-trip flow, filled with the trip as it stands.
- * (A reply button cannot open a form — only a flow message's own button can —
- * which is why tapping Edit sends this rather than opening it directly.)
- * False when the form is not available, so the caller carries on in the chat.
+ * A message whose button opens the trip form (edit-trip-flow.ts), filled with
+ * the trip as it stands. False when it could not be sent, so the caller carries
+ * on with reply buttons in the chat.
  */
-async function sendEditTripForm(deps: MetaWhatsappRouteDeps, userId: string, phone: string, addingStop: boolean): Promise<boolean> {
+async function sendTripForm(deps: MetaWhatsappRouteDeps, userId: string, phone: string, body: string, cta: string): Promise<boolean> {
   if (!EDIT_TRIP_FLOW_ENABLED || !deps.whatsappEditTripFlowId) return false;
   return sendInteractive(deps, phone, {
     type: 'flow',
-    body: {
-      text: addingStop
-        ? '🔸 *Add your stop* — tap below, type it in a Stop box and continue. You can change the pickup or destination there too.\n\n_Form not opening? Just type it here, e.g._ add a stop at Yaba market'
-        : '✏️ *Edit your trip* — pickup, stops and destination, all in one place.\n\n_Form not opening? Just type the change here, e.g._ pick me at Unilag gate',
-    },
+    body: { text: body.slice(0, 1024) },
     action: {
       name: 'flow',
       parameters: {
         flow_message_version: '3',
         flow_id: deps.whatsappEditTripFlowId,
         flow_token: signFlowToken(`edit:${userId}`, deps.jwtSecret),
-        flow_cta: addingStop ? 'Add a stop' : 'Edit trip',
+        flow_cta: cta.slice(0, 20),
         // data_exchange: opening calls our endpoint's INIT, so the boxes arrive filled in.
         flow_action: 'data_exchange',
       },
@@ -2022,21 +2038,29 @@ async function sendEditTripForm(deps: MetaWhatsappRouteDeps, userId: string, pho
   });
 }
 
-/** The Edit-trip form saved a trip: the chat gets the updated card, once, with Confirm trip on it. */
-export function createTripCardSender(deps: MetaWhatsappRouteDeps) {
-  return async (userId: string, trip: PendingRouteData, headline: string): Promise<void> => {
+/**
+ * They ASKED to edit (typed "edit", "add a stop", or tapped a button on a card
+ * sent before the form existed): a short message with the form's button. The
+ * normal path needs no such message — the trip card's own button is the form.
+ */
+async function sendEditTripForm(deps: MetaWhatsappRouteDeps, userId: string, phone: string, addingStop: boolean): Promise<boolean> {
+  return sendTripForm(deps, userId, phone,
+    addingStop
+      ? '🔸 *Add your stop* — tap below and type it in a Stop box. You can change the pickup or destination there too.\n\n_Form not opening? Just type it here, e.g._ add a stop at Yaba market'
+      : '✏️ *Edit your trip* — pickup, stops and destination, all in one place.\n\n_Form not opening? Just type the change here, e.g._ pick me at Unilag gate',
+    addingStop ? 'Add a stop' : 'Edit trip');
+}
+
+/** The trip was confirmed inside the form: the chat gets ONE message — the price step. */
+export function createTripConfirmedSender(deps: MetaWhatsappRouteDeps) {
+  return async (userId: string, trip: PendingRouteData): Promise<void> => {
     const phone = (await userClient.findById(userId).catch(() => null))?.phone;
     if (!phone) return;
     await Promise.all([
       clearPendingGeoChoices(deps.redisClient, userId),
       clearPendingFarPlace(deps.redisClient, userId),
-      clearBookingMisses(deps.redisClient, userId),
     ].map((step) => step.catch(() => undefined)));
-    const said = await sendTripConfirmation(deps, { id: userId }, phone, trip, headline);
-    await appendWhatsappConversation(deps.redisClient, phone, [
-      { role: 'user', content: '[changed the trip in the Edit trip form]' },
-      { role: 'assistant', content: said },
-    ]);
+    await confirmTripAndQuote(deps, { id: userId }, phone, '[confirmed the trip in the form]', trip);
   };
 }
 

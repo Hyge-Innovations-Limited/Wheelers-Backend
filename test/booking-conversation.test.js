@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripCardSender } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -1036,10 +1036,11 @@ const TEJUOSHO = { lat: 6.5140, lng: 3.3690, address: 'Tejuosho Market, Yaba, La
 const UNILAG_GATE = { lat: 6.5190, lng: 3.3900, address: 'University of Lagos Main Gate, Akoka, Lagos', name: 'UNILAG Main Gate' };
 
 /** A rider looking at "Check your trip": Akoka → Yaba, nothing confirmed yet. */
-async function riderAtTripCard(world = {}) {
+async function riderAtTripCard(world = {}, configure = () => {}) {
   const redis = memoryRedis();
   const { deps, published } = makeDeps(redis);
   deps.appBaseUrl = 'https://app.wheelersng.com';
+  configure(deps);
   const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }), ...world });
   const who = rider();
   const user = await riderWithPickup(deps, redis, who);
@@ -1206,7 +1207,7 @@ test('"I did not catch that" shows the trip again — and an unsure model never 
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm', 'not moved on to the price');
 });
 
-/* ── the Edit-trip FORM: every change in one place, one message back ────── */
+/* ── the trip FORM: one card, one button — confirm, edit and stops inside it ── */
 
 const { handleEditTripFlow } = require('../apps/api-gateway/dist/whatsapp-flows/edit-trip-flow.js');
 const { verifyFlowToken } = require('../apps/api-gateway/dist/whatsapp-flows/encryption.js');
@@ -1214,71 +1215,106 @@ const EDIT_TRIP_FLOW = require('../apps/api-gateway/src/whatsapp-flows/edit-trip
 
 /** A rider at the trip card, on a server where the form is published. */
 async function riderWithForm(world = {}) {
-  const at = await riderAtTripCard({ places: (query) => (/sabo/i.test(query) ? SABO : /gate/i.test(query) ? UNILAG_GATE : /market/i.test(query) ? [SABO, TEJUOSHO] : null), ...world });
-  at.deps.whatsappEditTripFlowId = 'flow-edit-trip-1';
-  const formDeps = { redisClient: at.redis, googleMapsApiKey: 'test-key', routePlanner: at.deps.routePlanner, onTripSaved: createTripCardSender(at.deps) };
-  const form = (action, data) => handleEditTripFlow({ version: '3.0', action, flow_token: 'x', data }, at.user.id, formDeps);
+  const at = await riderAtTripCard(
+    { places: (query) => (/sabo/i.test(query) ? SABO : /gate/i.test(query) ? UNILAG_GATE : /market/i.test(query) ? [SABO, TEJUOSHO] : null), ...world },
+    (deps) => { deps.whatsappEditTripFlowId = 'flow-edit-trip-1'; },
+  );
+  const formDeps = { redisClient: at.redis, googleMapsApiKey: 'test-key', routePlanner: at.deps.routePlanner, onTripConfirmed: createTripConfirmedSender(at.deps) };
+  const form = (action, data, screen) => handleEditTripFlow({ version: '3.0', action, flow_token: 'x', data, screen }, at.user.id, formDeps);
   const submit = (fields) => form('data_exchange', { action: 'edit_trip', pickup: AKOKA.address, stop_1: '', stop_2: '', stop_3: '', destination: YABA.address, ...fields });
   return { ...at, form, submit };
 }
 
-test('Edit trip / Add a stop send ONE message whose button opens the form — and with no form published the chat sheet still works', async () => {
-  const { deps, sent, who, user } = await riderWithForm();
+test('with the form published the trip card is ONE message with ONE button that opens it — no reply buttons, no second message', async () => {
+  const { redis, deps, sent, who, user } = await riderWithForm();
 
-  await tapButton(deps, who, 'trip_edit', 'Edit trip');
-  const message = last(sent).interactive;
-  assert.equal(message.type, 'flow');
-  assert.equal(message.action.parameters.flow_id, 'flow-edit-trip-1');
-  assert.equal(message.action.parameters.flow_cta, 'Edit trip');
-  assert.equal(message.action.parameters.flow_action, 'data_exchange', 'opening it asks OUR server for the boxes, filled in');
-  assert.equal(verifyFlowToken(message.action.parameters.flow_token, deps.jwtSecret), `edit:${user.id}`);
-  assert.match(message.body.text, /Form not opening\? Just type/, 'a phone that cannot open forms is told what to do');
+  const card = last(sent).interactive;
+  assert.equal(card.type, 'flow');
+  assert.equal(card.action.parameters.flow_cta, 'Confirm or edit trip');
+  assert.ok(card.action.parameters.flow_cta.length <= 20, "WhatsApp's limit for a form button");
+  assert.equal(card.action.parameters.flow_id, 'flow-edit-trip-1');
+  assert.equal(card.action.parameters.flow_action, 'data_exchange', 'opening it asks OUR server for the boxes, filled in');
+  assert.equal(verifyFlowToken(card.action.parameters.flow_token, deps.jwtSecret), `edit:${user.id}`);
+  assert.match(card.body.text, /Check your trip[\s\S]*Pickup: \*31 Emily Akinola[\s\S]*Destination: \*7 Osaro Isokpan[\s\S]*suggested fare ₦/);
+  assert.match(card.body.text, /Form not opening\? Reply_ \*yes\*/, 'a phone that cannot open forms is told what to do');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
-  const before = sent.length;
-  await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
-  assert.equal(sent.length, before + 1);
-  assert.equal(last(sent).interactive.action.parameters.flow_cta, 'Add a stop');
-
-  deps.whatsappEditTripFlowId = undefined;
-  await tapButton(deps, who, 'trip_edit', 'Edit trip');
-  assert.equal(last(sent).interactive.type, 'list', 'the Choose sheet, exactly as before');
+  // …and that promise is kept: "yes" confirms without the form.
+  await say(deps, who, 'yes');
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Set your price');
 });
 
-test('THE FORM: opens filled in; a new pickup AND a stop in one go → saved, and the chat gets exactly one message: the updated card', async () => {
+test('if WhatsApp refuses the form message, the card falls back to reply buttons — never silence', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  deps.whatsappEditTripFlowId = 'flow-edit-trip-1';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const send = global.fetch;
+  global.fetch = async (url, init) => (String(url).includes('graph.facebook.com') && JSON.parse(init.body).interactive?.type === 'flow'
+    ? { ok: false, status: 400, json: async () => ({}), text: async () => 'flow not published' }
+    : send(url, init));
+  const who = rider();
+  await riderWithPickup(deps, redis, who);
+  await say(deps, who, 'Osaro Isokpan street');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Confirm trip', 'Add a stop', 'Edit trip']);
+});
+
+test('THE FORM: opens filled in; nothing changed + Confirm trip = confirmed, and the chat gets exactly ONE message — the price step', async () => {
   const { redis, sent, user, form, submit } = await riderWithForm();
 
   const opened = await form('INIT');
   assert.equal(opened.screen, 'EDIT_TRIP');
   assert.deepEqual([opened.data.pickup, opened.data.stop_1, opened.data.destination, opened.data.has_error], [AKOKA.address, '', YABA.address, false]);
+  assert.match(opened.data.summary_line, /km · ~\d+ min · suggested fare ₦/);
 
   const before = sent.length;
-  const saved = await submit({ pickup: 'unilag main gate', stop_1: 'sabo market' });
-  assert.equal(saved.screen, 'TRIP_UPDATED');
-  assert.match(saved.data.headline, /Trip updated/);
-  assert.match(saved.data.pickup_line, /UNILAG Main Gate/);
-  assert.deepEqual([saved.data.has_stop_1, saved.data.has_stop_2], [true, false]);
-  assert.match(saved.data.stop_1_line, /Stop 1: Sabo Market/);
-  assert.match(saved.data.summary_line, /km · ~\d+ min · suggested fare ₦/);
-
-  const trip = await bidState.getPendingRoute(redis, user.id);
-  assert.match(trip.pickupAddress, /UNILAG Main Gate/);
-  assert.equal(trip.stops.length, 1);
-  assert.deepEqual(Object.keys(trip.stops[0]).sort(), ['address', 'lat', 'lng'], 'only what drivers need');
-  assert.notEqual(trip.confirmed, true, 'a changed trip is confirmed again — the form never confirms');
-
-  assert.equal(sent.length, before + 1, 'ONE message for two changes');
-  const card = last(sent).interactive;
-  assert.match(card.body.text, /Trip updated[\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market/);
-  assert.equal(card.action.buttons[0].reply.title, 'Confirm trip');
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
-
-  // Emptying the box removes the stop.
-  const removed = await submit({ pickup: trip.pickupAddress, stop_1: '' });
-  assert.equal(removed.data.has_stop_1, false);
-  assert.deepEqual((await bidState.getPendingRoute(redis, user.id)).stops, []);
+  const done = await submit({});
+  assert.equal(done.screen, 'DONE');
+  assert.match(done.data.headline, /Trip confirmed/);
+  assert.equal(sent.length, before + 1);
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Set your price');
+  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Minimum fare: ₦[\s\S]*Suggested fare: ₦/);
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
 });
 
-test('THE FORM: more than one match → a second screen to pick from, in the same form — never a guess, never a chat message', async () => {
+test('THE FORM: a new pickup AND a stop in one go → they SEE the new trip and fare before it is priced → Confirm → the price step, stops included', async () => {
+  const { redis, sent, user, form, submit, deps, who, published } = await riderWithForm();
+  const before = sent.length;
+
+  const review = await submit({ pickup: 'unilag main gate', stop_1: 'sabo market' });
+  assert.equal(review.screen, 'REVIEW_TRIP');
+  assert.match(review.data.pickup_line, /UNILAG Main Gate/);
+  assert.deepEqual([review.data.has_stop_1, review.data.has_stop_2], [true, false]);
+  assert.match(review.data.stop_1_line, /Stop 1: Sabo Market/);
+  assert.match(review.data.summary_line, /km · ~\d+ min · suggested fare ₦/);
+  assert.equal(sent.length, before, 'nothing sent to the chat while they are still in the form');
+
+  // Saved, NOT confirmed: if they swipe the form away here, the chat and the form still agree on the trip.
+  const saved = await bidState.getPendingRoute(redis, user.id);
+  assert.match(saved.pickupAddress, /UNILAG Main Gate/);
+  assert.deepEqual(Object.keys(saved.stops[0]).sort(), ['address', 'lat', 'lng'], 'only what drivers need');
+  assert.notEqual(saved.confirmed, true);
+  assert.equal((await form('INIT')).data.stop_1, SABO.address, 're-opening shows the saved change');
+
+  // An old cached copy of the form may drop our `action` tag: the screen it came from still says what it is.
+  const done = await form('data_exchange', {}, 'REVIEW_TRIP');
+  assert.equal(done.screen, 'DONE');
+  assert.equal(sent.length, before + 1, 'ONE message for two changes and a confirmation');
+  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market[\s\S]*Suggested fare/);
+
+  await say(deps, who, '3,000');
+  assert.equal(published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event.stops.length, 1, 'drivers see the stop');
+
+  // Emptying the box removes the stop (on a fresh booking).
+  const again = await riderWithForm();
+  await again.submit({ stop_1: 'sabo market' });
+  const removed = await again.submit({ stop_1: '' });
+  assert.equal(removed.data.has_stop_1, false);
+  assert.deepEqual((await bidState.getPendingRoute(again.redis, again.user.id)).stops, []);
+});
+
+test('THE FORM: more than one match → a screen to pick from, in the same form — never a guess, never a chat message', async () => {
   const { redis, sent, user, form, submit } = await riderWithForm();
   const before = sent.length;
 
@@ -1287,7 +1323,6 @@ test('THE FORM: more than one match → a second screen to pick from, in the sam
   assert.deepEqual([which.data.show_stop_1, which.data.show_pickup, which.data.show_destination], [true, false, false]);
   assert.deepEqual(which.data.stop_1_options.map((o) => [o.id, o.title]), [['0', 'Sabo Market'], ['1', 'Tejuosho Market'], ['none', 'None of these']]);
   assert.ok(which.data.pickup_options.length >= 1, 'a hidden group still gets a data source (WhatsApp refuses an empty one)');
-  assert.equal(sent.length, before, 'nothing sent to the chat yet');
 
   assert.match((await form('data_exchange', { action: 'pick_places' })).data.error, /Pick the right stop 1/);
   const none = await form('data_exchange', { action: 'pick_places', pick_stop_1: 'none' });
@@ -1295,14 +1330,13 @@ test('THE FORM: more than one match → a second screen to pick from, in the sam
   assert.match(none.data.error, /tap ← at the top and type the stop 1 again/);
   assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null, 'nothing saved');
 
-  // An old cached copy of the form may drop our `action` tag: the payload's shape still says what it is.
-  const picked = await form('data_exchange', { pick_stop_1: '1' });
-  assert.equal(picked.screen, 'TRIP_UPDATED');
-  assert.equal((await bidState.getPendingRoute(redis, user.id)).stops[0].address, TEJUOSHO.address);
-  assert.equal(sent.length, before + 1);
+  const picked = await form('data_exchange', { pick_stop_1: '1' });      // no `action` tag: the payload's shape says it
+  assert.equal(picked.screen, 'REVIEW_TRIP');
+  assert.match(picked.data.stop_1_line, /Tejuosho Market/);
+  assert.equal(sent.length, before, 'still nothing in the chat — they have not confirmed');
 });
 
-test('THE FORM refuses out loud and keeps what they typed: unknown place, another city, the same place twice — and says so when nothing changed', async () => {
+test('THE FORM refuses out loud and keeps what they typed: unknown place, another city, the same place twice', async () => {
   const far = { lat: 7.3775, lng: 3.9470, address: 'Bodija Market, Ibadan', name: 'Bodija Market' };
   const { redis, sent, user, submit } = await riderWithForm({ places: (query) => (/bodija/i.test(query) ? far : /osaro/i.test(query) ? { ...YABA, name: 'Osaro Isokpan' } : null), geocode: (query) => (/nowhere/i.test(query) ? null : YABA) });
   const before = sent.length;
@@ -1315,18 +1349,14 @@ test('THE FORM refuses out loud and keeps what they typed: unknown place, anothe
   assert.match((await submit({ stop_1: 'bodija market' })).data.error, /stop 1 I found \(Bodija Market, Ibadan\) is about \d+ km from your pickup/);
   assert.match((await submit({ stop_1: 'osaro isokpan' })).data.error, /stop 1 and your destination are the same place/);
   assert.match((await submit({ pickup: '' })).data.error, /needs a pickup and a destination/);
-
-  const same = await submit({});
-  assert.equal(same.screen, 'TRIP_UPDATED');
-  assert.match(same.data.headline, /Nothing changed/);
   assert.equal(sent.length, before, 'not one message to the chat in all of that');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null);
 });
 
-test('THE FORM on a dead or running booking says so instead of editing it; closing the form is not a message to answer', async () => {
-  const { redis, deps, sent, who, user, form } = await riderWithForm();
+test('THE FORM on a dead or running booking: it still OPENS on its first screen (WhatsApp allows no other) and says so; closing the form is not a message to answer', async () => {
+  const { redis, deps, sent, who, user, form, submit } = await riderWithForm();
 
-  // WhatsApp announces a closed form with an nfm_reply. The card was sent when the trip was saved — this gets no reply.
+  // WhatsApp announces a closed form with an nfm_reply. The price step was sent on confirm — this gets no reply.
   const before = sent.length;
   const payload = { object: 'whatsapp_business_account', entry: [{ changes: [{ value: {
     contacts: [{ profile: { name: who.name }, wa_id: who.phone }],
@@ -1337,18 +1367,25 @@ test('THE FORM on a dead or running booking says so instead of editing it; closi
   assert.equal(sent.length, before);
 
   await bidState.setActiveRide(redis, user.id, 'ride-out');
-  assert.match((await form('INIT')).data.headline, /Drivers are already looking at this trip/);
+  const searching = await form('INIT');
+  assert.equal(searching.screen, 'EDIT_TRIP');
+  assert.match(searching.data.error, /Drivers are already looking at this trip/);
+  assert.equal((await submit({ stop_1: 'sabo market' })).screen, 'DONE', 'and it edits nothing');
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null);
+
   await bidState.clearActiveRide(redis, user.id);
   await bidState.clearPendingRoute(redis, user.id);
   const expired = await form('INIT');
-  assert.equal(expired.screen, 'TRIP_UPDATED');
-  assert.match(expired.data.headline, /expired/);
+  assert.equal(expired.screen, 'EDIT_TRIP');
+  assert.match(expired.data.error, /expired/);
+  assert.match((await submit({})).data.headline, /expired/);
+  assert.equal(sent.length, before);
 });
 
 test('the form on Meta and the server agree: every binding exists, every box the server reads is sent, and the screens only go forward', () => {
   const fields = ['pickup', 'stop_1', 'stop_2', 'stop_3', 'destination'];
   const screens = Object.fromEntries(EDIT_TRIP_FLOW.screens.map((screen) => [screen.id, screen]));
-  assert.deepEqual(Object.keys(screens), ['EDIT_TRIP', 'PICK_PLACES', 'TRIP_UPDATED']);
+  assert.deepEqual(Object.keys(screens), ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'DONE']);
   assert.equal(EDIT_TRIP_FLOW.version, '5.1', 'the version the two earlier flows proved on this account');
 
   for (const screen of EDIT_TRIP_FLOW.screens) {
@@ -1357,11 +1394,13 @@ test('the form on Meta and the server agree: every binding exists, every box the
     // v5.1 does not interpolate inside longer strings: a binding is the WHOLE value or it is printed literally.
     for (const value of JSON.stringify(screen.layout).match(/"[^"]*\$\{[^"]*"/g) ?? []) assert.match(value, /^"\$\{(data|form)\.[a-z0-9_]+\}"$/, `${screen.id}: ${value}`);
   }
-  const footer = (id) => screens[id].layout.children[0].children.find((child) => child.type === 'Footer')['on-click-action'];
-  assert.deepEqual(Object.keys(footer('EDIT_TRIP').payload).sort(), ['action', ...fields].sort());
-  assert.deepEqual(Object.keys(footer('PICK_PLACES').payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
-  assert.equal(footer('TRIP_UPDATED').name, 'complete');
-  assert.equal(screens.TRIP_UPDATED.terminal, true);
+  const footer = (id) => screens[id].layout.children[0].children.find((child) => child.type === 'Footer');
+  assert.equal(footer('EDIT_TRIP').label, 'Confirm trip');
+  assert.deepEqual(Object.keys(footer('EDIT_TRIP')['on-click-action'].payload).sort(), ['action', ...fields].sort());
+  assert.deepEqual(Object.keys(footer('PICK_PLACES')['on-click-action'].payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
+  assert.deepEqual(footer('REVIEW_TRIP')['on-click-action'].payload, { action: 'confirm_trip' });
+  assert.equal(footer('DONE')['on-click-action'].name, 'complete');
+  assert.deepEqual(EDIT_TRIP_FLOW.screens.filter((screen) => screen.terminal).map((screen) => screen.id), ['DONE']);
   // Forward-only, one entry: Meta rejects anything else.
   const order = Object.keys(EDIT_TRIP_FLOW.routing_model);
   for (const [from, tos] of Object.entries(EDIT_TRIP_FLOW.routing_model)) for (const to of tos) assert.ok(order.indexOf(to) > order.indexOf(from), `${from} → ${to} goes backwards`);

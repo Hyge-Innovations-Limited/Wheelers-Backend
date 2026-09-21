@@ -4,17 +4,21 @@
   "routing_model": {
     "EDIT_TRIP": [
       "PICK_PLACES",
-      "TRIP_UPDATED"
+      "REVIEW_TRIP",
+      "DONE"
     ],
     "PICK_PLACES": [
-      "TRIP_UPDATED"
+      "REVIEW_TRIP"
     ],
-    "TRIP_UPDATED": []
+    "REVIEW_TRIP": [
+      "DONE"
+    ],
+    "DONE": []
   },
   "screens": [
     {
       "id": "EDIT_TRIP",
-      "title": "Edit your trip",
+      "title": "Your trip",
       "terminal": false,
       "data": {
         "pickup": {
@@ -36,6 +40,14 @@
         "destination": {
           "type": "string",
           "__example__": "Yankee by Lustro, Yaba"
+        },
+        "summary_line": {
+          "type": "string",
+          "__example__": "2.4 km · ~11 min · suggested fare ₦2,500"
+        },
+        "has_summary_line": {
+          "type": "boolean",
+          "__example__": true
         },
         "error": {
           "type": "string",
@@ -62,7 +74,12 @@
             "children": [
               {
                 "type": "TextBody",
-                "text": "Change anything below. A name is enough — if there is more than one match, you pick the right one next."
+                "text": "All correct? Tap Confirm trip. Or change anything first — a name is enough, and you can add up to 3 stops."
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.summary_line}",
+                "visible": "${data.has_summary_line}"
               },
               {
                 "type": "TextCaption",
@@ -107,7 +124,7 @@
               },
               {
                 "type": "Footer",
-                "label": "Continue",
+                "label": "Confirm trip",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
@@ -381,21 +398,13 @@
       }
     },
     {
-      "id": "TRIP_UPDATED",
-      "title": "Your trip",
-      "terminal": true,
+      "id": "REVIEW_TRIP",
+      "title": "Your updated trip",
+      "terminal": false,
       "data": {
-        "headline": {
-          "type": "string",
-          "__example__": "Trip updated ✅"
-        },
         "pickup_line": {
           "type": "string",
           "__example__": "Pickup: University of Lagos, Akoka"
-        },
-        "has_pickup_line": {
-          "type": "boolean",
-          "__example__": true
         },
         "stop_1_line": {
           "type": "string",
@@ -425,21 +434,17 @@
           "type": "string",
           "__example__": "Destination: Yankee by Lustro, Yaba"
         },
-        "has_destination_line": {
-          "type": "boolean",
-          "__example__": true
-        },
         "summary_line": {
           "type": "string",
           "__example__": "3.5 km · ~14 min · suggested fare ₦2,500"
         },
-        "has_summary_line": {
-          "type": "boolean",
-          "__example__": true
-        },
-        "note": {
+        "error": {
           "type": "string",
-          "__example__": "It is in your chat now — tap Confirm trip there when it is right."
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
         }
       },
       "layout": {
@@ -447,16 +452,20 @@
         "children": [
           {
             "type": "Form",
-            "name": "trip_updated_form",
+            "name": "review_trip_form",
             "children": [
               {
                 "type": "TextHeading",
-                "text": "${data.headline}"
+                "text": "Is this right?"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
               },
               {
                 "type": "TextBody",
-                "text": "${data.pickup_line}",
-                "visible": "${data.has_pickup_line}"
+                "text": "${data.pickup_line}"
               },
               {
                 "type": "TextBody",
@@ -475,13 +484,55 @@
               },
               {
                 "type": "TextBody",
-                "text": "${data.destination_line}",
-                "visible": "${data.has_destination_line}"
+                "text": "${data.destination_line}"
               },
               {
                 "type": "TextCaption",
-                "text": "${data.summary_line}",
-                "visible": "${data.has_summary_line}"
+                "text": "${data.summary_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Not right? Tap the arrow at the top to go back and change it."
+              },
+              {
+                "type": "Footer",
+                "label": "Confirm trip",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "confirm_trip"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Wheelers",
+      "terminal": true,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Trip confirmed ✅"
+        },
+        "note": {
+          "type": "string",
+          "__example__": "Your price is next — it is waiting in the chat."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "done_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
               },
               {
                 "type": "TextBody",

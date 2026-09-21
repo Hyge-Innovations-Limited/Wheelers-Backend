@@ -1,38 +1,46 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import type { RedisClient } from '../redis/client';
-import { getActiveRide, getPendingRoute, storePendingRoute, MAX_CHAT_STOPS } from './bid-state';
+import { getActiveRide, getPendingRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from './bid-state';
 import type { PendingRouteData, RouteStop } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 
 /**
- * The "Edit trip" form — the ONE WhatsApp Flow that is switched on.
+ * The "Confirm or edit trip" form — the ONE WhatsApp Flow that is switched on.
  *
- * In the chat, adding a stop is five messages: tap, "where?", the typed place,
- * the picker, the new trip. Here the rider changes the pickup, up to three
- * stops and the destination on one screen and taps Continue once; the chat gets
- * one message back — the updated trip card.
+ * WhatsApp allows a message reply buttons OR one form button, never both. So the
+ * trip card is ONE message with ONE button, and everything the rider can do to
+ * a trip before pricing it happens in here: confirm it as it is, change the
+ * pickup or destination, add or remove stops. Then the chat gets one message —
+ * the price step. (In the chat alone, adding a stop was five messages.)
  *
- *   EDIT_TRIP     the five boxes, filled with the trip as it is
+ *   EDIT_TRIP     the five boxes, filled with the trip as it is  [Confirm trip]
+ *                   nothing changed → confirmed → DONE
  *   PICK_PLACES   only when something typed has more than one match
- *   TRIP_UPDATED  the saved trip (terminal). Also says "nothing changed" and
- *                 "this trip has expired".
+ *   REVIEW_TRIP   only after a change: the new trip and fare     [Confirm trip]
+ *                   (a single match can still be the wrong place — they look
+ *                   before it is priced; ← goes back to the boxes)
+ *   DONE          terminal: "confirmed — your price is in the chat", and the
+ *                 dead ends (expired, drivers already looking)
+ *
+ * A flow may only OPEN on its entry screen, so INIT always answers EDIT_TRIP —
+ * a dead booking says so there, in the error line.
  *
  * A Flow cannot suggest while the rider types — its boxes are only sent when a
  * button is tapped — so ambiguity is a second screen, not a dropdown. It is the
  * same lookup the chat uses (findPlaceOptions), so both doors agree on places.
  *
- * Nothing here confirms a trip or names a price: the saved route is stored
- * WITHOUT `confirmed`, exactly as a typed change is, and the card it sends has
- * the Confirm trip button.
+ * A changed trip is saved (without `confirmed`) the moment it is planned, so
+ * the chat and the form never disagree about what the trip is. Confirming sets
+ * `confirmed` and hands over to the chat's price step. Nothing here names a price.
  */
 
 export interface EditTripFlowDeps {
   redisClient: RedisClient;
   googleMapsApiKey: string;
   routePlanner: GoogleMapsRoutePlanner;
-  /** Sends the updated trip card to the rider's chat. Absent in tests that only drive the form. */
-  onTripSaved?: (userId: string, trip: PendingRouteData, headline: string) => Promise<void>;
+  /** The trip was confirmed in the form: send the price step to the rider's chat. Absent in tests that only drive the form. */
+  onTripConfirmed?: (userId: string, trip: PendingRouteData) => Promise<void>;
 }
 
 type FlowScreen = { screen: string; data: Record<string, unknown> };
@@ -69,10 +77,16 @@ function currentPlaces(trip: PendingRouteData): Partial<Record<Field, RouteStop>
   };
 }
 
-function editScreen(values: Partial<Record<Field, string>>, error = ''): FlowScreen {
+function summaryOf(trip: PendingRouteData): string {
+  return `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}`;
+}
+
+function editScreen(values: Partial<Record<Field, string>>, error = '', trip?: PendingRouteData): FlowScreen {
   return {
     screen: 'EDIT_TRIP',
     data: {
+      summary_line: trip ? summaryOf(trip) : '',
+      has_summary_line: Boolean(trip),
       pickup: values.pickup ?? '',
       stop_1: values.stop_1 ?? '',
       stop_2: values.stop_2 ?? '',
@@ -101,58 +115,74 @@ function pickScreen(draft: Draft, error = ''): FlowScreen {
   return { screen: 'PICK_PLACES', data };
 }
 
-function doneScreen(headline: string, note: string, trip?: PendingRouteData): FlowScreen {
-  const stops = trip?.stops ?? [];
+function reviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
+  const stops = trip.stops ?? [];
   return {
-    screen: 'TRIP_UPDATED',
+    screen: 'REVIEW_TRIP',
     data: {
-      headline,
-      pickup_line: trip ? `Pickup: ${trip.pickupAddress}` : '',
-      has_pickup_line: Boolean(trip),
+      pickup_line: `Pickup: ${trip.pickupAddress}`,
       stop_1_line: stops[0] ? `Stop 1: ${stops[0].address}` : '',
       has_stop_1: Boolean(stops[0]),
       stop_2_line: stops[1] ? `Stop 2: ${stops[1].address}` : '',
       has_stop_2: Boolean(stops[1]),
       stop_3_line: stops[2] ? `Stop 3: ${stops[2].address}` : '',
       has_stop_3: Boolean(stops[2]),
-      destination_line: trip ? `Destination: ${trip.destAddress}` : '',
-      has_destination_line: Boolean(trip),
-      summary_line: trip ? `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}` : '',
-      has_summary_line: Boolean(trip),
-      note,
+      destination_line: `Destination: ${trip.destAddress}`,
+      summary_line: summaryOf(trip),
+      error,
+      has_error: error.length > 0,
     },
   };
 }
 
-const EXPIRED = () => doneScreen('This trip has expired ⏳', 'Go back to the chat and send your pickup and destination again.');
+function doneScreen(headline: string, note: string): FlowScreen {
+  return { screen: 'DONE', data: { headline, note } };
+}
+
+const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
+const SEARCHING_NOTE = 'Drivers are already looking at this trip. To change it, reply "cancel" in the chat and send the new trip.';
 
 /** Every request the Edit-trip flow makes: opening it, going back, and its two Continue buttons. */
 export async function handleEditTripFlow(body: FlowRequestBody, userId: string, deps: EditTripFlowDeps): Promise<FlowScreen> {
-  const trip = await getPendingRoute(deps.redisClient, userId);
-  if (!trip) return EXPIRED();
-  if (await getActiveRide(deps.redisClient, userId)) {
-    return doneScreen('Drivers are already looking at this trip', 'To change it, reply "cancel" in the chat and send the new trip.', trip);
-  }
+  const [trip, activeRideId] = await Promise.all([getPendingRoute(deps.redisClient, userId), getActiveRide(deps.redisClient, userId)]);
+  const deadEnd = activeRideId ? SEARCHING_NOTE : !trip ? EXPIRED_NOTE : null;
 
   const data = body.data ?? {};
-  // Phones cache flow JSON and old copies drop our `action` tag — read the intent from the payload's shape.
+  // Phones cache flow JSON and old copies drop our `action` tag — read the intent from the payload's shape and the screen.
   const action = typeof data['action'] === 'string' ? data['action']
     : typeof data['pickup'] === 'string' ? 'edit_trip'
-      : FIELDS.some((field) => typeof data[`pick_${field}`] === 'string') ? 'pick_places' : null;
+      : FIELDS.some((field) => typeof data[`pick_${field}`] === 'string') ? 'pick_places'
+        : body.screen === 'REVIEW_TRIP' ? 'confirm_trip' : null;
 
   if (body.action !== 'data_exchange' || !action) {
-    // INIT, BACK, or something we do not know: the form, as the trip stands.
+    // INIT, BACK, or something we do not know: the boxes, as the trip stands. (A flow can only open on this screen.)
+    if (deadEnd || !trip) return editScreen({}, deadEnd ?? EXPIRED_NOTE);
     const places = currentPlaces(trip);
-    return editScreen(Object.fromEntries(FIELDS.map((field) => [field, places[field]?.address ?? ''])));
+    return editScreen(Object.fromEntries(FIELDS.map((field) => [field, places[field]?.address ?? ''])), '', trip);
   }
 
+  if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching 🔍' : 'This trip has expired ⏳', deadEnd ?? EXPIRED_NOTE);
+  if (action === 'confirm_trip') return confirm(userId, trip, deps);
   if (action === 'pick_places') return pickPlaces(data, userId, trip, deps);
   return editTrip(data, userId, trip, deps);
 }
 
+/** "This trip is right": from here on it is the chat's price step. */
+async function confirm(userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+  const confirmed: PendingRouteData = { ...trip, confirmed: true };
+  await storePendingRoute(deps.redisClient, userId, confirmed);
+  await setBookingStage(deps.redisClient, userId, 'awaiting_price');
+  await deps.redisClient.del(draftKey(userId)).catch(() => undefined);
+  // Sent NOW, not when they tap "Back to chat": a rider who swipes the form away must still find the price step waiting.
+  await deps.onTripConfirmed?.(userId, confirmed).catch((error) => {
+    console.error('[edit-trip-flow] confirmed the trip but could not send the price step', { userId, error: error instanceof Error ? error.message : String(error) });
+  });
+  return doneScreen('Trip confirmed ✅', 'Your price is next — it is waiting for you in the chat.');
+}
+
 async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const typed = Object.fromEntries(FIELDS.map((field) => [field, text(data[field])])) as Record<Field, string>;
-  if (!typed.pickup || !typed.destination) return editScreen(typed, 'A trip needs a pickup and a destination.');
+  if (!typed.pickup || !typed.destination) return editScreen(typed, 'A trip needs a pickup and a destination.', trip);
 
   const current = currentPlaces(trip);
   const draft: Draft = { typed, resolved: {}, options: {} };
@@ -174,19 +204,19 @@ async function editTrip(data: Record<string, unknown>, userId: string, trip: Pen
 
   if (misses.length > 0) {
     const first = FIELDS.find((field) => misses.includes(field))!;
-    return editScreen(typed, `I could not find "${clip(typed[first], 40)}" (${FIELD_LABEL[first]}). Add the area or a landmark — e.g. "Shoprite, Ikeja".`);
+    return editScreen(typed, `I could not find "${clip(typed[first], 40)}" (${FIELD_LABEL[first]}). Add the area or a landmark — e.g. "Shoprite, Ikeja".`, trip);
   }
 
   await deps.redisClient.set(draftKey(userId), JSON.stringify(draft), DRAFT_TTL_SECONDS);
   if (Object.keys(draft.options).length > 0) return pickScreen(draft);
-  return finish(draft, userId, trip, deps, (error) => editScreen(typed, error));
+  return finish(draft, userId, trip, deps, (error) => editScreen(typed, error, trip));
 }
 
 async function pickPlaces(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const raw = await deps.redisClient.get(draftKey(userId)).catch(() => null);
   let draft: Draft | null = null;
   try { draft = raw ? (JSON.parse(raw) as Draft) : null; } catch { draft = null; }
-  if (!draft) return EXPIRED();
+  if (!draft) return doneScreen('That took too long ⏳', 'Open the form again from the chat and make your change once more.');
 
   for (const field of FIELDS) {
     const options = draft.options[field];
@@ -237,10 +267,8 @@ async function finish(
   const beforeStops = trip.stops ?? [];
   const unchanged = before.pickup!.address === pickup.address && before.destination!.address === destination.address
     && beforeStops.length === stops.length && stops.every((stop, index) => stop.address === beforeStops[index]!.address);
-  if (unchanged) {
-    await deps.redisClient.del(draftKey(userId)).catch(() => undefined);
-    return doneScreen('Nothing changed', 'Your trip is as it was. Tap Confirm trip in the chat when it is right.', trip);
-  }
+  // Nothing changed and they tapped Confirm trip: that IS the confirmation.
+  if (unchanged) return confirm(userId, trip, deps);
 
   const planned = await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
   if (!planned) return refuse('I could not find a driving route through those places. Check them and try again.');
@@ -257,13 +285,9 @@ async function finish(
     route: planned.geometry,
     // A changed trip is looked at again before any price: never `confirmed`, never a carried-over offer.
   };
+  // Saved now, unconfirmed: if they leave here, the chat and the form still agree on what the trip is.
   await storePendingRoute(deps.redisClient, userId, next);
+  await setBookingStage(deps.redisClient, userId, 'awaiting_trip_confirm');
   await deps.redisClient.del(draftKey(userId)).catch(() => undefined);
-
-  // The card goes to the chat NOW, not when they tap "Back to chat": a rider who
-  // swipes the form away instead must still find their updated trip waiting.
-  await deps.onTripSaved?.(userId, next, '✅ *Trip updated*').catch((error) => {
-    console.error('[edit-trip-flow] saved the trip but could not send the card', { userId, error: error instanceof Error ? error.message : String(error) });
-  });
-  return doneScreen('Trip updated ✅', 'It is in your chat now — tap Confirm trip there when it is right.', next);
+  return reviewScreen(next);
 }
