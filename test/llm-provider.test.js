@@ -55,6 +55,23 @@ test('the key travels in a header, never in the URL', async () => {
   assert.equal(JSON.parse(calls[0].init.body).generationConfig.responseMimeType, 'application/json');
 });
 
+test('Gemini is told not to deliberate — and a model that refuses the setting is asked again without it, once', async () => {
+  // Left to think, the booking parse ran past the 6 s limit in production and the backup answered instead.
+  let calls = world({ gemini: () => geminiSays('{"intent":"cancel"}') });
+  const fast = new GeminiClient({ apiKey: 'k', model: 'gemini-3.8-flash', timeoutMs: 2000 });
+  await fast.completeJson([{ role: 'user', content: 'x' }]);
+  assert.deepEqual(JSON.parse(calls[0].init.body).generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+
+  const refusal = { ok: false, status: 400, json: async () => ({ error: { message: 'Thinking level LOW is not supported for this model.' } }) };
+  calls = world({ gemini: (n) => (n === 1 ? refusal : geminiSays('{"intent":"cancel"}')) });
+  const picky = new GeminiClient({ apiKey: 'k', model: 'some-model-without-thinking', timeoutMs: 2000 });
+  assert.deepEqual(await picky.completeJson([{ role: 'user', content: 'x' }]), { intent: 'cancel' });
+  assert.equal(JSON.parse(calls[1].init.body).generationConfig.thinkingConfig, undefined, 'the retry drops the setting');
+  await picky.completeJson([{ role: 'user', content: 'y' }]);
+  assert.equal(calls.length, 3, 'and the next call does not ask again');
+  assert.equal(JSON.parse(calls[2].init.body).generationConfig.thinkingConfig, undefined);
+});
+
 test('without GEMINI_API_KEY nothing changes: Groq answers, Gemini is never called', async () => {
   const calls = world({ groq: () => groqSays('{"intent":"deposit"}') });
   const llm = createLlm(cfg, 'intent');

@@ -2,6 +2,19 @@ import type { LlmChatMessage } from './types';
 
 const GEMINI_BASE_URL = (process.env['GEMINI_BASE_URL'] ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 
+/**
+ * How hard the model "thinks" before answering. Left at its default,
+ * gemini-3.8-flash spent 350–520 thinking tokens on every booking parse —
+ * 2.5–3 s on an empty prompt, and past the 6 s limit on a real one, so the call
+ * was aborted and the weaker backup answered instead (seen in production:
+ * "primary failed — This operation was aborted"). Pulling a pickup and a
+ * destination out of a sentence needs no deliberation: 'low' measured ~1.1 s
+ * with zero thinking tokens. Set GEMINI_THINKING_LEVEL='' to send nothing.
+ */
+const THINKING_LEVEL = (process.env['GEMINI_THINKING_LEVEL'] ?? 'low').trim();
+// Models that refuse the setting are remembered, so they are asked once, not every time.
+const refusesThinkingLevel = new Set<string>();
+
 export interface GeminiClientConfig {
   apiKey?: string;
   model: string;
@@ -111,8 +124,10 @@ export class GeminiClient {
     }
   }
 
-  private async generateOnce(system: string, contents: GeminiContent[], generationConfig: Record<string, unknown>): Promise<string | null> {
+  private async generateOnce(system: string, contents: GeminiContent[], baseConfig: Record<string, unknown>): Promise<string | null> {
     if (!this.config.apiKey || contents.length === 0) return null;
+    const withThinking = Boolean(THINKING_LEVEL) && !refusesThinkingLevel.has(this.config.model);
+    const generationConfig = withThinking ? { ...baseConfig, thinkingConfig: { thinkingLevel: THINKING_LEVEL } } : baseConfig;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -130,6 +145,13 @@ export class GeminiClient {
       });
 
       const payload = (await response.json().catch(() => null)) as GeminiResponse | null;
+      if (!response.ok && response.status === 400 && withThinking && /thinking/i.test(payload?.error?.message ?? '')) {
+        // This model does not take the setting. Note it and ask again without.
+        refusesThinkingLevel.add(this.config.model);
+        console.warn('[gemini] model refuses thinkingLevel — continuing without it', { model: this.config.model, level: THINKING_LEVEL });
+        clearTimeout(timeout);
+        return this.generateOnce(system, contents, baseConfig);
+      }
       if (!response.ok) {
         throw new GeminiError(
           payload?.error?.message?.split('\n')[0] ?? `Gemini request failed with status ${response.status}`,
