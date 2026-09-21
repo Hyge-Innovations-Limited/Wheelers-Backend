@@ -21,6 +21,8 @@ import {
   addBid,
   shouldNotify,
   noteNotified,
+  hasUnopenedOffersMessage,
+  markOffersMessageSent,
   getGroupSeat,
   clearActiveRide,
   clearActiveRideIfMatches,
@@ -48,6 +50,7 @@ import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
   sendBidNotification,
   sendOffersInChat,
+  offersFormIsOn,
   sortOffers,
   sendFlowOffersMessage,
   sendRideMatchedNotification,
@@ -264,7 +267,7 @@ function scheduleBidFlush(
  *                    confirmed only when every rider picks the same driver)
  *   WhatsApp refuses the tappable message → the numbered text list
  */
-async function announceOffers(
+export async function announceOffers(
   deps: StartGatewayConsumerDeps,
   phone: string,
   rideId: string,
@@ -275,7 +278,15 @@ async function announceOffers(
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
-  if (!groupSeat && await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes, riderId)) return;
+  if (!groupSeat) {
+    // The offers form: ONE unopened message at a time. It opens on the live list,
+    // so more offers while it sits unopened need no second message — the next one
+    // goes out only after they have looked (opening the form clears the mark).
+    if (offersFormIsOn(deps.whatsappNotifier) && await hasUnopenedOffersMessage(deps.redisClient, rideId)) return;
+    const sent = await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes, riderId);
+    if (sent === 'form') await markOffersMessageSent(deps.redisClient, rideId).catch(() => undefined);
+    if (sent) return;
+  }
   await sendBidNotification(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes);
 }
 
@@ -1375,6 +1386,9 @@ async function dropBidFromWhatsappRide(
   if (!isWa) return;
   const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
   if (!phone) return;
+  // With the offers form nothing needs saying: it opens on the live list, and
+  // picking a driver who has gone is refused there. A message per withdrawal is noise.
+  if (offersFormIsOn(deps.whatsappNotifier) && !(await getGroupSeat(deps.redisClient, rideId).catch(() => null))) return;
   await sendOfferWithdrawnNotification(deps.whatsappNotifier, phone, gone.driverName, remaining.length).catch(() => {});
   // The message they were about to tap still lists the driver who left. Give
   // them a fresh one rather than a tap that answers "no longer available".

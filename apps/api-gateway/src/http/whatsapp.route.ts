@@ -83,6 +83,7 @@ import {
   clearAcceptedSeats,
   getGroupSeatMembers,
   storePendingAccept,
+  markOffersMessageSent,
   getPendingAccept,
   clearPendingAccept,
   clearPendingWhatsappWithdrawal,
@@ -1109,6 +1110,7 @@ async function sendCurrentOffers(
       { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret },
       phone, bids, offerNgn, news ? [news] : undefined, meta?.riderId,
     );
+    if (sent === 'form') await markOffersMessageSent(deps.redisClient, rideId).catch(() => undefined);
     if (sent) return `${news ? `${news} ` : ''}[sent ${bids.length} offer${bids.length === 1 ? '' : 's'} to tap]`;
   }
   const text = `${news ? `${news}\n\n` : ''}${formatBidList(bids, offerNgn)}`;

@@ -8,7 +8,7 @@ import {
   offerKey,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
-import { clearBids, clearPendingAccept, getActiveRide, getBids, getRideMeta, getRideState, setRideState, storeLastBatch } from './bid-state';
+import { clearBids, clearPendingAccept, getActiveRide, getBids, getRideMeta, getRideState, markOffersMessageOpened, setRideState, storeLastBatch } from './bid-state';
 import type { WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
@@ -150,6 +150,8 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (body.action !== 'data_exchange' || !action) {
     if (!rideId) return closedOffers('This search has ended — nothing was charged. Send your trip again in the chat.');
     if (confirmed) return closedOffers('Your driver is already confirmed — their details are in the chat.');
+    // They are looking: the next offer that arrives may buzz them again.
+    await markOffersMessageOpened(deps.redisClient, rideId).catch(() => undefined);
     return offersScreen(deps, rideId);
   }
 

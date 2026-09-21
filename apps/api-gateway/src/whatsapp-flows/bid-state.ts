@@ -270,6 +270,28 @@ export async function shouldNotify(
   return true;
 }
 
+/**
+ * With the offers form, the chat holds at most ONE unopened offers message per
+ * search: the form shows the live list whenever it is opened, so a second
+ * message about offers they have not looked at yet is only noise. Set when the
+ * form message is sent; cleared when the form is opened, or after two minutes.
+ */
+const unopenedOffersKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_message_unopened`;
+
+// Two minutes, not the whole search: a rider who never opened it is buzzed again by
+// the next offer after that — silence must never be why a driver was missed.
+const UNOPENED_OFFERS_TTL = 120;
+
+export async function markOffersMessageSent(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(unopenedOffersKey(rideId), Date.now().toString(), UNOPENED_OFFERS_TTL);
+}
+export async function markOffersMessageOpened(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(unopenedOffersKey(rideId));
+}
+export async function hasUnopenedOffersMessage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return Boolean(await redis.get(unopenedOffersKey(rideId)).catch(() => null));
+}
+
 /** An urgent offer went out regardless of the window: start a fresh one behind it. */
 export async function noteNotified(redis: RedisClient, rideId: string): Promise<void> {
   await redis.set(debounceKey(rideId), Date.now().toString(), DEBOUNCE_TTL);

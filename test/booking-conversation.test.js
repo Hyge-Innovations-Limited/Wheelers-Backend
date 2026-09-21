@@ -1629,33 +1629,60 @@ async function riderWithOffersForm(walletNgn) {
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));   // the chat is told without holding the form up
 
-test('with the offers form published, offers arrive as ONE message with ONE button — and fall back to reply buttons if WhatsApp refuses it', async () => {
+test('with the offers form published, offers are ONE message that says only HOW MANY drivers — and falls back to reply buttons if WhatsApp refuses it', async () => {
   const sent = [];
   global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
   const meta = { metaAccessToken: 't', metaPhoneNumberId: '1', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: 'test-secret-that-is-at-least-32-characters-long' };
   const driver = { driverId: 'd', userId: 'u', name: 'oke oyebade' };
   const one = [offerFrom(driver, 17000)];
 
-  assert.equal(await offersNotifier.sendOffersInChat(meta, '+2348030000001', one, 17000, undefined, 'rider-1'), true);
+  assert.equal(await offersNotifier.sendOffersInChat(meta, '+2348030000001', one, 17000, undefined, 'rider-1'), 'form');
   const message = sent[0].interactive;
   assert.equal(message.type, 'flow');
-  assert.equal(message.action.parameters.flow_cta, 'Respond to offer');
+  assert.equal(message.action.parameters.flow_cta, 'See driver offers');
   assert.equal(verifyFlowToken(message.action.parameters.flow_token, meta.flowTokenSecret), 'bids:rider-1');
-  assert.match(message.body.text, /\*oke oyebade\* offers \*₦17,000\*[\s\S]*Your price: ₦17,000[\s\S]*accept a driver, change your price, decline or cancel/);
+  assert.match(message.body.text, /\*1 driver found\* for your ₦17,000 offer/);
+  assert.doesNotMatch(message.body.text, /oke oyebade|Camry|min away/, 'nothing that can go stale: who and how much live in the form');
 
   await offersNotifier.sendOffersInChat(meta, '+234', [...one, offerFrom(driver, 16000, { driverName: 'Aisha Bello' })], 17000, undefined, 'rider-1');
-  assert.equal(sent[1].interactive.action.parameters.flow_cta, 'Respond to offers');
-  assert.match(sent[1].interactive.body.text, /2 drivers have made offers[\s\S]*\*₦16,000\* — Aisha Bello[\s\S]*\*₦17,000\* — oke oyebade/);
+  assert.match(sent[1].interactive.body.text, /\*2 drivers found\*/);
 
   // Refused → the reply-button message, in the same call.
   sent.length = 0;
   global.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return { ok: body.interactive.type !== 'flow', status: 200, text: async () => '' }; };
-  assert.equal(await offersNotifier.sendOffersInChat(meta, '+234', one, 17000, undefined, 'rider-1'), true);
+  assert.equal(await offersNotifier.sendOffersInChat(meta, '+234', one, 17000, undefined, 'rider-1'), 'buttons');
   assert.deepEqual(sent.map((m) => m.interactive.type), ['flow', 'button']);
   // No form published → reply buttons, as before.
   sent.length = 0;
-  await offersNotifier.sendOffersInChat({ metaAccessToken: 't', metaPhoneNumberId: '1' }, '+234', one, 17000, undefined, 'rider-1');
-  assert.deepEqual(sent.map((m) => m.interactive.type), ['button']);
+  assert.equal(await offersNotifier.sendOffersInChat({ metaAccessToken: 't', metaPhoneNumberId: '1' }, '+234', one, 17000, undefined, 'rider-1'), 'buttons');
+});
+
+test('ONE unopened offers message at a time: more offers send nothing until the rider has opened the form — then the next offer buzzes again', async () => {
+  const { announceOffers } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const { redis, sent, user, rideId, form } = await riderWithOffersForm(10_000);
+  const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: 'test-secret-that-is-at-least-32-characters-long' };
+  const consumerDeps = { redisClient: redis, whatsappNotifier: notifier };
+  const first = offerFrom(await onlineDriver(), 2400);
+  const second = offerFrom(await onlineDriver('Aisha Bello'), 2200);
+  const offersMessages = () => sent.filter((m) => m.interactive?.type === 'flow' && m.interactive.action.parameters.flow_cta === 'See driver offers').length;
+
+  await bidState.addBid(redis, rideId, first);
+  await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first], 2000);
+  assert.equal(offersMessages(), 1);
+
+  // A cheaper driver answers while that message sits unopened: no second message.
+  await bidState.addBid(redis, rideId, second);
+  await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first, second], 2000, ['Aisha Bello joined at ₦2,200']);
+  assert.equal(offersMessages(), 1, 'the form opens on the live list — the unopened message is still true');
+
+  // They open the form: both drivers are there, cheapest first. Now they have looked.
+  const opened = await form('INIT');
+  assert.deepEqual(opened.data.choices.slice(0, 2).map((c) => c.title), ['₦2,200 · Aisha Bello', '₦2,400 · Chinedu Okafor']);
+  const third = offerFrom(await onlineDriver('Tunde Ade'), 2100);
+  await bidState.addBid(redis, rideId, third);
+  await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first, second, third], 2000);
+  assert.equal(offersMessages(), 2, 'something new since they looked → one buzz');
+  assert.match(textOf(last(sent)), /\*3 drivers found\*/);
 });
 
 test('OFFERS FORM · Change my price: a box, "Bid updated ✅" — drivers are told, and the chat gets NOTHING', async () => {

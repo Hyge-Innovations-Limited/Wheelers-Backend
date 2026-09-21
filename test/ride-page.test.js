@@ -415,7 +415,7 @@ test('one offer is an "Accept ₦X" button; several are a "Choose a driver" list
   const bids = [chinedu, bidFrom(driver, 6100, { driverName: 'Aisha Bello', etaSeconds: 95 }), bidFrom(driver, 6800, { driverName: 'Babatunde Olanrewaju-Adeyemi' })];
 
   // one offer
-  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', [chinedu], 6000), true);
+  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', [chinedu], 6000), 'buttons');
   const single = sent[0].interactive;
   assert.equal(single.type, 'button');
   assert.deepEqual(single.action.buttons.map((b) => b.reply.title), ['Accept ₦6,400', 'Change my price', 'Cancel search']);
@@ -424,7 +424,7 @@ test('one offer is an "Accept ₦X" button; several are a "Choose a driver" list
   assert.deepEqual(notifier.parseOfferReplyId(single.action.buttons[0].reply.id), { shownPriceNgn: 6400, key: chinedu.bidId });
 
   // several: cheapest first, everything visible without opening the list
-  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', bids, 6000, ['Aisha Bello joined at ₦6,100']), true);
+  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', bids, 6000, ['Aisha Bello joined at ₦6,100']), 'buttons');
   const list = sent[1].interactive;
   assert.equal(list.type, 'list');
   assert.equal(list.action.button, 'Choose a driver');
