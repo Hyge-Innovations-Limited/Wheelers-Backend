@@ -17,20 +17,22 @@ let calls;
 /** geocoder / places: query text → canned Google body. Anything unlisted is a miss. */
 function stubGoogle({ geocoder = {}, places = {}, placesDenied = false }) {
   calls = [];
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     const u = new URL(url);
-    const isPlaces = u.pathname.includes('/place/');
-    const query = isPlaces ? u.searchParams.get('input') : u.searchParams.get('address');
+    const isPlaces = u.hostname === 'places.googleapis.com';
+    const query = isPlaces ? JSON.parse(init.body).textQuery : u.searchParams.get('address');
     calls.push(`${isPlaces ? 'places' : 'geocode'}:${query}`);
-    let body;
     if (isPlaces) {
-      body = placesDenied
-        ? { status: 'REQUEST_DENIED', error_message: 'This API project is not authorized to use this API.' }
-        : places[query] ? { status: 'OK', candidates: [places[query]] } : { status: 'ZERO_RESULTS', candidates: [] };
-    } else {
-      body = geocoder[query] ? { status: 'OK', results: [geocoder[query]] } : { status: 'ZERO_RESULTS', results: [] };
+      if (placesDenied) {
+        return { ok: false, status: 403, json: async () => ({ error: { status: 'PERMISSION_DENIED', message: 'Places API (New) has not been used in this project.' } }) };
+      }
+      const hit = places[query];
+      // Fixtures are written in Google's classic shape; serve them the way Places API (New) does.
+      const asNew = hit ? [{ displayName: { text: hit.name }, formattedAddress: hit.formatted_address, location: { latitude: hit.geometry.location.lat, longitude: hit.geometry.location.lng }, types: hit.types }] : [];
+      return { ok: true, status: 200, json: async () => ({ places: asNew }) };
     }
-    return { ok: true, json: async () => body };
+    const body = geocoder[query] ? { status: 'OK', results: [geocoder[query]] } : { status: 'ZERO_RESULTS', results: [] };
+    return { ok: true, status: 200, json: async () => body };
   };
 }
 

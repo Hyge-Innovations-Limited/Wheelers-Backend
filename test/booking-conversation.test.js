@@ -68,15 +68,23 @@ function installWorld(world) {
       const places = Array.isArray(found) ? found : found ? [found] : [];
       return { ok: true, json: async () => (places.length ? { status: 'OK', results: places.map((place) => geocodeResult(place)) } : { status: 'ZERO_RESULTS', results: [] }) };
     }
-    if (href.includes('/maps/api/place/')) {
-      const params = new URL(href).searchParams;
-      calls.places.push({ input: params.get('input'), bias: params.get('locationbias') });
-      const place = world.places?.(params.get('input'), params.get('locationbias')) ?? null;
+    if (href.includes('places.googleapis.com')) {
+      const asked = JSON.parse(init.body);
+      const circle = asked.locationBias?.circle;
+      const bias = circle ? `circle:${circle.radius}@${circle.center.latitude},${circle.center.longitude}` : 'rectangle';
+      calls.places.push({ input: asked.textQuery, bias });
+      if (world.placesOff) return { ok: false, status: 403, json: async () => ({ error: { status: 'PERMISSION_DENIED', message: 'not enabled' } }) };
+      const found = world.places?.(asked.textQuery, bias) ?? null;
+      const list = Array.isArray(found) ? found : found ? [found] : [];
       return {
-        ok: true,
-        json: async () => (place
-          ? { status: 'OK', candidates: [{ name: '', formatted_address: place.address, geometry: { location: place }, types: ['street_address'] }] }
-          : { status: 'ZERO_RESULTS', candidates: [] }),
+        ok: true, status: 200,
+        json: async () => ({ places: list.map((place) => ({
+          displayName: place.name ? { text: place.name } : undefined,
+          formattedAddress: `${place.address}${/nigeria$/i.test(place.address) ? '' : ', Nigeria'}`,
+          shortFormattedAddress: place.address.replace(/,\s*Nigeria$/i, ''),
+          location: { latitude: place.lat, longitude: place.lng },
+          types: ['point_of_interest'],
+        })) }),
       };
     }
     if (href.includes('api.groq.com')) {
@@ -301,7 +309,7 @@ test('the labels fit WhatsApp\'s limits and lead with what differs', () => {
   // The screenshot: "Admiralty Way, Lekki, Nigeria" was cut to "Admiralty Way, Lekki, Ni".
   const rows = placeChoiceRows([ADMIRALTY_WAY.address, ADMIRALTY_ROAD.address]);
   assert.deepEqual(rows.map((r) => r.title), ['Admiralty Way', 'Admiralty Road']);
-  assert.deepEqual(rows.map((r) => r.description), ['Lekki', 'Lekki']);
+  assert.deepEqual(rows.map((r) => r.description), ['Admiralty Way, Lekki', 'Admiralty Road, Lekki']);
   assert.deepEqual(rows.map((r) => r.id), ['place_choice_1', 'place_choice_2']);
 
   // Same street name in two districts: the DISTRICT is what tells them apart.
@@ -395,6 +403,112 @@ test('if WhatsApp refuses the list, the question still goes out — as numbered 
   assert.match(textOf(last(sent)), /Destination: \*Admiralty Road/);
 });
 
+/* ── named places: a list, like a ride app's search box ─────────────────── */
+
+const IKORODU_GARAGE = { lat: 6.6194, lng: 3.5105, name: 'Ikorodu Garage', address: 'Lagos Rd, Ikorodu, Lagos' };
+const CALEB = [
+  { lat: 6.6018, lng: 3.4800, name: 'Caleb University College of Law', address: 'Magodo, Lagos' },
+  { lat: 6.6583, lng: 3.7420, name: 'Caleb University', address: 'Ibadan-Ijebu Ode Rd, Imota' },
+  { lat: 6.6570, lng: 3.7400, name: 'Caleb University Admissions', address: 'Imota, Lagos' },
+  { lat: 6.6420, lng: 3.7390, name: 'Caleb University staff residence', address: 'Isiu' },
+];
+const calebWorld = (extra = {}) => ({
+  // What the address geocoder really says today: ONE answer, badly labelled.
+  geocode: (q) => (/caleb/i.test(q) ? { lat: 6.6583, lng: 3.7420, address: 'Ikorodu, Ibadan-Ijebu Ode Rd, Imota 104101, Lagos, Nigeria' }
+    : /ikorodu/i.test(q) ? { lat: 6.6194, lng: 3.5105, address: 'Ikorodu, 104101, Lagos, Nigeria' } : null),
+  places: (q) => (/caleb.*law|law.*caleb/i.test(q) ? [CALEB[0]] : /caleb/i.test(q) ? CALEB : /ikorodu garage/i.test(q) ? [IKORODU_GARAGE] : []),
+  intent: (message, system) => (/part-way through booking/.test(system)
+    ? (/caleb law/i.test(message) ? { intent: 'change_destination', address: 'Caleb law' } : { intent: 'other' })
+    : {
+        intent: 'ride_request',
+        pickup: { address: 'Ikorodu Garage, Ikorodu, Lagos', area: 'Ikorodu', specific: true },
+        destination: { address: 'Caleb University, Lagos', area: '', specific: true },
+        offerNgn: null, paymentMethod: null, outsideNigeria: false,
+      }),
+  ...extra,
+});
+
+test('THE CHAT — "from ikorodu garage to Caleb University" offers the Caleb Universities instead of guessing one', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld());
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+
+  const before = sent.length;
+  await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
+  assert.equal(sent.length - before, 1, 'one message');
+  const picker = last(sent);
+  assert.equal(picker.interactive.type, 'list');
+  assert.match(textOf(picker), /Pickup: \*Ikorodu Garage, Lagos Rd, Ikorodu, Lagos\*/, 'the garage by name — not just "Ikorodu"');
+  assert.match(textOf(picker), /I found 4 places matching/);
+  assert.doesNotMatch(textOf(picker), /Suggested fare/, 'no quote until they choose');
+
+  const rows = picker.interactive.action.sections[0].rows;
+  // "Caleb University …" does not fit 24 characters, so the shared words come off.
+  assert.deepEqual(rows.map((r) => r.title), ['College of Law', 'Caleb University', 'Admissions', 'Staff residence', 'None of these']);
+  assert.match(rows[0].description, /^Caleb University College of Law, Magodo, Lagos · 3\.\d km$/);
+  assert.match(rows[1].description, /^Caleb University, Ibadan-Ijebu Ode Rd, Imota · 2\d km$/);
+  for (const row of rows) { assert.ok(row.title.length <= 24); assert.ok(row.description.length <= 72); }
+
+  await tap(deps, who, 'place_choice_1', 'College of Law');
+  const quote = textOf(last(sent));
+  assert.match(quote, /Pickup: \*Ikorodu Garage/);
+  assert.match(quote, /Destination: \*Caleb University College of Law, Magodo, Lagos\*/);
+  assert.doesNotMatch(quote, /Ibadan-Ijebu Ode Rd|[A-Z0-9]{4}\+[A-Z0-9]{2}/, 'no mislabelled road, no map code');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+});
+
+test('THE CHAT, part 2 — "No Caleb law" at the price step lands on the College of Law, by name', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld());
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
+  await tap(deps, who, 'place_choice_2', 'Caleb University'); // they picked the main campus first
+
+  await say(deps, who, 'No Caleb law');
+  const requote = textOf(last(sent));
+  assert.match(requote, /Destination updated!/);
+  assert.match(requote, /Destination: \*Caleb University College of Law, Magodo, Lagos\*/);
+  assert.doesNotMatch(requote, /\+2QW|Ketu/);
+});
+
+test('a correction that is itself ambiguous gets the picker too', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({
+    intent: (message, system) => (/part-way through booking/.test(system)
+      ? { intent: 'change_destination', address: 'caleb university' }
+      : calebWorld().intent(message, system)),
+  }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
+  await tap(deps, who, 'place_choice_2', 'Caleb University');
+
+  await say(deps, who, 'not that caleb university, the other one');
+  assert.equal(last(sent).interactive.type, 'list');
+  await tap(deps, who, 'place_choice_3', 'Admissions');
+  assert.match(textOf(last(sent)), /Destination: \*Caleb University Admissions/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+});
+
+test('with Places switched off in Google Cloud, the bot still works — it just cannot offer a list', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({ placesOff: true }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
+  assert.match(textOf(last(sent)), /Suggested fare/, 'today\'s behaviour: the geocoder\'s single answer');
+});
+
 /* ── searching near the pickup ─────────────────────────────────────────── */
 
 test('a destination search leans towards the pickup, and asks Places before believing another city', async () => {
@@ -405,12 +519,12 @@ test('a destination search leans towards the pickup, and asks Places before beli
   });
 
   const [best] = await geocodeAddressCandidates('k', 'No 7 osaro isokpan', 3, { near: AKOKA });
-  assert.equal(best.formattedAddress, YABA.address, 'the match 2 km away beats the one 245 km away');
+  assert.match(best.formattedAddress, /^7 Osaro Isokpan St, Yaba/, 'the match 2 km away beats the one 245 km away');
   assert.match(calls.geocode[0].bounds, /^6\.02\d*,2\.88\d*\|7\.02\d*,3\.88\d*$/, 'Google was told where the trip is');
   assert.match(calls.places[0].bias, /^circle:50000@6\.5244,3\.387$/);
 
   const single = await geocodeAddress('k', 'No 7 osaro isokpan', { near: AKOKA });
-  assert.equal(single.formattedAddress, YABA.address);
+  assert.match(single.formattedAddress, /^7 Osaro Isokpan St, Yaba/);
 
   const noHint = await geocodeAddress('k', 'No 7 osaro isokpan');
   assert.equal(noHint.formattedAddress, BENIN.address, 'without a pickup nothing changes');
@@ -502,6 +616,7 @@ test('the whole trip in one message gets the same care: destination searched nea
 
   // Same message, but nothing of that name near Lagos: ask, do not quote.
   placesNearby = null;
+  resetPlacesAvailability(); // place searches are remembered for a few hours; this is a different world
   const other = rider();
   await say(deps, other, 'hi');
   await agree(redis, await findRider(other));

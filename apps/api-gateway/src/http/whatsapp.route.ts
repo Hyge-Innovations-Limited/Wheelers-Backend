@@ -30,7 +30,7 @@ import { classifyWalletIntent, mightConcernMoney, walletIntentModel } from '../L
 import { classifyBookingIntent, mightNotBeAnAddress } from '../LLM/booking-intent';
 import type { BookingIntentResult } from '../LLM/booking-intent';
 import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
-import { geocodeAddress, geocodeAddressCandidates, reverseGeocode, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
+import { geocodeAddress, reverseGeocode, findPlaceOptions, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { downloadMetaMedia } from '../whatsapp-flows/meta-media';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
@@ -996,33 +996,77 @@ function clip(text: string, max: number): string {
   return `${(lastSpace > max * 0.5 ? cut.slice(0, lastSpace) : cut).replace(/[\s,·-]+$/, '')}…`;
 }
 
+export interface PlaceChoice { address: string; name?: string; distanceKm?: number }
+
 /**
  * Row labels for the picker. WhatsApp allows 24 characters for a row's title
  * and 72 for the line under it — "Admiralty Way, Lekki, Nigeria" used to be
  * dumped into the title and arrive as "Admiralty Way, Lekki, Ni".
  *
- * The title carries WHAT DIFFERS between the options: the street or place name
- * when those differ, the area when the name is the same everywhere ("Aiyetoro
- * Street" in Surulere and in Akoka). The full address always sits underneath.
+ * The title carries WHAT DIFFERS between the options:
+ *   • branches of one place drop the shared words — "Caleb University College
+ *     of Law" / "Caleb University Admissions" → "College of Law" / "Admissions"
+ *   • different streets keep their names — "Admiralty Way" / "Admiralty Road"
+ *   • one name in several districts leads with the district — "Surulere" / "Akoka"
+ * The full label, and how far it is, always sit underneath.
  */
-export function placeChoiceRows(addresses: string[]): Array<{ id: string; title: string; description: string }> {
-  const parsed = addresses.map((address) => {
-    const parts = address.split(',').map((part) => part.replace(/\b\d{5,6}\b/g, '').trim()).filter(Boolean);
-    const withoutCountry = parts.filter((part, index) => !(index === parts.length - 1 && /^nigeria$/i.test(part)));
-    return { address, name: withoutCountry[0] ?? address, area: withoutCountry[1] ?? '', rest: withoutCountry.slice(1).join(', ') };
+export function placeChoiceRows(choices: Array<PlaceChoice | string>): Array<{ id: string; title: string; description: string }> {
+  const parsed = choices.map((choice) => {
+    const option = typeof choice === 'string' ? { address: choice } : choice;
+    const parts = option.address.split(',').map((part) => part.replace(/\b\d{5,6}\b/g, '').trim()).filter(Boolean)
+      .filter((part, index, all) => !(index === all.length - 1 && /^nigeria$/i.test(part)));
+    const name = option.name?.trim() || parts[0] || option.address;
+    const area = parts.find((part) => part.toLowerCase() !== name.toLowerCase()) ?? '';
+    return { name, area, label: parts.join(', ') || option.address, distanceKm: option.distanceKm };
   });
-  const names = new Set(parsed.map((place) => place.name.toLowerCase()));
-  const namesDiffer = names.size === parsed.length;
 
-  const titles = parsed.map((place) => clip(namesDiffer || !place.area ? place.name : place.area, 24));
+  const namesDiffer = new Set(parsed.map((place) => place.name.toLowerCase())).size === parsed.length;
+  let titles: string[];
+  if (namesDiffer) {
+    // Names that fit are shown whole ("Admiralty Way" / "Admiralty Road"). Only
+    // when one is too long for the 24 characters do the leading words every
+    // option shares come off — they say nothing about which one is which, and
+    // without this the part that matters ("… College of Law") is what gets cut.
+    const words = parsed.map((place) => place.name.split(/\s+/));
+    let shared = 0;
+    if (parsed.some((place) => place.name.length > 24)) {
+      while (words.every((w) => w.length > shared) && new Set(words.map((w) => w[shared]!.toLowerCase())).size === 1) shared += 1;
+    }
+    titles = words.map((w, index) => {
+      const rest = w.slice(shared).join(' ');
+      return rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : parsed[index]!.name;
+    });
+  } else {
+    titles = parsed.map((place) => place.area || place.name);
+  }
+  titles = titles.map((title) => clip(title, 24));
   const timesUsed = (title: string) => titles.filter((other) => other.toLowerCase() === title.toLowerCase()).length;
 
-  return parsed.map((place, index) => ({
-    id: `place_choice_${index + 1}`,
-    // Still identical (same street AND same area)? Number them so they can be told apart.
-    title: timesUsed(titles[index]!) > 1 ? clip(`${index + 1}. ${titles[index]}`, 24) : titles[index]!,
-    description: clip(namesDiffer ? (place.rest || place.address) : place.address, 72),
-  }));
+  return parsed.map((place, index) => {
+    const distance = place.distanceKm != null ? ` · ${place.distanceKm < 10 ? place.distanceKm.toFixed(1) : Math.round(place.distanceKm)} km` : '';
+    return {
+      id: `place_choice_${index + 1}`,
+      // Still identical? Number them so they can be told apart.
+      title: timesUsed(titles[index]!) > 1 ? clip(`${index + 1}. ${titles[index]}`, 24) : titles[index]!,
+      description: `${clip(place.label, 72 - distance.length)}${distance}`,
+    };
+  });
+}
+
+/** The option a tap (or a typed number) picks, if a picker for one of these contexts is open. */
+async function takePickedPlace(
+  deps: MetaWhatsappRouteDeps,
+  userId: string,
+  message: string,
+  contexts: Array<PendingGeoChoices['context']>,
+): Promise<{ context: PendingGeoChoices['context']; lat: number; lng: number; address: string } | null> {
+  if (!/^[1-9]$/.test(message.trim())) return null;
+  const choices = await getPendingGeoChoices(deps.redisClient, userId);
+  if (!choices || !contexts.includes(choices.context)) return null;
+  const pick = choices.options[Number(message.trim()) - 1];
+  if (!pick) return null;
+  await clearPendingGeoChoices(deps.redisClient, userId);
+  return { context: choices.context, ...pick };
 }
 
 /**
@@ -1040,14 +1084,17 @@ async function sendPlaceChoices(
     context: PendingGeoChoices['context'];
     field: 'pickup' | 'destination';
     typed: string;
-    candidates: Array<{ lat: number; lng: number; formattedAddress: string }>;
+    candidates: Array<{ lat: number; lng: number; formattedAddress: string; name?: string; distanceKm?: number }>;
+    /** A line to lead with, e.g. the pickup that is already settled. */
+    intro?: string;
   },
 ): Promise<void> {
-  const options = input.candidates.slice(0, 9).map((c) => ({ lat: c.lat, lng: c.lng, address: c.formattedAddress }));
+  const shown = input.candidates.slice(0, 9);
+  const options = shown.map((c) => ({ lat: c.lat, lng: c.lng, address: c.formattedAddress }));
   await storePendingGeoChoices(deps.redisClient, user.id, { context: input.context, options });
 
-  const rows = placeChoiceRows(options.map((option) => option.address));
-  const body = `I found ${options.length} places matching "${clip(input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`;
+  const rows = placeChoiceRows(shown.map((c) => ({ address: c.formattedAddress, name: c.name, distanceKm: c.distanceKm })));
+  const body = `${input.intro ? `${input.intro}\n\n` : ''}I found ${options.length} places matching "${clip(input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`;
   const asText = [
     `Found a few places matching "${input.typed}" — which one did you mean?`,
     ``,
@@ -1252,16 +1299,31 @@ async function replanPendingRoute(
   pendingRoute: PendingRouteData,
   field: 'pickup' | 'destination',
   address: string,
-  confirmedFarPlace?: { lat: number; lng: number; address: string },
+  /** A place the rider has already settled on: picked from the list, or a far one they said yes to. */
+  chosen?: { lat: number; lng: number; address: string; farConfirmed?: boolean },
 ): Promise<void> {
   const isPickup = field === 'pickup';
   const otherEnd = isPickup
     ? { lat: pendingRoute.destLat, lng: pendingRoute.destLng }
     : { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng };
 
-  const geo = confirmedFarPlace
-    ? { lat: confirmedFarPlace.lat, lng: confirmedFarPlace.lng, formattedAddress: confirmedFarPlace.address }
-    : await geocodeAddress(deps.googleMapsApiKey, address, { spokenText: incomingMessage, near: otherEnd });
+  let geo: { lat: number; lng: number; formattedAddress: string } | null = chosen
+    ? { lat: chosen.lat, lng: chosen.lng, formattedAddress: chosen.address }
+    : null;
+  if (!geo) {
+    const matches = await findPlaceOptions(deps.googleMapsApiKey, address, { spokenText: incomingMessage, near: otherEnd });
+    if (matches.length > 1) {
+      // "No, Caleb law" has more than one answer too — ask, never guess.
+      await sendPlaceChoices(deps, user, phone, incomingMessage, {
+        context: isPickup ? 'edit_pickup' : 'edit_destination',
+        field,
+        typed: address,
+        candidates: matches,
+      });
+      return;
+    }
+    geo = matches[0] ?? null;
+  }
   if (!geo) {
     await replyAndLog(deps, phone, incomingMessage,
       `${geocodeMissLine(address)}\n\nPlease try a more specific ${field} address or share a location pin 📍\n\nYour booking is unchanged.`);
@@ -1269,7 +1331,7 @@ async function replanPendingRoute(
   }
 
   const place = { lat: geo.lat, lng: geo.lng, address: geo.formattedAddress };
-  if (!confirmedFarPlace && await askIfFarPlaceIsMeant(deps, user, phone, incomingMessage, field, place, otherEnd)) return;
+  if (!chosen?.farConfirmed && await askIfFarPlaceIsMeant(deps, user, phone, incomingMessage, field, place, otherEnd)) return;
 
   const pickup = isPickup ? place : { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress };
   const destination = isPickup ? { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress } : place;
@@ -1479,7 +1541,7 @@ async function handleGroupStageText(
       }
     }
 
-    const candidates = await geocodeAddressCandidates(deps.googleMapsApiKey, typed);
+    const candidates = await findPlaceOptions(deps.googleMapsApiKey, typed, { spokenText: incomingMessage });
     if (candidates.length === 0) {
       await replyAndLog(deps, phone, incomingMessage,
         `${geocodeMissLine(typed)}\n\nPlease type a more specific address or share a location pin 📍`);
@@ -3247,7 +3309,7 @@ async function handleIncomingMetaMessage(
       // in Surulere AND Akoka): ask, never assume. Only for a plain answer — when
       // they are answering "whereabouts in Lekki?", the area already narrows it.
       if (!pickedPickup && !hint?.area && !looksLikeConversation(answer)) {
-        const matches = await geocodeAddressCandidates(deps.googleMapsApiKey, answer);
+        const matches = await findPlaceOptions(deps.googleMapsApiKey, answer, { spokenText: incomingMessage });
         if (matches.length > 1) {
           await sendPlaceChoices(deps, user, phone, incomingMessage, { context: 'pickup', field: 'pickup', typed: answer, candidates: matches });
           return;
@@ -3284,6 +3346,18 @@ async function handleIncomingMetaMessage(
       });
       await clearPendingAreaHint(deps.redisClient, user.id);
       await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
+
+      // They picked the pickup from a list, and told us the destination in the
+      // same breath as the trip. Asking them to type "yes" is one message too
+      // many: answer the destination step with what they already said.
+      if (pickedPickup && hint?.counterpartAddress) {
+        await appendWhatsappConversation(deps.redisClient, phone, [
+          { role: 'user', content: incomingMessage },
+          { role: 'assistant', content: `📍 Pickup: ${pickupGeo.formattedAddress}` },
+        ]);
+        await handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', messageBody: hint.counterpartAddress });
+        return;
+      }
 
       // If they already told us where they were going, don't ask again.
       const reply = hint?.counterpartAddress
@@ -3430,9 +3504,9 @@ async function handleIncomingMetaMessage(
           : typedDestination;
         // Lean the search towards the pickup: "7 Osaro Isokpan" from Akoka is
         // the one in Lagos, not the better-known street of that name in Benin.
-        let candidates = await geocodeAddressCandidates(deps.googleMapsApiKey, narrowed, 3, { near: pickupPoint });
+        let candidates = await findPlaceOptions(deps.googleMapsApiKey, narrowed, { near: pickupPoint, spokenText: incomingMessage });
         if (candidates.length === 0 && narrowed !== typedDestination) {
-          candidates = await geocodeAddressCandidates(deps.googleMapsApiKey, typedDestination, 3, { near: pickupPoint });
+          candidates = await findPlaceOptions(deps.googleMapsApiKey, typedDestination, { near: pickupPoint, spokenText: incomingMessage });
         }
 
         // Ambiguous place ("Aiyetoro" is in Surulere AND Akoka) — ask, don't
@@ -3560,11 +3634,17 @@ async function handleIncomingMetaMessage(
 
       const editField = bookingStage === 'editing_pickup' ? 'pickup' : 'destination';
 
+      const pickedForEdit = await takePickedPlace(deps, user.id, incomingMessage, ['edit_pickup', 'edit_destination']);
+      if (pickedForEdit) {
+        await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, editField, pickedForEdit.address, pickedForEdit);
+        return;
+      }
+
       // "yes" to a far-away place we held back, or a fresh address.
       const heldEditPlace = await getPendingFarPlace(deps.redisClient, user.id);
       if (heldEditPlace) await clearPendingFarPlace(deps.redisClient, user.id);
       if (heldEditPlace && heldEditPlace.field === editField && isAffirmativeReply(incomingMessage)) {
-        await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, editField, heldEditPlace.address, heldEditPlace);
+        await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, editField, heldEditPlace.address, { ...heldEditPlace, farConfirmed: true });
         return;
       }
 
@@ -3880,12 +3960,20 @@ async function handleIncomingMetaMessage(
           return;
         }
 
+        // A tap on "which one did you mean?" for a corrected address.
+        const pickedEdit = await takePickedPlace(deps, user.id, incomingMessage, ['edit_pickup', 'edit_destination']);
+        if (pickedEdit) {
+          await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute,
+            pickedEdit.context === 'edit_pickup' ? 'pickup' : 'destination', pickedEdit.address, pickedEdit);
+          return;
+        }
+
         // A place in another city is waiting on a yes/no.
         const farPlace = await getPendingFarPlace(deps.redisClient, user.id);
         if (farPlace) {
           await clearPendingFarPlace(deps.redisClient, user.id);
           if (isAffirmativeReply(incomingMessage)) {
-            await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, farPlace.field, farPlace.address, farPlace);
+            await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, farPlace.field, farPlace.address, { ...farPlace, farConfirmed: true });
             return;
           }
           // Anything else is read normally below — usually the corrected address.
@@ -4243,11 +4331,43 @@ async function handleIncomingMetaMessage(
       if (hasPickup && hasDestination) {
         // Pickup first, so the destination can be searched for NEAR it. Looked
         // up side by side, "osaro isokpan" had no idea the trip started in Lagos.
-        const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage });
-        const destGeo = await geocodeAddress(deps.googleMapsApiKey, rideIntent.destination!.address, {
-          spokenText: incomingMessage,
-          ...(pickupGeo ? { near: { lat: pickupGeo.lat, lng: pickupGeo.lng } } : {}),
-        });
+        const pickupOptions = await findPlaceOptions(deps.googleMapsApiKey, rideIntent.pickup!.address, { spokenText: incomingMessage });
+        if (pickupOptions.length > 1) {
+          // Several pickups by that name. Ask — and remember where they are
+          // going, so choosing one carries straight on to the destination.
+          await setPendingAreaHint(deps.redisClient, user.id, {
+            kind: 'pickup',
+            area: '',
+            counterpartAddress: rideIntent.destination!.address.trim(),
+          });
+          await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
+          await sendPlaceChoices(deps, user, phone, incomingMessage, {
+            context: 'pickup', field: 'pickup', typed: rideIntent.pickup!.address, candidates: pickupOptions,
+          });
+          return;
+        }
+        const pickupGeo = pickupOptions[0] ?? null;
+
+        const destOptions = pickupGeo
+          ? await findPlaceOptions(deps.googleMapsApiKey, rideIntent.destination!.address, {
+              spokenText: incomingMessage,
+              near: { lat: pickupGeo.lat, lng: pickupGeo.lng },
+            })
+          : [];
+        if (pickupGeo && destOptions.length > 1) {
+          // "Caleb University" is a main campus, a College of Law, an admissions
+          // office… The pickup is settled; the destination step takes the tap.
+          await setPendingLocation(deps.redisClient, user.id, {
+            lat: pickupGeo.lat, lng: pickupGeo.lng, address: pickupGeo.formattedAddress, savedAt: new Date().toISOString(),
+          });
+          await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
+          await sendPlaceChoices(deps, user, phone, incomingMessage, {
+            context: 'destination', field: 'destination', typed: rideIntent.destination!.address, candidates: destOptions,
+            intro: `📍 Pickup: *${pickupGeo.formattedAddress}*`,
+          });
+          return;
+        }
+        const destGeo = destOptions[0] ?? null;
 
         if (!pickupGeo) {
           const reply = `${geocodeMissLine(rideIntent.pickup!.address)}\n\nPlease try a more specific pickup address, or share a location pin 📍`;

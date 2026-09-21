@@ -1,9 +1,14 @@
-interface GeocodeResult {
+export interface GeocodeResult {
   lat: number;
   lng: number;
+  /** What we show the rider. For a named place it leads with the name. */
   formattedAddress: string;
   /** ISO 3166-1 alpha-2, when Google reported one. */
   countryCode?: string;
+  /** The place's own name ("Caleb University College of Law"), when it has one. */
+  name?: string;
+  /** Straight-line km from the other end of the trip, when that is known. */
+  distanceKm?: number;
 }
 
 interface GoogleGeocodingResult {
@@ -366,89 +371,187 @@ export function simplerQueries(address: string, spokenText?: string): string[] {
   );
 }
 
-interface GooglePlacesResponse {
-  status: string;
-  error_message?: string;
-  candidates?: Array<{
-    name?: string;
-    formatted_address?: string;
-    types?: string[];
-    geometry?: { location?: { lat?: number; lng?: number } };
-  }>;
-}
-
 // Roughly Nigeria — a bias, not a filter; the service-area check still runs.
-const PLACES_LOCATION_BIAS = 'rectangle:4.0,2.6|14.0,14.8';
+const NIGERIA_RECTANGLE = {
+  low: { latitude: 4.0, longitude: 2.6 },
+  high: { latitude: 14.0, longitude: 14.8 },
+};
+const PLACES_SEARCH_URL = (process.env['GOOGLE_PLACES_SEARCH_URL'] ?? 'https://places.googleapis.com/v1/places:searchText').trim();
+const PLACES_FIELDS = 'places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.types';
 let placesDisabled = false;
 
+interface PlacesSearchResponse {
+  places?: Array<{
+    displayName?: { text?: string };
+    formattedAddress?: string;
+    shortFormattedAddress?: string;
+    location?: { latitude?: number; longitude?: number };
+    types?: string[];
+  }>;
+  error?: { status?: string; message?: string };
+}
+
+/** "J94G+2QW, Ketu, Lagos" → "Ketu, Lagos". A plus code is a map reference, not something a rider recognises. */
+export function stripPlusCode(address: string): string {
+  return address.replace(/^\s*[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\s*,?\s*/i, '').trim();
+}
+
+/** "Caleb University College of Law, Magodo, Lagos" — the name first, so the rider sees we understood. */
+function placeLabel(name: string | undefined, address: string): string {
+  const clean = stripPlusCode(address).replace(/,\s*Nigeria\s*$/i, '').trim();
+  if (!name) return clean || address;
+  return clean.toLowerCase().includes(name.toLowerCase()) ? clean : [name, clean].filter(Boolean).join(', ');
+}
+
+function meaningfulWords(query: string): string[] {
+  return query.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 3 && !GENERIC_QUERY_WORDS.has(word));
+}
+
+// A few hours of memory: the same famous places are asked for again and again,
+// and every search is billed.
+const PLACES_CACHE_TTL_MS = 6 * 60 * 60_000;
+const PLACES_CACHE_MAX = 500;
+const placesCache = new Map<string, { at: number; results: GeocodeResult[] }>();
+
 /**
- * Google Places "find place from text". Returns null for anything we could
- * not route to: no match, a whole state or country, somewhere outside the
- * service area, or a guess that shares no words with the question.
+ * Named places matching some words, the way a ride app's search box lists them:
+ * "Caleb University" → the main campus, the College of Law, Admissions, the
+ * staff residence. The address geocoder cannot do this — it answers a named
+ * place with ONE result, often mislabelled ("Ikorodu, Ibadan-Ijebu Ode Rd" for
+ * Caleb University), which is why the bot used to guess instead of asking.
+ *
+ * Google Places API (New). Returns [] when the API is not enabled for the key,
+ * and says so once — everything then falls back to the address geocoder.
  */
-export async function findPlace(apiKey: string, query: string, near?: GeoPoint): Promise<GeocodeResult | null> {
-  if (placesDisabled || !query.trim()) return null;
-  const params = new URLSearchParams({
-    input: query,
-    inputtype: 'textquery',
-    fields: 'name,formatted_address,geometry,types',
-    locationbias: near ? `circle:${NEAR_PLACES_RADIUS_M}@${near.lat},${near.lng}` : PLACES_LOCATION_BIAS,
-    key: apiKey,
-  });
+export async function searchPlaces(apiKey: string, query: string, near?: GeoPoint, limit = 5): Promise<GeocodeResult[]> {
+  const text = query.trim();
+  if (placesDisabled || !text || !apiKey) return [];
+
+  const cacheKey = `${text.toLowerCase()}|${near ? `${near.lat.toFixed(2)},${near.lng.toFixed(2)}` : ''}|${limit}`;
+  const cached = placesCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PLACES_CACHE_TTL_MS) return cached.results;
 
   try {
-    const response = await fetch(`https://maps.googleapis.com/maps/api/place/findplacefromtext/json?${params.toString()}`);
-    if (!response.ok) return null;
-    const data = (await response.json()) as GooglePlacesResponse;
-
-    if (data.status === 'REQUEST_DENIED') {
-      // The key does not have the Places API enabled. Say so once, then stop
-      // paying a round-trip on every miss.
-      placesDisabled = true;
-      console.error('[geocoding] Places API is not enabled for GOOGLE_MAPS_API_KEY — named places will be found less often. Enable "Places API" in Google Cloud.', {
-        message: data.error_message,
-      });
-      return null;
-    }
-    const place = data.status === 'OK' ? data.candidates?.[0] : undefined;
-    const location = place?.geometry?.location;
-    if (!place || location?.lat == null || location?.lng == null) return null;
-
-    if (place.types?.some((type) => TOO_COARSE_TYPES.has(type))) return null;
-
-    const label = [place.name, place.formatted_address].filter(Boolean).join(', ');
-    if (!partialMatchLooksRelated(query, label)) {
-      console.warn('[geocoding] ignoring place — unrelated to query', { query, resolvedTo: label });
-      return null;
-    }
-
-    const inNigeria =
-      isWithinServiceBounds(location.lat, location.lng) &&
-      (!SERVICE_COUNTRY || SERVICE_COUNTRY !== 'NG' || /nigeria\s*$/i.test(place.formatted_address ?? SERVICE_COUNTRY_NAME));
-    if (!inNigeria) {
-      rememberOutsideMatch(query, label);
-      return null;
-    }
-
-    // Lead with the place's own name: "Caleb University, Imota…" tells the
-    // rider we understood them; a bare street address does not.
-    const formattedAddress =
-      place.name && !(place.formatted_address ?? '').toLowerCase().includes(place.name.toLowerCase())
-        ? label
-        : place.formatted_address ?? label;
-    return { lat: location.lat, lng: location.lng, formattedAddress, countryCode: SERVICE_COUNTRY || undefined };
-  } catch (error) {
-    console.warn('[geocoding] place search failed', {
-      query,
-      error: error instanceof Error ? error.message : String(error),
+    const response = await fetch(PLACES_SEARCH_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey, 'x-goog-fieldmask': PLACES_FIELDS },
+      body: JSON.stringify({
+        textQuery: text,
+        regionCode: SERVICE_COUNTRY || 'NG',
+        maxResultCount: Math.min(20, limit * 3),
+        locationBias: near
+          ? { circle: { center: { latitude: near.lat, longitude: near.lng }, radius: NEAR_PLACES_RADIUS_M } }
+          : { rectangle: NIGERIA_RECTANGLE },
+      }),
     });
-    return null;
+    const data = (await response.json().catch(() => null)) as PlacesSearchResponse | null;
+
+    if (response.status === 403 || data?.error?.status === 'PERMISSION_DENIED') {
+      // The key's project does not have Places API (New) switched on. Say so
+      // once, then stop paying a round-trip on every lookup.
+      placesDisabled = true;
+      console.error('[geocoding] Places API (New) is not enabled for GOOGLE_MAPS_API_KEY — riders will not be offered a list of matching places, and named places will be found less often. Enable "Places API (New)" in Google Cloud for this key\'s project.', {
+        message: data?.error?.message?.slice(0, 300),
+      });
+      return [];
+    }
+    if (!response.ok) return [];
+
+    const words = meaningfulWords(text);
+    const results: GeocodeResult[] = [];
+    for (const place of data?.places ?? []) {
+      const lat = place.location?.latitude;
+      const lng = place.location?.longitude;
+      if (lat == null || lng == null) continue;
+      if (place.types?.some((type) => TOO_COARSE_TYPES.has(type))) continue;
+
+      const name = place.displayName?.text?.trim() || undefined;
+      const address = place.formattedAddress ?? place.shortFormattedAddress ?? '';
+      const inNigeria = isWithinServiceBounds(lat, lng) && (SERVICE_COUNTRY !== 'NG' || !address || /nigeria\s*$/i.test(address));
+      if (!inNigeria) {
+        rememberOutsideMatch(text, placeLabel(name, address));
+        continue;
+      }
+      results.push({ lat, lng, name, formattedAddress: placeLabel(name, place.shortFormattedAddress ?? address), countryCode: SERVICE_COUNTRY || undefined });
+    }
+
+    // Every word the rider typed should be somewhere in the match ("caleb law"
+    // → "Caleb University College of Law"). If that leaves nothing, settle for
+    // any shared word rather than an empty list.
+    const haystack = (r: GeocodeResult) => `${r.name ?? ''} ${r.formattedAddress}`.toLowerCase();
+    const strict = results.filter((r) => words.length > 0 && words.every((word) => haystack(r).includes(word)));
+    const related = strict.length > 0 ? strict : results.filter((r) => words.some((word) => haystack(r).includes(word)));
+
+    // The same place listed twice (or two doors of one building) is one option.
+    const distinct: GeocodeResult[] = [];
+    for (const candidate of related) {
+      const twin = distinct.some((kept) =>
+        kmBetween(kept, candidate) < 0.12 || (kept.name && candidate.name && kept.name.toLowerCase() === candidate.name.toLowerCase() && kmBetween(kept, candidate) < 1));
+      if (!twin) distinct.push(candidate);
+      if (distinct.length >= limit) break;
+    }
+
+    if (placesCache.size >= PLACES_CACHE_MAX) placesCache.clear();
+    placesCache.set(cacheKey, { at: Date.now(), results: distinct });
+    return distinct;
+  } catch (error) {
+    console.warn('[geocoding] place search failed', { query: text, error: error instanceof Error ? error.message : String(error) });
+    return [];
   }
+}
+
+/** The single best named place for some words, or null. */
+export async function findPlace(apiKey: string, query: string, near?: GeoPoint): Promise<GeocodeResult | null> {
+  const [best] = await searchPlaces(apiKey, query, near, 1);
+  return best ?? null;
+}
+
+const ADDRESS_LIKE = /^\s*(?:no\.?\s*)?\d+[a-z]?\b|\b(street|str|road|rd|avenue|ave|close|crescent|lane|drive|estate|way)\b/i;
+
+/**
+ * Everything a rider might mean by what they typed — the list behind the
+ * "which one did you mean?" picker.
+ *
+ *   a named place ("caleb university", "ikorodu garage", "shoprite") → Places
+ *     first: it knows names and branches; the geocoder is the fallback.
+ *   a street address ("no 7 osaro isokpan", "15 Aiyetoro Street") → the address
+ *     geocoder first: it knows house numbers; Places is the fallback.
+ *
+ * One option means "just use it". Several means "ask". With `near`, options in
+ * the same city as the other end of the trip push out far-away ones.
+ */
+export async function findPlaceOptions(
+  apiKey: string,
+  query: string,
+  options: Pick<GeocodeOptions, 'near' | 'spokenText'> & { limit?: number } = {},
+): Promise<GeocodeResult[]> {
+  const limit = options.limit ?? 5;
+  const near = options.near;
+  // The rider's own words first; the model's tidied-up version second.
+  const queries = [...simplerQueries(query, options.spokenText).reverse(), query].filter((q, i, all) => q.trim() && all.indexOf(q) === i);
+
+  let found: GeocodeResult[] = [];
+  for (const q of queries) {
+    const viaPlaces = () => searchPlaces(apiKey, q, near, limit);
+    const viaGeocoder = () => geocodeAddressCandidates(apiKey, q, Math.min(limit, 3), { near });
+    found = ADDRESS_LIKE.test(q) ? await viaGeocoder() : await viaPlaces();
+    if (found.length === 0) found = ADDRESS_LIKE.test(q) ? await viaPlaces() : await viaGeocoder();
+    if (found.length > 0) break;
+  }
+
+  found = found.map((option) => ({ ...option, formattedAddress: stripPlusCode(option.formattedAddress) || option.formattedAddress }));
+  if (near) {
+    found = found.map((option) => ({ ...option, distanceKm: Math.round(kmBetween(near, option) * 10) / 10 }));
+    const sameCity = found.filter((option) => (option.distanceKm ?? 0) <= SAME_CITY_KM);
+    if (sameCity.length > 0) found = sameCity;
+  }
+  return found.slice(0, limit);
 }
 
 /** Test hook: forget that Places was ever refused. */
 export function resetPlacesAvailability(): void {
   placesDisabled = false;
+  placesCache.clear();
 }
 
 /**
