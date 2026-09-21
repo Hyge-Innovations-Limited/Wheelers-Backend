@@ -243,7 +243,7 @@ function scheduleBidFlush(
         await sendFlowOffersMessage(deps.whatsappNotifier, phone, riderId, meta, allBids)
           .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
       } else {
-        await announceOffers(deps, phone, rideId, allBids, meta.offerNgn, describeBidChanges(previousBatch, allBids))
+        await announceOffers(deps, phone, rideId, riderId, allBids, meta.offerNgn, describeBidChanges(previousBatch, allBids))
           .catch((err) => console.warn('[consumer] WhatsApp bid flush failed', err));
       }
     })();
@@ -268,13 +268,14 @@ async function announceOffers(
   deps: StartGatewayConsumerDeps,
   phone: string,
   rideId: string,
+  riderId: string,
   bids: WhatsappBid[],
   riderOfferNgn: number,
   changes?: string[],
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
-  if (!groupSeat && await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes)) return;
+  if (!groupSeat && await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes, riderId)) return;
   await sendBidNotification(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes);
 }
 
@@ -445,7 +446,7 @@ async function handleRideEvent(
             await sendFlowOffersMessage(deps.whatsappNotifier, phone, event.riderId, meta, allBids)
               .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
           } else {
-            await announceOffers(deps, phone, event.rideId, allBids, meta.offerNgn, changes)
+            await announceOffers(deps, phone, event.rideId, event.riderId, allBids, meta.offerNgn, changes)
               .catch((err) => console.warn('[consumer] WhatsApp bid notification failed', err));
           }
         } else {
@@ -1382,5 +1383,5 @@ async function dropBidFromWhatsappRide(
   if (!meta || meta.source === 'flow') return;
   const stillThere = sortOffers(remaining);
   await storeLastBatch(deps.redisClient, rideId, stillThere).catch(() => {});
-  await announceOffers(deps, phone, rideId, stillThere, meta.offerNgn).catch(() => {});
+  await announceOffers(deps, phone, rideId, riderId, stillThere, meta.offerNgn).catch(() => {});
 }

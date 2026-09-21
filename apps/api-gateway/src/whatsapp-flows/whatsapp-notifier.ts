@@ -1,5 +1,5 @@
 import { signFlowToken } from './encryption';
-import { META_FLOWS_ENABLED } from './flow-toggle';
+import { META_FLOWS_ENABLED, OFFERS_FORM_FLOW_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
 
@@ -9,6 +9,8 @@ export interface WhatsappNotifierDeps {
   /** When set, bid updates for flow rides go out as a tappable flow message. */
   offersFlowId?: string;
   flowTokenSecret?: string;
+  /** Published offers FORM (offers-form-flow.ts). With it, offers are one message with one button. */
+  offersFormFlowId?: string;
 }
 
 /* ── offers, in the chat, as things to TAP ─────────────────────────────── */
@@ -133,9 +135,53 @@ export async function sendOffersInChat(
   bids: WhatsappBid[],
   riderOfferNgn: number,
   changes?: string[],
+  /** Whose offers these are. With it and a published form, the message's one button opens the offers form. */
+  riderId?: string,
 ): Promise<boolean> {
-  const interactive = buildOffersMessage(bids, riderOfferNgn, changes);
-  if (!interactive) return false;
+  const buttons = buildOffersMessage(bids, riderOfferNgn, changes);
+  if (!buttons) return false;
+
+  // WhatsApp allows reply buttons OR one form button. The form wins when there is
+  // one: accepting, changing the price, declining and cancelling all happen inside
+  // it, so none of them costs another chat message.
+  const form = riderId && OFFERS_FORM_FLOW_ENABLED && deps.offersFormFlowId && deps.flowTokenSecret
+    ? {
+        type: 'flow',
+        body: { text: `${offersSummary(bids, riderOfferNgn, changes)}\n\nTap below to accept a driver, change your price, decline or cancel — all in one place.`.slice(0, 1024) },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_id: deps.offersFormFlowId,
+            flow_token: signFlowToken(`bids:${riderId}`, deps.flowTokenSecret),
+            flow_cta: bids.length === 1 ? 'Respond to offer' : 'Respond to offers',
+            flow_action: 'data_exchange',
+          },
+        },
+      }
+    : null;
+  if (form && await postInteractive(deps, phone, form)) return true;
+  return postInteractive(deps, phone, buttons);
+}
+
+/** The offers as text — who, how much, how far — for the body of the form message. */
+function offersSummary(bids: WhatsappBid[], riderOfferNgn: number, changes?: string[]): string {
+  const offers = sortOffers(bids);
+  const news = changes && changes.length > 0 ? `🔔 ${changes.join('\n🔔 ')}\n\n` : '';
+  if (offers.length === 1) {
+    const bid = offers[0]!;
+    return `${news}🚗 *${bid.driverName}* offers *₦${bid.counterOfferNgn.toLocaleString()}*\n${offerFacts(bid)}\n\nYour price: ₦${riderOfferNgn.toLocaleString()}`;
+  }
+  const shown = offers.slice(0, MAX_OFFER_ROWS);
+  return [
+    `${news}🚗 *${offers.length} drivers have made offers* · your price ₦${riderOfferNgn.toLocaleString()}`,
+    '',
+    shown.map((bid) => `*₦${bid.counterOfferNgn.toLocaleString()}* — ${bid.driverName}\n${offerFacts(bid)}`).join('\n\n'),
+    ...(offers.length > shown.length ? ['', `…and ${offers.length - shown.length} more at higher prices.`] : []),
+  ].join('\n');
+}
+
+async function postInteractive(deps: WhatsappNotifierDeps, phone: string, interactive: Record<string, unknown>): Promise<boolean> {
 
   const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
     method: 'POST',

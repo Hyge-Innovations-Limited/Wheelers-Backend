@@ -175,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -534,6 +534,7 @@ async function bootstrap(): Promise<void> {
     whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
     whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
     whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
+    whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
   });
 
   const server = createServer(async (req, res) => {
@@ -901,6 +902,7 @@ async function bootstrap(): Promise<void> {
         whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
         whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
         whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
+        whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
       };
 
       if (req.method === "GET") {
@@ -935,6 +937,7 @@ async function bootstrap(): Promise<void> {
         routePlanner,
         kycStorage: driverKycStorage ?? undefined,
         onTripConfirmed: createTripConfirmedSender(buildMetaWhatsappDeps()),
+        ...createOffersFormChatHooks(buildMetaWhatsappDeps()),
         notifier:
           gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
             ? {
@@ -2189,6 +2192,7 @@ async function bootstrap(): Promise<void> {
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
             offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
             flowTokenSecret: gatewayEnv.JWT_SECRET,
+            offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
           }
         : undefined,
     // A rider who tapped a driver and went to add money: the deposit confirms the ride.

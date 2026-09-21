@@ -131,6 +131,8 @@ export interface MetaWhatsappRouteDeps {
   whatsappOffersFlowId?: string;
   /** Published "Edit trip" form. Unset = Edit trip opens the chat's Choose sheet. */
   whatsappEditTripFlowId?: string;
+  /** Published offers form. Unset = offers arrive with reply buttons / the Choose list. */
+  whatsappOffersFormFlowId?: string;
 }
 
 /* ─── Meta Cloud API helpers ─── */
@@ -1104,8 +1106,8 @@ async function sendCurrentOffers(
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
   if (!groupSeat && deps.metaAccessToken && deps.metaPhoneNumberId) {
     const sent = await sendOffersInChat(
-      { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId },
-      phone, bids, offerNgn, news ? [news] : undefined,
+      { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret },
+      phone, bids, offerNgn, news ? [news] : undefined, meta?.riderId,
     );
     if (sent) return `${news ? `${news} ` : ''}[sent ${bids.length} offer${bids.length === 1 ? '' : 's'} to tap]`;
   }
@@ -1255,6 +1257,38 @@ async function acceptOfferInChat(
       await sendMetaReply(deps, phone, reply);
     }
   }
+}
+
+/**
+ * What the offers FORM needs the chat to say. Only the two things a rider must
+ * keep: the confirmed driver's details, and the Add money button. Changing the
+ * price, declining and cancelling are answered inside the form and cost the
+ * chat nothing.
+ */
+export function createOffersFormChatHooks(deps: MetaWhatsappRouteDeps) {
+  const phoneOf = async (userId: string) => (await userClient.findById(userId).catch(() => null))?.phone ?? null;
+  return {
+    onRideConfirmed: async (userId: string, ride: ConfirmedRideForChat): Promise<void> => {
+      const phone = await phoneOf(userId);
+      if (!phone) return;
+      logActivity({ userId, eventType: 'ride_offer_accepted', source: 'whatsapp_form', metadata: { fareNgn: ride.fareNgn, driverId: ride.driverId } });
+      const said = await sendRideConfirmation(deps, userId, phone, ride);
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: `[accepted ${ride.driverName}'s offer in the offers form]` },
+        { role: 'assistant', content: said },
+      ]);
+    },
+    onWalletShort: async (userId: string, rideId: string, bid: WhatsappBid, short: { balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }): Promise<void> => {
+      const phone = await phoneOf(userId);
+      if (!phone) return;
+      await rememberChosenOffer(deps, userId, rideId, bid);        // the deposit landing finishes the job
+      const said = await sendRideTopupButton(deps, userId, phone, { driverName: bid.driverName, ...short });
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: `[chose ${bid.driverName} in the offers form — wallet short]` },
+        { role: 'assistant', content: said },
+      ]);
+    },
+  };
 }
 
 /**

@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /**
- * Create / update / publish the "Edit trip" WhatsApp Flow — and ONLY that flow.
- * The booking and offers flows are switched off and this script never touches them.
+ * Create / update / publish ONE of the forms that are switched on — and only it.
+ * The old booking and "Driver Offers" flows are off; this script never touches them.
  *
- *   npm run flow:push:edit-trip          (run ON THE SERVER, from the repo root)
+ *   npm run flow:push:edit-trip     the "Confirm or edit trip" form
+ *   npm run flow:push:offers        the offers form (accept / change price / decline / cancel)
+ *   npm run flow:push:forms         both, one after the other
+ *                                   (run ON THE SERVER, from the repo root)
  *
  * Reads META_ACCESS_TOKEN (and optionally META_WABA_ID, APP_BASE_URL) from .env.
- * First run: creates the flow on Meta and writes WHATSAPP_EDIT_TRIP_FLOW_ID to
- * .env. Later runs: uploads the JSON to that flow; if Meta refuses because it is
+ * First run: creates the flow on Meta and writes its id to .env
+ * (WHATSAPP_EDIT_TRIP_FLOW_ID / WHATSAPP_OFFERS_FORM_FLOW_ID). Later runs: uploads the JSON to that flow; if Meta refuses because it is
  * already published, clones it to a new flow and rewrites the id.
  * Whenever the id in .env changes you MUST restart so the bot sends the new one:
  *   npm run pm2:reload            (or: pm2 restart ecosystem.config.cjs --update-env)
@@ -30,13 +33,21 @@ const readEnv = () => Object.fromEntries(
 );
 const env = readEnv();
 
-const ENV_KEY = 'WHATSAPP_EDIT_TRIP_FLOW_ID';
+const FORMS = {
+  'edit-trip': { envKey: 'WHATSAPP_EDIT_TRIP_FLOW_ID', name: 'Wheelers Edit Trip', json: 'edit-trip-flow-definition.json' },
+  offers: { envKey: 'WHATSAPP_OFFERS_FORM_FLOW_ID', name: 'Wheelers Offers Form', json: 'offers-form-flow-definition.json' },
+};
+const which = process.argv[2];
+const chosen = FORMS[which];
+if (!chosen) { console.error(`usage: node scripts/whatsapp-form-push.mjs <${Object.keys(FORMS).join('|')}>`); process.exit(1); }
+console.log(`\n── ${chosen.name} ──`);
+const ENV_KEY = chosen.envKey;
 const TOKEN = env.META_ACCESS_TOKEN;
 const WABA_ID = env.META_WABA_ID || '2408321253328724';
 const ENDPOINT_URI = `${(env.APP_BASE_URL || 'https://app.wheelersng.com').replace(/\/+$/, '')}/webhooks/whatsapp-flow`;
 if (!TOKEN) { console.error('META_ACCESS_TOKEN missing from .env'); process.exit(1); }
 
-const flowJson = readFileSync(resolve(root, 'apps/api-gateway/src/whatsapp-flows/edit-trip-flow-definition.json'), 'utf8');
+const flowJson = readFileSync(resolve(root, 'apps/api-gateway/src/whatsapp-flows', chosen.json), 'utf8');
 JSON.parse(flowJson); // fail fast on malformed JSON
 
 const BASE = 'https://graph.facebook.com/v21.0';
@@ -55,7 +66,7 @@ async function create() {
   const created = await api(`/${WABA_ID}/flows`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: `Wheelers Edit Trip ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, categories: ['OTHER'] }),
+    body: JSON.stringify({ name: `${chosen.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, categories: ['OTHER'] }),
   });
   if (!created.ok) { console.error('flow creation failed:', JSON.stringify(created.body)); process.exit(1); }
   console.log('created flow', created.body.id);

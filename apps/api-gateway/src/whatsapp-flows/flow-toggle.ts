@@ -24,3 +24,13 @@ export const META_FLOWS_ENABLED = false;
  * trip" opens the chat's Choose sheet exactly as before.
  */
 export const EDIT_TRIP_FLOW_ENABLED = true;
+
+/**
+ * The offers form (offers-form-flow.ts): the offers message becomes ONE message
+ * with ONE button, and accepting a driver, changing the price, declining all and
+ * cancelling the search happen inside it — no follow-up chat messages. Needs
+ * WHATSAPP_OFFERS_FORM_FLOW_ID (`npm run flow:push:offers`). Without it, offers
+ * arrive with reply buttons / the Choose list exactly as before.
+ * (Not the old "Wheelers Driver Offers" flow behind META_FLOWS_ENABLED — that stays off.)
+ */
+export const OFFERS_FORM_FLOW_ENABLED = true;

@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -1382,28 +1382,42 @@ test('THE FORM on a dead or running booking: it still OPENS on its first screen 
   assert.equal(sent.length, before);
 });
 
-test('the form on Meta and the server agree: every binding exists, every box the server reads is sent, and the screens only go forward', () => {
-  const fields = ['pickup', 'stop_1', 'stop_2', 'stop_3', 'destination'];
-  const screens = Object.fromEntries(EDIT_TRIP_FLOW.screens.map((screen) => [screen.id, screen]));
-  assert.deepEqual(Object.keys(screens), ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'DONE']);
-  assert.equal(EDIT_TRIP_FLOW.version, '5.1', 'the version the two earlier flows proved on this account');
-
-  for (const screen of EDIT_TRIP_FLOW.screens) {
+/** What Meta would reject, or print literally, checked before it ever gets there. */
+function checkFormJson(flow, screenIds) {
+  const screens = Object.fromEntries(flow.screens.map((screen) => [screen.id, screen]));
+  assert.deepEqual(Object.keys(screens), screenIds);
+  assert.equal(flow.version, '5.1', 'the version the earlier flows proved on this account');
+  for (const screen of flow.screens) {
     const bound = [...JSON.stringify(screen.layout).matchAll(/\$\{data\.([a-z0-9_]+)\}/g)].map((m) => m[1]);
     for (const name of bound) assert.ok(name in screen.data, `${screen.id} binds data.${name}, which it does not declare`);
     // v5.1 does not interpolate inside longer strings: a binding is the WHOLE value or it is printed literally.
     for (const value of JSON.stringify(screen.layout).match(/"[^"]*\$\{[^"]*"/g) ?? []) assert.match(value, /^"\$\{(data|form)\.[a-z0-9_]+\}"$/, `${screen.id}: ${value}`);
+    const form = screen.layout.children[0];
+    const inputs = form.children.filter((child) => child.name).map((child) => child.name);
+    for (const used of [...JSON.stringify(form).matchAll(/\$\{form\.([a-z0-9_]+)\}/g)].map((m) => m[1])) assert.ok(inputs.includes(used), `${screen.id} sends form.${used}, which is not an input on it`);
   }
-  const footer = (id) => screens[id].layout.children[0].children.find((child) => child.type === 'Footer');
-  assert.equal(footer('EDIT_TRIP').label, 'Confirm trip');
-  assert.deepEqual(Object.keys(footer('EDIT_TRIP')['on-click-action'].payload).sort(), ['action', ...fields].sort());
-  assert.deepEqual(Object.keys(footer('PICK_PLACES')['on-click-action'].payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
-  assert.deepEqual(footer('REVIEW_TRIP')['on-click-action'].payload, { action: 'confirm_trip' });
-  assert.equal(footer('DONE')['on-click-action'].name, 'complete');
-  assert.deepEqual(EDIT_TRIP_FLOW.screens.filter((screen) => screen.terminal).map((screen) => screen.id), ['DONE']);
   // Forward-only, one entry: Meta rejects anything else.
-  const order = Object.keys(EDIT_TRIP_FLOW.routing_model);
-  for (const [from, tos] of Object.entries(EDIT_TRIP_FLOW.routing_model)) for (const to of tos) assert.ok(order.indexOf(to) > order.indexOf(from), `${from} → ${to} goes backwards`);
+  const order = Object.keys(flow.routing_model);
+  for (const [from, tos] of Object.entries(flow.routing_model)) for (const to of tos) assert.ok(order.indexOf(to) > order.indexOf(from), `${from} → ${to} goes backwards`);
+  const footer = (id) => screens[id].layout.children[0].children.find((child) => child.type === 'Footer');
+  return { screens, footer };
+}
+
+test('the forms on Meta and the server agree: every binding exists, every box the server reads is sent, and the screens only go forward', () => {
+  const fields = ['pickup', 'stop_1', 'stop_2', 'stop_3', 'destination'];
+  const trip = checkFormJson(EDIT_TRIP_FLOW, ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'DONE']);
+  assert.equal(trip.footer('EDIT_TRIP').label, 'Confirm trip');
+  assert.deepEqual(Object.keys(trip.footer('EDIT_TRIP')['on-click-action'].payload).sort(), ['action', ...fields].sort());
+  assert.deepEqual(Object.keys(trip.footer('PICK_PLACES')['on-click-action'].payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
+  assert.deepEqual(trip.footer('REVIEW_TRIP')['on-click-action'].payload, { action: 'confirm_trip' });
+  assert.equal(trip.footer('DONE')['on-click-action'].name, 'complete');
+
+  const OFFERS_FORM = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
+  const offers = checkFormJson(OFFERS_FORM, ['OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'DONE']);
+  assert.deepEqual(offers.footer('OFFERS')['on-click-action'].payload, { action: 'offers_choice', choice: '${form.choice}' });
+  assert.deepEqual(offers.footer('CHANGE_PRICE')['on-click-action'].payload, { action: 'update_price', new_price: '${form.new_price}' });
+  assert.deepEqual(offers.footer('CANCEL_SEARCH')['on-click-action'].payload, { action: 'cancel_search', reason: '${form.reason}' });
+  assert.deepEqual(OFFERS_FORM.screens.filter((screen) => screen.terminal).map((screen) => screen.id), ['DONE']);
 });
 
 /* ── offers in the chat: tap one and it is yours ────────────────────────── */
@@ -1451,7 +1465,8 @@ async function searchingRider(walletNgn) {
   await prisma.ride.create({ data: { id: rideId, riderId: user.id, status: 'MATCHING', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
   await prisma.wallet.upsert({ where: { userId: user.id }, update: { balanceNgn: walletNgn }, create: { userId: user.id, balanceNgn: walletNgn } });
   const accepted = () => published.filter((p) => p.event?.eventType === 'RIDE_OFFER_ACCEPTED').map((p) => p.event);
-  return { redis, deps, sent, who, user, rideId, accepted };
+  const publishedEvents = () => published.map((p) => p.event).filter(Boolean);
+  return { redis, deps, sent, who, user, rideId, accepted, publishedEvents };
 }
 const offerId = (bid, shownPriceNgn = bid.counterOfferNgn) => `offer:${shownPriceNgn}:${bid.bidId}`;
 
@@ -1597,6 +1612,144 @@ test('"cancel", then a tap on an offer instead of a reason: the tap wins — the
   await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
   assert.equal(accepted().length, 1);
 });
+
+/* ── the OFFERS FORM: accept, change price, decline all, cancel — one button, no extra messages ── */
+
+const { handleOffersFormFlow } = require('../apps/api-gateway/dist/whatsapp-flows/offers-form-flow.js');
+const offersNotifier = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
+
+/** A rider whose price is out, on a server where the offers form is published. */
+async function riderWithOffersForm(walletNgn) {
+  const at = await searchingRider(walletNgn);
+  at.deps.whatsappOffersFormFlowId = 'flow-offers-form-1';
+  const formDeps = { redisClient: at.redis, publisher: at.deps.publisher, ...createOffersFormChatHooks(at.deps) };
+  const form = (action, data) => handleOffersFormFlow({ version: '3.0', action, flow_token: 'x', data }, at.user.id, formDeps);
+  const events = (type) => at.publishedEvents().filter((e) => e.eventType === type);
+  return { ...at, form, events };
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 60));   // the chat is told without holding the form up
+
+test('with the offers form published, offers arrive as ONE message with ONE button — and fall back to reply buttons if WhatsApp refuses it', async () => {
+  const sent = [];
+  global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
+  const meta = { metaAccessToken: 't', metaPhoneNumberId: '1', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: 'test-secret-that-is-at-least-32-characters-long' };
+  const driver = { driverId: 'd', userId: 'u', name: 'oke oyebade' };
+  const one = [offerFrom(driver, 17000)];
+
+  assert.equal(await offersNotifier.sendOffersInChat(meta, '+2348030000001', one, 17000, undefined, 'rider-1'), true);
+  const message = sent[0].interactive;
+  assert.equal(message.type, 'flow');
+  assert.equal(message.action.parameters.flow_cta, 'Respond to offer');
+  assert.equal(verifyFlowToken(message.action.parameters.flow_token, meta.flowTokenSecret), 'bids:rider-1');
+  assert.match(message.body.text, /\*oke oyebade\* offers \*₦17,000\*[\s\S]*Your price: ₦17,000[\s\S]*accept a driver, change your price, decline or cancel/);
+
+  await offersNotifier.sendOffersInChat(meta, '+234', [...one, offerFrom(driver, 16000, { driverName: 'Aisha Bello' })], 17000, undefined, 'rider-1');
+  assert.equal(sent[1].interactive.action.parameters.flow_cta, 'Respond to offers');
+  assert.match(sent[1].interactive.body.text, /2 drivers have made offers[\s\S]*\*₦16,000\* — Aisha Bello[\s\S]*\*₦17,000\* — oke oyebade/);
+
+  // Refused → the reply-button message, in the same call.
+  sent.length = 0;
+  global.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return { ok: body.interactive.type !== 'flow', status: 200, text: async () => '' }; };
+  assert.equal(await offersNotifier.sendOffersInChat(meta, '+234', one, 17000, undefined, 'rider-1'), true);
+  assert.deepEqual(sent.map((m) => m.interactive.type), ['flow', 'button']);
+  // No form published → reply buttons, as before.
+  sent.length = 0;
+  await offersNotifier.sendOffersInChat({ metaAccessToken: 't', metaPhoneNumberId: '1' }, '+234', one, 17000, undefined, 'rider-1');
+  assert.deepEqual(sent.map((m) => m.interactive.type), ['button']);
+});
+
+test('OFFERS FORM · Change my price: a box, "Bid updated ✅" — drivers are told, and the chat gets NOTHING', async () => {
+  const { redis, sent, rideId, form, events } = await riderWithOffersForm(10_000);
+  await bidState.addBid(redis, rideId, offerFrom(await onlineDriver(), 2400));
+
+  const opened = await form('INIT');
+  assert.equal(opened.screen, 'OFFERS');
+  assert.deepEqual(opened.data.choices.map((c) => c.title), ['₦2,400 · Chinedu Okafor', 'Change my price', 'Decline all', 'Cancel search']);
+  assert.match(opened.data.offer_line, /Your price: ₦2,000/);
+
+  const before = sent.length;
+  const box = await form('data_exchange', { action: 'offers_choice', choice: 'change_price' });
+  assert.equal(box.screen, 'CHANGE_PRICE');
+  assert.equal(box.data.current_price, '2000', 'the box opens on their current price');
+
+  const low = await form('data_exchange', { action: 'update_price', new_price: '100' });
+  assert.equal(low.screen, 'CHANGE_PRICE');
+  assert.match(low.data.error, /lowest price for this trip is ₦/);
+  assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
+
+  const updated = await form('data_exchange', { new_price: '2,800' });        // no `action` tag: the payload's shape says it
+  assert.equal(updated.screen, 'DONE');
+  assert.match(updated.data.headline, /Bid updated to ₦2,800/);
+  assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [2800]);
+  assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 2800);
+  assert.equal(sent.length, before, 'not one chat message');
+});
+
+test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why inside the form — neither sends a chat message', async () => {
+  const { redis, sent, user, rideId, form, events } = await riderWithOffersForm(10_000);
+  await bidState.addBid(redis, rideId, offerFrom(await onlineDriver(), 2400));
+  const before = sent.length;
+
+  const declined = await form('data_exchange', { action: 'offers_choice', choice: 'decline_all' });
+  assert.equal(declined.screen, 'DONE');
+  assert.match(declined.data.headline, /Offers declined/);
+  assert.deepEqual(await bidState.getBids(redis, rideId), []);
+  assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'still searching');
+  assert.equal(events('RIDE_CANCELLED').length, 0);
+  assert.deepEqual((await form('INIT')).data.choices.map((c) => c.id), ['change_price', 'cancel_search'], 'nothing to decline once nothing is on the table');
+
+  const why = await form('data_exchange', { action: 'offers_choice', choice: 'cancel_search' });
+  assert.equal(why.screen, 'CANCEL_SEARCH');
+  assert.deepEqual(why.data.reasons.map((r) => r.id), ['1', '2', '3', '4']);
+  assert.ok(why.data.reasons.every((r) => r.title.length <= 30));
+  const cancelled = await form('data_exchange', { action: 'cancel_search', reason: '4' });
+  assert.match(cancelled.data.headline, /Search cancelled/);
+  assert.deepEqual(events('RIDE_CANCELLED').map((e) => [e.rideId, e.reason, e.cancelledBy]), [[rideId, 'Accidental request', 'rider']]);
+  assert.equal(await bidState.getActiveRide(redis, user.id), null);
+  assert.equal(sent.length, before, 'not one chat message for either');
+
+  // The form can only OPEN on its first screen — a finished search says so there.
+  const over = await form('INIT');
+  assert.equal(over.screen, 'OFFERS');
+  assert.match(over.data.error, /search has ended/);
+  assert.deepEqual(over.data.choices.map((c) => c.id), ['close']);
+});
+
+test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat gets the driver card — a re-priced offer is refused, a short wallet gets the Add money button', async () => {
+  const { redis, sent, user, rideId, form, events } = await riderWithOffersForm(3_000);
+  const driver = await onlineDriver();
+  const bid = offerFrom(driver, 2400);
+  const dear = offerFrom(await onlineDriver('Tunde Ade'), 9000);
+  await bidState.addBid(redis, rideId, bid);
+  await bidState.addBid(redis, rideId, dear);
+
+  // The screen was left open while the driver re-priced: the old price is never held.
+  await bidState.addBid(redis, rideId, { ...bid, counterOfferNgn: 2900 });
+  const stale = await form('data_exchange', { action: 'offers_choice', choice: `offer:2400:${bid.bidId}` });
+  assert.equal(stale.screen, 'OFFERS');
+  assert.match(stale.data.error, /changed their price to ₦2,900 \(it was ₦2,400\)/);
+  assert.equal(events('RIDE_OFFER_ACCEPTED').length, 0);
+
+  // More than the wallet holds: the choice is remembered and ONE Add money button goes to the chat.
+  const short = await form('data_exchange', { action: 'offers_choice', choice: `offer:9000:${dear.bidId}` });
+  assert.equal(short.screen, 'DONE');
+  assert.match(short.data.headline, /Add ₦6,000 to ride with Tunde/);
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Add money');
+  assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, dear.bidId);
+  assert.equal(events('RIDE_OFFER_ACCEPTED').length, 0);
+
+  const ok = await form('data_exchange', { action: 'offers_choice', choice: `offer:2900:${bid.bidId}` });
+  assert.equal(ok.screen, 'DONE');
+  assert.match(ok.data.headline, /Ride confirmed/);
+  assert.deepEqual(events('RIDE_OFFER_ACCEPTED').map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2900]]);
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2900);
+  await settle();
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+
+  const after = await form('INIT');
+  assert.match(after.data.error, /driver is already confirmed/);
+});
+
 
 /* ── always a way out ──────────────────────────────────────────────────── */
 

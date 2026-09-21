@@ -10,6 +10,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { META_FLOWS_ENABLED } from './flow-toggle';
 import { handleEditTripFlow, type EditTripFlowDeps } from './edit-trip-flow';
+import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
 import type { FlowRequestBody } from './encryption';
@@ -63,6 +64,9 @@ export interface WhatsappFlowEndpointDeps {
   notifier?: WhatsappNotifierDeps;
   /** The trip was confirmed in the Edit-trip form: send the price step to the rider's chat. */
   onTripConfirmed?: EditTripFlowDeps['onTripConfirmed'];
+  /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
+  onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
+  onWalletShort?: OffersFormDeps['onWalletShort'];
 }
 
 const POLL_INTERVAL_MS = 1_000;
@@ -193,6 +197,16 @@ async function handleFlowAction(
       googleMapsApiKey: deps.googleMapsApiKey,
       routePlanner: deps.routePlanner,
       onTripConfirmed: deps.onTripConfirmed,
+    });
+  }
+
+  // ── The offers form (token `bids:<userId>`): accept / change price / decline all / cancel ──
+  if (rideId === 'bids') {
+    return handleOffersFormFlow(body, userId, {
+      redisClient: deps.redisClient,
+      publisher: deps.publisher,
+      onRideConfirmed: deps.onRideConfirmed,
+      onWalletShort: deps.onWalletShort,
     });
   }
 
