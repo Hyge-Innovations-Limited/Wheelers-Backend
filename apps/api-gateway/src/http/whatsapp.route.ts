@@ -878,62 +878,139 @@ async function sendSearchStarted(
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+interface ConfirmedRideForChat {
+  driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
+  vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
+  pickupAddress?: string; destAddress?: string;
+}
+
+/** Everything about the ride, as one tidy list — the text under the car's photo. */
+function rideDetailsText(ride: ConfirmedRideForChat, withTrackingLine: boolean): string {
+  return [
+    `✅ *Ride confirmed & paid*`,
+    ``,
+    `*YOUR DRIVER*`,
+    `👤 ${ride.driverName}`,
+    `⭐ ${ride.driverRating.toFixed(1)} · ${ride.totalRides.toLocaleString()} rides`,
+    ...(ride.driverPhone ? [`📞 ${ride.driverPhone}`] : []),
+    ``,
+    `*THE CAR*`,
+    `🚗 ${ride.vehicleModel}`,
+    `🔢 Plate: *${ride.vehiclePlate}*`,
+    ``,
+    `*YOUR TRIP*`,
+    ...(ride.pickupAddress ? [`📍 From: ${ride.pickupAddress}`] : []),
+    ...(ride.destAddress ? [`🏁 To: ${ride.destAddress}`] : []),
+    `💰 ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
+    `⏱ Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
+    ``,
+    withTrackingLine
+      ? `Check the plate before you get in. Tap *Track live trip* to watch your driver on the map. 🗺️`
+      : `Check the plate before you get in. Your driver is on the way! 🚗`,
+  ].join('\n').slice(0, 1024);   // WhatsApp's limit for a caption and for a button message's body
+}
+
 /**
- * "Your ride is confirmed", the same from the chat's *pay* and the page's Accept:
+ * One WhatsApp message made of three things: a picture on top, text under it,
+ * and a link button at the bottom. Returns false if WhatsApp refuses it, so the
+ * caller can send the same content the long way.
+ */
+async function sendPhotoCardWithLink(
+  deps: MetaWhatsappRouteDeps,
+  to: string,
+  imageUrl: string,
+  body: string,
+  buttonText: string,
+  url: string,
+): Promise<boolean> {
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return false;
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: to.replace(/^\+/, ''),
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        header: { type: 'image', image: { link: imageUrl } },
+        body: { text: body },
+        action: { name: 'cta_url', parameters: { display_text: buttonText.slice(0, 20), url } },
+      },
+    }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.error('[whatsapp] photo card failed — sending the photo and the button separately', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * "Your ride is confirmed" — TWO messages, the same from the chat's *pay* and
+ * from the page's Accept:
  *
  *   1. the driver's photo
- *   2. the vehicle's photo
- *   3. every detail in ONE message, ending in a "Track live trip" button
+ *   2. the car's photo, with every detail listed under it and a
+ *      "Track live trip" button at the bottom — one message
  *
- * In that order on purpose — the face and the car first, then the message the
- * rider keeps coming back to, last, so it sits at the bottom of the chat with
- * the button under it. WhatsApp delivers in the order it finishes processing,
- * and pictures take longer than text: each send is awaited and followed by a
- * short pause, or the details routinely landed ABOVE the photos.
+ * It used to be four (photo, photo, details, button). The rider needs a face, a
+ * car to look for, and one thing to tap; everything about the ride now sits in
+ * the message they will scroll back to when the car pulls up.
+ *
+ * The driver's photo is awaited and followed by a short pause: pictures take
+ * longer to land than the message after them, and the card kept arriving first.
  */
 async function sendRideConfirmation(
   deps: MetaWhatsappRouteDeps,
   userId: string,
   phone: string,
-  ride: {
-    driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
-    vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
-  },
+  ride: ConfirmedRideForChat,
 ): Promise<string> {
+  let selfieUrl: string | null = null;
+  let carUrl: string | null = null;
   if (deps.driverKycStorage) {
     try {
       const kyc = await driverClient.findKycSubmission(ride.driverId);
-      if (kyc?.selfieKey) {
-        await sendMetaImageMessage(deps, phone, await deps.driverKycStorage.getSignedUrl(kyc.selfieKey), `Your driver: *${ride.driverName}*`);
-        await pause(900);
-      }
-      if (kyc?.vehicleImageKeys?.length) {
-        await sendMetaImageMessage(deps, phone, await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!), `${ride.vehicleModel} · *${ride.vehiclePlate}*`);
-        await pause(1500);
-      }
+      if (kyc?.selfieKey) selfieUrl = await deps.driverKycStorage.getSignedUrl(kyc.selfieKey);
+      if (kyc?.vehicleImageKeys?.length) carUrl = await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!);
     } catch {
-      // Non-critical — the details still go out.
+      // No photos on file, or storage is down: the details still go out.
     }
   }
 
-  const url = ridePageUrl(deps, userId);
-  const text = [
-    `✅ *Ride confirmed & paid!*`,
-    ``,
-    `👤 *${ride.driverName}*`,
-    `⭐ ${ride.driverRating.toFixed(1)} · ${ride.totalRides.toLocaleString()} rides`,
-    ...(ride.driverPhone ? [`📞 ${ride.driverPhone}`] : []),
-    `🚗 ${ride.vehicleModel} · *${ride.vehiclePlate}*`,
-    `💰 ₦${ride.fareNgn.toLocaleString()} held from your wallet — paid when the trip ends`,
-    `⏱ Arriving in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
-    ``,
-    url
-      ? `Tap *Track live trip* to watch your driver on the map. Check the plate before you get in. 🚗`
-      : `Your driver is on the way! Check the plate before you get in. 🚗`,
-  ].join('\n');
-  if (url) await sendMetaLinkButton(deps, phone, text, 'Track live trip', url);
-  else await sendMetaReply(deps, phone, text);
-  return text;
+  const trackUrl = ridePageUrl(deps, userId);
+  const details = rideDetailsText(ride, Boolean(trackUrl));
+
+  // The card carries ONE picture. The car when there is one (it is what they
+  // look for on the street); otherwise the driver's own photo becomes the card.
+  const cardPhoto = carUrl ?? selfieUrl;
+  if (selfieUrl && carUrl) {
+    await sendMetaImageMessage(deps, phone, selfieUrl, `Your driver: *${ride.driverName}*`).catch(() => undefined);
+    await pause(1200);
+  }
+
+  if (cardPhoto && trackUrl && await sendPhotoCardWithLink(deps, phone, cardPhoto, details, 'Track live trip', trackUrl)) {
+    return details;
+  }
+
+  // The long way: WhatsApp refused the card, there is no photo, or no page to link to.
+  if (cardPhoto) {
+    await sendMetaImageMessage(deps, phone, cardPhoto, details).catch(() => undefined);
+    if (trackUrl) {
+      await pause(1200);
+      await sendMetaLinkButton(deps, phone, `🗺️ *Track your trip live* — watch ${ride.driverName.split(' ')[0]} on the map.`, 'Track live trip', trackUrl);
+    }
+  } else if (trackUrl) {
+    await sendMetaLinkButton(deps, phone, details, 'Track live trip', trackUrl);
+  } else {
+    await sendMetaReply(deps, phone, details);
+  }
+  return details;
 }
 
 /**
@@ -2875,6 +2952,8 @@ async function handleIncomingMetaMessage(
           vehiclePlate: pendingAccept.vehiclePlate,
           etaSeconds: pendingAccept.etaSeconds,
           fareNgn: agreedFare,
+          pickupAddress: rideMeta.pickupAddress,
+          destAddress: rideMeta.destinationAddress,
         });
 
         // Clear pending accept so rider can't accidentally pay twice

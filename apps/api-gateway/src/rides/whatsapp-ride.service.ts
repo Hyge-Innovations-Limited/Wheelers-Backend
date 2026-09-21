@@ -171,6 +171,8 @@ export interface ConfirmedRide {
   vehicleModel: string;
   vehiclePlate: string;
   etaSeconds: number;
+  pickupAddress: string;
+  destAddress: string;
 }
 
 export type ConfirmResult =
@@ -272,6 +274,8 @@ export async function confirmRideWithOffer(
     vehicleModel: bid.vehicleModel,
     vehiclePlate: bid.vehiclePlate,
     etaSeconds: bid.etaSeconds,
+    pickupAddress: meta.pickupAddress,
+    destAddress: meta.destinationAddress,
   };
   await clearPendingAccept(deps.redisClient, riderId);
   await setRideState(deps.redisClient, rideId, 'confirmed');
