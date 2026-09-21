@@ -1,4 +1,3 @@
-import { createWalletPageToken, RIDE_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import { signFlowToken } from './encryption';
 import { META_FLOWS_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
@@ -10,36 +9,133 @@ export interface WhatsappNotifierDeps {
   /** When set, bid updates for flow rides go out as a tappable flow message. */
   offersFlowId?: string;
   flowTokenSecret?: string;
-  /**
-   * With both set, offers are announced with a "View offers" button to the
-   * bidding page instead of being listed in the chat.
-   */
-  appBaseUrl?: string;
-  pageTokenSecret?: string;
+}
+
+/* ── offers, in the chat, as things to TAP ─────────────────────────────── */
+
+/** What a tapped offer sends back: `offer:<price shown>:<offer key>`. */
+const OFFER_REPLY = /^offer:(\d+):(.+)$/;
+export const CHANGE_PRICE_REPLY_ID = 'offers_change_price';
+export const CANCEL_SEARCH_REPLY_ID = 'offers_cancel';
+export const CHANGE_PRICE_TITLE = 'Change my price';
+export const CANCEL_SEARCH_TITLE = 'Cancel search';
+/** WhatsApp allows ten rows in a list; two are "change my price" and "cancel". */
+const MAX_OFFER_ROWS = 8;
+
+/** Same handle the bidding page uses: the durable bid id when there is one. */
+function keyOf(bid: WhatsappBid): string {
+  return bid.bidId ?? `driver:${bid.driverId}`;
 }
 
 /**
- * The chat's whole part in bidding when the rider is NOT on the page: one short
- * line and a button. The list itself — who, how much, how far — lives on the
- * page, where it updates in place instead of arriving as message after message.
- * Returns false when the button cannot be sent, so the caller can fall back to
- * the text list.
+ * The price rides in the id on purpose. A chat message cannot be edited, so an
+ * old one may still show ₦2,800 after the driver has moved to ₦3,200 — and a tap
+ * on it must never hold a fare the rider did not see.
  */
-export async function sendOffersButton(
+export function offerReplyId(bid: WhatsappBid): string {
+  return `offer:${bid.counterOfferNgn}:${keyOf(bid)}`;
+}
+
+export function parseOfferReplyId(id: string | undefined): { shownPriceNgn: number; key: string } | null {
+  const match = OFFER_REPLY.exec(id ?? '');
+  return match ? { shownPriceNgn: Number(match[1]), key: match[2]! } : null;
+}
+
+/** Cheapest first, nearest breaking a tie — the order shown, and the order "1" means. */
+export function sortOffers(bids: WhatsappBid[]): WhatsappBid[] {
+  return [...bids].sort((a, b) => (a.counterOfferNgn - b.counterOfferNgn) || (a.etaSeconds - b.etaSeconds));
+}
+
+function offerFacts(bid: WhatsappBid): string {
+  const etaMin = Math.max(1, Math.ceil(bid.etaSeconds / 60));
+  return [bid.vehicleModel, bid.vehiclePlate, `${bid.driverRating.toFixed(1)}★`, `${etaMin} min away`].filter(Boolean).join(' · ');
+}
+
+function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] || 'Driver';
+}
+
+/** The interactive message for the offers on the table. Exported for tests. */
+export function buildOffersMessage(
+  bids: WhatsappBid[],
+  riderOfferNgn: number,
+  changes?: string[],
+): Record<string, unknown> | null {
+  const offers = sortOffers(bids);
+  if (offers.length === 0) return null;
+  const news = changes && changes.length > 0 ? `🔔 ${changes.join('\n🔔 ')}\n\n` : '';
+
+  if (offers.length === 1) {
+    const bid = offers[0]!;
+    return {
+      type: 'button',
+      body: {
+        text: `${news}🚗 *${bid.driverName}* offers *₦${bid.counterOfferNgn.toLocaleString()}*\n${offerFacts(bid)}\n\nYour price: ₦${riderOfferNgn.toLocaleString()}`.slice(0, 1024),
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: offerReplyId(bid), title: `Accept ₦${bid.counterOfferNgn.toLocaleString()}`.slice(0, 20) } },
+          { type: 'reply', reply: { id: CHANGE_PRICE_REPLY_ID, title: CHANGE_PRICE_TITLE } },
+          { type: 'reply', reply: { id: CANCEL_SEARCH_REPLY_ID, title: CANCEL_SEARCH_TITLE } },
+        ],
+      },
+    };
+  }
+
+  const shown = offers.slice(0, MAX_OFFER_ROWS);
+  const lines = shown.map((bid) => `*₦${bid.counterOfferNgn.toLocaleString()}* — ${bid.driverName}\n${offerFacts(bid)}`);
+  const hidden = offers.length - shown.length;
+  return {
+    type: 'list',
+    body: {
+      text: [
+        `${news}🚗 *${offers.length} drivers have made offers* · your price ₦${riderOfferNgn.toLocaleString()}`,
+        '',
+        lines.join('\n\n'),
+        ...(hidden > 0 ? ['', `…and ${hidden} more at higher prices.`] : []),
+        '',
+        'Tap *Choose a driver* to take one.',
+      ].join('\n').slice(0, 1024),
+    },
+    action: {
+      button: 'Choose a driver',
+      sections: [
+        {
+          title: 'Offers',
+          rows: shown.map((bid) => ({
+            id: offerReplyId(bid),
+            title: `₦${bid.counterOfferNgn.toLocaleString()} · ${firstName(bid.driverName)}`.slice(0, 24),
+            description: offerFacts(bid).slice(0, 72),
+          })),
+        },
+        {
+          title: 'Something else',
+          rows: [
+            { id: CHANGE_PRICE_REPLY_ID, title: CHANGE_PRICE_TITLE, description: 'Offer drivers a different amount' },
+            { id: CANCEL_SEARCH_REPLY_ID, title: CANCEL_SEARCH_TITLE, description: 'Stop looking — nothing is charged' },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Offers go to the chat as things to tap: one offer is an "Accept ₦X" button,
+ * several are a "Choose a driver" list. No "reply 1–3" instructions — the tap IS
+ * the reply. Returns false when WhatsApp refuses the message, so the caller can
+ * fall back to the numbered text list (the one case where numbers are still the
+ * only way to answer).
+ */
+export async function sendOffersInChat(
   deps: WhatsappNotifierDeps,
   phone: string,
-  riderId: string,
   bids: WhatsappBid[],
+  riderOfferNgn: number,
+  changes?: string[],
 ): Promise<boolean> {
-  if (!deps.appBaseUrl || !deps.pageTokenSecret || bids.length === 0) return false;
-
-  const best = [...bids].sort((a, b) => a.counterOfferNgn - b.counterOfferNgn)[0]!;
-  const nearest = [...bids].sort((a, b) => a.etaSeconds - b.etaSeconds)[0]!;
-  const headline = bids.length === 1
-    ? `🚗 *${best.driverName}* offered ₦${best.counterOfferNgn.toLocaleString()} · ${Math.max(1, Math.ceil(best.etaSeconds / 60))} min away`
-    : `🚗 *${bids.length} drivers have made offers* — from ₦${best.counterOfferNgn.toLocaleString()}, nearest ${Math.max(1, Math.ceil(nearest.etaSeconds / 60))} min away`;
-  const token = createWalletPageToken(riderId, 'ride', deps.pageTokenSecret, RIDE_PAGE_TOKEN_TTL_SECONDS);
-  const url = `${deps.appBaseUrl.replace(/\/+$/, '')}/widget/ride/ride.html#t=${encodeURIComponent(token)}`;
+  const interactive = buildOffersMessage(bids, riderOfferNgn, changes);
+  if (!interactive) return false;
 
   const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
     method: 'POST',
@@ -49,16 +145,12 @@ export async function sendOffersButton(
       recipient_type: 'individual',
       to: phone.replace(/^\+/, ''),
       type: 'interactive',
-      interactive: {
-        type: 'cta_url',
-        body: { text: `${headline}\n\nTap *View offers* to compare and pick one — or reply *more* to see them here.` },
-        action: { name: 'cta_url', parameters: { display_text: 'View offers', url } },
-      },
+      interactive,
     }),
   }).catch(() => null);
 
   if (!response?.ok) {
-    console.error('[whatsapp-notifier] offers button failed — falling back to the text list', {
+    console.error('[whatsapp-notifier] tappable offers failed — falling back to the numbered list', {
       status: response?.status ?? null,
       payload: response ? await response.text().catch(() => '') : 'network error',
     });
@@ -353,7 +445,7 @@ export async function sendOfferWithdrawnNotification(
 ): Promise<void> {
   const who = driverName ? `*${driverName}*` : 'One driver';
   const next = remaining > 0
-    ? `Reply *more* to see the ${remaining} still available.`
+    ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table 👇`
     : 'Other offers will land here as drivers respond.';
   await sendMetaWhatsappMessage(deps, phone, `ℹ️ ${who} is no longer available — their offer has been removed. ${next}`);
 }

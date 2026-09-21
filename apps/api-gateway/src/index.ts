@@ -175,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -512,6 +512,29 @@ async function bootstrap(): Promise<void> {
     faceStorage: riderKycFaceStorage,
   };
 
+  // The bidding page, the WhatsApp webhook and the deposit hook all talk to the
+  // same chat, so they are built from the same settings.
+  const buildMetaWhatsappDeps = () => ({
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    publisher,
+    paymentsClient,
+    redisClient: redisCommandClient,
+    routePlanner,
+    googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+    metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+    metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+    metaAppSecret: gatewayEnv.META_APP_SECRET,
+    metaWebhookVerifyToken: gatewayEnv.META_WEBHOOK_VERIFY_TOKEN,
+    groqApiKey: gatewayEnv.GROQ_API_KEY,
+    groqModel: gatewayEnv.GROQ_MODEL,
+    groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
+    appBaseUrl: gatewayEnv.APP_BASE_URL,
+    driverKycStorage: driverKycStorage ?? undefined,
+    groupRideFaceStorage: groupRideFaceStorage ?? undefined,
+    whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
+    whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+  });
+
   const server = createServer(async (req, res) => {
     const startedAt = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -844,29 +867,6 @@ async function bootstrap(): Promise<void> {
 
       return;
     }
-
-    // The bidding page and the WhatsApp webhook talk to the same chat, so they
-    // are built from the same settings.
-    const buildMetaWhatsappDeps = () => ({
-      jwtSecret: gatewayEnv.JWT_SECRET,
-      publisher,
-      paymentsClient,
-      redisClient: redisCommandClient,
-      routePlanner,
-      googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
-      metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
-      metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
-      metaAppSecret: gatewayEnv.META_APP_SECRET,
-      metaWebhookVerifyToken: gatewayEnv.META_WEBHOOK_VERIFY_TOKEN,
-      groqApiKey: gatewayEnv.GROQ_API_KEY,
-      groqModel: gatewayEnv.GROQ_MODEL,
-      groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
-      appBaseUrl: gatewayEnv.APP_BASE_URL,
-      driverKycStorage: driverKycStorage ?? undefined,
-      groupRideFaceStorage: groupRideFaceStorage ?? undefined,
-      whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
-      whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
-    });
 
     if (url.pathname.startsWith("/ride-page/")) {
       const handled = await handleRidePageRoute(req, res, {
@@ -2186,10 +2186,10 @@ async function bootstrap(): Promise<void> {
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
             offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
             flowTokenSecret: gatewayEnv.JWT_SECRET,
-            appBaseUrl: gatewayEnv.APP_BASE_URL,
-            pageTokenSecret: gatewayEnv.JWT_SECRET,
           }
         : undefined,
+    // A rider who tapped a driver and went to add money: the deposit confirms the ride.
+    onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in

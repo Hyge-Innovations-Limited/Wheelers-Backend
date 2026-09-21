@@ -170,8 +170,10 @@ test('offers appear by themselves, update in place, and disappear when a driver 
   assert.equal(state.offers[0].plate, 'LND-174XA');
   assert.equal(JSON.stringify(state).includes('+234'), false, 'no driver phone before a ride is confirmed');
 
-  // The chat's "accept 1" must mean what the page shows.
-  assert.equal((await bidState.getLastBatch(redis, rideId)).length, 2);
+  // All the PAGE says about them is a count: offers are seen, and taken, in the chat.
+  assert.equal(state.offerCount, 2);
+  // …and looking at the page must not reorder what "1" means in the chat.
+  assert.equal((await bidState.getLastBatch(redis, rideId)).length, 0);
 
   await bidState.addBid(redis, rideId, { ...first, counterOfferNgn: 6200 });        // same driver, new price
   await bidState.removeBid(redis, rideId, aisha.driverId);
@@ -396,28 +398,55 @@ test('every request from the page says "still here"; silence means they left', a
   assert.equal(await bidState.isRidePageOpen(redis, rider), false);
 });
 
-test('page closed: offers are one short line and a View offers button — never the full list', async () => {
+/* ── offers go to the CHAT, as things to tap ──────────────────────────── */
+
+test('one offer is an "Accept ₦X" button; several are a "Choose a driver" list — and nowhere does it say "reply with a number"', async () => {
   const sent = [];
   global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
-  const meta = { metaAccessToken: 't', metaPhoneNumberId: '1', appBaseUrl: 'https://app.wheelersng.com/', pageTokenSecret: JWT_SECRET };
+  const meta = { metaAccessToken: 't', metaPhoneNumberId: '1' };
   const driver = { driverId: 'd', userId: 'u' };
-  const bids = [bidFrom(driver, 6400), bidFrom(driver, 6100, { driverName: 'Aisha Bello', etaSeconds: 95 }), bidFrom(driver, 6800, { driverName: 'Tunde' })];
+  const chinedu = bidFrom(driver, 6400);
+  const bids = [chinedu, bidFrom(driver, 6100, { driverName: 'Aisha Bello', etaSeconds: 95 }), bidFrom(driver, 6800, { driverName: 'Babatunde Olanrewaju-Adeyemi' })];
 
-  assert.equal(await notifier.sendOffersButton(meta, '+2348030000001', 'rider-1', bids), true);
-  const message = sent[0];
-  assert.equal(message.interactive.type, 'cta_url');
-  assert.equal(message.interactive.action.parameters.display_text, 'View offers');
-  assert.match(message.interactive.body.text, /3 drivers have made offers\* — from ₦6,100, nearest 2 min away/);
-  assert.doesNotMatch(message.interactive.body.text, /Chinedu|Tunde/, 'the list lives on the page');
-  const url = message.interactive.action.parameters.url;
-  assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/, 'the token rides in the #fragment');
-  assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), JWT_SECRET), { userId: 'rider-1', scope: 'ride' });
+  // one offer
+  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', [chinedu], 6000), true);
+  const single = sent[0].interactive;
+  assert.equal(single.type, 'button');
+  assert.deepEqual(single.action.buttons.map((b) => b.reply.title), ['Accept ₦6,400', 'Change my price', 'Cancel search']);
+  assert.match(single.body.text, /\*Chinedu Okafor\* offers \*₦6,400\*[\s\S]*Toyota Corolla · LND-174XA · 4\.9★ · 4 min away[\s\S]*Your price: ₦6,000/);
+  // The id carries the price they SAW, so an old message can never hold a newer fare.
+  assert.deepEqual(notifier.parseOfferReplyId(single.action.buttons[0].reply.id), { shownPriceNgn: 6400, key: chinedu.bidId });
 
-  await notifier.sendOffersButton(meta, '+2348030000001', 'rider-1', [bids[0]]);
-  assert.match(sent[1].interactive.body.text, /\*Chinedu Okafor\* offered ₦6,400 · 4 min away/, 'a single offer is worth naming');
+  // several: cheapest first, everything visible without opening the list
+  assert.equal(await notifier.sendOffersInChat(meta, '+2348030000001', bids, 6000, ['Aisha Bello joined at ₦6,100']), true);
+  const list = sent[1].interactive;
+  assert.equal(list.type, 'list');
+  assert.equal(list.action.button, 'Choose a driver');
+  const rows = list.action.sections[0].rows;
+  assert.deepEqual(rows.map((r) => r.title), ['₦6,100 · Aisha', '₦6,400 · Chinedu', '₦6,800 · Babatunde']);
+  assert.ok(rows.every((r) => r.title.length <= 24 && r.description.length <= 72), "WhatsApp's row limits");
+  assert.deepEqual(list.action.sections[1].rows.map((r) => r.title), ['Change my price', 'Cancel search']);
+  assert.match(list.body.text, /^🔔 Aisha Bello joined at ₦6,100\n\n🚗 \*3 drivers have made offers\*/);
+  assert.match(list.body.text, /\*₦6,100\* — Aisha Bello[\s\S]*\*₦6,400\* — Chinedu Okafor/);
+  for (const message of [single, list]) assert.doesNotMatch(message.body.text, /reply with|reply \*?\d/i);
 
-  // No page configured, or Meta refuses the button → the caller falls back to the text list.
-  assert.equal(await notifier.sendOffersButton({ metaAccessToken: 't', metaPhoneNumberId: '1' }, '+234', 'r', bids), false);
+  // more offers than WhatsApp has rows for: the cheapest eight, and it says so
+  const many = Array.from({ length: 11 }, (_, i) => bidFrom(driver, 7000 + i * 100, { driverName: `Driver ${i}` }));
+  await notifier.sendOffersInChat(meta, '+234', many, 6000);
+  assert.equal(sent[2].interactive.action.sections[0].rows.length, 8);
+  assert.match(sent[2].interactive.body.text, /and 3 more at higher prices/);
+
+  // Meta refuses → false, so the caller falls back to the numbered text list.
   global.fetch = async () => ({ ok: false, status: 400, text: async () => 'no' });
-  assert.equal(await notifier.sendOffersButton(meta, '+234', 'r', bids), false);
+  assert.equal(await notifier.sendOffersInChat(meta, '+234', bids, 6000), false);
+  assert.equal(await notifier.sendOffersInChat(meta, '+234', [], 6000), false);
+});
+
+test('the first offer and a cheaper-than-shown offer interrupt at once; the rest are bundled', () => {
+  const { isUrgentOffer } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const shown = [{ counterOfferNgn: 6400 }, { counterOfferNgn: 7000 }];
+  assert.equal(isUrgentOffer([], { counterOfferNgn: 9000 }), true, 'the first offer of a search');
+  assert.equal(isUrgentOffer(shown, { counterOfferNgn: 6000 }), true, 'cheaper than anything they have seen');
+  assert.equal(isUrgentOffer(shown, { counterOfferNgn: 6400 }), false, 'matching the best is not news');
+  assert.equal(isUrgentOffer(shown, { counterOfferNgn: 8000 }), false);
 });

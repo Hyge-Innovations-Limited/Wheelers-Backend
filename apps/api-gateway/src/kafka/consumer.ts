@@ -20,6 +20,8 @@ import {
   lookupPhoneByUserId,
   addBid,
   shouldNotify,
+  noteNotified,
+  getGroupSeat,
   clearActiveRide,
   clearActiveRideIfMatches,
   clearPendingAccept,
@@ -41,12 +43,12 @@ import {
   getAcceptedBid,
   storeLastCompletedRide,
   getLastBatch,
-  isRidePageOpen,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
   sendBidNotification,
-  sendOffersButton,
+  sendOffersInChat,
+  sortOffers,
   sendFlowOffersMessage,
   sendRideMatchedNotification,
   sendDriverArrivedNotification,
@@ -70,6 +72,12 @@ export interface StartGatewayConsumerDeps {
   redisClient: RedisClient;
   publisher: GatewayPublisher;
   whatsappNotifier?: WhatsappNotifierDeps;
+  /**
+   * A WhatsApp rider's deposit has landed. Returns true when it was spoken for —
+   * the rider had tapped a driver and was adding money to take them, so the chat
+   * has already said what happened — and the plain "deposit received" is skipped.
+   */
+  onWhatsappDeposit?: (deposit: { userId: string; amountNgn: number; newBalanceNgn: number }) => Promise<boolean>;
 }
 
 interface RideParticipantState {
@@ -153,8 +161,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
  */
 const pendingBidFlushTimers = new Map<string, NodeJS.Timeout>();
 
-/** Just past the 30s notification debounce, so shouldNotify passes at fire time. */
-const BID_FLUSH_DELAY_MS = 31_000;
+/** Just past the 15s notification debounce, so shouldNotify passes at fire time. */
+const BID_FLUSH_DELAY_MS = 16_000;
 
 /** "Timilehin now ₦4,300 (was ₦5,000)" — the delta, not a re-announcement. */
 function describeBidChanges(previous: WhatsappBid[], current: WhatsappBid[]): string[] {
@@ -226,7 +234,8 @@ function scheduleBidFlush(
         return;
       }
 
-      const allBids = await getBids(deps.redisClient, rideId);
+      const previousBatch = await getLastBatch(deps.redisClient, rideId).catch(() => []);
+      const allBids = sortOffers(await getBids(deps.redisClient, rideId));
       if (allBids.length === 0) return;
 
       await storeLastBatch(deps.redisClient, rideId, allBids);
@@ -234,7 +243,7 @@ function scheduleBidFlush(
         await sendFlowOffersMessage(deps.whatsappNotifier, phone, riderId, meta, allBids)
           .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
       } else {
-        await announceOffers(deps, phone, riderId, allBids, meta.offerNgn)
+        await announceOffers(deps, phone, rideId, allBids, meta.offerNgn, describeBidChanges(previousBatch, allBids))
           .catch((err) => console.warn('[consumer] WhatsApp bid flush failed', err));
       }
     })();
@@ -245,25 +254,43 @@ function scheduleBidFlush(
 }
 
 /**
- * Tell a WhatsApp rider about the offers on the table — or do not.
+ * Offers go to the rider's CHAT — always, whether or not the bidding page is
+ * open. The page only takes the price; the chat is where offers are seen and
+ * taken, because it is the only thing that can buzz a phone in a pocket.
  *
- *   on the bidding page → nothing. The page is showing them, as toasts; a
- *                         buzz in the chat for the same offer is noise.
- *   page closed         → one short line with a "View offers" button.
- *   no page configured, or the button fails → the full text list, as before.
+ *   one offer      → a message with an "Accept ₦X" button
+ *   several        → one "Choose a driver" list, cheapest first
+ *   a group seat   → the numbered text list (a seat is booked by number, and
+ *                    confirmed only when every rider picks the same driver)
+ *   WhatsApp refuses the tappable message → the numbered text list
  */
 async function announceOffers(
   deps: StartGatewayConsumerDeps,
   phone: string,
-  riderId: string,
+  rideId: string,
   bids: WhatsappBid[],
   riderOfferNgn: number,
   changes?: string[],
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
-  if (await isRidePageOpen(deps.redisClient, riderId)) return;
-  if (await sendOffersButton(deps.whatsappNotifier, phone, riderId, bids)) return;
+  const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
+  if (!groupSeat && await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes)) return;
   await sendBidNotification(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes);
+}
+
+/**
+ * When does an offer interrupt the rider?
+ *
+ *   the FIRST offer of a search            → now. They are waiting for exactly this.
+ *   an offer CHEAPER than any they've seen → now. It changes their decision.
+ *   anything else                          → bundled: one message per 15 seconds.
+ *
+ * A flat 30-second wait made the first driver feel slow; a message per bid made
+ * five drivers re-pricing feel like spam.
+ */
+export function isUrgentOffer(previousBatch: Pick<WhatsappBid, 'counterOfferNgn'>[], bid: Pick<WhatsappBid, 'counterOfferNgn'>): boolean {
+  if (previousBatch.length === 0) return true;
+  return bid.counterOfferNgn < Math.min(...previousBatch.map((shown) => shown.counterOfferNgn));
 }
 
 async function handleRideEvent(
@@ -402,11 +429,13 @@ async function handleRideEvent(
         source: meta?.source ?? null,
       });
       if (phone && meta) {
-        if (await shouldNotify(deps.redisClient, event.rideId)) {
+        const previousBatch = await getLastBatch(deps.redisClient, event.rideId).catch(() => []);
+        const urgent = isUrgentOffer(previousBatch, bid);
+        if (urgent) await noteNotified(deps.redisClient, event.rideId).catch(() => undefined);
+        if (urgent || await shouldNotify(deps.redisClient, event.rideId)) {
           // Fetch ALL bids and send as one batched message — naming what
           // changed since the last message the rider actually saw.
-          const previousBatch = await getLastBatch(deps.redisClient, event.rideId).catch(() => []);
-          const allBids = await getBids(deps.redisClient, event.rideId);
+          const allBids = sortOffers(await getBids(deps.redisClient, event.rideId));
           const changes = describeBidChanges(previousBatch, allBids);
           await storeLastBatch(deps.redisClient, event.rideId, allBids);
           if (meta.source === 'flow') {
@@ -416,7 +445,7 @@ async function handleRideEvent(
             await sendFlowOffersMessage(deps.whatsappNotifier, phone, event.riderId, meta, allBids)
               .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
           } else {
-            await announceOffers(deps, phone, event.riderId, allBids, meta.offerNgn, changes)
+            await announceOffers(deps, phone, event.rideId, allBids, meta.offerNgn, changes)
               .catch((err) => console.warn('[consumer] WhatsApp bid notification failed', err));
           }
         } else {
@@ -1011,6 +1040,18 @@ async function handleWalletEvent(
       }
     }
 
+    // Adding money to take a driver they tapped: the deposit itself confirms the ride.
+    if (!handledByRide && event.creditType === 'deposit' && deps.onWhatsappDeposit) {
+      handledByRide = await deps.onWhatsappDeposit({
+        userId: event.userId,
+        amountNgn: event.amountNgn,
+        newBalanceNgn: event.newBalanceNgn,
+      }).catch((error) => {
+        console.error('[consumer] finishing a ride on deposit failed', { userId: event.userId, error: error instanceof Error ? error.message : String(error) });
+        return false;
+      });
+    }
+
     // No active ride — send generic deposit confirmation to WhatsApp users
     if (!handledByRide && deps.whatsappNotifier && event.creditType === 'deposit') {
       const phone = await lookupPhoneByUserId(deps.redisClient, event.userId);
@@ -1334,4 +1375,12 @@ async function dropBidFromWhatsappRide(
   const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
   if (!phone) return;
   await sendOfferWithdrawnNotification(deps.whatsappNotifier, phone, gone.driverName, remaining.length).catch(() => {});
+  // The message they were about to tap still lists the driver who left. Give
+  // them a fresh one rather than a tap that answers "no longer available".
+  if (remaining.length === 0) return;
+  const meta = await getRideMeta(deps.redisClient, rideId).catch(() => null);
+  if (!meta || meta.source === 'flow') return;
+  const stillThere = sortOffers(remaining);
+  await storeLastBatch(deps.redisClient, rideId, stillThere).catch(() => {});
+  await announceOffers(deps, phone, rideId, stillThere, meta.offerNgn).catch(() => {});
 }

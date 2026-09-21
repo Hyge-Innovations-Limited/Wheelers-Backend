@@ -9,7 +9,7 @@
 <meta name="format-detection" content="telephone=no">
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="ride.css">
-<title>Your ride · Wheelers</title>
+<title>Your price · Wheelers</title>
 </head>
 <body>
 <!-- the playful shapes from the rider app's home screen -->
@@ -21,7 +21,6 @@
   <header class="top">
     <svg class="mark" viewBox="0 0 83 83" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wheelers"><rect width="82.1161" height="82.1161" rx="12.3174" fill="#FF7700"/><path d="M48.1453 10.712C55.4632 10.6823 63.0012 10.6475 70.3102 10.7158C70.3425 14.5644 69.819 20.9519 69.414 24.7845C68.29 35.4206 65.0334 61.6465 57.1527 69.1636C55.9543 70.3069 54.1021 71.529 52.1862 71.6441C51.0682 71.712 50.0534 71.3748 49.2163 70.788C44.8701 67.7427 43.7239 58.0597 43.3432 53.5894C43.0982 54.878 42.9843 56.1865 42.7604 57.4792C42.1116 61.2236 40.8286 66.7673 37.8116 69.6735C36.9608 70.4926 35.8496 71.1383 34.4932 71.2219C32.8028 71.3254 31.1915 70.5331 29.9485 69.6818C28.2278 68.5035 26.8756 67.0395 25.7523 65.4678C17.4396 53.8334 13.1833 24.2477 11.8042 10.5071C19.7275 10.4106 28.0154 10.5036 35.9579 10.5048L33.8437 51.2213L33.2895 61.1681C33.2117 62.5438 33.054 64.11 33.0973 65.4808C33.106 65.755 33.2493 65.9071 33.4972 66.0607C33.8241 66.0757 34.0237 65.9873 34.122 65.718C36.0987 60.2969 37.1336 54.2556 38.0324 48.6728C39.2915 40.4598 40.289 32.2215 41.0236 23.9666C41.2161 22.0475 41.3849 20.1269 41.5299 18.205C41.6071 17.2019 41.5805 13.8985 42.4905 13.3078C43.2328 13.1019 43.6119 13.637 43.7041 14.1503C43.9854 15.7175 44.1943 17.2963 44.422 18.8695L45.6615 27.4075L49.5476 54.5675C49.6724 55.4544 50.3389 61.4347 50.6468 61.7905C50.776 61.9399 50.899 61.9947 51.1158 62.0317C51.1967 62.0091 51.3164 61.992 51.3729 61.9406C51.9271 61.4313 51.6494 57.8692 51.6354 57.0905C51.3506 46.4589 50.6426 35.8376 49.5124 25.243C49.3139 23.8255 49.195 22.2791 49.0402 20.8488L48.1453 10.712Z" fill="#FEFAEF"/></svg>
     <span class="brand">Wheelers</span>
-    <button class="pill" type="button" id="balance-pill" aria-label="Wallet balance"><span id="balance">₦0</span></button>
   </header>
 
   <section data-view="loading">
@@ -35,7 +34,7 @@
 
   <section data-view="idle" hidden>
     <div class="card note">
-      <h1>Nothing to bid on</h1>
+      <h1>Nothing to price</h1>
       <p id="idle-text">This booking has ended. Send your trip to the Wheelers bot to start a new one.</p>
     </div>
     <p class="foot">Close this page to go back to the chat.</p>
@@ -43,7 +42,7 @@
 
   <!-- 1 · name your price -->
   <section data-view="price" hidden>
-    <p class="eyebrow">Step 1 of 2</p>
+    <p class="eyebrow">Your trip</p>
     <h1>Name your <em>price</em></h1>
 
     <div class="card trip">
@@ -55,18 +54,17 @@
     <label class="amount" for="price-input"><span class="naira">₦</span><input id="price-input" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Your price in naira"></label>
     <div class="chips" id="price-chips"></div>
     <p class="hint" id="price-hint"></p>
-    <div class="card warn" id="price-short" hidden>
-      <p id="price-short-text"></p>
-      <button class="btn small" type="button" id="price-topup">Add money now</button>
-    </div>
     <div class="notice bad" id="price-err" hidden></div>
 
     <button class="btn primary" type="button" id="find" disabled>Find drivers <span aria-hidden="true">→</span></button>
-    <p class="foot">Drivers see your price and reply with their own. You only pay when you accept one.</p>
+    <p class="foot">Drivers see your price and reply with their own. Their offers come to your WhatsApp chat — you pick one there.</p>
   </section>
 
-  <!-- 2 · offers -->
+  <!-- 2 · the price is out — offers arrive in the chat, not here -->
   <section data-view="offers" hidden>
+    <p class="eyebrow ok">Your price is out</p>
+    <h1>Now check your <em>chat</em></h1>
+
     <div class="card trip compact">
       <div class="stop"><span class="dot from"></span><span class="where" data-route="pickup"></span></div>
       <div class="stop"><span class="dot to"></span><span class="where" data-route="dest"></span></div>
@@ -77,20 +75,13 @@
       <button class="btn small" type="button" id="change-offer">Change</button>
     </div>
 
-    <div class="list-head">
-      <h2 id="offers-title">Offers</h2>
-      <div class="sort" role="group" aria-label="Sort offers">
-        <button type="button" data-sort="price" class="on">Cheapest</button>
-        <button type="button" data-sort="eta">Nearest</button>
-      </div>
-    </div>
-
     <div class="searching" id="searching">
       <span class="pulse"></span>
-      <div><strong>Asking drivers near you…</strong><span>Offers appear here by themselves. No need to refresh.</span></div>
+      <div><strong id="sent-title">Asking drivers near you…</strong><span id="sent-text">Each offer arrives as a WhatsApp message. Tap the one you want, right there in the chat.</span></div>
     </div>
-    <ul class="offers" id="offers" aria-live="polite"></ul>
 
+    <a class="btn primary" id="back-to-chat" href="#" hidden>Back to WhatsApp <span aria-hidden="true">→</span></a>
+    <p class="foot" id="close-hint">You can close this page now — WhatsApp will buzz you when a driver responds.</p>
     <button class="btn quiet" type="button" id="cancel-search">Cancel search</button>
   </section>
 
@@ -131,35 +122,6 @@
   <div class="notice bad" id="offer-err" hidden></div>
   <button class="btn primary" type="button" id="offer-save">Update offer</button>
   <button class="btn quiet" type="button" data-close>Keep my offer</button>
-</div>
-
-<div class="sheet" id="sheet-accept" hidden role="dialog" aria-modal="true" aria-labelledby="sa-title">
-  <h2 id="sa-title">Ride with <span id="sa-name"></span>?</h2>
-  <div class="rows">
-    <div><span>Fare</span><strong id="sa-fare"></strong></div>
-    <div><span>Arrives in</span><strong id="sa-eta"></strong></div>
-    <div><span>Vehicle</span><strong id="sa-vehicle"></strong></div>
-    <div><span id="sa-after-label">Wallet after</span><strong id="sa-after"></strong></div>
-  </div>
-  <p class="sub" id="sa-note" hidden></p>
-  <div class="notice bad" id="accept-err" hidden></div>
-  <button class="btn primary" type="button" id="accept-go">Accept &amp; hold fare</button>
-  <button class="btn quiet" type="button" data-close>Not yet</button>
-</div>
-
-<div class="sheet" id="sheet-topup" hidden role="dialog" aria-modal="true" aria-labelledby="st-title">
-  <h2 id="st-title">Send <em id="tu-send"></em></h2>
-  <p class="sub"><span id="tu-gets"></span> lands in your wallet — from any bank app, to your own Wheelers account.</p>
-  <div class="notice" id="tu-preparing" hidden>Your Wheelers account number is being set up with the bank. This takes a moment — it will appear here by itself.</div>
-  <div class="acct" id="tu-acct">
-    <span class="label">Your Wheelers account</span>
-    <div class="bank" id="tu-bank"></div>
-    <div class="number" id="tu-number"></div>
-    <div class="name" id="tu-name"></div>
-    <button class="btn" type="button" id="tu-copy">Copy account number</button>
-  </div>
-  <div class="searching slim"><span class="pulse"></span><div><strong>Waiting for your transfer</strong><span id="tu-wait">This continues by itself the moment it lands.</span></div></div>
-  <button class="btn quiet" type="button" data-close>Close</button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>

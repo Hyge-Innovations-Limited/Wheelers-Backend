@@ -10,6 +10,7 @@ import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { getBanks } from '../payments/banks';
 import { submitWithdrawal, WithdrawalError } from '../payments/withdrawal';
 import type { RedisClient } from '../redis/client';
+import { getActiveRide, getPendingAccept } from '../whatsapp-flows/bid-state';
 import { isRecord, pickNumber, pickString } from '../utils/object';
 import {
   PinFlowError,
@@ -73,6 +74,19 @@ function firstNameOf(name: string | null | undefined): string {
   return name?.trim().split(/\s+/)[0] ?? '';
 }
 
+/**
+ * Adding money to take a driver they tapped in the chat? Then the page skips
+ * "how much?" and opens on the figure to send — the shortfall for THAT fare,
+ * charges folded in. Null for an ordinary deposit, or once the search is over.
+ */
+async function rideTopupFor(deps: WalletPageRouteDeps, userId: string, balanceNgn: number) {
+  const pending = await getPendingAccept(deps.redisClient, userId).catch(() => null);
+  if (!pending || balanceNgn + 0.004 >= pending.fareNgn) return null;
+  if ((await getActiveRide(deps.redisClient, userId).catch(() => null)) !== pending.rideId) return null;
+  const landsNgn = Math.ceil(pending.fareNgn - balanceNgn);
+  return { driverName: pending.driverName, fareNgn: pending.fareNgn, landsNgn, sendNgn: depositNeededFor(landsNgn) };
+}
+
 /* ── GET /wallet-page/session ─────────────────────────────────────────── */
 
 async function handleSession(req: IncomingMessage, res: ServerResponse, deps: WalletPageRouteDeps): Promise<void> {
@@ -96,10 +110,12 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, deps: Wa
   }
 
   const summary = await getSecuritySummary(userId);
+  const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
   sendJson(res, 200, {
     scope,
+    rideTopup: scope === 'deposit' ? await rideTopupFor(deps, userId, balanceNgn) : null,
     firstName: firstNameOf(security.name),
-    balanceNgn: wallet ? Number(wallet.balanceNgn) : 0,
+    balanceNgn,
     lockedNgn: wallet ? Number(wallet.lockedNgn) : 0,
     account: account ? { bankName: account.bankName, accountNumber: account.accountNumber, accountName: account.accountName } : null,
     needsPhone,

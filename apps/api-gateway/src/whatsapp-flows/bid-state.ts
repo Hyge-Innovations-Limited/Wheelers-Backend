@@ -62,7 +62,7 @@ const ACTIVE_RIDE_TTL = 1800;        // 30 minutes — while still looking for a
 export const IN_TRIP_ACTIVE_RIDE_TTL = 3 * 60 * 60;
 const PENDING_LOCATION_TTL = 600;    // 10 minutes
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
-const DEBOUNCE_TTL = 30;             // 30 seconds
+const DEBOUNCE_TTL = 15;             // offers that are not urgent are bundled this long
 const BID_BATCH_TTL = 900;           // 15 minutes — stores last batch sent to rider
 
 function rideMetaKey(rideId: string): string {
@@ -257,6 +257,11 @@ export async function shouldNotify(
   if (existing) return false;
   await redis.set(debounceKey(rideId), Date.now().toString(), DEBOUNCE_TTL);
   return true;
+}
+
+/** An urgent offer went out regardless of the window: start a fresh one behind it. */
+export async function noteNotified(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(debounceKey(rideId), Date.now().toString(), DEBOUNCE_TTL);
 }
 
 // ── Accepted bid (stored so driver profile flow can read it) ──────────────
@@ -497,7 +502,9 @@ export interface PendingAcceptData {
   fareNgn: number;
 }
 
-const PENDING_ACCEPT_TTL = 300; // 5 minutes
+// Long enough for a bank transfer to land: the chosen driver is confirmed by
+// the deposit itself, so the choice has to outlive the trip to the bank app.
+const PENDING_ACCEPT_TTL = 15 * 60;
 
 function pendingAcceptKey(userId: string): string {
   return `whatsapp:user:${userId}:pending_accept`;

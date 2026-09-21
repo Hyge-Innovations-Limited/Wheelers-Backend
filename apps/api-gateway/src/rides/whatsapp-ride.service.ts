@@ -177,7 +177,7 @@ export interface ConfirmedRide {
 
 export type ConfirmResult =
   | { ok: true; ride: ConfirmedRide }
-  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' }
+  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' }
   | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number };
 
 /**
@@ -190,6 +190,25 @@ export type ConfirmResult =
  * is never confirmed on money that is not there.
  */
 export async function confirmRideWithOffer(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  key: string,
+): Promise<ConfirmResult> {
+  // One confirmation at a time per ride. A deposit landing can finish the ride
+  // in the same second the rider taps Accept again; without this both would
+  // publish the acceptance and the rider would be told twice.
+  const confirmingKey = `whatsapp:ride:${rideId}:confirming`;
+  const mine = await deps.redisClient.setIfNotExists(confirmingKey, '1', 20).catch(() => true);
+  if (!mine) return { ok: false, code: 'ALREADY_CONFIRMING' };
+  try {
+    return await confirmOnce(deps, riderId, rideId, key);
+  } finally {
+    await deps.redisClient.del(confirmingKey).catch(() => undefined);
+  }
+}
+
+async function confirmOnce(
   deps: RideServiceDeps,
   riderId: string,
   rideId: string,

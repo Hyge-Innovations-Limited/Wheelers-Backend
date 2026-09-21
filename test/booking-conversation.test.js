@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -906,7 +906,7 @@ test('never turn "ok" into a fare; never guess an amount from words', async () =
 
 /* ── the bidding page, from the chat's side ─────────────────────────────── */
 
-test('the quote comes with a "Set your price" button; typing a price still works and answers with "View offers"', async () => {
+test('the quote comes with a "Set your price" button; typing a price still works, and the search message says offers come to the chat', async () => {
   const redis = memoryRedis();
   const { deps, published } = makeDeps(redis);
   deps.appBaseUrl = 'https://app.wheelersng.com';
@@ -927,8 +927,9 @@ test('the quote comes with a "Set your price" button; typing a price still works
 
   await say(deps, who, '2,000');
   const searching = last(sent);
-  assert.equal(searching.interactive.action.parameters.display_text, 'View offers');
+  assert.equal(searching.interactive.action.parameters.display_text, 'Change my price', 'the page is for the price — offers are not on it');
   assert.match(textOf(searching), /Finding you a driver/);
+  assert.match(textOf(searching), /offers will land right here in this chat/);
   assert.ok(published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
 });
 
@@ -1016,6 +1017,198 @@ test('if WhatsApp refuses a picture-and-button message, nothing is lost: photo, 
   assert.match(order[1].body.image.link, /car\.jpg$/);
   assert.match(order[1].body.image.caption, /\*YOUR DRIVER\*[\s\S]*Plate: \*LND-174XA\*/, 'the info is the caption of the second picture');
   assert.equal(order[2].body.interactive.action.parameters.display_text, 'Track live trip');
+});
+
+/* ── offers in the chat: tap one and it is yours ────────────────────────── */
+
+/** Tap a reply BUTTON (an offer's "Accept ₦X"). */
+async function tapButton(deps, who, id, title) {
+  messageCounter += 1;
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ value: {
+      contacts: [{ profile: { name: who.name }, wa_id: who.phone }],
+      messages: [{ id: `wamid.btn.${Date.now()}.${messageCounter}`, from: who.phone, type: 'interactive', interactive: { type: 'button_reply', button_reply: { id, title } } }],
+    } }] }],
+  };
+  const raw = Buffer.from(JSON.stringify(payload));
+  const req = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield raw; } };
+  const res = { statusCode: 0, setHeader() {}, writeHead() { return this; }, end() {} };
+  await handleMetaWhatsappWebhookRoute(req, res, deps);
+}
+
+async function onlineDriver(name = 'Chinedu Okafor') {
+  const user = await prisma.user.create({ data: { privyDid: `local:${Date.now()}-${Math.random()}`, role: 'DRIVER', name, phone: '+2348031234567' } });
+  await prisma.wallet.create({ data: { userId: user.id, balanceNgn: 0 } });
+  const driver = await prisma.driver.create({ data: { userId: user.id, status: 'ONLINE', kycStatus: 'APPROVED', lat: 6.52, lng: 3.38, lastSeenAt: new Date(), vehicleModel: 'Toyota Corolla', vehiclePlate: 'LND-174XA', totalRides: 412 } });
+  return { userId: user.id, driverId: driver.id, name };
+}
+const offerFrom = (driver, priceNgn, extra = {}) => ({
+  bidId: require('node:crypto').randomUUID(), driverId: driver.driverId, driverUserId: driver.userId, counterOfferNgn: priceNgn,
+  driverName: driver.name, driverRating: 4.9, vehiclePlate: 'LND-174XA', vehicleModel: 'Toyota Corolla',
+  etaSeconds: 240, distanceKm: 1.2, receivedAt: new Date().toISOString(), ...extra,
+});
+
+/** A rider whose price is out, with `walletNgn` in the wallet and the ride row ride-service would have written. */
+async function searchingRider(walletNgn) {
+  const redis = memoryRedis();
+  const { deps, published } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  const user = await riderWithPickup(deps, redis, who);
+  await say(deps, who, 'Osaro Isokpan street');
+  await say(deps, who, '2,000');
+  const rideId = await bidState.getActiveRide(redis, user.id);
+  assert.ok(rideId, 'the search is live');
+  await prisma.ride.create({ data: { id: rideId, riderId: user.id, status: 'MATCHING', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
+  await prisma.wallet.upsert({ where: { userId: user.id }, update: { balanceNgn: walletNgn }, create: { userId: user.id, balanceNgn: walletNgn } });
+  const accepted = () => published.filter((p) => p.event?.eventType === 'RIDE_OFFER_ACCEPTED').map((p) => p.event);
+  return { redis, deps, sent, who, user, rideId, accepted };
+}
+const offerId = (bid, shownPriceNgn = bid.counterOfferNgn) => `offer:${shownPriceNgn}:${bid.bidId}`;
+
+test('TAP an offer with money in the wallet: fare held, ride confirmed — no "reply pay", no second step', async () => {
+  const { redis, deps, sent, who, user, rideId, accepted } = await searchingRider(10_000);
+  const bid = offerFrom(await onlineDriver(), 2400);
+  await bidState.addBid(redis, rideId, bid);
+
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+
+  assert.deepEqual(accepted().map((e) => [e.rideId, e.bidId, e.agreedFareNgn, e.paymentMethod]), [[rideId, bid.bidId, 2400, 'WALLET']]);
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2400, 'the fare is held');
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+  assert.match(textOf(last(sent)), /Ride confirmed & paid[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
+  assert.equal(sent.some((m) => /reply \*pay\*/i.test(textOf(m))), false);
+
+  // A second tap on the same message: they are told their driver is coming, and nothing is charged twice.
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+  assert.match(textOf(last(sent)), /Chinedu Okafor\* is on the way/);
+  assert.equal(accepted().length, 1);
+});
+
+test('a row tapped in the "Choose a driver" list, and a typed number, both take the offer the same way', async () => {
+  for (const pick of ['row', 'number']) {
+    const { redis, deps, who, rideId, accepted } = await searchingRider(10_000);
+    const cheap = offerFrom(await onlineDriver('Aisha Bello'), 2200);
+    const dear = offerFrom(await onlineDriver('Tunde Ade'), 2900);
+    await bidState.addBid(redis, rideId, dear);
+    await bidState.addBid(redis, rideId, cheap);
+
+    if (pick === 'row') await tap(deps, who, offerId(cheap), '₦2,200 · Aisha');
+    else {
+      await say(deps, who, 'more');   // the list they would be answering: cheapest first
+      await say(deps, who, '1');
+    }
+    assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[cheap.bidId, 2200]], pick);
+  }
+});
+
+test('an OLD message must never hold a NEW price: the driver re-priced, so the tap shows the offers again instead', async () => {
+  const { redis, deps, sent, who, user, rideId, accepted } = await searchingRider(10_000);
+  const driver = await onlineDriver();
+  const bid = offerFrom(driver, 2400);
+  await bidState.addBid(redis, rideId, bid);
+  await bidState.addBid(redis, rideId, { ...bid, counterOfferNgn: 3200 });     // same driver, dearer now
+
+  await tapButton(deps, who, offerId(bid, 2400), 'Accept ₦2,400');
+
+  assert.equal(accepted().length, 0);
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 0, 'nothing was held');
+  const fresh = last(sent).interactive;
+  assert.match(fresh.body.text, /Chinedu Okafor changed their price to ₦3,200 \(it was ₦2,400\) — nothing was charged/);
+  assert.equal(fresh.action.buttons[0].reply.title, 'Accept ₦3,200', 'and the new price is one tap away');
+
+  // A driver who pulled out entirely.
+  await bidState.removeBid(redis, rideId, driver.driverId);
+  await tapButton(deps, who, offerId(bid, 3200), 'Accept ₦3,200');
+  assert.match(textOf(last(sent)), /no longer on the table[\s\S]*Still asking drivers/);
+  assert.equal(accepted().length, 0);
+});
+
+test('SHORT WALLET: the tap remembers the driver and sends ONE "Add money" button — and the deposit landing confirms the ride by itself', async () => {
+  const { redis, deps, sent, who, user, rideId, accepted } = await searchingRider(400);
+  const bid = offerFrom(await onlineDriver(), 2400);
+  await bidState.addBid(redis, rideId, bid);
+
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+
+  assert.equal(accepted().length, 0, 'no ride on money that is not there');
+  const ask = last(sent).interactive;
+  assert.equal(ask.type, 'cta_url');
+  assert.equal(ask.action.parameters.display_text, 'Add money');
+  assert.match(ask.action.parameters.url, /\/widget\/wallet\/deposit\.html#t=/, 'the deposit flow — not the price page');
+  assert.match(ask.body.text, /Add money to ride with Chinedu[\s\S]*Fare: ₦2,400 · your wallet: ₦400[\s\S]*Send \*₦2,051\* and ₦2,000 lands/, '(2000 + 30) / 0.99');
+  assert.doesNotMatch(ask.body.text, /fee|charge|account number/i, 'one figure, no breakdown, no bank details in the chat');
+  assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, bid.bidId);
+
+  // The deposit page, opened from that button, skips "how much?".
+  const { handleWalletPageRoute } = require('../apps/api-gateway/dist/http/wallet-page.route.js');
+  const token = decodeURIComponent(ask.action.parameters.url.split('#t=')[1]);
+  const res = { statusCode: 200, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+  await handleWalletPageRoute({ method: 'GET', headers: { authorization: `Bearer ${token}` } }, res, { jwtSecret: deps.jwtSecret, redisClient: redis, paymentsClient: deps.paymentsClient, publisher: deps.publisher }, new URL('http://x/wallet-page/session'));
+  assert.deepEqual(res.body.rideTopup, { driverName: 'Chinedu Okafor', fareNgn: 2400, landsNgn: 2000, sendNgn: 2051 });
+
+  // They sent too little first: told what is still missing, the choice is kept.
+  const finish = createWhatsappDepositFinisher(deps);
+  await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 1400 } });
+  assert.equal(await finish({ userId: user.id, amountNgn: 1000, newBalanceNgn: 1400 }), true);
+  assert.match(textOf(last(sent)), /₦1,000 received[\s\S]*not quite enough[\s\S]*Send \*₦1,041\* and ₦1,000 lands/);
+  assert.equal(accepted().length, 0);
+
+  // The rest lands: the ride confirms with nobody touching anything.
+  await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
+  assert.equal(await finish({ userId: user.id, amountNgn: 1000, newBalanceNgn: 2400 }), true, 'the plain "deposit received" is not sent on top');
+  assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+  assert.equal(await bidState.getPendingAccept(redis, user.id), null);
+});
+
+test('money arrives but the driver did not wait: it stays in the wallet, they are told why, and the offers still there are one tap away', async () => {
+  const { redis, deps, sent, who, user, rideId, accepted } = await searchingRider(0);
+  const gone = await onlineDriver('Tunde Ade');
+  const chosen = offerFrom(gone, 2400);
+  const other = offerFrom(await onlineDriver('Aisha Bello'), 2600);
+  await bidState.addBid(redis, rideId, chosen);
+  await bidState.addBid(redis, rideId, other);
+  await tap(deps, who, offerId(chosen), '₦2,400 · Tunde');
+  await bidState.removeBid(redis, rideId, gone.driverId);
+
+  const finish = createWhatsappDepositFinisher(deps);
+  await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
+  assert.equal(await finish({ userId: user.id, amountNgn: 2400, newBalanceNgn: 2400 }), true);
+  assert.equal(accepted().length, 0);
+  assert.match(textOf(last(sent)), /₦2,400 received[\s\S]*Tunde Ade is no longer available[\s\S]*safe in your wallet/);
+  assert.equal(last(sent).interactive.action.buttons[0].reply.title, 'Accept ₦2,600');
+  assert.equal(await bidState.getPendingAccept(redis, user.id), null);
+
+  // An ordinary deposit — nobody was chosen — is not ours to speak for.
+  assert.equal(await finish({ userId: user.id, amountNgn: 500, newBalanceNgn: 2900 }), false);
+});
+
+test('the search ended while the transfer was on its way: said plainly, money kept, a way forward', async () => {
+  const { redis, deps, sent, who, user, rideId } = await searchingRider(0);
+  const bid = offerFrom(await onlineDriver(), 2400);
+  await bidState.addBid(redis, rideId, bid);
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+  await bidState.clearActiveRide(redis, user.id);          // what the bid timeout does
+  await bidState.cleanupRideKeys(redis, rideId);
+
+  assert.equal(await createWhatsappDepositFinisher(deps)({ userId: user.id, amountNgn: 2400, newBalanceNgn: 2400 }), true);
+  assert.match(textOf(last(sent)), /search ended while your transfer was on its way[\s\S]*safe in your wallet[\s\S]*search again/);
+
+  // And a tap on the old message now says the same, instead of reaching the model as "Accept ₦2,400".
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+  assert.match(textOf(last(sent)), /That search has ended — nothing was charged/);
+});
+
+test('"cancel", then a tap on an offer instead of a reason: the tap wins — the ride is taken, not cancelled', async () => {
+  const { redis, deps, who, rideId, accepted } = await searchingRider(10_000);
+  const bid = offerFrom(await onlineDriver(), 2400);
+  await bidState.addBid(redis, rideId, bid);
+  await say(deps, who, 'cancel');
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
+  assert.equal(accepted().length, 1);
 });
 
 /* ── always a way out ──────────────────────────────────────────────────── */

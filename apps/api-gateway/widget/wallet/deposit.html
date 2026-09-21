@@ -55,9 +55,9 @@
 
   <!-- 2 · what you get, and where to send it -->
   <section data-view="pay" class="step-in" hidden>
-    <p class="eyebrow">Step 2 of 2</p>
+    <p class="eyebrow" id="pay-eyebrow">Step 2 of 2</p>
     <h1>Send <em id="pay-amount" class="num"></em></h1>
-    <p class="lede">From any bank app, to your own Wheelers account below.</p>
+    <p class="lede" id="pay-lede">From any bank app, to your own Wheelers account below.</p>
 
     <div class="receipt">
       <div class="total"><span class="k">Lands in your wallet</span><span class="v" id="row-gets"></span></div>
@@ -71,7 +71,7 @@
       <button class="btn" type="button" id="copy">Copy account number</button>
     </div>
 
-    <div class="waiting" id="waiting"><span class="pulse"></span><span>Waiting for your transfer</span></div>
+    <div class="waiting" id="waiting"><span class="pulse"></span><span id="waiting-text">Waiting for your transfer</span></div>
     <button class="btn quiet" type="button" id="change">Change amount</button>
     <p class="foot">This account is yours alone. Anything sent to it goes straight into your Wheelers wallet.</p>
   </section>

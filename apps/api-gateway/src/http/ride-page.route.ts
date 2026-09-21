@@ -19,7 +19,6 @@ import {
   getRideMeta,
   getRideState,
   markRidePageSeen,
-  storeLastBatch,
 } from '../whatsapp-flows/bid-state';
 import {
   cancelWhatsappRide,
@@ -31,9 +30,12 @@ import {
 } from '../rides/whatsapp-ride.service';
 
 /**
- * The bidding page a WhatsApp rider opens from the chat.
+ * The page a WhatsApp rider opens from the chat — to NAME A PRICE, and later to
+ * track the trip. Offers are not shown here: they go to the chat, where a phone
+ * buzzes, and are taken there with a tap (see acceptOfferInChat). /accept and
+ * /topup still answer, but the page no longer calls them.
  *
- *   GET  /ride-page/state     where the booking is, and every offer on the table
+ *   GET  /ride-page/state     where the booking is, and how many offers are waiting in the chat
  *   POST /ride-page/find      { amountNgn }  name a price → drivers are asked
  *   POST /ride-page/offer     { amountNgn }  change the bid
  *   POST /ride-page/accept    { key }        take one driver's offer (holds the fare)
@@ -107,6 +109,11 @@ async function balanceOf(userId: string): Promise<number> {
 // service can replace it with one setting when traffic grows.
 const MAP_TILE_URL = (process.env['MAP_TILE_URL'] ?? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').trim();
 const MAP_ATTRIBUTION = (process.env['MAP_ATTRIBUTION'] ?? '© OpenStreetMap contributors').trim();
+
+// "Back to WhatsApp" on the page. The bot's own number, digits only (2348012345678).
+// Unset, the page just says to close itself.
+const BOT_NUMBER = (process.env['WHATSAPP_BOT_NUMBER'] ?? '').replace(/\D/g, '');
+const CHAT_URL = BOT_NUMBER ? `https://wa.me/${BOT_NUMBER}` : null;
 
 const TRIP_STATUSES = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
 /** A position older than this is shown, but labelled as old. */
@@ -219,11 +226,12 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         };
       }
 
-      // What the page shows is what "accept 1" in the chat must mean too.
-      await storeLastBatch(deps.redisClient, rideId, bids).catch(() => undefined);
       return {
         phase: 'offers' as const, rideId, balanceNgn, route, offerNgn: meta.offerNgn,
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
+        // All the page says about offers: how many are waiting in the chat, and the way back to it.
+        offerCount: bids.length,
+        chatUrl: CHAT_URL,
         offers: bids.map((bid) => ({
           key: offerKey(bid),
           // Wallet short for THIS offer? Then this is what to deposit — the bank's
@@ -255,6 +263,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         suggestedFareNgn: quote.suggestedFareNgn,
       },
       minOfferNgn: quote.minOfferNgn,
+      chatUrl: CHAT_URL,
     };
   }
 
@@ -329,6 +338,7 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
   DRIVER_TAKEN: { status: 409, message: 'Another rider is confirming that driver right now. Pick another offer.' },
   HOLD_FAILED: { status: 503, message: 'Could not hold the fare in your wallet. Please try again.' },
   CONFIRM_FAILED: { status: 503, message: 'Could not confirm just now — your money is held safely. Tap Accept again.' },
+  ALREADY_CONFIRMING: { status: 409, message: 'Your driver is being confirmed — one moment.' },
 };
 
 async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
