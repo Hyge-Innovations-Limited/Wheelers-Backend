@@ -59,6 +59,8 @@
     "test:wallet-intent": "npm -w @wheleers/api-gateway run build && node --test test/wallet-intent.test.js",
     "places:check": "node scripts/check-places.mjs",
     "test:llm": "npm -w @wheleers/api-gateway run build && node --test test/llm-provider.test.js",
+    "test:all": "npm run build && node --test --test-force-exit --test-concurrency=1 test/llm-provider.test.js test/geocoding-fallback.test.js test/whatsapp-amounts.test.js test/wallet-intent.test.js test/rider-memory.test.js test/face-check.test.js test/deposit-split.test.js test/bank-names.test.js test/live-map.test.js test/paystack-webhook.test.js test/wallet-pin.test.js test/rider-signup.test.js test/driver-bids.test.js test/booking-conversation.test.js test/otp-channels.test.js test/group-ride.test.js test/ride-page.test.js test/wallet-holds.test.js",
+    "test:ride-page": "npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/ride-page.test.js",
     "test:booking": "npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/booking-conversation.test.js",
     "test:live-map": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/live-map.test.js",
     "test:wallet-pin": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/wallet-pin.test.js",

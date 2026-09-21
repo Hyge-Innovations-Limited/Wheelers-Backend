@@ -1,3 +1,4 @@
+import { createWalletPageToken, RIDE_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import { signFlowToken } from './encryption';
 import { META_FLOWS_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
@@ -9,6 +10,61 @@ export interface WhatsappNotifierDeps {
   /** When set, bid updates for flow rides go out as a tappable flow message. */
   offersFlowId?: string;
   flowTokenSecret?: string;
+  /**
+   * With both set, offers are announced with a "View offers" button to the
+   * bidding page instead of being listed in the chat.
+   */
+  appBaseUrl?: string;
+  pageTokenSecret?: string;
+}
+
+/**
+ * The chat's whole part in bidding when the rider is NOT on the page: one short
+ * line and a button. The list itself — who, how much, how far — lives on the
+ * page, where it updates in place instead of arriving as message after message.
+ * Returns false when the button cannot be sent, so the caller can fall back to
+ * the text list.
+ */
+export async function sendOffersButton(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  riderId: string,
+  bids: WhatsappBid[],
+): Promise<boolean> {
+  if (!deps.appBaseUrl || !deps.pageTokenSecret || bids.length === 0) return false;
+
+  const best = [...bids].sort((a, b) => a.counterOfferNgn - b.counterOfferNgn)[0]!;
+  const nearest = [...bids].sort((a, b) => a.etaSeconds - b.etaSeconds)[0]!;
+  const headline = bids.length === 1
+    ? `🚗 *${best.driverName}* offered ₦${best.counterOfferNgn.toLocaleString()} · ${Math.max(1, Math.ceil(best.etaSeconds / 60))} min away`
+    : `🚗 *${bids.length} drivers have made offers* — from ₦${best.counterOfferNgn.toLocaleString()}, nearest ${Math.max(1, Math.ceil(nearest.etaSeconds / 60))} min away`;
+  const token = createWalletPageToken(riderId, 'ride', deps.pageTokenSecret, RIDE_PAGE_TOKEN_TTL_SECONDS);
+  const url = `${deps.appBaseUrl.replace(/\/+$/, '')}/widget/ride/ride.html#t=${encodeURIComponent(token)}`;
+
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone.replace(/^\+/, ''),
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        body: { text: `${headline}\n\nTap *View offers* to compare and pick one — or reply *more* to see them here.` },
+        action: { name: 'cta_url', parameters: { display_text: 'View offers', url } },
+      },
+    }),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    console.error('[whatsapp-notifier] offers button failed — falling back to the text list', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 export async function sendMetaWhatsappMessage(

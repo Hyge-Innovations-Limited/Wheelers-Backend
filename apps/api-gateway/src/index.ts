@@ -101,6 +101,7 @@ import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
+import { handleRidePageRoute } from "./http/ride-page.route";
 import { describeLlm } from "./LLM/llm";
 import {
   handleLiveDriversRoute,
@@ -174,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -237,6 +238,8 @@ const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".css": "text/css",
   ".js": "application/javascript",
+  // The bidding page wears the mobile app's typeface, served from here.
+  ".ttf": "font/ttf",
 };
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
@@ -274,7 +277,7 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Content-Security-Policy":
-        "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     });
     res.end(data);
   } catch {
@@ -826,6 +829,40 @@ async function bootstrap(): Promise<void> {
       });
 
       return;
+    }
+
+    // The bidding page and the WhatsApp webhook talk to the same chat, so they
+    // are built from the same settings.
+    const buildMetaWhatsappDeps = () => ({
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      publisher,
+      paymentsClient,
+      redisClient: redisCommandClient,
+      routePlanner,
+      googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+      metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+      metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+      metaAppSecret: gatewayEnv.META_APP_SECRET,
+      metaWebhookVerifyToken: gatewayEnv.META_WEBHOOK_VERIFY_TOKEN,
+      groqApiKey: gatewayEnv.GROQ_API_KEY,
+      groqModel: gatewayEnv.GROQ_MODEL,
+      groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
+      appBaseUrl: gatewayEnv.APP_BASE_URL,
+      driverKycStorage: driverKycStorage ?? undefined,
+      groupRideFaceStorage: groupRideFaceStorage ?? undefined,
+      whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
+      whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+    });
+
+    if (url.pathname.startsWith("/ride-page/")) {
+      const handled = await handleRidePageRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        publisher,
+        paymentsClient,
+        notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
+      }, url);
+      if (handled) return;
     }
 
     if (url.pathname === "/webhooks/whatsapp") {
@@ -2135,6 +2172,8 @@ async function bootstrap(): Promise<void> {
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
             offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
             flowTokenSecret: gatewayEnv.JWT_SECRET,
+            appBaseUrl: gatewayEnv.APP_BASE_URL,
+            pageTokenSecret: gatewayEnv.JWT_SECRET,
           }
         : undefined,
   });

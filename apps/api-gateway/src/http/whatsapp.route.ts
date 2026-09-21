@@ -14,7 +14,9 @@ import {
   FeedbackLoggedEvent,
 } from '@wheleers/kafka-schemas';
 import type { PaymentsClient } from '@wheleers/payments';
-import { createWalletPageToken, type WalletPageScope } from '../auth/local';
+import { createWalletPageToken, RIDE_PAGE_TOKEN_TTL_SECONDS, type WalletPageScope } from '../auth/local';
+import type { RidePageChatEvent } from './ride-page.route';
+import { publishWhatsappRide } from '../rides/whatsapp-ride.service';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser, provisionDepositAccount } from '../onboarding/user-onboarding';
 import {
@@ -821,6 +823,120 @@ async function sendMetaLinkButton(
   }
 }
 
+/** The rider's own link to the bidding page: name a price, watch offers, accept one. */
+function ridePageUrl(deps: MetaWhatsappRouteDeps, userId: string): string | null {
+  if (!deps.appBaseUrl) return null;
+  const token = createWalletPageToken(userId, 'ride', deps.jwtSecret, RIDE_PAGE_TOKEN_TTL_SECONDS);
+  return `${deps.appBaseUrl.replace(/\/+$/, '')}/widget/ride/ride.html#t=${encodeURIComponent(token)}`;
+}
+
+/**
+ * A fare quote, with a button to name the price on the bidding page. Typing
+ * the price in the chat still works — it is the fallback for a phone that will
+ * not open the page — so the text says so.
+ */
+async function sendQuoteWithPriceButton(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  quote: string,
+): Promise<void> {
+  const url = ridePageUrl(deps, user.id);
+  if (!url) {
+    await sendMetaReply(deps, phone, quote);
+    return;
+  }
+  await sendMetaLinkButton(deps, phone,
+    quote.replace('Send your offer (e.g.', 'Tap *Set your price* — or just type your offer (e.g.'),
+    'Set your price', url);
+}
+
+/** "Finding drivers" — the one chat message a search needs, with the way back to the offers. */
+async function sendSearchStarted(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  trip: { pickupAddress: string; destAddress: string; offerNgn: number },
+): Promise<string> {
+  const url = ridePageUrl(deps, user.id);
+  const lines = [
+    `🔍 *Finding you a driver!*`,
+    ``,
+    `Pickup: *${trip.pickupAddress}*`,
+    `Destination: *${trip.destAddress}*`,
+    `Your offer: ₦${trip.offerNgn.toLocaleString()}`,
+    ``,
+    url
+      ? `Tap *View offers* to watch drivers respond and pick one. 🚗`
+      : `We'll send you available drivers — pick one and pay to confirm! 🚗`,
+  ];
+  const text = lines.join('\n');
+  if (url) await sendMetaLinkButton(deps, phone, text, 'View offers', url);
+  else await sendMetaReply(deps, phone, text);
+  return text;
+}
+
+/**
+ * What happened on the bidding page, told to the chat. The page is where the
+ * rider acts; the chat is the record — and where the driver's details need to
+ * be when the page is closed and the car is outside.
+ */
+export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
+  return async (event: RidePageChatEvent): Promise<void> => {
+    if (!event.phone) return;
+
+    if (event.kind === 'search_started') {
+      const text = await sendSearchStarted(deps, { id: event.userId }, event.phone, event);
+      await appendWhatsappConversation(deps.redisClient, event.phone, [
+        { role: 'user', content: `[named a price on the offers page: ₦${event.offerNgn.toLocaleString()}]` },
+        { role: 'assistant', content: text },
+      ]);
+      return;
+    }
+
+    if (event.kind === 'search_cancelled') {
+      const text = 'Search cancelled — nothing was charged. Message me whenever you need a ride. 🚗';
+      await appendWhatsappConversation(deps.redisClient, event.phone, [
+        { role: 'user', content: '[cancelled the search on the offers page]' },
+        { role: 'assistant', content: text },
+      ]);
+      await sendMetaReply(deps, event.phone, text);
+      return;
+    }
+
+    const ride = event.ride;
+    if (deps.driverKycStorage) {
+      try {
+        const kyc = await driverClient.findKycSubmission(ride.driverId);
+        const images: Promise<void>[] = [];
+        if (kyc?.selfieKey) images.push(sendMetaImageMessage(deps, event.phone, await deps.driverKycStorage.getSignedUrl(kyc.selfieKey), ride.driverName));
+        if (kyc?.vehicleImageKeys?.length) images.push(sendMetaImageMessage(deps, event.phone, await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!), `${ride.vehicleModel} (${ride.vehiclePlate})`));
+        await Promise.all(images);
+      } catch {
+        // Non-critical — the confirmation still goes out.
+      }
+    }
+    const text = [
+      `✅ *Ride confirmed & paid!*`,
+      ``,
+      `💰 ₦${ride.fareNgn.toLocaleString()} held from your wallet`,
+      ``,
+      `Driver: *${ride.driverName}*`,
+      `Vehicle: ${ride.vehicleModel} (${ride.vehiclePlate})`,
+      `Rating: ${ride.driverRating.toFixed(1)}★ · ${ride.totalRides} rides`,
+      ...(ride.driverPhone ? [`Phone: ${ride.driverPhone}`] : []),
+      `ETA: ${Math.ceil(ride.etaSeconds / 60)} min`,
+      ``,
+      `Your driver is on the way! 🚗`,
+    ].join('\n');
+    await appendWhatsappConversation(deps.redisClient, event.phone, [
+      { role: 'user', content: `[accepted ${ride.driverName}'s offer on the offers page]` },
+      { role: 'assistant', content: text },
+    ]);
+    await sendMetaReply(deps, event.phone, text);
+  };
+}
+
 /**
  * Money is handled on Wheelers' own page, not in the chat: bank details and a
  * PIN typed into WhatsApp would sit in the chat history for anyone holding the
@@ -1376,7 +1492,7 @@ async function replanPendingRoute(
   await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
   await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
 
-  await replyAndLog(deps, phone, incomingMessage, [
+  await quoteAndLog(deps, user, phone, incomingMessage, [
     `✅ *${isPickup ? 'Pickup updated!' : 'Destination updated!'}*`,
     ``,
     `Pickup: *${pickup.address}*`,
@@ -1389,6 +1505,21 @@ async function replanPendingRoute(
     ``,
     `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
   ].join('\n'));
+}
+
+/** replyAndLog for a fare quote: same record, plus the "Set your price" button. */
+async function quoteAndLog(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  userMessage: string,
+  quote: string,
+): Promise<void> {
+  await appendWhatsappConversation(deps.redisClient, phone, [
+    { role: 'user', content: userMessage },
+    { role: 'assistant', content: quote },
+  ]);
+  await sendQuoteWithPriceButton(deps, user, phone, quote);
 }
 
 /** Entry: "group ride" intent. Pre-filled locations skip straight ahead. */
@@ -1955,7 +2086,7 @@ async function convertGroupToNormalRide(
   });
   await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
 
-  await replyAndLog(deps, phone, incomingMessage, [
+  await quoteAndLog(deps, user, phone, incomingMessage, [
     `🚗 *Switched to a normal ride.*`,
     ``,
     `Pickup: *${pickup.address}*`,
@@ -2471,7 +2602,7 @@ async function handleIncomingMetaMessage(
               { role: 'user', content: incomingMessage },
               { role: 'assistant', content: reply },
             ]);
-            await sendMetaReply(deps, phone, reply);
+            await sendQuoteWithPriceButton(deps, user, phone, reply);
             return;
           }
 
@@ -3120,7 +3251,7 @@ async function handleIncomingMetaMessage(
             { role: 'user', content: `[Shared location: ${address}]` },
             { role: 'assistant', content: reply },
           ]);
-          await sendMetaReply(deps, phone, reply);
+          await sendQuoteWithPriceButton(deps, user, phone, reply);
           return;
         }
       }
@@ -3232,7 +3363,7 @@ async function handleIncomingMetaMessage(
         { role: 'user', content: `[Shared destination location: ${address}]` },
         { role: 'assistant', content: reply },
       ]);
-      await sendMetaReply(deps, phone, reply);
+      await sendQuoteWithPriceButton(deps, user, phone, reply);
       return;
     }
 
@@ -3613,7 +3744,7 @@ async function handleIncomingMetaMessage(
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
       ]);
-      await sendMetaReply(deps, phone, reply);
+      await sendQuoteWithPriceButton(deps, user, phone, reply);
       return;
       }
     }
@@ -4069,99 +4200,27 @@ async function handleIncomingMetaMessage(
           return;
         }
 
-        // Publish ride — payment happens when rider accepts a driver
-        const rideId = randomUUID();
-
-        const publishClaim = await deps.redisClient.setIfNotExists(`whatsapp:user:${user.id}:publishing`, '1', 30).catch(() => true);
-        if (!publishClaim) return;
-
-        const event = RideRequestedEvent.parse({
-          eventType: 'RIDE_REQUESTED',
-          rideId,
-          riderId: user.id,
-          pickup: { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress },
-          destination: { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress },
-          stops: [],
-          plannedDistanceKm: pendingRoute.distanceKm,
-          plannedDurationSeconds: pendingRoute.durationSeconds,
-          fareEstimateNgn: offerNgn,
-          paymentMethod: 'WALLET',
-          riderOfferNgn: offerNgn,
-          suggestedFareNgn: pendingRoute.suggestedFareNgn,
-          minOfferNgn: pendingRoute.minOfferNgn,
-          ratePerKmNgn: pendingRoute.ratePerKmNgn,
-          route: pendingRoute.route,
-          timestamp: new Date().toISOString(),
-        });
-
-        try {
-          await deps.publisher.publishRideEvent(event);
-        } catch (publishError) {
-          console.error('[api-gateway][whatsapp] ride publish FAILED — quote kept', {
-            rideId,
-            riderId: user.id,
-            error: publishError instanceof Error ? publishError.message : String(publishError),
-          });
-          await deps.redisClient.del(`whatsapp:user:${user.id}:publishing`).catch(() => {});
-          const reply = 'Could not start the search just now. Send your price again to retry.';
-          await appendWhatsappConversation(deps.redisClient, phone, [
-            { role: 'user', content: incomingMessage },
-            { role: 'assistant', content: reply },
-          ]);
-          await sendMetaReply(deps, phone, reply);
+        // Publish ride — payment happens when rider accepts a driver. The same
+        // step the bidding page takes when they name the price there.
+        const published = await publishWhatsappRide(deps, { id: user.id, phone }, pendingRoute, offerNgn);
+        if (!published.ok) {
+          if (published.code === 'ALREADY_PUBLISHING') return;
+          const reply = published.code === 'BELOW_MINIMUM'
+            ? `Your offer ₦${offerNgn.toLocaleString()} is below the minimum fare of ₦${published.minOfferNgn.toLocaleString()}.\n\nPlease send a higher amount.`
+            : 'Could not start the search just now. Send your price again to retry.';
+          await replyAndLog(deps, phone, incomingMessage, reply);
           return;
         }
-        await clearPendingRoute(deps.redisClient, user.id);
-        await clearBookingStage(deps.redisClient, user.id);
 
-        await storeWhatsappRide(deps.redisClient, rideId, {
-          riderId: user.id,
-          phone,
+        const searchText = await sendSearchStarted(deps, user, phone, {
           pickupAddress: pendingRoute.pickupAddress,
-          pickupLat: pendingRoute.pickupLat,
-          pickupLng: pendingRoute.pickupLng,
-          destinationAddress: pendingRoute.destAddress,
-          destinationLat: pendingRoute.destLat,
-          destinationLng: pendingRoute.destLng,
-          distanceKm: pendingRoute.distanceKm,
-          durationSeconds: pendingRoute.durationSeconds,
-          offerNgn,
-          suggestedFareNgn: pendingRoute.suggestedFareNgn,
-          paymentMethod: 'WALLET',
-          createdAt: new Date().toISOString(),
-        });
-        await setActiveRide(deps.redisClient, user.id, rideId);
-        await storeLastRoute(deps.redisClient, user.id, {
-          pickupLat: pendingRoute.pickupLat,
-          pickupLng: pendingRoute.pickupLng,
-          pickupAddress: pendingRoute.pickupAddress,
-          destLat: pendingRoute.destLat,
-          destLng: pendingRoute.destLng,
           destAddress: pendingRoute.destAddress,
-          distanceKm: pendingRoute.distanceKm,
-          durationSeconds: pendingRoute.durationSeconds,
-          suggestedFareNgn: pendingRoute.suggestedFareNgn,
-          minOfferNgn: pendingRoute.minOfferNgn,
-          ratePerKmNgn: pendingRoute.ratePerKmNgn,
-          route: pendingRoute.route,
           offerNgn,
         });
-
-        const reply = [
-          `🔍 *Finding you a driver!*`,
-          ``,
-          `Pickup: *${pendingRoute.pickupAddress}*`,
-          `Destination: *${pendingRoute.destAddress}*`,
-          `Your offer: ₦${offerNgn.toLocaleString()}`,
-          ``,
-          `We'll send you available drivers — pick one and pay to confirm! 🚗`,
-        ].join('\n');
-
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
-          { role: 'assistant', content: reply },
+          { role: 'assistant', content: searchText },
         ]);
-        await sendMetaReply(deps, phone, reply);
         return;
       } else {
         // The quote expired (10 minutes) but the stage lingered — the price
@@ -4523,7 +4582,7 @@ async function handleIncomingMetaMessage(
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
         ]);
-        await sendMetaReply(deps, phone, reply);
+        await sendQuoteWithPriceButton(deps, user, phone, reply);
         return;
       }
 

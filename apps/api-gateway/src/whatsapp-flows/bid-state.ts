@@ -825,6 +825,27 @@ export async function clearPendingFarPlace(redis: RedisClient, userId: string): 
   await redis.del(farPlaceKey(userId));
 }
 
+// ── Is the rider looking at the bidding page right now? ────────────────────
+
+const RIDE_PAGE_SEEN_TTL = 25; // the page asks for news every 3 s; 25 s of silence = gone
+
+function ridePageSeenKey(userId: string): string {
+  return `whatsapp:user:${userId}:ride_page_seen`;
+}
+
+/** Every request from the bidding page doubles as "still here". */
+export async function markRidePageSeen(redis: RedisClient, userId: string): Promise<void> {
+  await redis.set(ridePageSeenKey(userId), String(Date.now()), RIDE_PAGE_SEEN_TTL);
+}
+
+/**
+ * While this is true, offers reach the rider as toasts on the page and the chat
+ * stays quiet. The moment they leave, chat notifications resume on their own.
+ */
+export async function isRidePageOpen(redis: RedisClient, userId: string): Promise<boolean> {
+  return (await redis.get(ridePageSeenKey(userId)).catch(() => null)) !== null;
+}
+
 // ── Not getting anywhere ───────────────────────────────────────────────────
 
 function bookingMissKey(userId: string): string {

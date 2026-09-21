@@ -41,10 +41,12 @@ import {
   getAcceptedBid,
   storeLastCompletedRide,
   getLastBatch,
+  isRidePageOpen,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
   sendBidNotification,
+  sendOffersButton,
   sendFlowOffersMessage,
   sendRideMatchedNotification,
   sendDriverArrivedNotification,
@@ -232,7 +234,7 @@ function scheduleBidFlush(
         await sendFlowOffersMessage(deps.whatsappNotifier, phone, riderId, meta, allBids)
           .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
       } else {
-        await sendBidNotification(deps.whatsappNotifier, phone, allBids, meta.offerNgn)
+        await announceOffers(deps, phone, riderId, allBids, meta.offerNgn)
           .catch((err) => console.warn('[consumer] WhatsApp bid flush failed', err));
       }
     })();
@@ -240,6 +242,28 @@ function scheduleBidFlush(
   timer.unref();
 
   pendingBidFlushTimers.set(rideId, timer);
+}
+
+/**
+ * Tell a WhatsApp rider about the offers on the table — or do not.
+ *
+ *   on the bidding page → nothing. The page is showing them, as toasts; a
+ *                         buzz in the chat for the same offer is noise.
+ *   page closed         → one short line with a "View offers" button.
+ *   no page configured, or the button fails → the full text list, as before.
+ */
+async function announceOffers(
+  deps: StartGatewayConsumerDeps,
+  phone: string,
+  riderId: string,
+  bids: WhatsappBid[],
+  riderOfferNgn: number,
+  changes?: string[],
+): Promise<void> {
+  if (!deps.whatsappNotifier) return;
+  if (await isRidePageOpen(deps.redisClient, riderId)) return;
+  if (await sendOffersButton(deps.whatsappNotifier, phone, riderId, bids)) return;
+  await sendBidNotification(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes);
 }
 
 async function handleRideEvent(
@@ -392,7 +416,7 @@ async function handleRideEvent(
             await sendFlowOffersMessage(deps.whatsappNotifier, phone, event.riderId, meta, allBids)
               .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
           } else {
-            await sendBidNotification(deps.whatsappNotifier, phone, allBids, meta.offerNgn, changes)
+            await announceOffers(deps, phone, event.riderId, allBids, meta.offerNgn, changes)
               .catch((err) => console.warn('[consumer] WhatsApp bid notification failed', err));
           }
         } else {

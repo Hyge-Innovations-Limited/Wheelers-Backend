@@ -46,3 +46,9 @@ Optional:
 Use `KAFKA_BROKERS=localhost:29092` when running tests/services against a local Kafka broker.
 
 The wallet/payment integration test only needs Postgres with migrations applied.
+
+## Running everything
+
+`npm run test:all` (needs `DATABASE_URL` pointing at a throwaway Postgres with migrations applied).
+
+It runs ONE FILE AT A TIME on purpose: `paystack-webhook.test.js` checks that the sum of every wallet equals the provider's cash, so another file creating funded wallets at the same moment makes it fail. Run files side by side and you will see six false failures there.

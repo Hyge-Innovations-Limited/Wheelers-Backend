@@ -814,6 +814,34 @@ test('never turn "ok" into a fare; never guess an amount from words', async () =
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0, 'nothing was booked on a guess');
 });
 
+/* ── the bidding page, from the chat's side ─────────────────────────────── */
+
+test('the quote comes with a "Set your price" button; typing a price still works and answers with "View offers"', async () => {
+  const redis = memoryRedis();
+  const { deps, published } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  const user = await riderWithPickup(deps, redis, who);
+
+  await say(deps, who, 'Osaro Isokpan street');
+  const quote = last(sent);
+  assert.equal(quote.interactive.type, 'cta_url');
+  assert.equal(quote.interactive.action.parameters.display_text, 'Set your price');
+  assert.match(textOf(quote), /Suggested fare: ₦/);
+  assert.match(textOf(quote), /Tap \*Set your price\* — or just type your offer/, 'the chat fallback is named');
+  const url = quote.interactive.action.parameters.url;
+  assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/);
+  const local = require('../apps/api-gateway/dist/auth/local.js');
+  assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), deps.jwtSecret), { userId: user.id, scope: 'ride' });
+
+  await say(deps, who, '2,000');
+  const searching = last(sent);
+  assert.equal(searching.interactive.action.parameters.display_text, 'View offers');
+  assert.match(textOf(searching), /Finding you a driver/);
+  assert.ok(published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
+});
+
 /* ── always a way out ──────────────────────────────────────────────────── */
 
 test('the second reply the bot cannot use brings buttons, not the same prompt again', async () => {

@@ -129,7 +129,16 @@ export function verifyLocalAccessToken(token: string, jwtSecret: string | undefi
  */
 const PAGE_TOKEN_TYPE = 'wheelers.wallet.page';
 
-export type WalletPageScope = 'deposit' | 'withdraw';
+/**
+ * 'ride' opens the bidding page for the rider's current booking: name a price,
+ * watch offers, accept one. It can move money only INTO a hold for that ride,
+ * from the rider's own wallet — never out — so it carries no PIN and may live
+ * as long as a booking does.
+ */
+export type WalletPageScope = 'deposit' | 'withdraw' | 'ride';
+
+/** A search for drivers can outlast 15 minutes; the link has to as well. */
+export const RIDE_PAGE_TOKEN_TTL_SECONDS = 2 * 60 * 60;
 
 interface WalletPageTokenPayload {
   sub: string;
@@ -185,7 +194,7 @@ export function verifyWalletPageToken(
   if (typeof sub !== 'string' || sub.length === 0) {
     throw new Error('Page token is missing subject.');
   }
-  if (scope !== 'deposit' && scope !== 'withdraw') {
+  if (scope !== 'deposit' && scope !== 'withdraw' && scope !== 'ride') {
     throw new Error('Page token scope is invalid.');
   }
   if (typeof exp !== 'number' || exp <= Math.floor(Date.now() / 1000)) {
