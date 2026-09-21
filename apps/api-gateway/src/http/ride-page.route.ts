@@ -64,7 +64,7 @@ export interface RidePageRouteDeps {
 }
 
 export type RidePageChatEvent =
-  | { kind: 'search_started'; userId: string; phone: string; rideId: string; offerNgn: number; pickupAddress: string; destAddress: string }
+  | { kind: 'search_started'; userId: string; phone: string; rideId: string; offerNgn: number; pickupAddress: string; destAddress: string; stopAddresses?: string[] }
   | { kind: 'ride_confirmed'; userId: string; phone: string; ride: ConfirmedRide }
   | { kind: 'search_cancelled'; userId: string; phone: string };
 
@@ -203,6 +203,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
       const route = {
         pickupAddress: meta.pickupAddress,
         destAddress: meta.destinationAddress,
+        stopAddresses: (meta.stops ?? []).map((stop) => stop.address),
         distanceKm: meta.distanceKm,
         durationMin: Math.ceil((meta.durationSeconds ?? 0) / 60),
         suggestedFareNgn: meta.suggestedFareNgn,
@@ -258,6 +259,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
       route: {
         pickupAddress: quote.pickupAddress,
         destAddress: quote.destAddress,
+        stopAddresses: (quote.stops ?? []).map((stop) => stop.address),
         distanceKm: quote.distanceKm,
         durationMin: Math.ceil(quote.durationSeconds / 60),
         suggestedFareNgn: quote.suggestedFareNgn,
@@ -306,6 +308,7 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   await deps.notifyChat?.({
     kind: 'search_started', userId, phone, rideId: result.rideId, offerNgn: amountNgn,
     pickupAddress: quote.pickupAddress, destAddress: quote.destAddress,
+    stopAddresses: (quote.stops ?? []).map((stop) => stop.address),
   }).catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
   sendJson(res, 200, await buildState(deps, userId));
 }

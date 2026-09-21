@@ -51,10 +51,29 @@
   function minutes(n) { return n + ' min'; }
 
   function drawRoute(route) {
+    drawStops(route.stopAddresses || []);
     setText('[data-route="pickup"]', route.pickupAddress);
     setText('[data-route="dest"]', route.destAddress);
     setText('[data-route="distance"]', (Number(route.distanceKm) || 0).toFixed(1) + ' km');
     setText('[data-route="time"]', '~' + minutes(route.durationMin));
+  }
+
+  /** The places on the way, between the pickup row and the destination row of every trip card. */
+  var stopsDrawn = null;
+  function drawStops(stops) {
+    var signature = stops.join('|');
+    if (stopsDrawn === signature) return;
+    stopsDrawn = signature;
+    Array.prototype.forEach.call(document.querySelectorAll('.stop.mid'), function (row) { row.parentNode.removeChild(row); });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-route="dest"]'), function (dest) {
+      var destRow = dest.parentNode;
+      stops.forEach(function (address) {
+        var row = el('div', 'stop mid');
+        row.appendChild(el('span', 'dot mid'));
+        row.appendChild(el('span', 'where', address));
+        destRow.parentNode.insertBefore(row, destRow);
+      });
+    });
   }
 
   /** Suggested, a little lower, a little higher — never under the floor. */

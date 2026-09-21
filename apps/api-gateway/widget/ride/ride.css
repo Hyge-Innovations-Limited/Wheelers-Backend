@@ -78,6 +78,8 @@ h2 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
 .dot { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 4px; border: var(--border); border-radius: 50%; background: var(--white); }
 .dot.from { background: var(--green); }
 .dot.to { background: var(--orange); border-radius: 4px; }
+.dot.mid { width: 10px; height: 10px; margin: 6px 2px 0; background: var(--ink); }
+.stop.mid .where { opacity: .8; }
 .where { font-weight: 600; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
 .trip-meta { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
 .trip-meta span { padding: 4px 10px; border: 2px solid var(--ink); border-radius: 999px; background: var(--paper); font-size: 13px; font-weight: 600; }

@@ -32,7 +32,7 @@ import { classifyWalletIntent, mightConcernMoney, walletIntentModel } from '../L
 import { classifyBookingIntent, mightNotBeAnAddress } from '../LLM/booking-intent';
 import type { BookingIntentResult } from '../LLM/booking-intent';
 import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
-import { geocodeAddress, reverseGeocode, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
+import { geocodeAddress, reverseGeocode, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { downloadMetaMedia } from '../whatsapp-flows/meta-media';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
@@ -91,7 +91,8 @@ import {
   getLastCompletedRide,
   clearLastCompletedRide,
 } from '../whatsapp-flows/bid-state';
-import type { PendingGeoChoices, PendingRouteData } from '../whatsapp-flows/bid-state';
+import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import type { PendingGeoChoices, PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
@@ -655,9 +656,10 @@ async function planRouteSafe(
   deps: MetaWhatsappRouteDeps,
   pickup: { lat: number; lng: number; address: string },
   destination: { lat: number; lng: number; address: string },
+  stops: RouteStop[] = [],
 ): Promise<Awaited<ReturnType<GoogleMapsRoutePlanner['planRoute']>> | null> {
   try {
-    return await deps.routePlanner.planRoute({ origin: pickup, destination });
+    return await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) });
   } catch (error) {
     console.warn('[whatsapp] route planning failed', {
       pickup: pickup.address,
@@ -846,15 +848,25 @@ async function sendQuoteWithPriceButton(
   user: { id: string },
   phone: string,
   quote: string,
-): Promise<void> {
+): Promise<string> {
+  // Every quote in this file comes through here — so this is the one place
+  // that says: a trip is CONFIRMED before a price is asked for. A changed trip
+  // is stored without `confirmed`, and is shown for confirmation again.
+  const trip = await getPendingRoute(deps.redisClient, user.id).catch(() => null);
+  if (trip && !trip.confirmed) {
+    const firstLine = quote.split('\n')[0] ?? '';
+    return sendTripConfirmation(deps, user, phone, trip, firstLine.startsWith('✅') ? firstLine : undefined);
+  }
+
   const url = ridePageUrl(deps, user.id);
   if (!url) {
     await sendMetaReply(deps, phone, quote);
-    return;
+    return quote;
   }
   await sendMetaLinkButton(deps, phone,
     quote.replace('Send your offer (e.g.', 'Tap *Set your price* — or just type your offer (e.g.'),
     'Set your price', url);
+  return quote;
 }
 
 /** "Finding drivers" — the one chat message a search needs. Offers follow it, in the chat. */
@@ -862,13 +874,14 @@ async function sendSearchStarted(
   deps: MetaWhatsappRouteDeps,
   user: { id: string },
   phone: string,
-  trip: { pickupAddress: string; destAddress: string; offerNgn: number },
+  trip: { pickupAddress: string; destAddress: string; offerNgn: number; stopAddresses?: string[] },
 ): Promise<string> {
   const url = ridePageUrl(deps, user.id);
   const lines = [
     `🔍 *Finding you a driver!*`,
     ``,
     `Pickup: *${trip.pickupAddress}*`,
+    ...(trip.stopAddresses ?? []).map((stop, index) => `Stop ${index + 1}: *${stop}*`),
     `Destination: *${trip.destAddress}*`,
     `Your offer: ₦${trip.offerNgn.toLocaleString()}`,
     ``,
@@ -886,7 +899,7 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 interface ConfirmedRideForChat {
   driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
   vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
-  pickupAddress?: string; destAddress?: string;
+  pickupAddress?: string; destAddress?: string; stopAddresses?: string[];
 }
 
 /** Everything about the ride, as one tidy list — the text under the car's photo. */
@@ -905,6 +918,7 @@ function rideDetailsText(ride: ConfirmedRideForChat, withTrackingLine: boolean):
     ``,
     `*YOUR TRIP*`,
     ...(ride.pickupAddress ? [`📍 From: ${ride.pickupAddress}`] : []),
+    ...(ride.stopAddresses ?? []).map((stop, index) => `🔸 Stop ${index + 1}: ${stop}`),
     ...(ride.destAddress ? [`🏁 To: ${ride.destAddress}`] : []),
     `💰 ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
     `⏱ Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
@@ -1595,7 +1609,7 @@ async function sendPlaceChoices(
   incomingMessage: string,
   input: {
     context: PendingGeoChoices['context'];
-    field: 'pickup' | 'destination';
+    field: 'pickup' | 'destination' | 'stop';
     typed: string;
     candidates: Array<{ lat: number; lng: number; formattedAddress: string; name?: string; distanceKm?: number }>;
     /** A line to lead with, e.g. the pickup that is already settled. */
@@ -1641,7 +1655,7 @@ async function sendPlaceChoices(
         action: {
           button: 'Choose',
           sections: [{
-            title: input.field === 'pickup' ? 'Pick the right pickup' : 'Pick the destination',
+            title: input.field === 'pickup' ? 'Pick the right pickup' : input.field === 'stop' ? 'Pick the stop' : 'Pick the destination',
             rows: [
               ...rows,
               { id: 'place_choice_none', title: NONE_OF_THESE, description: 'Type the address again with the area or a landmark' },
@@ -1851,7 +1865,7 @@ async function replanPendingRoute(
   const pickup = isPickup ? place : { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress };
   const destination = isPickup ? { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress } : place;
 
-  const plannedRoute = await planRouteSafe(deps, pickup, destination);
+  const plannedRoute = await planRouteSafe(deps, pickup, destination, pendingRoute.stops);
   if (!plannedRoute) {
     await replyAndLog(deps, phone, incomingMessage, `${ROUTE_PLAN_FAILED_REPLY}\n\nYour booking is unchanged.`);
     return;
@@ -1872,6 +1886,7 @@ async function replanPendingRoute(
     minOfferNgn: minFare,
     ratePerKmNgn: plannedRoute.ratePerKmNgn,
     route: plannedRoute.geometry,
+    stops: pendingRoute.stops,
   });
   await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
   await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
@@ -1891,6 +1906,311 @@ async function replanPendingRoute(
   ].join('\n'));
 }
 
+/* ── confirm the trip before the price: Confirm · Add a stop · Edit ─────── */
+
+const TRIP_CONFIRM_ID = 'trip_confirm';
+const TRIP_ADD_STOP_ID = 'trip_add_stop';
+const TRIP_EDIT_ID = 'trip_edit';
+const TRIP_EDIT_PICKUP_ID = 'trip_edit_pickup';
+const TRIP_EDIT_DESTINATION_ID = 'trip_edit_destination';
+const TRIP_CANCEL_ID = 'trip_cancel';
+const TRIP_REMOVE_STOP = /^trip_remove_stop_(\d)$/;
+
+/** Pickup, every stop in order, destination — the same lines on the card, the quote and the edit list. */
+function tripLines(trip: PendingRouteData): string[] {
+  return [
+    `🟢 Pickup: *${trip.pickupAddress}*`,
+    ...(trip.stops ?? []).map((stop, index) => `🔸 Stop ${index + 1}: *${stop.address}*`),
+    `🏁 Destination: *${trip.destAddress}*`,
+  ];
+}
+
+/**
+ * "Is this your trip?" — shown after the destination is known and after every
+ * change, BEFORE any price is asked for. Three taps: it is right, add a stop,
+ * or change something. Typing works too ("add a stop at Yaba market", "no, pick
+ * me at the gate") — the step's handler reads it.
+ */
+async function sendTripConfirmation(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  trip: PendingRouteData,
+  headline?: string,
+): Promise<string> {
+  await setBookingStage(deps.redisClient, user.id, 'awaiting_trip_confirm');
+  const canAddStop = (trip.stops?.length ?? 0) < MAX_CHAT_STOPS;
+  const body = [
+    headline ?? '🧾 *Check your trip*',
+    ``,
+    ...tripLines(trip),
+    ``,
+    `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}`,
+    ``,
+    `All correct? Tap *Confirm trip*. To change anything tap *Edit trip* — or just type it, e.g. _add a stop at Yaba market_.`,
+  ].join('\n');
+
+  const buttons = [
+    { id: TRIP_CONFIRM_ID, title: 'Confirm trip' },
+    ...(canAddStop ? [{ id: TRIP_ADD_STOP_ID, title: 'Add a stop' }] : []),
+    { id: TRIP_EDIT_ID, title: 'Edit trip' },
+  ];
+  const sent = await sendInteractive(deps, phone, {
+    type: 'button',
+    body: { text: body.slice(0, 1024) },
+    action: { buttons: buttons.map((button) => ({ type: 'reply', reply: button })) },
+  });
+  if (!sent) await sendMetaReply(deps, phone, `${body}\n\nReply *confirm*, *add stop* or *edit*.`);
+  return body;
+}
+
+/** The "Edit trip" sheet: WhatsApp's own picker, one row per thing that can change. */
+async function sendTripEditMenu(deps: MetaWhatsappRouteDeps, phone: string, trip: PendingRouteData): Promise<string> {
+  const stops = trip.stops ?? [];
+  const rows = [
+    { id: TRIP_EDIT_PICKUP_ID, title: 'Change pickup', description: clip(trip.pickupAddress, 72) },
+    { id: TRIP_EDIT_DESTINATION_ID, title: 'Change destination', description: clip(trip.destAddress, 72) },
+    ...(stops.length < MAX_CHAT_STOPS ? [{ id: TRIP_ADD_STOP_ID, title: 'Add a stop', description: 'A place to pass through on the way' }] : []),
+    ...stops.map((stop, index) => ({ id: `trip_remove_stop_${index + 1}`, title: `Remove stop ${index + 1}`, description: clip(stop.address, 72) })),
+    { id: TRIP_CANCEL_ID, title: 'Cancel booking', description: 'Throw this trip away' },
+  ];
+  const body = `✏️ *Edit your trip*\n\n${tripLines(trip).join('\n')}\n\nTap *Choose* and pick what to change.`;
+  const sent = await sendInteractive(deps, phone, {
+    type: 'list',
+    body: { text: body.slice(0, 1024) },
+    action: { button: 'Choose', sections: [{ title: 'What to change', rows }] },
+  });
+  if (!sent) {
+    await sendMetaReply(deps, phone, `${body}\n\nType what to change — e.g. *edit pickup Unilag gate*, *edit destination Yaba*, *add a stop at Shoprite*${stops.length ? ', *remove stop 1*' : ''}.`);
+  }
+  return body;
+}
+
+/** One interactive message. False when it could not be sent, so the caller can say it in text. */
+async function sendInteractive(deps: MetaWhatsappRouteDeps, to: string, interactive: Record<string, unknown>): Promise<boolean> {
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return false;
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: to.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.error('[whatsapp] interactive message failed — falling back to text', {
+      kind: interactive['type'],
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
+/** The trip is right: now, and only now, the price. */
+async function confirmTripAndQuote(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  trip: PendingRouteData,
+): Promise<void> {
+  await storePendingRoute(deps.redisClient, user.id, { ...trip, confirmed: true });
+  await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
+  await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
+  await quoteAndLog(deps, user, phone, incomingMessage, [
+    `✅ *Trip confirmed*`,
+    ``,
+    ...tripLines(trip),
+    ``,
+    `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min`,
+    `Minimum fare: ₦${trip.minOfferNgn.toLocaleString()}`,
+    `Suggested fare: ₦${trip.suggestedFareNgn.toLocaleString()}`,
+    ``,
+    `Send your offer (e.g. *${trip.suggestedFareNgn.toLocaleString()}* or *${Math.round(trip.suggestedFareNgn * 0.85).toLocaleString()}*)`,
+  ].join('\n'));
+}
+
+/** Re-plan the same ends with a different list of stops, and show the trip again. */
+async function replanWithStops(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  trip: PendingRouteData,
+  stops: RouteStop[],
+  headline: string,
+): Promise<void> {
+  const pickup = { lat: trip.pickupLat, lng: trip.pickupLng, address: trip.pickupAddress };
+  const destination = { lat: trip.destLat, lng: trip.destLng, address: trip.destAddress };
+  const planned = await planRouteSafe(deps, pickup, destination, stops);
+  if (!planned) {
+    await replyAndLog(deps, phone, incomingMessage, `I could not find a driving route through that stop. 😕 Your trip is unchanged — try a different place, or share a location pin 📍`);
+    return;
+  }
+  const next: PendingRouteData = {
+    ...trip,
+    stops,
+    distanceKm: planned.distanceKm,
+    durationSeconds: planned.durationSeconds,
+    suggestedFareNgn: planned.suggestedFareNgn,
+    minOfferNgn: planned.minOfferNgn,
+    ratePerKmNgn: planned.ratePerKmNgn,
+    route: planned.geometry,
+    confirmed: false,
+    offerNgn: undefined,
+  };
+  await storePendingRoute(deps.redisClient, user.id, next);
+  await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
+  const said = await sendTripConfirmation(deps, user, phone, next, headline);
+  await appendWhatsappConversation(deps.redisClient, phone, [
+    { role: 'user', content: incomingMessage },
+    { role: 'assistant', content: said },
+  ]);
+}
+
+const ADD_STOP_PROMPT = 'Where do you want to stop? 🔸\n\nType the place — e.g. *"Yaba market"* or *"Shoprite Ikeja"* — or share a location pin 📍\n\nReply *back* to leave the trip as it is.';
+
+async function askForStop(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, incomingMessage: string, trip: PendingRouteData): Promise<void> {
+  if ((trip.stops?.length ?? 0) >= MAX_CHAT_STOPS) {
+    await replyAndLog(deps, phone, incomingMessage, `A trip can have up to ${MAX_CHAT_STOPS} stops, and yours has ${MAX_CHAT_STOPS}. Remove one first — tap *Edit trip*.`);
+    return;
+  }
+  await setBookingStage(deps.redisClient, user.id, 'adding_stop');
+  await replyAndLog(deps, phone, incomingMessage, ADD_STOP_PROMPT);
+}
+
+/**
+ * Add a stop by name (looked up like every other place: Places first, the
+ * picker when there is more than one answer) or as a place already settled on
+ * (picked from the list, or a shared pin).
+ */
+async function addStopToTrip(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  trip: PendingRouteData,
+  typed: string,
+  chosen?: RouteStop,
+): Promise<void> {
+  const stops = trip.stops ?? [];
+  if (stops.length >= MAX_CHAT_STOPS) {
+    await askForStop(deps, user, phone, incomingMessage, trip);
+    return;
+  }
+  const pickup = { lat: trip.pickupLat, lng: trip.pickupLng };
+
+  // Only the three fields: a picked place arrives with the picker's bookkeeping on it,
+  // and whatever is stored here is sent to drivers as the stop.
+  let stop: RouteStop | null = chosen ? { lat: chosen.lat, lng: chosen.lng, address: chosen.address } : null;
+  if (!stop) {
+    const matches = await findPlaceOptions(deps.googleMapsApiKey, typed, { spokenText: incomingMessage, near: pickup });
+    if (matches.length > 1) {
+      await setBookingStage(deps.redisClient, user.id, 'adding_stop');
+      await sendPlaceChoices(deps, user, phone, incomingMessage, { context: 'stop', field: 'stop', typed, candidates: matches });
+      return;
+    }
+    stop = matches[0] ? { lat: matches[0].lat, lng: matches[0].lng, address: matches[0].formattedAddress } : null;
+  }
+  if (!stop) {
+    await setBookingStage(deps.redisClient, user.id, 'adding_stop');
+    await replyAndLog(deps, phone, incomingMessage, `${geocodeMissLine(typed)}\n\nTry the stop again with the area or a landmark, share a pin 📍, or reply *back*.`);
+    return;
+  }
+
+  // A stop in another city is a wrong match, not a plan.
+  const awayKm = Math.round(kmBetween(pickup, stop));
+  if (awayKm > SAME_CITY_KM) {
+    await setBookingStage(deps.redisClient, user.id, 'adding_stop');
+    await replyAndLog(deps, phone, incomingMessage, `I found *${stop.address}* — but that is about ${awayKm.toLocaleString()} km from your pickup, in another city.\n\nSend the stop again with the area — e.g. *"Shoprite, Ikeja"* — or reply *back*.`);
+    return;
+  }
+  const samePlace = [
+    { label: 'your pickup', lat: trip.pickupLat, lng: trip.pickupLng },
+    { label: 'your destination', lat: trip.destLat, lng: trip.destLng },
+    ...stops.map((existing, index) => ({ label: `stop ${index + 1}`, lat: existing.lat, lng: existing.lng })),
+  ].find((place) => kmBetween(place, stop!) < SAME_PLACE_KM);
+  if (samePlace) {
+    await setBookingStage(deps.redisClient, user.id, 'adding_stop');
+    await replyAndLog(deps, phone, incomingMessage, `*${stop.address}* is the same place as ${samePlace.label}. Send a different stop, or reply *back*.`);
+    return;
+  }
+
+  await replanWithStops(deps, user, phone, incomingMessage, trip, [...stops, stop], `✅ *Stop added*`);
+}
+
+async function removeStopFromTrip(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  trip: PendingRouteData,
+  /** 1-based. Omitted with one stop on the trip = that one. */
+  position?: number,
+): Promise<void> {
+  const stops = trip.stops ?? [];
+  if (stops.length === 0) {
+    const said = await sendTripConfirmation(deps, user, phone, trip, 'Your trip has no stops 👇');
+    await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+    return;
+  }
+  const index = (position ?? (stops.length === 1 ? 1 : 0)) - 1;
+  if (!stops[index]) {
+    const said = await sendTripEditMenu(deps, phone, trip);      // more than one stop and they did not say which
+    await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+    return;
+  }
+  await replanWithStops(deps, user, phone, incomingMessage, trip, stops.filter((_, at) => at !== index), `✅ *Stop removed*`);
+}
+
+/** Ask for the new pickup / destination; the existing editing steps take it from there (Places + the picker). */
+async function askForNewEnd(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, incomingMessage: string, trip: PendingRouteData, field: 'pickup' | 'destination'): Promise<void> {
+  await setBookingStage(deps.redisClient, user.id, field === 'pickup' ? 'editing_pickup' : 'editing_destination');
+  await replyAndLog(deps, phone, incomingMessage,
+    `Current ${field}: *${field === 'pickup' ? trip.pickupAddress : trip.destAddress}*\n\nType the new ${field} — a name is enough, I'll show you the matches — or share a location pin 📍`);
+}
+
+/**
+ * A tap on the trip card or the Edit sheet. Handled by what was tapped, not by
+ * the step the chat thinks it is on: those messages stay tappable, and a rider
+ * who confirmed and THEN taps "Edit trip" on the card above means it.
+ */
+async function handleTripTap(
+  deps: MetaWhatsappRouteDeps,
+  user: { id: string },
+  phone: string,
+  incomingMessage: string,
+  replyId: string,
+  hasActiveRide: boolean,
+): Promise<void> {
+  if (hasActiveRide) {
+    await replyAndLog(deps, phone, incomingMessage, 'Drivers are already looking at this trip. To change it, reply *cancel* and send the new trip.');
+    return;
+  }
+  const trip = await getPendingRoute(deps.redisClient, user.id);
+  if (!trip) {
+    await clearBookingStage(deps.redisClient, user.id);
+    await replyAndLog(deps, phone, incomingMessage, `That trip has expired. ⏳\n\n${BOOKING_START_PROMPT}`);
+    return;
+  }
+  await clearPendingGeoChoices(deps.redisClient, user.id).catch(() => undefined);
+
+  if (replyId === TRIP_CONFIRM_ID) return confirmTripAndQuote(deps, user, phone, incomingMessage, trip);
+  if (replyId === TRIP_ADD_STOP_ID) return askForStop(deps, user, phone, incomingMessage, trip);
+  if (replyId === TRIP_EDIT_PICKUP_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'pickup');
+  if (replyId === TRIP_EDIT_DESTINATION_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'destination');
+  if (replyId === TRIP_CANCEL_ID) {
+    await setBookingStage(deps.redisClient, user.id, 'awaiting_cancel_reason');
+    return replyAndLog(deps, phone, incomingMessage, CANCELLATION_REASON_PROMPT);
+  }
+  const remove = TRIP_REMOVE_STOP.exec(replyId);
+  if (remove) return removeStopFromTrip(deps, user, phone, incomingMessage, trip, Number(remove[1]));
+
+  // TRIP_EDIT_ID, or a row from a newer version of the sheet.
+  await setBookingStage(deps.redisClient, user.id, 'awaiting_trip_confirm');
+  const said = await sendTripEditMenu(deps, phone, trip);
+  await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+}
+
 /** replyAndLog for a fare quote: same record, plus the "Set your price" button. */
 async function quoteAndLog(
   deps: MetaWhatsappRouteDeps,
@@ -1899,11 +2219,12 @@ async function quoteAndLog(
   userMessage: string,
   quote: string,
 ): Promise<void> {
+  // Logged AFTER sending: an unconfirmed trip goes out as the confirmation card, not this quote.
+  const said = await sendQuoteWithPriceButton(deps, user, phone, quote);
   await appendWhatsappConversation(deps.redisClient, phone, [
     { role: 'user', content: userMessage },
-    { role: 'assistant', content: quote },
+    { role: 'assistant', content: said },
   ]);
-  await sendQuoteWithPriceButton(deps, user, phone, quote);
 }
 
 /** Entry: "group ride" intent. Pre-filled locations skip straight ahead. */
@@ -2623,12 +2944,18 @@ async function handleIncomingMetaMessage(
     // They said "cancel", then took an offer instead of giving a reason: the tap wins.
     if (tappedOffer && bookingStage === 'awaiting_cancel_reason') await clearBookingStage(deps.redisClient, user.id);
 
+    // ── A tap on the trip card or its Edit sheet ─────────────────────────
+    if (msgInfo.replyId?.startsWith('trip_')) {
+      await handleTripTap(deps, user, phone, incomingMessage, msgInfo.replyId, Boolean(activeRideId));
+      return;
+    }
+
     // ── "None of these" on a place picker ─────────────────────────────────
     if (!isLocation && incomingMessage.trim().toLowerCase() === NONE_OF_THESE.toLowerCase()) {
       const offered = await getPendingGeoChoices(deps.redisClient, user.id);
       if (offered) {
         await clearPendingGeoChoices(deps.redisClient, user.id);
-        const field = offered.context === 'pickup' || offered.context === 'group_pickup' ? 'pickup' : 'destination';
+        const field = offered.context === 'pickup' || offered.context === 'group_pickup' ? 'pickup' : offered.context === 'stop' ? 'stop' : 'destination';
         await replyAndLog(deps, phone, incomingMessage,
           `No problem. Type the ${field} again with the area or a nearby landmark — e.g. *"Admiralty Way, Lekki Phase 1"* — or share a location pin 📍`);
         return;
@@ -3313,6 +3640,15 @@ async function handleIncomingMetaMessage(
           { lat: locationLat, lng: locationLng, address },
         );
         return;
+      }
+
+      // ── Adding a stop via location pin ──
+      if (bookingStage === 'adding_stop') {
+        const trip = await getPendingRoute(deps.redisClient, user.id);
+        if (trip) {
+          await addStopToTrip(deps, user, phone, `[Shared location: ${address}]`, trip, address, { lat: locationLat, lng: locationLng, address });
+          return;
+        }
       }
 
       // ── Editing pickup/destination via location pin ──
@@ -4131,7 +4467,7 @@ async function handleIncomingMetaMessage(
         riderId: user.id,
         pickup,
         destination,
-        stops: [],
+        stops: pendingRoute.stops ?? [],
         plannedDistanceKm: pendingRoute.distanceKm,
         plannedDurationSeconds: pendingRoute.durationSeconds,
         fareEstimateNgn: pendingRoute.suggestedFareNgn,
@@ -4213,6 +4549,141 @@ async function handleIncomingMetaMessage(
         { role: 'assistant', content: reply },
       ]);
       await sendMetaReply(deps, phone, reply);
+      return;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // "WHERE IS THE STOP?" — a typed place, a tapped match, or "back"
+    // ══════════════════════════════════════════════════════════════════════
+    if (bookingStage === 'adding_stop' && !isLocation) {
+      const trip = await getPendingRoute(deps.redisClient, user.id);
+      if (!trip) {
+        await clearBookingStage(deps.redisClient, user.id);
+        await replyAndLog(deps, phone, incomingMessage, `That trip has expired. ⏳\n\n${BOOKING_START_PROMPT}`);
+        return;
+      }
+      if (/^(back|no|nothing|never\s*mind|nevermind|leave it|cancel)[\s!.]*$/i.test(incomingMessage.trim())) {
+        await clearPendingGeoChoices(deps.redisClient, user.id).catch(() => undefined);
+        const said = await sendTripConfirmation(deps, user, phone, trip, 'No stop added — here is your trip 👇');
+        await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+        return;
+      }
+      const pickedStop = await takePickedPlace(deps, user.id, incomingMessage, ['stop']);
+      if (pickedStop) {
+        await addStopToTrip(deps, user, phone, incomingMessage, trip, pickedStop.address, pickedStop);
+        return;
+      }
+      await addStopToTrip(deps, user, phone, incomingMessage, trip, stripDirectionPrefix(incomingMessage));
+      return;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // "IS THIS YOUR TRIP?" — before any price. Taps are handled above by id;
+    // this is for what they TYPE: yes, a price, or what to change.
+    // ══════════════════════════════════════════════════════════════════════
+    if (bookingStage === 'awaiting_trip_confirm' && !isLocation) {
+      const trip = await getPendingRoute(deps.redisClient, user.id);
+      if (!trip) {
+        await clearBookingStage(deps.redisClient, user.id);
+        await replyAndLog(deps, phone, incomingMessage, `That trip has expired. ⏳\n\n${BOOKING_START_PROMPT}`);
+        return;
+      }
+
+      if (isCancelCommand(incomingMessage)) {
+        await setBookingStage(deps.redisClient, user.id, 'awaiting_cancel_reason');
+        await replyAndLog(deps, phone, incomingMessage, CANCELLATION_REASON_PROMPT);
+        return;
+      }
+
+      // A tap on "which one did you mean?" after a typed change.
+      const picked = await takePickedPlace(deps, user.id, incomingMessage, ['edit_pickup', 'edit_destination', 'stop']);
+      if (picked) {
+        if (picked.context === 'stop') await addStopToTrip(deps, user, phone, incomingMessage, trip, picked.address, picked);
+        else await replanPendingRoute(deps, user, phone, incomingMessage, trip, picked.context === 'edit_pickup' ? 'pickup' : 'destination', picked.address, picked);
+        return;
+      }
+
+      // A place in another city is waiting on a yes/no.
+      const farPlace = await getPendingFarPlace(deps.redisClient, user.id);
+      if (farPlace) {
+        await clearPendingFarPlace(deps.redisClient, user.id);
+        if (isAffirmativeReply(incomingMessage)) {
+          await replanPendingRoute(deps, user, phone, incomingMessage, trip, farPlace.field, farPlace.address, { ...farPlace, farConfirmed: true });
+          return;
+        }
+      }
+
+      if (isEditPickupCommand(incomingMessage) || isEditDestinationCommand(incomingMessage)) {
+        const field = isEditPickupCommand(incomingMessage) ? 'pickup' : 'destination';
+        const inlineAddress = extractEditAddress(incomingMessage);
+        if (inlineAddress) await replanPendingRoute(deps, user, phone, incomingMessage, trip, field, inlineAddress);
+        else await askForNewEnd(deps, user, phone, incomingMessage, trip, field);
+        return;
+      }
+      if (/^edit(\s+(my\s+)?trip)?[\s!.]*$/i.test(incomingMessage.trim())) {
+        const said = await sendTripEditMenu(deps, phone, trip);
+        await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+        return;
+      }
+      const removeTyped = /^remove\s+stop\s*(\d)?[\s!.]*$/i.exec(incomingMessage.trim());
+      if (removeTyped) {
+        await removeStopFromTrip(deps, user, phone, incomingMessage, trip, removeTyped[1] ? Number(removeTyped[1]) : undefined);
+        return;
+      }
+
+      // They skipped ahead and named a price: the trip on screen is the trip
+      // they are pricing. Confirm it and let the price step read the number.
+      if (parseCounterOffer(incomingMessage) !== null) {
+        await storePendingRoute(deps.redisClient, user.id, { ...trip, confirmed: true });
+        await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
+        await handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', replyId: undefined });
+        return;
+      }
+      if (isAffirmativeReply(incomingMessage)) {
+        await confirmTripAndQuote(deps, user, phone, incomingMessage, trip);
+        return;
+      }
+
+      const wanted = await classifyBookingIntent(bookingIntentGroq(deps), {
+        step: 'confirm',
+        message: incomingMessage,
+        context: { pickupAddress: trip.pickupAddress, destinationAddress: trip.destAddress, stopAddresses: (trip.stops ?? []).map((stop) => stop.address) },
+        recentMessages: await getWhatsappConversation(deps.redisClient, phone),
+      });
+
+      if (wanted.intent === 'confirm') {
+        await confirmTripAndQuote(deps, user, phone, incomingMessage, trip);
+        return;
+      }
+      if (wanted.intent === 'change_pickup' || wanted.intent === 'change_destination') {
+        const field = wanted.intent === 'change_pickup' ? 'pickup' : 'destination';
+        if (wanted.address) await replanPendingRoute(deps, user, phone, incomingMessage, trip, field, wanted.address);
+        else await askForNewEnd(deps, user, phone, incomingMessage, trip, field);
+        return;
+      }
+      if (wanted.intent === 'add_stop') {
+        if (wanted.address) await addStopToTrip(deps, user, phone, incomingMessage, trip, wanted.address);
+        else await askForStop(deps, user, phone, incomingMessage, trip);
+        return;
+      }
+      if (wanted.intent === 'remove_stop') {
+        await removeStopFromTrip(deps, user, phone, incomingMessage, trip);
+        return;
+      }
+      if (wanted.intent === 'cancel') {
+        await setBookingStage(deps.redisClient, user.id, 'awaiting_cancel_reason');
+        await replyAndLog(deps, phone, incomingMessage, CANCELLATION_REASON_PROMPT);
+        return;
+      }
+      if (wanted.intent === 'restart') {
+        await startBookingOver(deps, user, phone, incomingMessage);
+        return;
+      }
+
+      // Anything else: the trip again, with the three things they can do.
+      const said = await sendTripConfirmation(deps, user, phone, trip,
+        wanted.intent === 'help' ? 'No wahala — this is the trip I have for you 👇' : 'I did not catch that — this is the trip I have for you 👇');
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
       return;
     }
 
@@ -4316,6 +4787,18 @@ async function handleIncomingMetaMessage(
             return;
           }
 
+          if (wanted.intent === 'add_stop') {
+            await clearBookingMisses(deps.redisClient, user.id);
+            if (wanted.address) await addStopToTrip(deps, user, phone, incomingMessage, pendingRoute, wanted.address);
+            else await askForStop(deps, user, phone, incomingMessage, pendingRoute);
+            return;
+          }
+          if (wanted.intent === 'remove_stop') {
+            await clearBookingMisses(deps.redisClient, user.id);
+            await removeStopFromTrip(deps, user, phone, incomingMessage, pendingRoute);
+            return;
+          }
+
           if (wanted.intent === 'cancel') {
             await clearBookingMisses(deps.redisClient, user.id);
             await setBookingStage(deps.redisClient, user.id, 'awaiting_cancel_reason');
@@ -4381,6 +4864,7 @@ async function handleIncomingMetaMessage(
         const searchText = await sendSearchStarted(deps, user, phone, {
           pickupAddress: pendingRoute.pickupAddress,
           destAddress: pendingRoute.destAddress,
+          stopAddresses: (pendingRoute.stops ?? []).map((stop) => stop.address),
           offerNgn,
         });
         await appendWhatsappConversation(deps.redisClient, phone, [
@@ -4448,7 +4932,7 @@ async function handleIncomingMetaMessage(
         riderId: user.id,
         pickup: { lat: lastRoute.pickupLat, lng: lastRoute.pickupLng, address: lastRoute.pickupAddress },
         destination: { lat: lastRoute.destLat, lng: lastRoute.destLng, address: lastRoute.destAddress },
-        stops: [],
+        stops: lastRoute.stops ?? [],
         plannedDistanceKm: lastRoute.distanceKm,
         plannedDurationSeconds: lastRoute.durationSeconds,
         fareEstimateNgn: lastRoute.suggestedFareNgn,
@@ -4472,6 +4956,7 @@ async function handleIncomingMetaMessage(
         destinationLat: lastRoute.destLat,
         destinationLng: lastRoute.destLng,
         distanceKm: lastRoute.distanceKm,
+        stops: lastRoute.stops,
         durationSeconds: lastRoute.durationSeconds,
         offerNgn: lastRoute.offerNgn,
         suggestedFareNgn: lastRoute.suggestedFareNgn,

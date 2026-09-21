@@ -160,8 +160,9 @@ function makeDeps(redisClient) {
       redisClient,
       // ₦300/km, so a wrong-city quote is unmistakable in the reply.
       routePlanner: {
-        planRoute: async ({ origin, destination }) => {
-          const distanceKm = kmBetween(origin, destination) * 1.3;
+        planRoute: async ({ origin, destination, stops = [] }) => {
+          const points = [origin, ...stops, destination];
+          const distanceKm = points.slice(1).reduce((sum, point, index) => sum + kmBetween(points[index], point), 0) * 1.3;
           const suggested = Math.round(distanceKm * 300 / 100) * 100 + 500;
           return { distanceKm, durationSeconds: Math.round(distanceKm * 150), suggestedFareNgn: suggested, minOfferNgn: Math.round(suggested * 0.8), ratePerKmNgn: 300, geometry: undefined };
         },
@@ -378,7 +379,7 @@ test('SCREENSHOT — two places called Admiralty: one message with a Choose butt
   // WhatsApp hands back the row's id. The title is only what was on screen.
   await tap(deps, who, 'place_choice_2', 'Admiralty Road');
   assert.match(textOf(last(sent)), /Destination: \*Admiralty Road, Lekki, Nigeria\*/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
   assert.equal(await bidState.getPendingGeoChoices(redis, user.id), null, 'the question is closed');
 });
 
@@ -490,7 +491,7 @@ test('THE CHAT — "from ikorodu garage to Caleb University" offers the Caleb Un
   assert.match(quote, /Pickup: \*Ikorodu Garage/);
   assert.match(quote, /Destination: \*Caleb University College of Law, Magodo, Lagos\*/);
   assert.doesNotMatch(quote, /Ibadan-Ijebu Ode Rd|[A-Z0-9]{4}\+[A-Z0-9]{2}/, 'no mislabelled road, no map code');
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 });
 
 test('THE CHAT, part 2 — "No Caleb law" at the price step lands on the College of Law, by name', async () => {
@@ -528,7 +529,7 @@ test('a correction that is itself ambiguous gets the picker too', async () => {
   assert.equal(last(sent).interactive.type, 'list');
   await tap(deps, who, 'place_choice_3', 'Admissions');
   assert.match(textOf(last(sent)), /Destination: \*Caleb University Admissions/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 });
 
 test('with Places switched off in Google Cloud, the bot still works — it just cannot offer a list', async () => {
@@ -539,7 +540,7 @@ test('with Places switched off in Google Cloud, the bot still works — it just 
   await say(deps, who, 'hi');
   await agree(redis, await findRider(who));
   await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
-  assert.match(textOf(last(sent)), /Suggested fare/, 'today\'s behaviour: the geocoder\'s single answer');
+  assert.match(textOf(last(sent)), /suggested fare/i, 'today\'s behaviour: the geocoder\'s single answer');
 });
 
 const IKORODU_SPOTS = [
@@ -621,7 +622,7 @@ test('"from unilag gate to lekki": the "Lekki" they said is kept, and its spots 
   await tap(deps, who, 'place_choice_2', 'Ikate Bus Stop');
   assert.doesNotMatch(textOf(last(sent)), /Session expired/);
   assert.match(textOf(last(sent)), /Destination: \*Ikate Bus Stop/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 });
 
 /* ── one message, one answer — whichever way the model reads it ──────────── */
@@ -711,7 +712,7 @@ test('only a destination given: it is remembered, the pickup is asked for, and t
   const quote = textOf(last(sent));
   assert.match(quote, /Pickup: \*Ikorodu Garage/);
   assert.match(quote, /Destination: \*Caleb University College of Law/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 });
 
 /* ── searching near the pickup ─────────────────────────────────────────── */
@@ -758,7 +759,7 @@ test('SCREENSHOT 1 — "No 7 osaro isokpan" from Akoka is quoted for Lagos, not 
   const reply = textOf(last(sent));
   assert.match(reply, /7 Osaro Isokpan St, Yaba/);
   assert.doesNotMatch(reply, /Benin/);
-  assert.match(reply, /Suggested fare: ₦1,[0-9]{3}\b/, 'a city fare, not ₦97,100');
+  assert.match(reply, /suggested fare ₦1,[0-9]{3}\b/, 'a city fare, not ₦97,100');
 });
 
 test('when the only match IS in another city, the bot asks before quoting — and both answers work', async () => {
@@ -783,7 +784,7 @@ test('when the only match IS in another city, the bot asks before quoting — an
   // The rider does what the screenshot rider did: sends it again with the city.
   await say(deps, who, 'No 7 osaro isokpan Lagos');
   assert.match(textOf(last(sent)), /Destination: \*7 Osaro Isokpan St, Yaba/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
   // A different rider who really is going to Benin.
   const traveller = rider();
@@ -791,7 +792,7 @@ test('when the only match IS in another city, the bot asks before quoting — an
   await say(deps, traveller, 'Isokpan street');
   await say(deps, traveller, 'yes');
   assert.match(textOf(last(sent)), /Destination: \*Isokpan St, Use, Benin City/);
-  assert.equal(await bidState.getBookingStage(redis, travellerUser.id), 'awaiting_price');
+  assert.equal(await bidState.getBookingStage(redis, travellerUser.id), 'awaiting_trip_confirm');
 });
 
 test('the whole trip in one message gets the same care: destination searched near the pickup, far ones questioned', async () => {
@@ -896,6 +897,7 @@ test('never turn "ok" into a fare; never guess an amount from words', async () =
   const who = rider();
   await riderWithPickup(deps, redis, who);
   await say(deps, who, 'Osaro Isokpan street');
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
 
   await say(deps, who, 'ok book it');
   assert.match(textOf(last(sent)), /just tell me your price/);
@@ -915,6 +917,8 @@ test('the quote comes with a "Set your price" button; typing a price still works
   const user = await riderWithPickup(deps, redis, who);
 
   await say(deps, who, 'Osaro Isokpan street');
+  assert.equal(last(sent).interactive.type, 'button', 'first the trip is confirmed — no price is asked for yet');
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
   const quote = last(sent);
   assert.equal(quote.interactive.type, 'cta_url');
   assert.equal(quote.interactive.action.parameters.display_text, 'Set your price');
@@ -1017,6 +1021,183 @@ test('if WhatsApp refuses a picture-and-button message, nothing is lost: photo, 
   assert.match(order[1].body.image.link, /car\.jpg$/);
   assert.match(order[1].body.image.caption, /\*YOUR DRIVER\*[\s\S]*Plate: \*LND-174XA\*/, 'the info is the caption of the second picture');
   assert.equal(order[2].body.interactive.action.parameters.display_text, 'Track live trip');
+});
+
+/* ── confirm the trip before the price: Confirm · Add a stop · Edit trip ── */
+
+const SABO = { lat: 6.5068, lng: 3.3780, address: 'Sabo Market, Yaba, Lagos', name: 'Sabo Market' };
+const TEJUOSHO = { lat: 6.5140, lng: 3.3690, address: 'Tejuosho Market, Yaba, Lagos', name: 'Tejuosho Market' };
+const UNILAG_GATE = { lat: 6.5190, lng: 3.3900, address: 'University of Lagos Main Gate, Akoka, Lagos', name: 'UNILAG Main Gate' };
+
+/** A rider looking at "Check your trip": Akoka → Yaba, nothing confirmed yet. */
+async function riderAtTripCard(world = {}) {
+  const redis = memoryRedis();
+  const { deps, published } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }), ...world });
+  const who = rider();
+  const user = await riderWithPickup(deps, redis, who);
+  await say(deps, who, 'Osaro Isokpan street');
+  return { redis, deps, sent, who, user, published };
+}
+
+test('after the destination comes "Check your trip" — Confirm / Add a stop / Edit — and NO price until it is confirmed', async () => {
+  const { redis, deps, sent, who, user } = await riderAtTripCard();
+
+  const card = last(sent).interactive;
+  assert.equal(card.type, 'button');
+  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['trip_confirm', 'Confirm trip'], ['trip_add_stop', 'Add a stop'], ['trip_edit', 'Edit trip']]);
+  assert.match(card.body.text, /Check your trip[\s\S]*Pickup: \*31 Emily Akinola[\s\S]*Destination: \*7 Osaro Isokpan St, Yaba/);
+  assert.doesNotMatch(card.body.text, /Send your offer|Minimum fare|Set your price/, 'the price is not asked for yet');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
+  const quote = last(sent).interactive;
+  assert.equal(quote.action.parameters.display_text, 'Set your price');
+  assert.match(quote.body.text, /Trip confirmed[\s\S]*Minimum fare: ₦[\s\S]*Suggested fare: ₦/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
+});
+
+test('typing works as well as tapping: "yes" confirms, and a price typed at the card means "this trip, at this price"', async () => {
+  const typedYes = await riderAtTripCard();
+  await say(typedYes.deps, typedYes.who, 'yes');
+  assert.equal(await bidState.getBookingStage(typedYes.redis, typedYes.user.id), 'awaiting_price');
+
+  const typedPrice = await riderAtTripCard();
+  await say(typedPrice.deps, typedPrice.who, '2,000');
+  assert.ok(typedPrice.published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
+});
+
+test('ADD A STOP: tap, type the place, pick it from the Places list — the trip is re-planned through it and drivers are told', async () => {
+  const { redis, deps, sent, who, user, published } = await riderAtTripCard({ places: (query) => (/market/i.test(query) ? [SABO, TEJUOSHO] : null) });
+  const before = await bidState.getPendingRoute(redis, user.id);
+
+  await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
+  assert.match(textOf(last(sent)), /Where do you want to stop\?/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'adding_stop');
+
+  // Two markets match: the same picker as every other place — never a guess.
+  await say(deps, who, 'yaba market');
+  const picker = last(sent).interactive;
+  assert.equal(picker.type, 'list');
+  assert.equal(picker.action.sections[0].title, 'Pick the stop');
+  assert.deepEqual(picker.action.sections[0].rows.map((r) => r.title), ['Sabo Market', 'Tejuosho Market', 'None of these']);
+
+  await tap(deps, who, 'place_choice_2', 'Tejuosho Market');
+  const card = last(sent).interactive;
+  assert.match(card.body.text, /Stop added[\s\S]*Pickup: \*31 Emily[\s\S]*Stop 1: \*Tejuosho Market, Yaba, Lagos\*[\s\S]*Destination: \*7 Osaro/);
+  const after = await bidState.getPendingRoute(redis, user.id);
+  assert.deepEqual(after.stops, [{ lat: TEJUOSHO.lat, lng: TEJUOSHO.lng, address: TEJUOSHO.address }]);
+  assert.ok(after.distanceKm > before.distanceKm && after.suggestedFareNgn >= before.suggestedFareNgn, 'the route and the fare are for the trip THROUGH the stop');
+  assert.notEqual(after.confirmed, true, 'a changed trip is confirmed again');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
+  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Stop 1: \*Tejuosho Market/);
+  await say(deps, who, '3,000');
+  const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event;
+  assert.deepEqual(request.stops, [{ lat: TEJUOSHO.lat, lng: TEJUOSHO.lng, address: TEJUOSHO.address }], 'drivers see the stop');
+  assert.match(textOf(last(sent)), /Finding you a driver[\s\S]*Stop 1: \*Tejuosho Market/);
+});
+
+test('just TYPING it works: "add a stop at sabo market" / "remove the stop" — and "back" leaves the trip alone', async () => {
+  const { redis, deps, sent, who, user } = await riderAtTripCard({
+    places: (query) => (/sabo/i.test(query) ? SABO : null),
+    intent: (message) => ({
+      'abeg make we branch sabo market first': { intent: 'add_stop', address: 'sabo market' },
+      'no need to stop again': { intent: 'remove_stop', address: null },
+    }[message] ?? { intent: 'other', address: null }),
+  });
+
+  await say(deps, who, 'abeg make we branch sabo market first');
+  assert.match(textOf(last(sent)), /Stop added[\s\S]*Stop 1: \*Sabo Market, Yaba, Lagos\*/);
+
+  await say(deps, who, 'no need to stop again');
+  assert.match(textOf(last(sent)), /Stop removed/);
+  assert.doesNotMatch(textOf(last(sent)), /Stop 1:/);
+  assert.deepEqual((await bidState.getPendingRoute(redis, user.id)).stops, []);
+
+  await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
+  await say(deps, who, 'back');
+  assert.match(textOf(last(sent)), /No stop added[\s\S]*Confirm trip/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+});
+
+test('EDIT TRIP opens the Choose sheet: change pickup, change destination, add a stop, remove each stop — and a change keeps the stops', async () => {
+  const { redis, deps, sent, who, user } = await riderAtTripCard({ places: (query) => (/sabo/i.test(query) ? SABO : /gate/i.test(query) ? UNILAG_GATE : null) });
+  await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
+  await say(deps, who, 'sabo market');
+
+  await tapButton(deps, who, 'trip_edit', 'Edit trip');
+  const sheet = last(sent).interactive;
+  assert.equal(sheet.type, 'list');
+  assert.equal(sheet.action.button, 'Choose');
+  assert.deepEqual(sheet.action.sections[0].rows.map((r) => [r.id, r.title]), [
+    ['trip_edit_pickup', 'Change pickup'], ['trip_edit_destination', 'Change destination'], ['trip_add_stop', 'Add a stop'],
+    ['trip_remove_stop_1', 'Remove stop 1'], ['trip_cancel', 'Cancel booking'],
+  ]);
+  assert.ok(sheet.action.sections[0].rows.every((r) => r.title.length <= 24 && r.description.length <= 72));
+  assert.match(sheet.action.sections[0].rows[3].description, /Sabo Market/, 'each row says what it would change');
+
+  // Change pickup → type a name → Places finds it → the trip comes back for confirmation, stop intact.
+  await tap(deps, who, 'trip_edit_pickup', 'Change pickup');
+  assert.match(textOf(last(sent)), /Current pickup: \*31 Emily Akinola[\s\S]*Type the new pickup/);
+  await say(deps, who, 'unilag main gate');
+  assert.match(textOf(last(sent)), /Pickup updated![\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+
+  await tap(deps, who, 'trip_remove_stop_1', 'Remove stop 1');
+  assert.deepEqual((await bidState.getPendingRoute(redis, user.id)).stops, []);
+});
+
+test('stops have limits that are said out loud: three at most, never another city, never the same place twice', async () => {
+  const far = { lat: 7.3775, lng: 3.9470, address: 'Sabo Market, Ibadan', name: 'Sabo Market' };
+  let found = SABO;
+  const { redis, deps, sent, who, user } = await riderAtTripCard({ places: () => found });
+  const addStop = async (place, text) => { found = place; await tapButton(deps, who, 'trip_add_stop', 'Add a stop'); await say(deps, who, text); };
+
+  await addStop(far, 'sabo ibadan');          // (its own words: place lookups are cached by what was typed)
+  assert.match(textOf(last(sent)), /in another city/);
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null, 'nothing was added');
+
+  await say(deps, who, 'back');
+  await addStop({ ...YABA, name: 'Osaro Isokpan' }, 'osaro isokpan');
+  assert.match(textOf(last(sent)), /same place as your destination/);
+  await say(deps, who, 'back');
+
+  await addStop(SABO, 'sabo market');
+  await addStop(TEJUOSHO, 'tejuosho');
+  await addStop(UNILAG_GATE, 'unilag gate');
+  const full = last(sent).interactive;
+  assert.deepEqual(full.action.buttons.map((b) => b.reply.title), ['Confirm trip', 'Edit trip'], 'no "Add a stop" once there are three');
+  await tap(deps, who, 'trip_add_stop', 'Add a stop');     // an old card's button
+  assert.match(textOf(last(sent)), /up to 3 stops/);
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).stops.length, 3);
+});
+
+test('old cards stay tappable and stay safe: Edit after confirming re-opens the trip; a card from an expired or running booking says so', async () => {
+  const { redis, deps, sent, who, user } = await riderAtTripCard();
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
+  await tapButton(deps, who, 'trip_edit', 'Edit trip');                  // the card above the quote
+  assert.equal(last(sent).interactive.type, 'list');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+
+  await bidState.clearPendingRoute(redis, user.id);
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
+  assert.match(textOf(last(sent)), /That trip has expired/);
+
+  await bidState.setActiveRide(redis, user.id, 'ride-already-out');
+  await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
+  assert.match(textOf(last(sent)), /Drivers are already looking at this trip/);
+});
+
+test('"I did not catch that" shows the trip again — and an unsure model never counts as "yes"', async () => {
+  const { redis, deps, sent, who, user } = await riderAtTripCard({ intent: () => ({ intent: 'answer', address: null }) });
+  await say(deps, who, 'hmm wetin be this');
+  assert.equal(last(sent).interactive.type, 'button');
+  assert.match(textOf(last(sent)), /I did not catch that/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm', 'not moved on to the price');
 });
 
 /* ── offers in the chat: tap one and it is yours ────────────────────────── */
@@ -1220,6 +1401,7 @@ test('the second reply the bot cannot use brings buttons, not the same prompt ag
   const who = rider();
   const user = await riderWithPickup(deps, redis, who);
   await say(deps, who, 'Osaro Isokpan street');
+  await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
 
   await say(deps, who, 'hmm wetin be this');
   assert.equal(last(sent).type, 'text');

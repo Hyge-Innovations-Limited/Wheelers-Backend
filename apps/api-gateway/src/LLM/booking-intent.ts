@@ -16,12 +16,15 @@ import type { WhatsappConversationMessage } from './types';
  * geocoding and publishing the ride — decides what to do about it.
  */
 
-export type BookingStep = 'pickup' | 'destination' | 'price';
+/** 'confirm' = the trip is on screen with Confirm / Edit trip, before any price is asked for. */
+export type BookingStep = 'pickup' | 'destination' | 'confirm' | 'price';
 
 export type BookingIntent =
   | 'answer'              // what the step asked for: a place, or a price
   | 'change_pickup'
   | 'change_destination'
+  | 'add_stop'            // a place to pass through on the way
+  | 'remove_stop'
   | 'cancel'
   | 'restart'             // throw this booking away and begin a new one
   | 'confirm'             // "ok book it" — wants to go ahead, named no price
@@ -30,22 +33,25 @@ export type BookingIntent =
 
 export interface BookingIntentResult {
   intent: BookingIntent;
-  /** The place they named, in THEIR words. Only for change_pickup / change_destination. */
+  /** The place they named, in THEIR words. Only for change_pickup / change_destination / add_stop. */
   address?: string;
 }
 
 export interface BookingContext {
   pickupAddress?: string | null;
   destinationAddress?: string | null;
+  /** Stops already on the trip, in order. */
+  stopAddresses?: string[];
 }
 
 const INTENTS: ReadonlySet<string> = new Set([
-  'answer', 'change_pickup', 'change_destination', 'cancel', 'restart', 'confirm', 'help', 'other',
+  'answer', 'change_pickup', 'change_destination', 'add_stop', 'remove_stop', 'cancel', 'restart', 'confirm', 'help', 'other',
 ]);
 
 const STEP_ASKED: Record<BookingStep, string> = {
   pickup: 'their PICKUP place',
   destination: 'their DESTINATION place',
+  confirm: 'a CONFIRMATION that the trip shown (pickup, stops, destination) is right',
   price: 'the PRICE they offer (naira)',
 };
 
@@ -78,33 +84,38 @@ export function sharedPlaceWords(message: string, context: BookingContext): { pi
 }
 
 function buildPrompt(step: BookingStep, message: string, context: BookingContext): string {
-  const asked = step === 'price' ? 'price' : 'place';
+  const asked = step === 'price' ? 'price' : step === 'confirm' ? 'confirmation' : 'place';
+  const correcting = step === 'price' || step === 'confirm';
   const shared = sharedPlaceWords(message, context);
-  const evidence = step === 'price' && (shared.pickup.length > 0 || shared.destination.length > 0)
+  const evidence = correcting && (shared.pickup.length > 0 || shared.destination.length > 0)
     ? `\nWord evidence: the message shares [${shared.destination.join(', ')}] with the DESTINATION and [${shared.pickup.join(', ')}] with the PICKUP.`
     : '';
 
   return `
 A rider is part-way through booking a ride on WhatsApp with Wheelers (Nigeria). The assistant just asked for ${STEP_ASKED[step]}.
 Pickup so far: ${context.pickupAddress ?? 'not set'}
-Destination so far: ${context.destinationAddress ?? 'not set'}${evidence}
+Destination so far: ${context.destinationAddress ?? 'not set'}${context.stopAddresses?.length ? `\nStops so far: ${context.stopAddresses.map((stop, index) => `${index + 1}. ${stop}`).join(' | ')}` : ''}${evidence}
 
 Classify the rider's message by MEANING — any wording, Pidgin, slang, typos. Return ONLY JSON:
-{"intent":"answer"|"change_pickup"|"change_destination"|"cancel"|"restart"|"confirm"|"help"|"other","address":string|null}
+{"intent":"answer"|"change_pickup"|"change_destination"|"add_stop"|"remove_stop"|"cancel"|"restart"|"confirm"|"help"|"other","address":string|null}
 
 answer — gave the ${asked} that was asked for. ${step === 'price'
     ? 'Any price form: "2500", "2.5k", "I fit pay 3k", "two thousand".'
+    : step === 'confirm'
+      ? 'NEVER use "answer" at this step: saying the trip is right is "confirm".'
     : 'Any place, however short: "Yaba", "the mall", "No 7 Osaro Isokpan" ("No 7" = Number 7).'}
 change_destination — wants a different destination, with or without naming it: "that's not where I'm going", "not that one, I mean Ikeja", "wrong place", "I'm going to Yaba instead", "Benin? I said Lagos".
 change_pickup — wants a different pickup: "pick me from the gate instead", "I've moved, I'm at Shoprite now".
+add_stop — wants to pass through another place on the way, with or without naming it: "add a stop", "I need to stop at Yaba market", "make we branch Shoprite first", "pick my friend at Unilag gate on the way".
+remove_stop — wants a stop taken off: "remove the stop", "no need to stop again", "remove Yaba market".
 cancel — no longer wants this ride: "cancel first order", "forget it", "never mind", "abeg leave am", "I no do again".
 restart — wants a fresh booking: "book a ride", "new ride", "start again", "start afresh".
-confirm — wants to go ahead but gave no ${asked}: "ok", "go ahead", "book it", "proceed".
+confirm — ${step === 'confirm' ? 'the trip is right, go ahead: "confirm", "yes", "correct", "na so", "ok", "go ahead", "book it"' : `wants to go ahead but gave no ${asked}: "ok", "go ahead", "book it", "proceed"`}.
 help — lost or wants a person: "I don't understand", "this isn't working", "agent", "customer care".
 other — anything else: greetings, wallet or balance questions, unrelated chat.
-${step === 'price' ? `
+${correcting ? `
 At this step a message that is ONLY a place (no price) is the rider CORRECTING an address — never "answer". Use the word evidence: it is the destination unless it clearly matches or refines the pickup. The same address resent with a city or area added is a correction. "No 7 …" means Number 7.` : ''}
-address — for change_pickup/change_destination only: the place they named, in THEIR words, adding no city or state they did not write. Otherwise null.
+address — for change_pickup/change_destination/add_stop only: the place they named, in THEIR words, adding no city or state they did not write. Otherwise null.
 Unsure between answer and something else → answer. Unsure among the rest → other.
 `.trim();
 }
@@ -130,9 +141,12 @@ export function fallbackBookingIntent(step: BookingStep, message: string): Booki
   if (/\b(agent|human|customer care|support|help)\b/.test(m)) return { intent: 'help' };
   if (/\b(change|edit|wrong)\b.*\b(destination|drop\s*-?off|where i'?m going)\b/.test(m)) return { intent: 'change_destination' };
   if (/\b(change|edit|wrong)\b.*\b(pick\s*-?up)\b/.test(m)) return { intent: 'change_pickup' };
+  if (/\b(remove|delete|no)\b.*\bstop\b/.test(m)) return { intent: 'remove_stop' };
+  if (/\b(add|another|one more)\b.*\bstop\b|\bstop (at|by)\b/.test(m)) return { intent: 'add_stop' };
+  if (step === 'confirm' && /^(confirm|yes|yeah|yep|ok|okay|correct|go ahead|proceed|na so)\b/.test(m)) return { intent: 'confirm' };
   // Without the model we cannot tell a correction from chatter at the price
   // step, and at the address steps a place is by far the likeliest reply.
-  return { intent: step === 'price' ? 'other' : 'answer' };
+  return { intent: step === 'price' || step === 'confirm' ? 'other' : 'answer' };
 }
 
 /**
@@ -145,6 +159,8 @@ const WAY_OUT_BUTTONS: Record<string, BookingIntent> = {
   'change destination': 'change_destination',
   'start again': 'restart',
   'cancel ride': 'cancel',
+  'confirm trip': 'confirm',
+  'add a stop': 'add_stop',
 };
 
 export async function classifyBookingIntent(
@@ -181,7 +197,9 @@ export async function classifyBookingIntent(
       return { intent: 'answer' };
     }
 
-    const wantsAddress = intent === 'change_pickup' || intent === 'change_destination';
+    // "Unsure → answer" must never read as "yes, that trip is right".
+    if (step === 'confirm' && intent === 'answer') return { intent: 'other' };
+    const wantsAddress = intent === 'change_pickup' || intent === 'change_destination' || intent === 'add_stop';
     const address = wantsAddress && typeof result?.address === 'string' ? result.address.trim() : '';
     return address ? { intent, address: address.slice(0, 200) } : { intent };
   } catch (error) {

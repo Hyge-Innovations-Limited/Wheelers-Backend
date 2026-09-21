@@ -26,6 +26,8 @@ export interface WhatsappRideMeta {
   destinationAddress: string;
   destinationLat?: number;
   destinationLng?: number;
+  /** Places to pass through on the way, in order. */
+  stops?: RouteStop[];
   distanceKm?: number;
   durationSeconds?: number;
   offerNgn: number;
@@ -33,6 +35,15 @@ export interface WhatsappRideMeta {
   paymentMethod: 'CASH' | 'WALLET';
   createdAt: string;
 }
+
+export interface RouteStop {
+  lat: number;
+  lng: number;
+  address: string;
+}
+
+/** A chat booking carries at most this many stops (the ride event allows 5). */
+export const MAX_CHAT_STOPS = 3;
 
 export interface WhatsappBid {
   /** Durable DriverBid.id — acceptance names this exact bid and price. */
@@ -355,7 +366,7 @@ export async function clearPendingLocation(
 
 // ── Rider booking stage (tracks where the rider is in the booking flow) ───
 
-export type BookingStage = 'awaiting_pickup' | 'awaiting_destination' | 'awaiting_route_confirmation' | 'awaiting_price' | 'awaiting_payment' | 'awaiting_cancel_reason' | 'awaiting_withdrawal_amount' | 'awaiting_withdrawal_bank' | 'awaiting_withdrawal_account' | 'awaiting_withdrawal_confirmation' | 'searching' | 'bidding' | 'editing_pickup' | 'editing_destination' | 'group_awaiting_pickup' | 'group_awaiting_destination' | 'group_awaiting_confirm' | 'group_awaiting_face_photo';
+export type BookingStage = 'awaiting_pickup' | 'awaiting_destination' | 'awaiting_route_confirmation' | 'awaiting_trip_confirm' | 'adding_stop' | 'awaiting_price' | 'awaiting_payment' | 'awaiting_cancel_reason' | 'awaiting_withdrawal_amount' | 'awaiting_withdrawal_bank' | 'awaiting_withdrawal_account' | 'awaiting_withdrawal_confirmation' | 'searching' | 'bidding' | 'editing_pickup' | 'editing_destination' | 'group_awaiting_pickup' | 'group_awaiting_destination' | 'group_awaiting_confirm' | 'group_awaiting_face_photo';
 
 function bookingStageKey(userId: string): string {
   return `whatsapp:user:${userId}:booking_stage`;
@@ -447,6 +458,14 @@ export interface PendingRouteData {
   minOfferNgn: number;
   ratePerKmNgn: number;
   route: unknown;
+  /** Places to pass through on the way, in order. */
+  stops?: RouteStop[];
+  /**
+   * The rider has looked at this exact trip and said it is right. Any change
+   * to it stores a new route WITHOUT this, so the changed trip is shown for
+   * confirmation again before a price is asked for.
+   */
+  confirmed?: boolean;
   /** Price the rider already named, held across the confirmation step. */
   offerNgn?: number;
 }
@@ -553,6 +572,8 @@ export interface LastRouteData {
   minOfferNgn: number;
   ratePerKmNgn: number;
   route?: unknown;
+  /** Carried so "search again" asks drivers for the same trip, stops included. */
+  stops?: RouteStop[];
   offerNgn: number;
 }
 
@@ -760,7 +781,7 @@ export async function clearGroupRequestRider(
 
 export interface PendingGeoChoices {
   /** Which field the answer fills. */
-  context: 'group_pickup' | 'group_destination' | 'pickup' | 'destination' | 'edit_pickup' | 'edit_destination';
+  context: 'group_pickup' | 'group_destination' | 'pickup' | 'destination' | 'edit_pickup' | 'edit_destination' | 'stop';
   options: Array<{ lat: number; lng: number; address: string }>;
 }
 

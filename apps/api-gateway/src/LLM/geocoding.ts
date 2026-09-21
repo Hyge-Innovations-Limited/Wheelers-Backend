@@ -238,7 +238,7 @@ export interface GeocodeOptions {
 export interface GeoPoint { lat: number; lng: number }
 
 /** Within this, two matches are the same place for a driver's purposes. */
-const SAME_PLACE_KM = 0.4;
+export const SAME_PLACE_KM = 0.4;
 
 /** Beyond this, two points are in different cities, not different streets. */
 export const SAME_CITY_KM = 100;

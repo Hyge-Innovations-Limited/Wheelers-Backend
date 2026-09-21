@@ -72,7 +72,7 @@ export async function publishWhatsappRide(
     riderId: rider.id,
     pickup: { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress },
     destination: { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress },
-    stops: [],
+    stops: pendingRoute.stops ?? [],
     plannedDistanceKm: pendingRoute.distanceKm,
     plannedDurationSeconds: pendingRoute.durationSeconds,
     fareEstimateNgn: offerNgn,
@@ -108,6 +108,7 @@ export async function publishWhatsappRide(
     destinationAddress: pendingRoute.destAddress,
     destinationLat: pendingRoute.destLat,
     destinationLng: pendingRoute.destLng,
+    stops: pendingRoute.stops,
     distanceKm: pendingRoute.distanceKm,
     durationSeconds: pendingRoute.durationSeconds,
     offerNgn,
@@ -173,6 +174,7 @@ export interface ConfirmedRide {
   etaSeconds: number;
   pickupAddress: string;
   destAddress: string;
+  stopAddresses: string[];
 }
 
 export type ConfirmResult =
@@ -295,6 +297,7 @@ async function confirmOnce(
     etaSeconds: bid.etaSeconds,
     pickupAddress: meta.pickupAddress,
     destAddress: meta.destinationAddress,
+    stopAddresses: (meta.stops ?? []).map((stop) => stop.address),
   };
   await clearPendingAccept(deps.redisClient, riderId);
   await setRideState(deps.redisClient, rideId, 'confirmed');
