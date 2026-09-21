@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, userClient, groupRideClient, walletClient, walletSecurityClient, virtualAccountClient, withdrawalClient, rideClient } from '@wheleers/db';
 import {
@@ -17,6 +17,7 @@ import type { PaymentsClient } from '@wheleers/payments';
 import { createWalletPageToken, RIDE_PAGE_TOKEN_TTL_SECONDS, type WalletPageScope } from '../auth/local';
 import type { RidePageChatEvent } from './ride-page.route';
 import { confirmRideWithOffer, offerKey, publishWhatsappRide } from '../rides/whatsapp-ride.service';
+import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser, provisionDepositAccount } from '../onboarding/user-onboarding';
 import {
@@ -911,8 +912,32 @@ interface ConfirmedRideForChat {
   pickupAddress?: string; destAddress?: string; stopAddresses?: string[];
 }
 
+const SOS_REPLY_ID = 'ride_sos';
+const SOS_CANCEL_REPLY_ID = 'ride_sos_cancel';
+const TRACK_CODE_TTL_SECONDS = 12 * 60 * 60;
+
+/**
+ * A short link to the live map, for the BODY of the ride card. WhatsApp gives a
+ * message one link button or reply buttons, never both — the card's button is
+ * SOS, so tracking is a link, and a link with a 300-character token in it is
+ * not something a rider can read. `/t/<code>` mints a fresh page token on every
+ * open (index.ts), so the link outlives the two-hour token and carries no secret
+ * beyond itself.
+ */
+async function trackLink(deps: MetaWhatsappRouteDeps, userId: string): Promise<string | null> {
+  if (!deps.appBaseUrl) return null;
+  const mine = `whatsapp:user:${userId}:track_code`;
+  const code = (await deps.redisClient.get(mine).catch(() => null)) ?? randomBytes(8).toString('base64url');
+  await Promise.all([
+    deps.redisClient.set(mine, code, TRACK_CODE_TTL_SECONDS),
+    deps.redisClient.set(trackCodeKey(code), userId, TRACK_CODE_TTL_SECONDS),
+  ]);
+  return `${deps.appBaseUrl.replace(/\/+$/, '')}/t/${code}`;
+}
+export const trackCodeKey = (code: string) => `whatsapp:track:${code}`;
+
 /** Everything about the ride, as one tidy list — the text under the car's photo. */
-function rideDetailsText(ride: ConfirmedRideForChat, withTrackingLine: boolean): string {
+function rideDetailsText(ride: ConfirmedRideForChat, trackUrl: string | null): string {
   return [
     `✅ *Ride confirmed & paid*`,
     ``,
@@ -923,7 +948,7 @@ function rideDetailsText(ride: ConfirmedRideForChat, withTrackingLine: boolean):
     ``,
     `*THE CAR*`,
     `🚗 ${ride.vehicleModel}`,
-    `🔢 Plate: *${ride.vehiclePlate}*`,
+    `🔢 Plate: *${ride.vehiclePlate}* — check it before you get in`,
     ``,
     `*YOUR TRIP*`,
     ...(ride.pickupAddress ? [`📍 From: ${ride.pickupAddress}`] : []),
@@ -931,67 +956,25 @@ function rideDetailsText(ride: ConfirmedRideForChat, withTrackingLine: boolean):
     ...(ride.destAddress ? [`🏁 To: ${ride.destAddress}`] : []),
     `💰 ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
     `⏱ Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
+    ...(trackUrl ? [``, `🗺️ *Track live trip:* ${trackUrl}`] : []),
     ``,
-    withTrackingLine
-      ? `Check the plate before you get in. Tap *Track live trip* to watch your driver on the map. 🗺️`
-      : `Check the plate before you get in. Your driver is on the way! 🚗`,
-  ].join('\n').slice(0, 1024);   // WhatsApp's limit for a caption and for a button message's body
+    `Feel unsafe at any point? Tap *SOS* — Wheelers' safety team gets your trip and location at once.`,
+  ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
 
 /**
- * One WhatsApp message made of three things: a picture on top, text under it,
- * and a link button at the bottom. Returns false if WhatsApp refuses it, so the
- * caller can send the same content the long way.
- */
-async function sendPhotoCardWithLink(
-  deps: MetaWhatsappRouteDeps,
-  to: string,
-  imageUrl: string,
-  body: string,
-  buttonText: string,
-  url: string,
-): Promise<boolean> {
-  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return false;
-  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: to.replace(/^\+/, ''),
-      type: 'interactive',
-      interactive: {
-        type: 'cta_url',
-        header: { type: 'image', image: { link: imageUrl } },
-        body: { text: body },
-        action: { name: 'cta_url', parameters: { display_text: buttonText.slice(0, 20), url } },
-      },
-    }),
-  }).catch(() => null);
-  if (!response?.ok) {
-    console.error('[whatsapp] photo card failed — sending the photo and the button separately', {
-      status: response?.status ?? null,
-      payload: response ? await response.text().catch(() => '') : 'network error',
-    });
-    return false;
-  }
-  return true;
-}
-
-/**
- * "Your ride is confirmed" — TWO messages, the same from the chat's *pay* and
- * from the page's Accept:
+ * "Your ride is confirmed" — TWO messages, the same from the chat, the offers
+ * form and the page:
  *
  *   1. the driver's photo
- *   2. the car's photo, with every detail listed under it and a
- *      "Track live trip" button at the bottom — one message
- *
- * It used to be four (photo, photo, details, button). The rider needs a face, a
- * car to look for, and one thing to tap; everything about the ride now sits in
- * the message they will scroll back to when the car pulls up.
+ *   2. the ride card: the car's photo on top, every detail under it with the
+ *      Track live trip LINK, and one button — 🆘 SOS
  *
  * The driver's photo is awaited and followed by a short pause: pictures take
  * longer to land than the message after them, and the card kept arriving first.
+ * One photo on file → just the card, carrying it. WhatsApp refuses the card →
+ * the same card without the picture; refuses that too → plain text. The details
+ * always arrive.
  */
 async function sendRideConfirmation(
   deps: MetaWhatsappRouteDeps,
@@ -1011,34 +994,44 @@ async function sendRideConfirmation(
     }
   }
 
-  const trackUrl = ridePageUrl(deps, userId);
-  const details = rideDetailsText(ride, Boolean(trackUrl));
-
-  // The card carries ONE picture. The car when there is one (it is what they
-  // look for on the street); otherwise the driver's own photo becomes the card.
-  const cardPhoto = carUrl ?? selfieUrl;
+  const details = rideDetailsText(ride, await trackLink(deps, userId).catch(() => null));
   if (selfieUrl && carUrl) {
     await sendMetaImageMessage(deps, phone, selfieUrl, `Your driver: *${ride.driverName}*`).catch(() => undefined);
     await pause(1200);
   }
 
-  if (cardPhoto && trackUrl && await sendPhotoCardWithLink(deps, phone, cardPhoto, details, 'Track live trip', trackUrl)) {
-    return details;
-  }
-
-  // The long way: WhatsApp refused the card, there is no photo, or no page to link to.
-  if (cardPhoto) {
-    await sendMetaImageMessage(deps, phone, cardPhoto, details).catch(() => undefined);
-    if (trackUrl) {
-      await pause(1200);
-      await sendMetaLinkButton(deps, phone, `🗺️ *Track your trip live* — watch ${ride.driverName.split(' ')[0]} on the map.`, 'Track live trip', trackUrl);
-    }
-  } else if (trackUrl) {
-    await sendMetaLinkButton(deps, phone, details, 'Track live trip', trackUrl);
-  } else {
-    await sendMetaReply(deps, phone, details);
-  }
+  const card = (photo: string | null) => ({
+    type: 'button',
+    ...(photo ? { header: { type: 'image', image: { link: photo } } } : {}),
+    body: { text: details },
+    action: { buttons: [{ type: 'reply', reply: { id: SOS_REPLY_ID, title: '🆘 SOS' } }] },
+  });
+  const photo = carUrl ?? selfieUrl;
+  const sent = (photo !== null && await sendInteractive(deps, phone, card(photo))) || await sendInteractive(deps, phone, card(null));
+  if (!sent) await sendMetaReply(deps, phone, details);
   return details;
+}
+
+/**
+ * The SOS button, and "I'm safe". Answered whatever else the chat is doing, and
+ * with one short message: a person who has just asked for help must see that it
+ * was heard — and one who slipped needs the way to take it back.
+ */
+async function handleSosTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+  if (replyId === SOS_CANCEL_REPLY_ID) {
+    const withdrawn = await cancelRiderSos(userId);
+    await sendMetaReply(deps, phone, withdrawn ? '✅ Glad you are safe — the alert has been withdrawn.' : 'You have no open alert. Tap *SOS* on your ride card if you ever need us.');
+    return;
+  }
+  const { alreadyOpen } = await raiseRiderSos(userId);
+  logActivity({ userId, eventType: 'safety_alert_raised', source: 'whatsapp', metadata: { alreadyOpen } });
+  const text = `🆘 *${alreadyOpen ? 'We already have your alert' : 'SOS received'}.* Wheelers' safety team has your trip, your driver and your location.\n\nIn immediate danger? Call *112*.`;
+  const sent = await sendInteractive(deps, phone, {
+    type: 'button',
+    body: { text },
+    action: { buttons: [{ type: 'reply', reply: { id: SOS_CANCEL_REPLY_ID, title: "I'm safe" } }] },
+  });
+  if (!sent) await sendMetaReply(deps, phone, text);
 }
 
 /**
@@ -3054,6 +3047,12 @@ async function handleIncomingMetaMessage(
         preview: incomingMessage.slice(0, 160),
       },
     });
+
+    // ── SOS. Before consent, before any booking step, before anything. ────
+    if (msgInfo.replyId === SOS_REPLY_ID || msgInfo.replyId === SOS_CANCEL_REPLY_ID) {
+      await handleSosTap(deps, user.id, phone, msgInfo.replyId);
+      return;
+    }
 
     // ── A tap on an offers message ───────────────────────────────────────
     // Old messages stay tappable forever. One from a search that is over must

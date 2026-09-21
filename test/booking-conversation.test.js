@@ -958,7 +958,7 @@ function recordMeta({ refuseCards = false } = {}) {
   const order = [];
   global.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
-    const isCard = body.type === 'interactive' && body.interactive.header?.type === 'image';
+    const isCard = body.type === 'interactive' && body.interactive.header?.type === 'image';   // the ride card WITH its picture
     order.push({ type: isCard ? 'card' : body.type, at: Date.now(), body });
     if (isCard && refuseCards) { order.pop(); return { ok: false, status: 400, json: async () => ({}), text: async () => 'header not supported' }; }
     return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
@@ -972,35 +972,43 @@ function confirmationDeps(redis) {
   return deps;
 }
 
-test('ride confirmed is TWO messages: the driver\'s photo, then the car\'s photo with every detail listed and the Track live trip button', async () => {
-  const deps = confirmationDeps(memoryRedis());
+test('ride confirmed is TWO messages: the driver\'s photo, then ONE card — car photo, every detail, the Track live trip LINK, and one button: 🆘 SOS', async () => {
+  const redis = memoryRedis();
+  const deps = confirmationDeps(redis);
   const order = recordMeta();
   const driver = await driverWithPhotos();
 
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001', ride: confirmedRide(driver.id) });
 
-  assert.deepEqual(order.map((m) => m.type), ['image', 'card'], 'two messages — not four');
+  assert.deepEqual(order.map((m) => m.type), ['image', 'card'], 'two messages — not three, not four');
   assert.match(order[0].body.image.link, /selfie\.jpg$/);
   assert.match(order[0].body.image.caption, /Your driver: \*Chinedu Okafor\*/);
   assert.ok(order[1].at - order[0].at >= 1100, 'the card waits for the first photo to land');
 
+  // WhatsApp gives a message a link button OR reply buttons. The button is SOS; tracking is a link in the text.
   const card = order[1].body.interactive;
-  assert.equal(card.type, 'cta_url');
+  assert.equal(card.type, 'button');
   assert.match(card.header.image.link, /car\.jpg$/, 'the car is the picture on the card');
-  assert.equal(card.action.parameters.display_text, 'Track live trip');
-  assert.match(card.action.parameters.url, /\/widget\/ride\/ride\.html#t=/);
+  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_sos', '🆘 SOS']]);
 
   const text = card.body.text;
   assert.ok(text.length <= 1024);
-  // A list, in sections — driver, car, trip — in that order.
   const at = (needle) => { const i = text.indexOf(needle); assert.ok(i >= 0, `the info carries "${needle}"`); return i; };
   const sequence = ['Ride confirmed & paid', '*YOUR DRIVER*', 'Chinedu Okafor', '4.9 · 412 rides', '+2348031234567',
     '*THE CAR*', 'Toyota Corolla', 'Plate: *LND-174XA*',
-    '*YOUR TRIP*', 'From: Ikorodu Garage', 'To: Caleb University College of Law', '₦6,200 — held in your wallet', 'Arrives in about 4 min', 'Track live trip'].map(at);
-  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order');
+    '*YOUR TRIP*', 'From: Ikorodu Garage', 'To: Caleb University College of Law', '₦6,200 — held in your wallet', 'Arrives in about 4 min',
+    'Track live trip:* https://app.wheelersng.com/t/', 'Tap *SOS*'].map(at);
+  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, then SOS');
+
+  // The link is short enough to read, and it is this rider's — the same one if the card is sent again.
+  const code = /\/t\/([A-Za-z0-9_-]{6,32})\b/.exec(text)[1];
+  assert.equal(await redis.get(`whatsapp:track:${code}`), 'rider-1');
+  assert.ok(text.match(/https:\/\/\S+/)[0].length < 50);
+  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001', ride: confirmedRide(driver.id) });
+  assert.ok(order.at(-1).body.interactive.body.text.includes(`/t/${code}`));
 });
 
-test('one photo on file → ONE message; none → the details still arrive with the button', async () => {
+test('one photo on file → ONE message; none → the card without a picture; WhatsApp refuses the picture card → the same card without it', async () => {
   const deps = confirmationDeps(memoryRedis());
 
   let order = recordMeta();
@@ -1013,20 +1021,65 @@ test('one photo on file → ONE message; none → the details still arrive with 
   const noPhotos = await driverWithPhotos({ selfie: false, car: false });
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noPhotos.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive']);
-  assert.equal(order[0].body.interactive.action.parameters.display_text, 'Track live trip');
-  assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
+  assert.equal(order[0].body.interactive.action.buttons[0].reply.title, '🆘 SOS');
+  assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*[\s\S]*Track live trip/);
+
+  order = recordMeta({ refuseCards: true });
+  const both = await driverWithPhotos();
+  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
+  assert.deepEqual(order.map((m) => m.type), ['image', 'interactive'], 'still two messages, still every detail, still SOS');
+  assert.equal(order[1].body.interactive.action.buttons[0].reply.id, 'ride_sos');
 });
 
-test('if WhatsApp refuses a picture-and-button message, nothing is lost: photo, photo with the info as its caption, then the button', async () => {
-  const deps = confirmationDeps(memoryRedis());
-  const order = recordMeta({ refuseCards: true });
-  const driver = await driverWithPhotos();
+/* ── 🆘 SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
 
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(driver.id) });
-  assert.deepEqual(order.map((m) => m.type), ['image', 'image', 'interactive']);
-  assert.match(order[1].body.image.link, /car\.jpg$/);
-  assert.match(order[1].body.image.caption, /\*YOUR DRIVER\*[\s\S]*Plate: \*LND-174XA\*/, 'the info is the caption of the second picture');
-  assert.equal(order[2].body.interactive.action.parameters.display_text, 'Track live trip');
+test('SOS: one tap records the emergency with the trip, the driver and the car\'s position; pressing again is ONE incident; "I\'m safe" withdraws it', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  const driver = await onlineDriver();
+  const ride = await prisma.ride.create({ data: { riderId: user.id, driverId: driver.driverId, status: 'IN_PROGRESS', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
+
+  await tapButton(deps, who, 'ride_sos', '🆘 SOS');
+  const alerts = () => prisma.safetyAlert.findMany({ where: { userId: user.id }, orderBy: { createdAt: 'asc' } });
+  const [alert] = await alerts();
+  assert.deepEqual([alert.kind, alert.status, alert.raisedByRole, alert.rideId, alert.counterpartUserId], ['SOS', 'OPEN', 'RIDER', ride.id, driver.userId]);
+  assert.deepEqual([alert.lat, alert.lng], [6.52, 3.38], 'a chat tap carries no position — the car\'s is where the rider is');
+  assert.match(alert.note, /WhatsApp ride card[\s\S]*DRIVER's last known position[\s\S]*IN_PROGRESS/);
+
+  // They are told it was heard — and how to take it back.
+  const heard = last(sent).interactive;
+  assert.match(heard.body.text, /SOS received[\s\S]*your trip, your driver and your location[\s\S]*Call \*112\*/);
+  assert.deepEqual(heard.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_sos_cancel', "I'm safe"]]);
+
+  await tapButton(deps, who, 'ride_sos', '🆘 SOS');                       // a frightened thumb
+  assert.equal((await alerts()).length, 1, 'one emergency, not two');
+  assert.match(textOf(last(sent)), /We already have your alert/);
+
+  await tapButton(deps, who, 'ride_sos_cancel', "I'm safe");
+  assert.equal((await alerts())[0].status, 'CANCELLED');
+  assert.match(textOf(last(sent)), /alert has been withdrawn/);
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED' } });
+});
+
+test('SOS is never stopped by anything else the chat is doing — not even the privacy question — and is recorded with no trip at all', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');                                             // consent still PENDING
+  const user = await findRider(who);
+  assert.equal(user.privacyConsent, 'PENDING');
+
+  await tapButton(deps, who, 'ride_sos', '🆘 SOS');
+  const alert = await prisma.safetyAlert.findFirst({ where: { userId: user.id } });
+  assert.ok(alert, 'the alert must get recorded');
+  assert.deepEqual([alert.rideId, alert.lat], [null, null]);
+  assert.match(textOf(last(sent)), /SOS received/);
+  assert.doesNotMatch(textOf(last(sent)), /privacy/i);
 });
 
 /* ── confirm the trip before the price: Confirm · Add a stop · Edit trip ── */
@@ -1479,7 +1532,7 @@ test('TAP an offer with money in the wallet: fare held, ride confirmed — no "r
 
   assert.deepEqual(accepted().map((e) => [e.rideId, e.bidId, e.agreedFareNgn, e.paymentMethod]), [[rideId, bid.bidId, 2400, 'WALLET']]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2400, 'the fare is held');
-  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+  assert.equal(last(sent).interactive.action.buttons[0].reply.title, '🆘 SOS', 'the ride card');
   assert.match(textOf(last(sent)), /Ride confirmed & paid[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
   assert.equal(sent.some((m) => /reply \*pay\*/i.test(textOf(m))), false);
 
@@ -1562,7 +1615,7 @@ test('SHORT WALLET: the tap remembers the driver and sends ONE "Add money" butto
   await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
   assert.equal(await finish({ userId: user.id, amountNgn: 1000, newBalanceNgn: 2400 }), true, 'the plain "deposit received" is not sent on top');
   assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
-  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+  assert.equal(last(sent).interactive.action.buttons[0].reply.title, '🆘 SOS', 'the ride card');
   assert.equal(await bidState.getPendingAccept(redis, user.id), null);
 });
 
@@ -1771,7 +1824,7 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
   assert.deepEqual(events('RIDE_OFFER_ACCEPTED').map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2900]]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2900);
   await settle();
-  assert.equal(last(sent).interactive.action.parameters.display_text, 'Track live trip');
+  assert.equal(last(sent).interactive.action.buttons[0].reply.title, '🆘 SOS', 'the ride card');
 
   const after = await form('INIT');
   assert.match(after.data.error, /driver is already confirmed/);
