@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, userClient, groupRideClient, walletClient, walletSecurityClient, virtualAccountClient, withdrawalClient, rideClient } from '@wheleers/db';
 import {
@@ -914,30 +914,10 @@ interface ConfirmedRideForChat {
 
 const SOS_REPLY_ID = 'ride_sos';
 const SOS_CANCEL_REPLY_ID = 'ride_sos_cancel';
-const TRACK_CODE_TTL_SECONDS = 12 * 60 * 60;
-
-/**
- * A short link to the live map, for the BODY of the ride card. WhatsApp gives a
- * message one link button or reply buttons, never both — the card's button is
- * SOS, so tracking is a link, and a link with a 300-character token in it is
- * not something a rider can read. `/t/<code>` mints a fresh page token on every
- * open (index.ts), so the link outlives the two-hour token and carries no secret
- * beyond itself.
- */
-async function trackLink(deps: MetaWhatsappRouteDeps, userId: string): Promise<string | null> {
-  if (!deps.appBaseUrl) return null;
-  const mine = `whatsapp:user:${userId}:track_code`;
-  const code = (await deps.redisClient.get(mine).catch(() => null)) ?? randomBytes(8).toString('base64url');
-  await Promise.all([
-    deps.redisClient.set(mine, code, TRACK_CODE_TTL_SECONDS),
-    deps.redisClient.set(trackCodeKey(code), userId, TRACK_CODE_TTL_SECONDS),
-  ]);
-  return `${deps.appBaseUrl.replace(/\/+$/, '')}/t/${code}`;
-}
-export const trackCodeKey = (code: string) => `whatsapp:track:${code}`;
+const TRACK_REPLY_ID = 'ride_track';
 
 /** Everything about the ride, as one tidy list — the text under the car's photo. */
-function rideDetailsText(ride: ConfirmedRideForChat, trackUrl: string | null): string {
+function rideDetailsText(ride: ConfirmedRideForChat): string {
   return [
     `✅ *Ride confirmed & paid*`,
     ``,
@@ -956,9 +936,9 @@ function rideDetailsText(ride: ConfirmedRideForChat, trackUrl: string | null): s
     ...(ride.destAddress ? [`🏁 To: ${ride.destAddress}`] : []),
     `💰 ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
     `⏱ Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
-    ...(trackUrl ? [``, `🗺️ *Track live trip:* ${trackUrl}`] : []),
     ``,
-    `Feel unsafe at any point? Tap *SOS* — Wheelers' safety team gets your trip and location at once.`,
+    `🗺️ *Track live trip* — watch your driver on the map.`,
+    `🆘 *SOS* — feel unsafe at any point? One tap and Wheelers' safety team has your trip and location.`,
   ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
 
@@ -967,8 +947,13 @@ function rideDetailsText(ride: ConfirmedRideForChat, trackUrl: string | null): s
  * form and the page:
  *
  *   1. the driver's photo
- *   2. the ride card: the car's photo on top, every detail under it with the
- *      Track live trip LINK, and one button — 🆘 SOS
+ *   2. the ride card: the car's photo on top, every detail under it, and two
+ *      buttons — Track live trip, 🆘 SOS
+ *
+ * WhatsApp gives a message ONE link button or up to three reply buttons, never
+ * both. Two buttons means reply buttons, and a reply button cannot open a link —
+ * so SOS acts on the tap, and Track live trip answers with the map's link button
+ * (handleRideCardTap). That one extra message is the price of the second button.
  *
  * The driver's photo is awaited and followed by a short pause: pictures take
  * longer to land than the message after them, and the card kept arriving first.
@@ -994,7 +979,7 @@ async function sendRideConfirmation(
     }
   }
 
-  const details = rideDetailsText(ride, await trackLink(deps, userId).catch(() => null));
+  const details = rideDetailsText(ride);
   if (selfieUrl && carUrl) {
     await sendMetaImageMessage(deps, phone, selfieUrl, `Your driver: *${ride.driverName}*`).catch(() => undefined);
     await pause(1200);
@@ -1004,7 +989,12 @@ async function sendRideConfirmation(
     type: 'button',
     ...(photo ? { header: { type: 'image', image: { link: photo } } } : {}),
     body: { text: details },
-    action: { buttons: [{ type: 'reply', reply: { id: SOS_REPLY_ID, title: '🆘 SOS' } }] },
+    action: {
+      buttons: [
+        ...(deps.appBaseUrl ? [{ type: 'reply', reply: { id: TRACK_REPLY_ID, title: 'Track live trip' } }] : []),
+        { type: 'reply', reply: { id: SOS_REPLY_ID, title: '🆘 SOS' } },
+      ],
+    },
   });
   const photo = carUrl ?? selfieUrl;
   const sent = (photo !== null && await sendInteractive(deps, phone, card(photo))) || await sendInteractive(deps, phone, card(null));
@@ -1012,12 +1002,19 @@ async function sendRideConfirmation(
   return details;
 }
 
+const RIDE_CARD_REPLIES: ReadonlySet<string> = new Set([TRACK_REPLY_ID, SOS_REPLY_ID, SOS_CANCEL_REPLY_ID]);
+
 /**
- * The SOS button, and "I'm safe". Answered whatever else the chat is doing, and
- * with one short message: a person who has just asked for help must see that it
- * was heard — and one who slipped needs the way to take it back.
+ * The ride card's buttons, and "I'm safe". Answered whatever else the chat is
+ * doing. SOS gets one short message: a person who has just asked for help must
+ * see that it was heard — and one who slipped needs the way to take it back.
  */
-async function handleSosTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+  if (replyId === TRACK_REPLY_ID) {
+    const url = ridePageUrl(deps, userId);
+    if (url) await sendMetaLinkButton(deps, phone, '🗺️ Your driver, live on the map.', 'Open live map', url);
+    return;
+  }
   if (replyId === SOS_CANCEL_REPLY_ID) {
     const withdrawn = await cancelRiderSos(userId);
     await sendMetaReply(deps, phone, withdrawn ? '✅ Glad you are safe — the alert has been withdrawn.' : 'You have no open alert. Tap *SOS* on your ride card if you ever need us.');
@@ -3049,8 +3046,8 @@ async function handleIncomingMetaMessage(
     });
 
     // ── SOS. Before consent, before any booking step, before anything. ────
-    if (msgInfo.replyId === SOS_REPLY_ID || msgInfo.replyId === SOS_CANCEL_REPLY_ID) {
-      await handleSosTap(deps, user.id, phone, msgInfo.replyId);
+    if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {
+      await handleRideCardTap(deps, user.id, phone, msgInfo.replyId);
       return;
     }
 

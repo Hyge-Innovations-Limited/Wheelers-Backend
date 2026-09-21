@@ -175,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks, trackCodeKey } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -194,7 +194,6 @@ import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
 // same guarded handlers as the chat bot. main keeps these unmounted.
 import { handleWhatsappFlowEndpoint } from "./whatsapp-flows/flow-endpoint";
-import { createWalletPageToken, RIDE_PAGE_TOKEN_TTL_SECONDS } from "./auth/local";
 import { handleRideSearchFlowEndpoint } from "./whatsapp-flows/ride-search-flow-endpoint";
 import { RedisClient } from "./redis/client";
 import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
@@ -868,19 +867,6 @@ async function bootstrap(): Promise<void> {
         phoneOtpTtlSeconds: gatewayEnv.WHATSAPP_OTP_TTL_SECONDS,
       });
 
-      return;
-    }
-
-    // The "Track live trip" link on the ride card: /t/<code> → the map page, with
-    // a page token minted NOW — so the link works for the whole trip, not just
-    // the two hours one token lives.
-    if (req.method === "GET" && /^\/t\/[A-Za-z0-9_-]{6,32}$/.test(url.pathname)) {
-      const riderId = await redisCommandClient.get(trackCodeKey(url.pathname.slice(3))).catch(() => null);
-      const base = (gatewayEnv.APP_BASE_URL ?? "").replace(/\/+$/, "");
-      const token = riderId ? createWalletPageToken(riderId, "ride", gatewayEnv.JWT_SECRET, RIDE_PAGE_TOKEN_TTL_SECONDS) : "";
-      // No code, no token: the page itself says "this link has expired".
-      res.writeHead(302, { Location: `${base}/widget/ride/ride.html#t=${encodeURIComponent(token)}`, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
-      res.end();
       return;
     }
 
