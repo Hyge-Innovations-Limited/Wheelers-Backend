@@ -226,6 +226,10 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
         offers: bids.map((bid) => ({
           key: offerKey(bid),
+          // Wallet short for THIS offer? Then this is what to deposit — the bank's
+          // cut and Wheelers' fee already folded in, so the figure on the Accept
+          // sheet is the figure they will actually transfer. null = wallet covers it.
+          topupSendNgn: balanceNgn + 0.004 < bid.counterOfferNgn ? depositNeededFor(Math.ceil(bid.counterOfferNgn - balanceNgn)) : null,
           driverName: bid.driverName,
           rating: bid.driverRating,
           vehicle: bid.vehicleModel,
@@ -402,8 +406,10 @@ async function handleTopup(req: IncomingMessage, res: ServerResponse, deps: Ride
   // One figure to send, exactly as on the Add money page — never an itemised list.
   sendJson(res, 200, {
     walletGetsNgn: wanted,
+    shortNgn: wanted,
     sendNgn: depositNeededFor(wanted),
     balanceNgn: await balanceOf(userId),
+    // null while the bank is still opening the account: the page keeps asking.
     account: await depositAccountFor(deps, userId),
   });
 }

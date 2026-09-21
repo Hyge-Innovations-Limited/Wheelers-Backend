@@ -144,11 +144,28 @@
     var showShort = amount >= floor && short > 0;
     W.show(W.$('price-short'), showShort);
     if (showShort) {
-      W.$('price-short-text').textContent = 'Your wallet has ' + W.naira(state.balanceNgn) + '. You can search now — you’ll need ' + W.naira(short) + ' more before you accept a driver.';
+      W.$('price-short-text').textContent = 'Your wallet has ' + W.naira(state.balanceNgn) + '. You can search now — you’ll need ' + W.naira(short) + ' more in it before you accept a driver.';
       W.$('price-topup').setAttribute('data-amount', String(short));
+      if (quotedFor !== short) W.$('price-topup').textContent = 'Add money now';   // never show a figure for a different amount
+      quoteTopup(short);
     }
   }
   W.$('price-input').addEventListener('input', function () { W.formatAmountInput(this); syncPrice(); });
+
+  // What they would have to SEND for that shortfall — asked of the server (it
+  // owns the charges), a beat after they stop typing.
+  var quoteTimer = null, quotedFor = null;
+  function quoteTopup(short) {
+    if (quotedFor === short) return;
+    clearTimeout(quoteTimer);
+    quoteTimer = setTimeout(function () {
+      W.api('GET', '/ride-page/topup?amount=' + encodeURIComponent(short)).then(function (quote) {
+        quotedFor = short;
+        if (Number(W.$('price-topup').getAttribute('data-amount')) !== short) return;
+        W.$('price-topup').textContent = 'Add money now · send ' + W.naira(quote.sendNgn);
+      }).catch(function () { /* the plain button still works */ });
+    }, 450);
+  }
 
   W.$('price-topup').addEventListener('click', function () {
     openTopup(Number(this.getAttribute('data-amount')), {});
@@ -351,8 +368,16 @@
     W.$('sa-eta').textContent = minutes(offer.etaMin);
     W.$('sa-vehicle').textContent = [offer.vehicle, offer.plate].filter(Boolean).join(' · ') || '—';
     var after = state.balanceNgn - offer.priceNgn;
-    W.$('sa-after').textContent = after >= 0 ? W.naira(after) : 'Add ' + W.naira(Math.ceil(-after)) + ' first';
-    W.$('accept-go').textContent = after >= 0 ? 'Accept & hold fare' : 'Add money & accept';
+    var short = after < 0;
+    // Short wallet: show what they will actually TRANSFER (charges folded in by
+    // the server), and what lands — never the bare shortfall, which is not the
+    // amount that gets them this ride.
+    W.$('sa-after-label').textContent = short ? 'To add' : 'Wallet after';
+    W.$('sa-after').textContent = short ? 'Send ' + W.naira(offer.topupSendNgn || Math.ceil(-after)) : W.naira(after);
+    var note = W.$('sa-note');
+    W.show(note, short);
+    if (short) note.textContent = 'Your wallet has ' + W.naira(state.balanceNgn) + '. ' + W.naira(Math.ceil(-after)) + ' lands in it, the fare is held, and ' + offer.driverName + ' is confirmed — all in one go.';
+    W.$('accept-go').textContent = short ? 'Add ' + W.naira(offer.topupSendNgn || Math.ceil(-after)) + ' & accept' : 'Accept & hold fare';
     W.show(W.$('accept-err'), false);
     openSheet('sheet-accept');
   }
@@ -380,15 +405,26 @@
   /* add money — one figure to send, never an itemised list */
 
   function showTopup(quote, purpose) {
-    if (!quote.account) {
-      closeSheets();
-      return say('Your account number is still being prepared. Try again in a minute.', 'bad');
-    }
+    var lands = quote.shortNgn || quote.walletGetsNgn;
     W.$('tu-send').textContent = W.naira(quote.sendNgn);
-    W.$('tu-gets').textContent = W.naira(quote.shortNgn || quote.walletGetsNgn);
-    W.$('tu-bank').textContent = quote.account.bankName;
-    W.$('tu-number').textContent = quote.account.accountNumber;
-    W.$('tu-name').textContent = quote.account.accountName;
+    W.$('tu-gets').textContent = W.naira(lands);
+    var ready = Boolean(quote.account);
+    W.show(W.$('tu-acct'), ready);
+    W.show(W.$('tu-preparing'), !ready);
+    if (ready) {
+      W.$('tu-bank').textContent = quote.account.bankName;
+      W.$('tu-number').textContent = quote.account.accountNumber;
+      W.$('tu-name').textContent = quote.account.accountName;
+    } else {
+      // The bank is still opening the account. Keep the sheet up and ask again.
+      setTimeout(function () {
+        if (W.$('sheet-topup').hidden || !W.$('tu-acct').hidden) return;
+        W.api('GET', '/ride-page/topup?amount=' + encodeURIComponent(lands)).then(function (again) {
+          if (again.account && !W.$('sheet-topup').hidden) showTopup(again, purpose);
+          else if (!W.$('sheet-topup').hidden) showTopup(quote, purpose);
+        }).catch(function () { /* the next tick tries again */ });
+      }, 4000);
+    }
     W.$('tu-wait').textContent = purpose.key
       ? 'The moment it lands, your driver is confirmed — no need to tap again.'
       : 'Your balance updates here the moment it lands.';

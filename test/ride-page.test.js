@@ -165,6 +165,7 @@ test('offers appear by themselves, update in place, and disappear when a driver 
 
   let state = (await call(deps, rider, 'GET', '/ride-page/state')).body;
   assert.deepEqual(state.offers.map((o) => [o.driverName, o.priceNgn, o.etaMin]), [['Chinedu Okafor', 6400, 4], ['Aisha Bello', 7000, 2]]);
+  assert.deepEqual(state.offers.map((o) => o.topupSendNgn), [null, null], 'a wallet that covers the fare is asked for nothing');
   assert.equal(state.offers[0].key, first.bidId);
   assert.equal(state.offers[0].plate, 'LND-174XA');
   assert.equal(JSON.stringify(state).includes('+234'), false, 'no driver phone before a ride is confirmed');
@@ -206,6 +207,11 @@ test('accept with a short wallet: no hold, no ride — one figure to send, and n
   const { body } = await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
   const bid = bidFrom(await makeDriver(), 6400);
   await bidState.addBid(redis, body.rideId, bid);
+
+  // Before they even tap: the offer already says what they would have to SEND for it
+  // (13,000 short once showed as "Add ₦13,000" — not the amount that gets them the ride).
+  const listed = (await call(deps, rider, 'GET', '/ride-page/state')).body.offers[0];
+  assert.equal(listed.topupSendNgn, 5283, '(6400 − 1200 + 30) / 0.99, in whole naira');
 
   const short = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId });
   assert.equal(short.status, 402);

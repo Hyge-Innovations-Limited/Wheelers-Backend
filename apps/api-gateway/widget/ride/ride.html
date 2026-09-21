@@ -139,8 +139,9 @@
     <div><span>Fare</span><strong id="sa-fare"></strong></div>
     <div><span>Arrives in</span><strong id="sa-eta"></strong></div>
     <div><span>Vehicle</span><strong id="sa-vehicle"></strong></div>
-    <div><span>Wallet after</span><strong id="sa-after"></strong></div>
+    <div><span id="sa-after-label">Wallet after</span><strong id="sa-after"></strong></div>
   </div>
+  <p class="sub" id="sa-note" hidden></p>
   <div class="notice bad" id="accept-err" hidden></div>
   <button class="btn primary" type="button" id="accept-go">Accept &amp; hold fare</button>
   <button class="btn quiet" type="button" data-close>Not yet</button>
@@ -149,7 +150,8 @@
 <div class="sheet" id="sheet-topup" hidden role="dialog" aria-modal="true" aria-labelledby="st-title">
   <h2 id="st-title">Send <em id="tu-send"></em></h2>
   <p class="sub"><span id="tu-gets"></span> lands in your wallet — from any bank app, to your own Wheelers account.</p>
-  <div class="acct">
+  <div class="notice" id="tu-preparing" hidden>Your Wheelers account number is being set up with the bank. This takes a moment — it will appear here by itself.</div>
+  <div class="acct" id="tu-acct">
     <span class="label">Your Wheelers account</span>
     <div class="bank" id="tu-bank"></div>
     <div class="number" id="tu-number"></div>

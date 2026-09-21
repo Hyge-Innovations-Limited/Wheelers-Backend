@@ -278,3 +278,5 @@ h2 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
 /* the car glides between fixes instead of jumping */
 .leaflet-marker-icon.car-marker { transition: transform 1.2s linear; }
 .leaflet-zoom-anim .leaflet-marker-icon.car-marker { transition: none; }
+
+.notice:not(.bad) { background: var(--yellow); }
