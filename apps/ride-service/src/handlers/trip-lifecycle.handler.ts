@@ -40,15 +40,24 @@ export function createTripLifecycleHandler(params?: {
             paymentMethod: event.paymentMethod,
           });
           if (assigned.count === 0) {
-            // Already assigned (a second accept raced this one) or no longer
-            // open. The first driver keeps the trip; this one is not marked
-            // ON_RIDE for a ride they did not get.
-            console.warn('[ride-service] assignment skipped — ride already assigned or closed', {
-              rideId: event.rideId,
-              driverId: event.driverId,
-            });
-            return;
+            // We did not write it. Either another driver won the race — they
+            // keep the trip and this one must NOT be marked ON_RIDE — or this
+            // very driver already holds it (a redelivered event). Ask.
+            const ride = await rideClient.findById(event.rideId).catch(() => null);
+            if (ride?.driverId !== event.driverId) {
+              console.warn('[ride-service] assignment skipped — the ride belongs to someone else, or is closed', {
+                rideId: event.rideId,
+                driverId: event.driverId,
+                actualDriverId: ride?.driverId ?? null,
+                status: ride?.status ?? null,
+              });
+              return;
+            }
           }
+          // This driver owns the trip, so they are off the market. Marking it
+          // used to be skipped whenever the write above wrote nothing, and a
+          // driver left ONLINE keeps being offered other people's rides while
+          // carrying a passenger.
           await driverClient.updateStatus(event.driverId, DriverStatus.ON_RIDE);
         } catch (err) {
           // agreedFareNgn is written here and read back at completion. If this

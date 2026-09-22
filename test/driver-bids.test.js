@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 
-const { prisma, driverBidClient, rideClient, SEARCH_TIMED_OUT_REASON } = require('@wheleers/db');
+const { prisma, driverBidClient, rideClient, driverClient, SEARCH_TIMED_OUT_REASON } = require('@wheleers/db');
 const {
   handleGetDriverBidsRoute,
   handleGetDriverActiveRideRoute,
@@ -165,6 +165,40 @@ test('a search that TIMED OUT can still be won — a rider still paying, or a la
   const cancelledByRider = await seedRide(rider.id, { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'Accidental request', cancelledAt: new Date() });
   assert.equal((await rideClient.assignDriver(cancelledByRider.id, driver.id)).count, 0, 'the rider said no — that stands');
   assert.equal(SEARCH_TIMED_OUT_REASON, 'No driver accepted in time', 'the ride service writes this exact reason');
+});
+
+test('a driver carrying a passenger is offered nothing — until they are nearly at their drop-off and the new pickup is on their way', async () => {
+  const IKEJA = { lat: 6.6018, lng: 3.3515 };          // where the current trip ends, and the new rider waits
+  const rider = await seedUser('RIDER', `+23480${stamp}41`);
+  const driver = await seedDriver(await seedUser('DRIVER', `+23480${stamp}42`));
+  const trip = await seedRide(rider.id, { status: 'IN_PROGRESS', driverId: driver.id, destLat: IKEJA.lat, destLng: IKEJA.lng });
+  await prisma.driver.update({ where: { id: driver.id }, data: { status: 'ON_RIDE', kycStatus: 'APPROVED' } });
+
+  const free = () => driverClient.findNearby(IKEJA.lat, IKEJA.lng, 5, 5);
+  const finishing = () => driverClient.findFinishingNearby(IKEJA.lat, IKEJA.lng, 5, 5, 2);
+  const has = async (rows) => (await rows()).some((d) => d.id === driver.id);
+
+  // Mid-trip, still 12 km out: busy. Not free, not finishing.
+  await driverClient.updateLocation(driver.id, IKEJA.lat + 0.11, IKEJA.lng);
+  assert.equal(await has(free), false, 'a driver with a passenger is never in the free pool');
+  assert.equal(await has(finishing), false, 'and 12 km from their drop-off they are simply busy');
+
+  // Now ~1 km from the drop-off, and the new pickup is right there: offer it.
+  await driverClient.updateLocation(driver.id, IKEJA.lat + 0.009, IKEJA.lng);
+  assert.equal(await has(free), false, 'still not free — they have someone in the car');
+  const queued = (await finishing()).find((d) => d.id === driver.id);
+  assert.ok(queued, 'nearly done, and the pickup is where they are heading');
+  assert.ok(queued.distanceKm < 0.2, 'ranked from where they will BE, not where they are');
+
+  // A pickup 40 km the other way is not "on their way", however close they are to dropping off.
+  assert.equal((await driverClient.findFinishingNearby(IKEJA.lat + 0.36, IKEJA.lng, 5, 5, 2)).some((d) => d.id === driver.id), false);
+
+  // The trip ends: they rejoin the free pool and leave the finishing one.
+  await prisma.ride.update({ where: { id: trip.id }, data: { status: 'COMPLETED' } });
+  await prisma.driver.update({ where: { id: driver.id }, data: { status: 'ONLINE' } });
+  await driverClient.updateLocation(driver.id, IKEJA.lat, IKEJA.lng);
+  assert.equal(await has(free), true);
+  assert.equal(await has(finishing), false);
 });
 
 test('GET /drivers/me/bids lists the driver\'s bids newest first, with the trip and outcome', async () => {

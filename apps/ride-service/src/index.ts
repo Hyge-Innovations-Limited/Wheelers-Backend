@@ -25,6 +25,12 @@ export type OnlineDriver = {
   vehicleModel: string;
   /** Driver→pickup at match time, when the match query computed it. */
   distanceKm?: number;
+  /**
+   * They are still carrying a passenger, and were matched because this pickup
+   * is near where they are dropping off. Their app labels the card so nobody
+   * abandons a rider for it; distanceKm is measured from that drop-off.
+   */
+  afterCurrentTrip?: boolean;
 };
 
 export type RideGpsState = {

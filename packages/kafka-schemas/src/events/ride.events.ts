@@ -98,6 +98,10 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
   // live "to pickup" card (the app recomputes from its own GPS after that).
   pickupDistanceKm:      z.number().optional(),
   pickupEtaSeconds:      z.number().int().optional(),
+  // This driver is still carrying a passenger and was matched because the
+  // pickup is near their drop-off. Their app labels the card so nobody
+  // abandons the rider they have; the distances above are from that drop-off.
+  afterCurrentTrip:      z.boolean().optional(),
   expiresAt:             z.string().datetime(),
   // One auction clock for every surface — apps render it, chat enforces it.
   bidsCloseAt:           z.string().datetime().optional(),

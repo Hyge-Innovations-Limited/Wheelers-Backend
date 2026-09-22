@@ -358,6 +358,8 @@ export async function handleRideEvent(
       plannedDurationSeconds: event.plannedDurationSeconds,
       pickupDistanceKm: event.pickupDistanceKm,
       pickupEtaSeconds: event.pickupEtaSeconds,
+      // "Next ride — near your drop-off": they are mid-trip, this is a queue.
+      afterCurrentTrip: event.afterCurrentTrip ?? false,
       expiresAt: event.expiresAt,
       route: event.route,
       isGroupRide: event.isGroupRide ?? false,

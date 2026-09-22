@@ -130,6 +130,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           plannedDistanceKm: rideRequested.plannedDistanceKm,
           plannedDurationSeconds: rideRequested.plannedDurationSeconds,
           ...pickupProximity(driver, rideRequested.pickup),
+          ...(driver.afterCurrentTrip ? { afterCurrentTrip: true } : {}),
           expiresAt: expiresAt.toISOString(),
           // Same instant as expiresAt — the card and the auction are one
           // clock now. Sent under its own name so clients state intent.

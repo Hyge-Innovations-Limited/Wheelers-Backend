@@ -69,6 +69,73 @@ export const driverClient = {
       LIMIT ${limit}
     `,
 
+  /**
+   * Drivers who are ON A TRIP but nearly done with it, whose drop-off is near
+   * this pickup — a driver already heading to Ikeja can take an Ikeja job next.
+   *
+   * Deliberately NOT part of findNearby, which is ONLINE only and must stay so:
+   * a driver carrying a passenger is not available for a job across town. Two
+   * gates make them eligible, and the ranking is by distance from where they
+   * will BE (their destination), not where they are now.
+   */
+  findFinishingNearby: (
+    lat: number,
+    lng: number,
+    radiusKm: number,
+    limit: number,
+    /** How close to their own drop-off counts as "nearly done". */
+    finishingWithinKm: number,
+  ) =>
+    prisma.$queryRaw<Array<{
+      id: string;
+      userId: string;
+      lat: number;
+      lng: number;
+      vehiclePlate: string | null;
+      vehicleModel: string | null;
+      distanceKm: number;
+    }>>`
+      SELECT
+        d.id, d."userId", d.lat, d.lng, d."vehiclePlate", d."vehicleModel",
+        ROUND(CAST(
+          6371 * acos(
+            cos(radians(${lat})) * cos(radians(r."destLat")) *
+            cos(radians(r."destLng") - radians(${lng})) +
+            sin(radians(${lat})) * sin(radians(r."destLat"))
+          )
+        AS numeric), 3) AS "distanceKm"
+      FROM "Driver" d
+      JOIN "Ride" r ON r."driverId" = d.id AND r.status = 'IN_PROGRESS'
+      WHERE
+        d.status = 'ON_RIDE'
+        AND d."kycStatus" = 'APPROVED'
+        AND d.lat IS NOT NULL
+        AND d.lng IS NOT NULL
+        AND r."destLat" IS NOT NULL
+        AND r."destLng" IS NOT NULL
+        -- Same liveness rule as findNearby: ONLINE in the DB means nothing
+        -- once the phone goes dark.
+        AND d."lastSeenAt" > now() - interval '90 seconds'
+        -- 1. Nearly there: the car is this close to its own drop-off.
+        AND (
+          6371 * acos(
+            cos(radians(d.lat)) * cos(radians(r."destLat")) *
+            cos(radians(r."destLng") - radians(d.lng)) +
+            sin(radians(d.lat)) * sin(radians(r."destLat"))
+          )
+        ) <= ${finishingWithinKm}
+        -- 2. On their way: the new pickup is near where they are dropping off.
+        AND (
+          6371 * acos(
+            cos(radians(${lat})) * cos(radians(r."destLat")) *
+            cos(radians(r."destLng") - radians(${lng})) +
+            sin(radians(${lat})) * sin(radians(r."destLat"))
+          )
+        ) <= ${radiusKm}
+      ORDER BY "distanceKm" ASC
+      LIMIT ${limit}
+    `,
+
   // ── Writes ─────────────────────────────────────────────────────────────────
 
   create: (userId: string) =>
