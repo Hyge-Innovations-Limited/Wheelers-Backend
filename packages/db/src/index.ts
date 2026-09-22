@@ -4,7 +4,7 @@ export { prisma } from './prisma';
 // Scoped clients — import only the one your service owns
 export { userClient }           from './clients/user.client';
 export { driverClient }         from './clients/driver.client';
-export { rideClient }           from './clients/rider.client';
+export { rideClient, SEARCH_TIMED_OUT_REASON } from './clients/rider.client';
 export { driverLocationClient, shouldRecordPoint } from './clients/driver-location.client';
 export type { LocationSource, MapDriverRow, ActiveRide } from './clients/driver-location.client';
 export { driverBidClient }      from './clients/driver-bid.client';

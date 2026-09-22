@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 
-const { prisma, driverBidClient } = require('@wheleers/db');
+const { prisma, driverBidClient, rideClient, SEARCH_TIMED_OUT_REASON } = require('@wheleers/db');
 const {
   handleGetDriverBidsRoute,
   handleGetDriverActiveRideRoute,
@@ -148,6 +148,23 @@ test('timeout, cancellation and withdrawal only touch bids still pending', async
   await driverBidClient.markWithdrawn(won.id, driver.id);
   await driverBidClient.resolvePending(won.id, 'EXPIRED');
   assert.equal((await driverBidClient.findByRide(won.id))[0].status, 'ACCEPTED');
+});
+
+test('a search that TIMED OUT can still be won — a rider still paying, or a late bid — but a ride the rider cancelled never can', async () => {
+  const rider = await seedUser('RIDER', `+23480${stamp}31`);
+  const driver = await seedDriver(await seedUser('DRIVER', `+23480${stamp}32`));
+
+  const timedOut = await seedRide(rider.id);
+  assert.equal((await rideClient.cancelIfUnmatched(timedOut.id)).count, 1);
+  assert.equal((await rideClient.cancelIfUnmatched(timedOut.id)).count, 0, 'once');
+  const revived = await rideClient.assignDriver(timedOut.id, driver.id, { agreedFareNgn: 6000, paymentMethod: 'WALLET' });
+  assert.equal(revived.count, 1, 'the deposit landed after the search gave up: the driver is theirs');
+  const row = await prisma.ride.findUniqueOrThrow({ where: { id: timedOut.id } });
+  assert.deepEqual([row.status, row.driverId, row.cancelStage, row.cancelReason, row.cancelledAt, Number(row.agreedFareNgn)], ['DRIVER_ASSIGNED', driver.id, null, null, null, 6000]);
+
+  const cancelledByRider = await seedRide(rider.id, { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'Accidental request', cancelledAt: new Date() });
+  assert.equal((await rideClient.assignDriver(cancelledByRider.id, driver.id)).count, 0, 'the rider said no — that stands');
+  assert.equal(SEARCH_TIMED_OUT_REASON, 'No driver accepted in time', 'the ride service writes this exact reason');
 });
 
 test('GET /drivers/me/bids lists the driver\'s bids newest first, with the trip and outcome', async () => {

@@ -27,6 +27,7 @@ import {
   clearActiveRide,
   clearActiveRideIfMatches,
   clearPendingAccept,
+  getPendingAccept,
   getActiveRide,
   removeBid,
   IN_TRIP_ACTIVE_RIDE_TTL,
@@ -305,7 +306,8 @@ export function isUrgentOffer(previousBatch: Pick<WhatsappBid, 'counterOfferNgn'
   return bid.counterOfferNgn < Math.min(...previousBatch.map((shown) => shown.counterOfferNgn));
 }
 
-async function handleRideEvent(
+/** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
+export async function handleRideEvent(
   event: RideEvent,
   deps: StartGatewayConsumerDeps,
   rideParticipants: Map<string, RideParticipantState>,
@@ -534,6 +536,18 @@ async function handleRideEvent(
         rideId: event.rideId,
         status: timedOutRide.status,
       });
+      return;
+    }
+
+    // The rider CHOSE a driver and is adding money for them: this search is
+    // not over, it is waiting on a bank transfer. Saying "no driver took your
+    // price — search again" here was a lie that cost the ride. The ride
+    // service accepts a driver after its own timeout (it rebuilds from the
+    // DB), so the deposit landing still confirms them; the chat state is kept
+    // for as long as the choice lives, and the rider hears nothing.
+    const pendingAccept = await getPendingAccept(deps.redisClient, event.riderId).catch(() => null);
+    if (pendingAccept?.rideId === event.rideId) {
+      console.info('[gateway] bid timeout held — rider is paying for a chosen driver', { rideId: event.rideId, driverId: pendingAccept.driverId });
       return;
     }
 

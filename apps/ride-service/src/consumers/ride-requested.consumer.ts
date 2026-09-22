@@ -121,7 +121,7 @@ export function createRideRequestedConsumer(params: {
         // and blocked the rider's next booking. Guarded: a driver who was
         // assigned in the meantime keeps the trip.
         await rideClient
-          .cancelIfUnmatched(event.rideId, 'No driver accepted in time')
+          .cancelIfUnmatched(event.rideId)
           .then((result) => {
             if (result.count > 0) {
               console.info('[ride-service] unmatched ride expired', { rideId: event.rideId });

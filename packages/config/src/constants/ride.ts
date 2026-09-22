@@ -9,13 +9,14 @@ export const RIDE = {
   // The offer card and the auction are ONE clock, deliberately equal: a
   // driver's card lives exactly as long as the rider's search. They used to
   // differ (150s card / 180s auction), which left drivers staring at an
-  // empty feed during a live auction — and before that they were both a
-  // too-short 30s. If you change one, change both.
-  OFFER_TTL_SECONDS: 90,
+  // empty feed during a live auction. If you change one, change both.
+  OFFER_TTL_SECONDS: 180,
 
   // How long the whole search runs before the rider is told nobody took it.
-  // 90s: three minutes measurably lost riders to silence; half kept them.
-  BID_TIMEOUT_SECONDS: 90,
+  // 90 s was tuned for a rider watching a chat; the rider now opens a form,
+  // reads the offers and taps — and a driver who first bid under the floor
+  // needs time to bid again. Both were losing rides at 90 s (2026-09-22).
+  BID_TIMEOUT_SECONDS: 180,
 
   // Maximum number of drivers to attempt before cancelling the ride
   // with a "no drivers available" reason.

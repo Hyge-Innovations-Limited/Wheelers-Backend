@@ -59,6 +59,9 @@ function buildRouteStops(params: {
   return routeStops;
 }
 
+/** The one cancel reason a later assignment may undo: the search timed out, nobody chose to cancel. */
+export const SEARCH_TIMED_OUT_REASON = 'No driver accepted in time';
+
 export const rideClient = {
 
   // ── Reads ──────────────────────────────────────────────────────────────────
@@ -215,16 +218,30 @@ export const rideClient = {
     }),
 
   // Assign driver once matched — also sets matchedAt timestamp.
+  //
+  // A ride the SEARCH gave up on (see cancelIfUnmatched — "No driver accepted in
+  // time") is not dead: a rider still adding money for a driver they chose, or a
+  // driver bidding late, can win it. It is revived here. A ride the RIDER
+  // cancelled never is — its cancelReason is theirs, not the timeout's.
   assignDriver: (rideId: string, driverId: string, opts?: {
     agreedFareNgn?: number;
     paymentMethod?: RidePaymentMethod;
   }) =>
     prisma.ride.updateMany({
-      where: { id: rideId, status: { in: ['REQUESTED', 'MATCHING'] } },
+      where: {
+        id: rideId,
+        OR: [
+          { status: { in: ['REQUESTED', 'MATCHING'] } },
+          { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: SEARCH_TIMED_OUT_REASON },
+        ],
+      },
       data: {
         driverId,
         status:    'DRIVER_ASSIGNED',
         matchedAt: new Date(),
+        cancelStage: null,
+        cancelReason: null,
+        cancelledAt: null,
         ...(opts?.agreedFareNgn !== undefined ? { agreedFareNgn: opts.agreedFareNgn } : {}),
         ...(opts?.paymentMethod !== undefined ? { paymentMethod: opts.paymentMethod } : {}),
       },
@@ -285,7 +302,7 @@ export const rideClient = {
    * changed (0 when a driver was assigned in the meantime or it was already
    * closed) so a bid timeout can never clobber a live trip.
    */
-  cancelIfUnmatched: (rideId: string, cancelReason: string) =>
+  cancelIfUnmatched: (rideId: string, cancelReason: string = SEARCH_TIMED_OUT_REASON) =>
     prisma.ride.updateMany({
       where: { id: rideId, status: { in: ['REQUESTED', 'MATCHING'] } },
       data: {

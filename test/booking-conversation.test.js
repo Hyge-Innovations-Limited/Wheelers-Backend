@@ -1671,6 +1671,28 @@ test('money arrives but the driver did not wait: it stays in the wallet, they ar
   assert.equal(await finish({ userId: user.id, amountNgn: 500, newBalanceNgn: 2900 }), false);
 });
 
+test('the search TIMES OUT while they are adding money for a chosen driver: no "search again", the choice is kept, and the deposit still confirms the driver', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const { redis, deps, sent, who, user, rideId, accepted } = await searchingRider(0);
+  const bid = offerFrom(await onlineDriver(), 2400);
+  await bidState.addBid(redis, rideId, bid);
+  await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');           // wallet short → Add money button, driver remembered
+  await prisma.ride.update({ where: { id: rideId }, data: { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'No driver accepted in time', cancelledAt: new Date() } });   // what the ride service does at the timeout
+
+  const before = sent.length;
+  const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' };
+  await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId, riderId: user.id, timestamp: new Date().toISOString() },
+    { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  assert.equal(sent.length, before, 'not a word — they are at the bank app');
+  assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'the search is still theirs');
+  assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, bid.bidId);
+
+  await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
+  assert.equal(await createWhatsappDepositFinisher(deps)({ userId: user.id, amountNgn: 2400, newBalanceNgn: 2400 }), true);
+  assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
+  assert.match(textOf(last(sent)), /Ride confirmed & paid/);
+});
+
 test('the search ended while the transfer was on its way: said plainly, money kept, a way forward', async () => {
   const { redis, deps, sent, who, user, rideId } = await searchingRider(0);
   const bid = offerFrom(await onlineDriver(), 2400);
