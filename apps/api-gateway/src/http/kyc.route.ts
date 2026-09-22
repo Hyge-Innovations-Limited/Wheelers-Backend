@@ -213,6 +213,8 @@ function parseBase64Image(dataUrl: string): ImageParseResult {
 }
 
 function extractIp(req: IncomingMessage): string | undefined {
+  const cloudflare = req.headers['cf-connecting-ip'];
+  if (typeof cloudflare === 'string' && cloudflare) return cloudflare.trim();
   const forwarded = req.headers['x-forwarded-for'];
   if (typeof forwarded === 'string') {
     return forwarded.split(',')[0]?.trim();

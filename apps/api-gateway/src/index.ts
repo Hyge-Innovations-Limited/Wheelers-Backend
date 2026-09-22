@@ -305,6 +305,11 @@ function getHeaderValue(req: IncomingMessage, name: string): string | null {
 }
 
 function getClientIp(req: IncomingMessage): string | null {
+  // Behind Cloudflare every connection comes FROM Cloudflare; the visitor's own
+  // address is in this header. Only nginx can reach this port, so the header
+  // is trusted — nobody else can forge it.
+  const cloudflare = getHeaderValue(req, "cf-connecting-ip");
+  if (cloudflare) return cloudflare.trim();
   const forwardedFor = getHeaderValue(req, "x-forwarded-for");
   if (forwardedFor) {
     return forwardedFor.split(",")[0]?.trim() || null;
