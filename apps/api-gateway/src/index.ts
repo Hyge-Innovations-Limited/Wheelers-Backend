@@ -175,7 +175,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createOffersFormChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -936,7 +936,6 @@ async function bootstrap(): Promise<void> {
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
         routePlanner,
         kycStorage: driverKycStorage ?? undefined,
-        onTripConfirmed: createTripConfirmedSender(buildMetaWhatsappDeps()),
         ...createOffersFormChatHooks(buildMetaWhatsappDeps()),
         notifier:
           gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID

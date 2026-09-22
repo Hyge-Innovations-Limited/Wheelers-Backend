@@ -1,6 +1,9 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
+import { userClient } from '@wheleers/db';
 import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import type { RedisClient } from '../redis/client';
+import { publishWhatsappRide } from '../rides/whatsapp-ride.service';
+import type { GatewayPublisher } from '../websocket/publisher';
 import { getActiveRide, getPendingRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from './bid-state';
 import type { PendingRouteData, RouteStop } from './bid-state';
 import type { FlowRequestBody } from './encryption';
@@ -20,8 +23,10 @@ import type { FlowRequestBody } from './encryption';
  *   REVIEW_TRIP   only after a change: the new trip and fare     [Confirm trip]
  *                   (a single match can still be the wrong place — they look
  *                   before it is priced; ← goes back to the boxes)
- *   DONE          terminal: "confirmed — your price is in the chat", and the
- *                 dead ends (expired, drivers already looking)
+ *   SET_PRICE     the price, right here — no page, no chat message [Find drivers]
+ *                   → the ride goes out to drivers
+ *   DONE          terminal: "You have successfully bid ₦X", and the dead ends
+ *                 (expired, drivers already looking)
  *
  * A flow may only OPEN on its entry screen, so INIT always answers EDIT_TRIP —
  * a dead booking says so there, in the error line.
@@ -32,15 +37,15 @@ import type { FlowRequestBody } from './encryption';
  *
  * A changed trip is saved (without `confirmed`) the moment it is planned, so
  * the chat and the form never disagree about what the trip is. Confirming sets
- * `confirmed` and hands over to the chat's price step. Nothing here names a price.
+ * `confirmed` and moves to the price; a price typed in the chat meanwhile still
+ * works (stage awaiting_price). The chat hears nothing until a driver answers.
  */
 
 export interface EditTripFlowDeps {
   redisClient: RedisClient;
   googleMapsApiKey: string;
   routePlanner: GoogleMapsRoutePlanner;
-  /** The trip was confirmed in the form: send the price step to the rider's chat. Absent in tests that only drive the form. */
-  onTripConfirmed?: (userId: string, trip: PendingRouteData) => Promise<void>;
+  publisher: GatewayPublisher;
 }
 
 type FlowScreen = { screen: string; data: Record<string, unknown> };
@@ -135,6 +140,19 @@ function reviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
   };
 }
 
+function priceScreen(trip: PendingRouteData, error = ''): FlowScreen {
+  return {
+    screen: 'SET_PRICE',
+    data: {
+      suggested_price: String(trip.suggestedFareNgn),
+      trip_line: `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min`,
+      limits_line: `Lowest for this trip: ₦${trip.minOfferNgn.toLocaleString()} · suggested ₦${trip.suggestedFareNgn.toLocaleString()}`,
+      error,
+      has_error: error.length > 0,
+    },
+  };
+}
+
 function doneScreen(headline: string, note: string): FlowScreen {
   return { screen: 'DONE', data: { headline, note } };
 }
@@ -152,7 +170,8 @@ export async function handleEditTripFlow(body: FlowRequestBody, userId: string, 
   const action = typeof data['action'] === 'string' ? data['action']
     : typeof data['pickup'] === 'string' ? 'edit_trip'
       : FIELDS.some((field) => typeof data[`pick_${field}`] === 'string') ? 'pick_places'
-        : body.screen === 'REVIEW_TRIP' ? 'confirm_trip' : null;
+        : data['price'] !== undefined ? 'set_price'
+          : body.screen === 'REVIEW_TRIP' ? 'confirm_trip' : null;
 
   if (body.action !== 'data_exchange' || !action) {
     // INIT, BACK, or something we do not know: the boxes, as the trip stands. (A flow can only open on this screen.)
@@ -163,21 +182,32 @@ export async function handleEditTripFlow(body: FlowRequestBody, userId: string, 
 
   if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching 🔍' : 'This trip has expired ⏳', deadEnd ?? EXPIRED_NOTE);
   if (action === 'confirm_trip') return confirm(userId, trip, deps);
+  if (action === 'set_price') return setPrice(data, userId, trip, deps);
   if (action === 'pick_places') return pickPlaces(data, userId, trip, deps);
   return editTrip(data, userId, trip, deps);
 }
 
-/** "This trip is right": from here on it is the chat's price step. */
+/** "This trip is right": now the price — on the next screen, not in the chat. */
 async function confirm(userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const confirmed: PendingRouteData = { ...trip, confirmed: true };
   await storePendingRoute(deps.redisClient, userId, confirmed);
-  await setBookingStage(deps.redisClient, userId, 'awaiting_price');
+  await setBookingStage(deps.redisClient, userId, 'awaiting_price');     // a price typed in the chat still works
   await deps.redisClient.del(draftKey(userId)).catch(() => undefined);
-  // Sent NOW, not when they tap "Back to chat": a rider who swipes the form away must still find the price step waiting.
-  await deps.onTripConfirmed?.(userId, confirmed).catch((error) => {
-    console.error('[edit-trip-flow] confirmed the trip but could not send the price step', { userId, error: error instanceof Error ? error.message : String(error) });
-  });
-  return doneScreen('Trip confirmed ✅', 'Your price is next — it is waiting for you in the chat.');
+  return priceScreen(confirmed);
+}
+
+/** Find drivers: the same publish as a typed price and as the page. No chat message — the next one is a driver's offer. */
+async function setPrice(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+  const amount = Math.round(Number(String(data['price'] ?? '').replace(/[,\s₦]/g, '')));
+  if (!Number.isFinite(amount) || amount <= 0) return priceScreen(trip, 'Enter your price in figures, e.g. 2500.');
+  const phone = (await userClient.findById(userId).catch(() => null))?.phone ?? '';
+  const result = await publishWhatsappRide({ redisClient: deps.redisClient, publisher: deps.publisher }, { id: userId, phone }, { ...trip, confirmed: true }, amount);
+  if (!result.ok) {
+    if (result.code === 'BELOW_MINIMUM') return priceScreen(trip, `The lowest price for this trip is ₦${result.minOfferNgn.toLocaleString()}.`);
+    if (result.code === 'PUBLISH_FAILED') return priceScreen(trip, 'Could not start the search just now. Tap Find drivers again.');
+    // ALREADY_PUBLISHING: a double tap — the first one is out.
+  }
+  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()} ✅`, 'Drivers see your price now. Their offers will come to your chat — you only pay when you accept one.');
 }
 
 async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {

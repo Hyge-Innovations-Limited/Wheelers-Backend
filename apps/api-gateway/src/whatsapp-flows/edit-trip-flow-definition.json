@@ -5,12 +5,17 @@
     "EDIT_TRIP": [
       "PICK_PLACES",
       "REVIEW_TRIP",
+      "SET_PRICE",
       "DONE"
     ],
     "PICK_PLACES": [
       "REVIEW_TRIP"
     ],
     "REVIEW_TRIP": [
+      "SET_PRICE",
+      "DONE"
+    ],
+    "SET_PRICE": [
       "DONE"
     ],
     "DONE": []
@@ -510,17 +515,93 @@
       }
     },
     {
+      "id": "SET_PRICE",
+      "title": "Name your price",
+      "terminal": false,
+      "data": {
+        "suggested_price": {
+          "type": "string",
+          "__example__": "2500"
+        },
+        "trip_line": {
+          "type": "string",
+          "__example__": "2.4 km · ~11 min"
+        },
+        "limits_line": {
+          "type": "string",
+          "__example__": "Lowest for this trip: ₦2,000 · suggested ₦2,500"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "price_form",
+            "init-values": {
+              "price": "${data.suggested_price}"
+            },
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Trip confirmed ✅ Now name your price. Drivers see it and reply with their own — you only pay when you accept one."
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.trip_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.limits_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextInput",
+                "name": "price",
+                "label": "Your price (₦)",
+                "input-type": "number",
+                "required": true
+              },
+              {
+                "type": "Footer",
+                "label": "Find drivers",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "set_price",
+                    "price": "${form.price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "DONE",
       "title": "Wheelers",
       "terminal": true,
       "data": {
         "headline": {
           "type": "string",
-          "__example__": "Trip confirmed ✅"
+          "__example__": "You have successfully bid ₦2,500 ✅"
         },
         "note": {
           "type": "string",
-          "__example__": "Your price is next — it is waiting in the chat."
+          "__example__": "Drivers see your price now. Their offers will come to your chat."
         }
       },
       "layout": {

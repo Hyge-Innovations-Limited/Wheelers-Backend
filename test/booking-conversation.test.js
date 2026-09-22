@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createTripConfirmedSender, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -1286,7 +1286,7 @@ async function riderWithForm(world = {}) {
     { places: (query) => (/sabo/i.test(query) ? SABO : /gate/i.test(query) ? UNILAG_GATE : /market/i.test(query) ? [SABO, TEJUOSHO] : null), ...world },
     (deps) => { deps.whatsappEditTripFlowId = 'flow-edit-trip-1'; },
   );
-  const formDeps = { redisClient: at.redis, googleMapsApiKey: 'test-key', routePlanner: at.deps.routePlanner, onTripConfirmed: createTripConfirmedSender(at.deps) };
+  const formDeps = { redisClient: at.redis, googleMapsApiKey: 'test-key', routePlanner: at.deps.routePlanner, publisher: at.deps.publisher };
   const form = (action, data, screen) => handleEditTripFlow({ version: '3.0', action, flow_token: 'x', data, screen }, at.user.id, formDeps);
   const submit = (fields) => form('data_exchange', { action: 'edit_trip', pickup: AKOKA.address, stop_1: '', stop_2: '', stop_3: '', destination: YABA.address, ...fields });
   return { ...at, form, submit };
@@ -1306,9 +1306,10 @@ test('with the form published the trip card is ONE message with ONE button that 
   assert.match(card.body.text, /Form not opening\? Reply_ \*yes\*/, 'a phone that cannot open forms is told what to do');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
-  // …and that promise is kept: "yes" confirms without the form.
+  // …and that promise is kept: "yes" confirms without the form — and the price is TYPED, never a web page.
   await say(deps, who, 'yes');
-  assert.equal(last(sent).interactive.action.parameters.display_text, 'Set your price');
+  assert.equal(last(sent).type, 'text');
+  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Send your offer \(e\.g\./);
 });
 
 test('if WhatsApp refuses the form message, the card falls back to reply buttons — never silence', async () => {
@@ -1326,23 +1327,36 @@ test('if WhatsApp refuses the form message, the card falls back to reply buttons
   assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Confirm trip', 'Add a stop', 'Edit trip']);
 });
 
-test('THE FORM: opens filled in; nothing changed + Confirm trip = confirmed, and the chat gets exactly ONE message — the price step', async () => {
-  const { redis, sent, user, form, submit } = await riderWithForm();
+test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers → "You have successfully bid" — the ride is out, and the chat gets NOTHING', async () => {
+  const { redis, sent, user, form, submit, published } = await riderWithForm();
 
   const opened = await form('INIT');
   assert.equal(opened.screen, 'EDIT_TRIP');
   assert.deepEqual([opened.data.pickup, opened.data.stop_1, opened.data.destination, opened.data.has_error], [AKOKA.address, '', YABA.address, false]);
-  assert.match(opened.data.summary_line, /km · ~\d+ min · suggested fare ₦/);
 
   const before = sent.length;
-  const done = await submit({});
-  assert.equal(done.screen, 'DONE');
-  assert.match(done.data.headline, /Trip confirmed/);
-  assert.equal(sent.length, before + 1);
-  assert.equal(last(sent).interactive.action.parameters.display_text, 'Set your price');
-  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Minimum fare: ₦[\s\S]*Suggested fare: ₦/);
+  const price = await submit({});
+  assert.equal(price.screen, 'SET_PRICE');
+  assert.match(price.data.limits_line, /Lowest for this trip: ₦[\d,]+ · suggested ₦[\d,]+/);
+  assert.equal(price.data.suggested_price, String((await bidState.getPendingRoute(redis, user.id)).suggestedFareNgn), 'the box opens on the suggested fare');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
+
+  const low = await form('data_exchange', { action: 'set_price', price: '100' });
+  assert.equal(low.screen, 'SET_PRICE');
+  assert.match(low.data.error, /lowest price for this trip is ₦/);
+  assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0);
+
+  const out = await form('data_exchange', { price: '2,500' });          // no `action` tag: the payload's shape says it
+  assert.equal(out.screen, 'DONE');
+  assert.match(out.data.headline, /You have successfully bid ₦2,500/);
+  const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event;
+  assert.deepEqual([request.riderOfferNgn, request.paymentMethod], [2500, 'WALLET']);
+  assert.equal(await bidState.getActiveRide(redis, user.id), request.rideId, 'the search is live');
+  assert.equal(sent.length, before, 'not one chat message: the next thing the chat hears is a driver\'s offer');
+
+  // A double tap on Find drivers is one search — the second is told it is already out.
+  assert.match((await form('data_exchange', { action: 'set_price', price: '2500' })).data.headline, /Already searching/);
+  assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 1);
 });
 
 test('THE FORM: a new pickup AND a stop in one go → they SEE the new trip and fare before it is priced → Confirm → the price step, stops included', async () => {
@@ -1365,13 +1379,13 @@ test('THE FORM: a new pickup AND a stop in one go → they SEE the new trip and 
   assert.equal((await form('INIT')).data.stop_1, SABO.address, 're-opening shows the saved change');
 
   // An old cached copy of the form may drop our `action` tag: the screen it came from still says what it is.
-  const done = await form('data_exchange', {}, 'REVIEW_TRIP');
-  assert.equal(done.screen, 'DONE');
-  assert.equal(sent.length, before + 1, 'ONE message for two changes and a confirmation');
-  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market[\s\S]*Suggested fare/);
+  const price = await form('data_exchange', {}, 'REVIEW_TRIP');
+  assert.equal(price.screen, 'SET_PRICE');
+  assert.equal(sent.length, before, 'still nothing in the chat');
 
-  await say(deps, who, '3,000');
+  await form('data_exchange', { action: 'set_price', price: '3000' });
   assert.equal(published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event.stops.length, 1, 'drivers see the stop');
+  assert.equal(sent.length, before, 'two changes, a confirmation and a price: ZERO chat messages');
 
   // Emptying the box removes the stop (on a fresh booking).
   const again = await riderWithForm();
@@ -1472,11 +1486,13 @@ function checkFormJson(flow, screenIds) {
 
 test('the forms on Meta and the server agree: every binding exists, every box the server reads is sent, and the screens only go forward', () => {
   const fields = ['pickup', 'stop_1', 'stop_2', 'stop_3', 'destination'];
-  const trip = checkFormJson(EDIT_TRIP_FLOW, ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'DONE']);
+  const trip = checkFormJson(EDIT_TRIP_FLOW, ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'SET_PRICE', 'DONE']);
   assert.equal(trip.footer('EDIT_TRIP').label, 'Confirm trip');
   assert.deepEqual(Object.keys(trip.footer('EDIT_TRIP')['on-click-action'].payload).sort(), ['action', ...fields].sort());
   assert.deepEqual(Object.keys(trip.footer('PICK_PLACES')['on-click-action'].payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
   assert.deepEqual(trip.footer('REVIEW_TRIP')['on-click-action'].payload, { action: 'confirm_trip' });
+  assert.equal(trip.footer('SET_PRICE').label, 'Find drivers');
+  assert.deepEqual(trip.footer('SET_PRICE')['on-click-action'].payload, { action: 'set_price', price: '${form.price}' });
   assert.equal(trip.footer('DONE')['on-click-action'].name, 'complete');
 
   const OFFERS_FORM = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');

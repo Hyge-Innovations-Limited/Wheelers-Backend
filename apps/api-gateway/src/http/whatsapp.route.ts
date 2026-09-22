@@ -868,7 +868,9 @@ async function sendQuoteWithPriceButton(
     return sendTripConfirmation(deps, user, phone, trip, firstLine.startsWith('✅') ? firstLine : undefined);
   }
 
-  const url = ridePageUrl(deps, user.id);
+  // With the trip form on, bidding is in the form — never the web page. This is
+  // the fallback for a phone that could not open it: the price is typed here.
+  const url = EDIT_TRIP_FLOW_ENABLED && deps.whatsappEditTripFlowId ? null : ridePageUrl(deps, user.id);
   if (!url) {
     await sendMetaReply(deps, phone, quote);
     return quote;
@@ -2075,19 +2077,6 @@ async function sendEditTripForm(deps: MetaWhatsappRouteDeps, userId: string, pho
       ? '🔸 *Add your stop* — tap below and type it in a Stop box. You can change the pickup or destination there too.\n\n_Form not opening? Just type it here, e.g._ add a stop at Yaba market'
       : '✏️ *Edit your trip* — pickup, stops and destination, all in one place.\n\n_Form not opening? Just type the change here, e.g._ pick me at Unilag gate',
     addingStop ? 'Add a stop' : 'Edit trip');
-}
-
-/** The trip was confirmed inside the form: the chat gets ONE message — the price step. */
-export function createTripConfirmedSender(deps: MetaWhatsappRouteDeps) {
-  return async (userId: string, trip: PendingRouteData): Promise<void> => {
-    const phone = (await userClient.findById(userId).catch(() => null))?.phone;
-    if (!phone) return;
-    await Promise.all([
-      clearPendingGeoChoices(deps.redisClient, userId),
-      clearPendingFarPlace(deps.redisClient, userId),
-    ].map((step) => step.catch(() => undefined)));
-    await confirmTripAndQuote(deps, { id: userId }, phone, '[confirmed the trip in the form]', trip);
-  };
 }
 
 /** One interactive message. False when it could not be sent, so the caller can say it in text. */

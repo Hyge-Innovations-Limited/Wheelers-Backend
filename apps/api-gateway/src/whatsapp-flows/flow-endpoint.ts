@@ -9,7 +9,7 @@ import { readRawBody, sendJson } from '../http/utils';
 import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encryption';
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { META_FLOWS_ENABLED } from './flow-toggle';
-import { handleEditTripFlow, type EditTripFlowDeps } from './edit-trip-flow';
+import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -62,8 +62,6 @@ export interface WhatsappFlowEndpointDeps {
   kycStorage?: DriverKycStorage;
   /** When set, Find Drivers drops a 'Check offers' re-entry button in chat. */
   notifier?: WhatsappNotifierDeps;
-  /** The trip was confirmed in the Edit-trip form: send the price step to the rider's chat. */
-  onTripConfirmed?: EditTripFlowDeps['onTripConfirmed'];
   /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
   onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
   onWalletShort?: OffersFormDeps['onWalletShort'];
@@ -196,7 +194,7 @@ async function handleFlowAction(
       redisClient: deps.redisClient,
       googleMapsApiKey: deps.googleMapsApiKey,
       routePlanner: deps.routePlanner,
-      onTripConfirmed: deps.onTripConfirmed,
+      publisher: deps.publisher,
     });
   }
 
