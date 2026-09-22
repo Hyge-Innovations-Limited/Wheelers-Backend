@@ -353,6 +353,8 @@ export async function handleRideEvent(
       paymentMethod: event.paymentMethod,
       riderOfferNgn: event.riderOfferNgn,
       suggestedFareNgn: event.suggestedFareNgn,
+      // The floor, so the app can say it BEFORE a bid is typed.
+      minOfferNgn: event.minOfferNgn,
       ratePerKmNgn: event.ratePerKmNgn,
       plannedDistanceKm: event.plannedDistanceKm,
       plannedDurationSeconds: event.plannedDurationSeconds,

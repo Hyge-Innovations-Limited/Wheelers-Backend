@@ -91,6 +91,9 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
   paymentMethod:         PaymentMethod,
   riderOfferNgn:         z.number(),
   suggestedFareNgn:      z.number(),
+  // The lowest bid the server will accept on this trip. Without it the driver
+  // app could only guess: a bid under the floor was typed, sent, and bounced.
+  minOfferNgn:           z.number().optional(),
   ratePerKmNgn:          z.number(),
   plannedDistanceKm:     z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
