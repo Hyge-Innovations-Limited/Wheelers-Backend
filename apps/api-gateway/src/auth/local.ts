@@ -150,6 +150,13 @@ interface WalletPageTokenPayload {
 
 export const WALLET_PAGE_TOKEN_TTL_SECONDS = 15 * 60;
 
+/**
+ * Adding money takes longer than the link used to live: open a bank app, find
+ * the account, type an amount, wait for the transfer. Fifteen minutes expired
+ * mid-payment. Withdrawals keep the shorter window — that page holds a PIN.
+ */
+export const DEPOSIT_PAGE_TOKEN_TTL_SECONDS = 30 * 60;
+
 export function createWalletPageToken(
   userId: string,
   scope: WalletPageScope,

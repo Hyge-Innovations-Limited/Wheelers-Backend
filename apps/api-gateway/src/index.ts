@@ -255,7 +255,9 @@ const MAP_TILE_ORIGIN = (() => {
   }
 })();
 const WIDGET_CSP =
-  `default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: ${MAP_TILE_ORIGIN}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+  // Nothing is loaded from anywhere but us and the map tiles: the pages use the
+  // system font stack, so Google Fonts is no longer allowed either.
+  `default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${MAP_TILE_ORIGIN}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
