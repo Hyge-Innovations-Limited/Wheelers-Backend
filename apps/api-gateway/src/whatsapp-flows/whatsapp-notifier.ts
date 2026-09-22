@@ -400,6 +400,8 @@ export async function sendDriverArrivedNotification(
     vehicleModel?: string;
     vehiclePlate?: string;
     driverPhone?: string | null;
+    /** The car's own photo. THIS is the moment for it — the rider is looking for it. */
+    carPhotoUrl?: string | null;
   },
 ): Promise<void> {
   // Chat messages can't be edited, so each one stands alone: the rider must
@@ -408,18 +410,49 @@ export async function sendDriverArrivedNotification(
     ? ` — look for the *${details.vehicleModel}*${details.vehiclePlate ? ` (${details.vehiclePlate})` : ''}`
     : '';
   const call = formatTappablePhone(details?.driverPhone);
-  const lines = [
+  const text = [
     `✅ *${details?.driverName ?? 'Your driver'} has arrived*${car}.`,
     ...(call ? [``, `Can't see them? Call: ${call}`] : []),
-  ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+  ].join('\n');
+
+  // ONE message: the car, with all of that as its caption. A photo Meta refuses
+  // must never swallow "your driver is outside", so the text goes on its own then.
+  if (details?.carPhotoUrl && await postImage(deps, phone, details.carPhotoUrl, text)) return;
+  await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** One picture with a caption. False when Meta refuses it, so the caller can fall back to text. */
+async function postImage(deps: WhatsappNotifierDeps, phone: string, link: string, caption: string): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone.replace(/^\+/, ''),
+      type: 'image',
+      image: { link, caption: caption.slice(0, 1024) },
+    }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.error('[whatsapp-notifier] image failed — sending the words on their own', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 export async function sendRideStartedNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
 ): Promise<void> {
-  await sendMetaWhatsappMessage(deps, phone, 'Your ride has started! Stay safe. 🚗');
+  await sendMetaWhatsappMessage(deps, phone, [
+    `🚗 *Trip started*`,
+    ``,
+    `Sit back and stay safe. We'll send your receipt when you arrive.`,
+  ].join('\n'));
 }
 
 export { sendRideCompletedNotification };
@@ -491,7 +524,11 @@ export async function sendOfferWithdrawnNotification(
   const next = remaining > 0
     ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table 👇`
     : 'Other offers will land here as drivers respond.';
-  await sendMetaWhatsappMessage(deps, phone, `ℹ️ ${who} is no longer available — their offer has been removed. ${next}`);
+  await sendMetaWhatsappMessage(deps, phone, [
+    `ℹ️ ${who} is no longer available — their offer has been removed.`,
+    ``,
+    next,
+  ].join('\n'));
 }
 
 export async function sendBidTimeoutNotification(
@@ -523,7 +560,13 @@ export async function sendRiderPaidNotification(
   await sendMetaWhatsappMessage(
     deps,
     phone,
-    `Payment received! Your wallet balance is now ₦${newBalanceNgn.toLocaleString()}. Your driver has been notified and is on the way.`,
+    [
+      `✅ *Payment received*`,
+      ``,
+      `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
+      ``,
+      `Your driver has been told — they are on the way. 🚗`,
+    ].join('\n'),
   );
 }
 
@@ -534,12 +577,12 @@ export async function sendDepositConfirmation(
   newBalanceNgn: number,
 ): Promise<void> {
   const msg = [
-    `Deposit received!`,
+    `✅ *Deposit received*`,
     ``,
-    `Amount: NGN ${amountNgn.toLocaleString()}`,
-    `Wallet balance: NGN ${newBalanceNgn.toLocaleString()}`,
+    `Amount: ₦${amountNgn.toLocaleString()}`,
+    `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
     ``,
-    `Your wallet is ready. Book a ride anytime!`,
+    `Your wallet is ready — book a ride anytime. 🚗`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);

@@ -321,38 +321,6 @@ async function sendMetaFlowMessage(
   return true;
 }
 
-async function sendMetaImageMessage(
-  deps: MetaWhatsappRouteDeps,
-  to: string,
-  imageUrl: string,
-  caption?: string,
-): Promise<void> {
-  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return;
-
-  const recipient = to.replace(/^\+/, '');
-  const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${deps.metaAccessToken}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: recipient,
-      type: 'image',
-      image: { link: imageUrl, ...(caption ? { caption } : {}) },
-    }),
-  });
-
-  if (!response.ok) {
-    const payload = await response.text();
-    console.error('[whatsapp] Meta image send failed', { status: response.status, payload });
-  }
-}
-
 function sendOk(res: ServerResponse): void {
   res.statusCode = 200;
   res.setHeader('content-type', 'text/plain');
@@ -906,8 +874,6 @@ async function sendSearchStarted(
   return text;
 }
 
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 interface ConfirmedRideForChat {
   driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
   vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
@@ -918,7 +884,19 @@ const SOS_REPLY_ID = 'ride_sos';
 const SOS_CANCEL_REPLY_ID = 'ride_sos_cancel';
 const TRACK_REPLY_ID = 'ride_track';
 
-/** Everything about the ride, as one tidy list — the text under the car's photo. */
+/** A signed URL for one of a driver's KYC photos. Null when there is none, storage is off, or it fails. */
+async function driverPhotoUrl(deps: MetaWhatsappRouteDeps, driverId: string, which: 'selfie' | 'car'): Promise<string | null> {
+  if (!deps.driverKycStorage) return null;
+  try {
+    const kyc = await driverClient.findKycSubmission(driverId);
+    const key = which === 'selfie' ? kyc?.selfieKey : kyc?.vehicleImageKeys?.[0];
+    return key ? await deps.driverKycStorage.getSignedUrl(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Everything about the ride, as one tidy list — the text under the driver's photo. */
 function rideDetailsText(ride: ConfirmedRideForChat): string {
   return [
     `✅ *Ride confirmed & paid*`,
@@ -948,20 +926,20 @@ function rideDetailsText(ride: ConfirmedRideForChat): string {
  * "Your ride is confirmed" — TWO messages, the same from the chat, the offers
  * form and the page:
  *
- *   1. the driver's photo
- *   2. the ride card: the car's photo on top, every detail under it, and two
- *      buttons — Track live trip, 🆘 SOS
+ * ONE message: the DRIVER'S photo on top, every detail under it, and two
+ * buttons — Track live trip, 🆘 SOS.
+ *
+ * A face is what the rider needs now; the car matters later, at the kerb, so
+ * its photo rides on "has arrived" instead (sendDriverArrivedNotification).
+ * This used to be two messages and the card wore the car.
  *
  * WhatsApp gives a message ONE link button or up to three reply buttons, never
  * both. Two buttons means reply buttons, and a reply button cannot open a link —
  * so SOS acts on the tap, and Track live trip answers with the map's link button
  * (handleRideCardTap). That one extra message is the price of the second button.
  *
- * The driver's photo is awaited and followed by a short pause: pictures take
- * longer to land than the message after them, and the card kept arriving first.
- * One photo on file → just the card, carrying it. WhatsApp refuses the card →
- * the same card without the picture; refuses that too → plain text. The details
- * always arrive.
+ * No photo on file, or WhatsApp refuses the picture → the same card without it;
+ * refuses that too → plain text. The details always arrive.
  */
 async function sendRideConfirmation(
   deps: MetaWhatsappRouteDeps,
@@ -969,23 +947,8 @@ async function sendRideConfirmation(
   phone: string,
   ride: ConfirmedRideForChat,
 ): Promise<string> {
-  let selfieUrl: string | null = null;
-  let carUrl: string | null = null;
-  if (deps.driverKycStorage) {
-    try {
-      const kyc = await driverClient.findKycSubmission(ride.driverId);
-      if (kyc?.selfieKey) selfieUrl = await deps.driverKycStorage.getSignedUrl(kyc.selfieKey);
-      if (kyc?.vehicleImageKeys?.length) carUrl = await deps.driverKycStorage.getSignedUrl(kyc.vehicleImageKeys[0]!);
-    } catch {
-      // No photos on file, or storage is down: the details still go out.
-    }
-  }
-
+  const selfieUrl = await driverPhotoUrl(deps, ride.driverId, 'selfie');
   const details = rideDetailsText(ride);
-  if (selfieUrl && carUrl) {
-    await sendMetaImageMessage(deps, phone, selfieUrl, `Your driver: *${ride.driverName}*`).catch(() => undefined);
-    await pause(1200);
-  }
 
   const card = (photo: string | null) => ({
     type: 'button',
@@ -998,8 +961,9 @@ async function sendRideConfirmation(
       ],
     },
   });
-  const photo = carUrl ?? selfieUrl;
-  const sent = (photo !== null && await sendInteractive(deps, phone, card(photo))) || await sendInteractive(deps, phone, card(null));
+  // A photo Meta refuses (an expired link, a format it dislikes) must not cost
+  // the rider their driver's details: the same card goes again without it.
+  const sent = (selfieUrl !== null && await sendInteractive(deps, phone, card(selfieUrl))) || await sendInteractive(deps, phone, card(null));
   if (!sent) await sendMetaReply(deps, phone, details);
   return details;
 }

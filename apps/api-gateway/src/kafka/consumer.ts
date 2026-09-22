@@ -68,6 +68,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
 export interface StartGatewayConsumerDeps {
@@ -76,6 +77,8 @@ export interface StartGatewayConsumerDeps {
   redisClient: RedisClient;
   publisher: GatewayPublisher;
   whatsappNotifier?: WhatsappNotifierDeps;
+  /** Resolves a driver's KYC photos — the car's, shown when they arrive. */
+  kycStorage?: DriverKycStorage;
   /**
    * A WhatsApp rider's deposit has landed. Returns true when it was spoken for —
    * the rider had tapped a driver and was adding money to take them, so the chat
@@ -304,6 +307,18 @@ export async function announceOffers(
 export function isUrgentOffer(previousBatch: Pick<WhatsappBid, 'counterOfferNgn'>[], bid: Pick<WhatsappBid, 'counterOfferNgn'>): boolean {
   if (previousBatch.length === 0) return true;
   return bid.counterOfferNgn < Math.min(...previousBatch.map((shown) => shown.counterOfferNgn));
+}
+
+/** The car's photo, for the one message that needs it: "has arrived". Null if there is none. */
+async function carPhotoFor(deps: StartGatewayConsumerDeps, driverId: string): Promise<string | null> {
+  if (!deps.kycStorage) return null;
+  try {
+    const kyc = await driverClient.findKycSubmission(driverId);
+    const key = kyc?.vehicleImageKeys?.[0];
+    return key ? await deps.kycStorage.getSignedUrl(key) : null;
+  } catch {
+    return null;   // never let a missing picture delay "your driver is outside"
+  }
 }
 
 /** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
@@ -777,6 +792,7 @@ export async function handleRideEvent(
           vehicleModel: arrivedBid?.vehicleModel,
           vehiclePlate: arrivedBid?.vehiclePlate,
           driverPhone: arrivedBid?.driverPhone,
+          carPhotoUrl: await carPhotoFor(deps, event.driverId),
         }).catch(() => {});
       }
     } else {

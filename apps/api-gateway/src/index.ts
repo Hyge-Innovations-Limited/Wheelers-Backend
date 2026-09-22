@@ -2199,6 +2199,7 @@ async function bootstrap(): Promise<void> {
             offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
           }
         : undefined,
+    kycStorage: driverKycStorage ?? undefined,
     // A rider who tapped a driver and went to add money: the deposit confirms the ride.
     onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
   });

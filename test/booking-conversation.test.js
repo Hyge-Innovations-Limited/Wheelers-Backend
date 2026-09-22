@@ -972,22 +972,17 @@ function confirmationDeps(redis) {
   return deps;
 }
 
-test('ride confirmed is TWO messages: the driver\'s photo, then ONE card — car photo, every detail, and two buttons: Track live trip, 🆘 SOS', async () => {
-  const redis = memoryRedis();
-  const deps = confirmationDeps(redis);
+test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it, and two buttons — Track live trip, 🆘 SOS', async () => {
+  const deps = confirmationDeps(memoryRedis());
   const order = recordMeta();
   const driver = await driverWithPhotos();
 
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001', ride: confirmedRide(driver.id) });
 
-  assert.deepEqual(order.map((m) => m.type), ['image', 'card'], 'two messages — not three, not four');
-  assert.match(order[0].body.image.link, /selfie\.jpg$/);
-  assert.match(order[0].body.image.caption, /Your driver: \*Chinedu Okafor\*/);
-  assert.ok(order[1].at - order[0].at >= 1100, 'the card waits for the first photo to land');
-
-  const card = order[1].body.interactive;
+  assert.deepEqual(order.map((m) => m.type), ['card'], 'ONE message — the separate selfie message is gone');
+  const card = order[0].body.interactive;
   assert.equal(card.type, 'button');
-  assert.match(card.header.image.link, /car\.jpg$/, 'the car is the picture on the card');
+  assert.match(card.header.image.link, /selfie\.jpg$/, 'a FACE — the car belongs on "has arrived"');
   assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_track', 'Track live trip'], ['ride_sos', '🆘 SOS']]);
 
   const text = card.body.text;
@@ -999,6 +994,52 @@ test('ride confirmed is TWO messages: the driver\'s photo, then ONE card — car
     '*YOUR TRIP*', 'From: Ikorodu Garage', 'To: Caleb University College of Law', '₦6,200 — held in your wallet', 'Arrives in about 4 min',
     '*Track live trip*', '*SOS*'].map(at);
   assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, then SOS');
+  // Every section stands apart — no wall of text.
+  for (const heading of ['*YOUR DRIVER*', '*THE CAR*', '*YOUR TRIP*']) assert.ok(text.includes(`\n\n${heading}`), `${heading} has air above it`);
+});
+
+test('no driver photo on file, or WhatsApp refuses the picture: the SAME card goes without it — the details always arrive', async () => {
+  const deps = confirmationDeps(memoryRedis());
+
+  let order = recordMeta();
+  const noSelfie = await driverWithPhotos({ selfie: false });          // a car photo on file changes nothing here
+  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
+  assert.deepEqual(order.map((m) => m.type), ['interactive']);
+  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS']);
+  assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
+
+  order = recordMeta({ refuseCards: true });
+  const both = await driverWithPhotos();
+  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
+  assert.deepEqual(order.map((m) => m.type), ['interactive'], 'one message still');
+  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_sos']);
+  assert.match(order[0].body.interactive.body.text, /Ride confirmed & paid/);
+});
+
+test('THE CAR shows up when it matters: "has arrived" is ONE message — the car\'s photo, with who and what to look for as its caption', async () => {
+  const { sendDriverArrivedNotification } = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
+  const meta = { metaAccessToken: 't', metaPhoneNumberId: '1' };
+  const details = { driverName: 'oke oyebade', vehicleModel: 'Camry', vehiclePlate: 'LAG-CAMRY', driverPhone: '09015208515' };
+
+  let sent = [];
+  global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
+  await sendDriverArrivedNotification(meta, '+2348030000001', { ...details, carPhotoUrl: 'https://files.test/car.jpg' });
+  assert.deepEqual(sent.map((m) => m.type), ['image'], 'ONE message, not a photo and then the words');
+  assert.equal(sent[0].image.link, 'https://files.test/car.jpg');
+  assert.match(sent[0].image.caption, /oke oyebade has arrived\* — look for the \*Camry\* \(LAG-CAMRY\)[\s\S]*Can't see them\? Call: \+2349015208515/);
+
+  // No photo on file → the words alone. They must never wait on a picture.
+  sent = [];
+  await sendDriverArrivedNotification(meta, '+234', details);
+  assert.deepEqual(sent.map((m) => m.type), ['text']);
+  assert.match(sent[0].text.body, /has arrived\* — look for the \*Camry\*/);
+
+  // Meta refuses the picture → the same words, still one message.
+  sent = [];
+  global.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return { ok: body.type !== 'image', status: 200, text: async () => 'bad media' }; };
+  await sendDriverArrivedNotification(meta, '+234', { ...details, carPhotoUrl: 'https://files.test/gone.jpg' });
+  assert.deepEqual(sent.map((m) => m.type), ['image', 'text']);
+  assert.match(sent[1].text.body, /has arrived/);
 });
 
 test('Track live trip is a reply button, and a reply button cannot open a link — so the tap is answered with ONE message: the map\'s link button', async () => {
@@ -1020,29 +1061,6 @@ test('Track live trip is a reply button, and a reply button cannot open a link �
   assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/);
   const local = require('../apps/api-gateway/dist/auth/local.js');
   assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), deps.jwtSecret), { userId: user.id, scope: 'ride' });
-});
-
-test('one photo on file → ONE message; none → the card without a picture; WhatsApp refuses the picture card → the same card without it', async () => {
-  const deps = confirmationDeps(memoryRedis());
-
-  let order = recordMeta();
-  const selfieOnly = await driverWithPhotos({ car: false });
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(selfieOnly.id) });
-  assert.deepEqual(order.map((m) => m.type), ['card']);
-  assert.match(order[0].body.interactive.header.image.link, /selfie\.jpg$/, 'the driver\'s own photo becomes the card');
-
-  order = recordMeta();
-  const noPhotos = await driverWithPhotos({ selfie: false, car: false });
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noPhotos.id) });
-  assert.deepEqual(order.map((m) => m.type), ['interactive']);
-  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS']);
-  assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
-
-  order = recordMeta({ refuseCards: true });
-  const both = await driverWithPhotos();
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
-  assert.deepEqual(order.map((m) => m.type), ['image', 'interactive'], 'still two messages, still every detail, still SOS');
-  assert.deepEqual(order[1].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_sos']);
 });
 
 /* ── 🆘 SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
