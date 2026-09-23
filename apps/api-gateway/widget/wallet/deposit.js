@@ -89,14 +89,14 @@
     });
   });
 
-  /** Poll gently while the page is visible; give up quietly after ten minutes. */
+  /** Poll gently while the page is visible; give up quietly when the link itself would have (30 min). */
   function watchForTransfer() {
     if (watching) return;
     watching = true;
     var started = Date.now();
     var timer = setInterval(function () {
       if (document.hidden) return;
-      if (Date.now() - started > 10 * 60 * 1000) {
+      if (Date.now() - started > 30 * 60 * 1000) {
         clearInterval(timer);
         W.show(W.$('waiting'), false);
         return;
