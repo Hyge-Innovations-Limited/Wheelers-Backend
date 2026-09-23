@@ -148,14 +148,14 @@ interface WalletPageTokenPayload {
   exp: number;
 }
 
-export const WALLET_PAGE_TOKEN_TTL_SECONDS = 15 * 60;
-
 /**
- * Adding money takes longer than the link used to live: open a bank app, find
- * the account, type an amount, wait for the transfer. Fifteen minutes expired
- * mid-payment. Withdrawals keep the shorter window — that page holds a PIN.
+ * Money links live 30 minutes. Fifteen expired mid-payment: open a bank app,
+ * find the account, type an amount, wait for the transfer. A withdrawal is
+ * the same trip in the other direction, and its PIN is asked for on the page
+ * itself — the link's lifetime is not what protects it.
  */
-export const DEPOSIT_PAGE_TOKEN_TTL_SECONDS = 30 * 60;
+export const WALLET_PAGE_TOKEN_TTL_SECONDS = 30 * 60;
+export const DEPOSIT_PAGE_TOKEN_TTL_SECONDS = WALLET_PAGE_TOKEN_TTL_SECONDS;
 
 export function createWalletPageToken(
   userId: string,

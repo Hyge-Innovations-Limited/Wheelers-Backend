@@ -1336,7 +1336,7 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
 /**
  * Money is handled on Wheelers' own page, not in the chat: bank details and a
  * PIN typed into WhatsApp would sit in the chat history for anyone holding the
- * phone. The link names one purpose and dies in 15 minutes; the token rides
+ * phone. The link names one purpose and dies in 30 minutes; the token rides
  * in the #fragment, which browsers never send to a server or a referrer.
  */
 async function sendWalletPageButton(
@@ -1353,8 +1353,18 @@ async function sendWalletPageButton(
   const token = createWalletPageToken(user.id, scope, deps.jwtSecret, scope === 'deposit' ? DEPOSIT_PAGE_TOKEN_TTL_SECONDS : undefined);
   const url = `${deps.appBaseUrl.replace(/\/+$/, '')}/widget/wallet/${scope === 'deposit' ? 'deposit' : 'withdraw'}.html#t=${encodeURIComponent(token)}`;
   const body = scope === 'deposit'
-    ? '💳 *Add money to your wallet*\n\nSee exactly what lands in your wallet, and get your account number to transfer to.'
-    : '💸 *Withdraw to your bank*\n\nPick the amount and the account, then confirm with your wallet PIN.';
+    ? [
+        '💳 *Add money to your wallet*',
+        '',
+        'Tap below to get your Wheelers account number.',
+        'Transfer from any bank app — it lands in your wallet by itself.',
+      ].join('\n')
+    : [
+        '💸 *Withdraw to your bank*',
+        '',
+        'Tap below, pick the amount and the account.',
+        'Confirm with your wallet PIN and it is on its way.',
+      ].join('\n');
   const minutes = (scope === 'deposit' ? DEPOSIT_PAGE_TOKEN_TTL_SECONDS : WALLET_PAGE_TOKEN_TTL_SECONDS) / 60;
   await sendMetaLinkButton(deps, phone, `${body}\n\n_This link is yours alone and works for ${minutes} minutes._`, scope === 'deposit' ? 'Add money' : 'Withdraw', url);
   await appendWhatsappConversation(deps.redisClient, phone, [
