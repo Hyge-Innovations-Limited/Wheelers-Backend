@@ -463,9 +463,11 @@ async function sendRideCompletedNotification(
   fareNgn: number,
   distanceKm: number,
   balanceNgn?: number,
+  /** The trip just finished. With it, the receipt carries Repeat / Reverse buttons — "now take me home" is one tap. */
+  rideId?: string,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
-  const lines = [
+  const text = [
     `🏁 *Trip complete!*`,
     ``,
     `Distance: ${distanceKm.toFixed(1)} km`,
@@ -473,8 +475,31 @@ async function sendRideCompletedNotification(
     ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
     `How was your driver? Reply *1–5* to rate them ⭐`,
-  ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+  ].join('\n');
+
+  // The rating stays a typed digit: a message has three buttons at most, and
+  // two of them are the trip itself. Group rides never carry these — a seat is
+  // not a trip a rider can book again on their own.
+  const buttons = rideId && !(await isGroupRideId(rideId)) ? {
+    type: 'button',
+    body: { text },
+    action: { buttons: [
+      { type: 'reply', reply: { id: `qa_again:${rideId}`, title: 'Repeat this ride' } },
+      { type: 'reply', reply: { id: `qa_back:${rideId}`, title: 'Reverse this ride' } },
+    ] },
+  } : null;
+  if (buttons && await postInteractive(deps, phone, buttons)) return;
+  await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** A rider's completed group seat lives in Redis under the anchor ride; a normal ride has no such entry. */
+async function isGroupRideId(rideId: string): Promise<boolean> {
+  return groupRideChecker ? groupRideChecker(rideId) : false;
+}
+let groupRideChecker: ((rideId: string) => Promise<boolean>) | null = null;
+/** Lets the consumer (which has Redis) answer "was this a group seat?" without the notifier holding a client. */
+export function setGroupRideChecker(check: (rideId: string) => Promise<boolean>): void {
+  groupRideChecker = check;
 }
 
 export async function sendRideCancelledNotification(

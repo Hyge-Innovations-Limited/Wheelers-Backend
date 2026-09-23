@@ -1904,6 +1904,144 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
 });
 
 
+/* ── quick actions: menu, history, repeat / reverse ─────────────────────── */
+
+const quick = require('../apps/api-gateway/dist/http/quick-actions.js');
+
+/** A rider with two completed trips on record, idle in the chat. */
+async function riderWithHistory() {
+  const redis = memoryRedis();
+  const { deps, published } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  deps.whatsappEditTripFlowId = 'flow-edit-trip-1';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  const trip = async (daysAgo, from, to, stops = []) => prisma.ride.create({ data: {
+    riderId: user.id, status: 'COMPLETED', completedAt: new Date(Date.now() - daysAgo * 86400e3),
+    pickupLat: from.lat, pickupLng: from.lng, pickupAddress: from.address, destLat: to.lat, destLng: to.lng, destAddress: to.address,
+    agreedFareNgn: 2400, routeStops: { create: [...stops.map((s, i) => ({ stopOrder: i + 1, type: 'INTERMEDIATE', lat: s.lat, lng: s.lng, address: s.address })), { stopOrder: stops.length + 1, type: 'FINAL', lat: to.lat, lng: to.lng, address: to.address }] },
+  } });
+  const older = await trip(3, YABA, AKOKA);
+  const newest = await trip(1, AKOKA, YABA, [SABO]);
+  return { redis, deps, sent, who, user, published, older, newest };
+}
+
+test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Repeat / Reverse / History, Wallet, Support', async () => {
+  process.env.SUPPORT_CONTACT = '+2348000000000';
+  const { deps, sent, who } = await riderWithHistory();
+  await say(deps, who, 'menu');
+  const menu = last(sent).interactive;
+  assert.equal(menu.type, 'list');
+  assert.equal(menu.action.button, 'Menu');
+  assert.match(menu.body.text, /What would you like to do\?[\s\S]*Wallet: ₦/);
+  const rows = menu.action.sections.flatMap((s) => s.rows);
+  assert.deepEqual(rows.map((r) => r.id), ['qa_book', 'qa_repeat', 'qa_reverse', 'qa_history', 'qa_deposit', 'qa_withdraw', 'qa_support']);
+  assert.ok(rows.every((r) => r.title.length <= 24 && r.description.length <= 72), "WhatsApp's row limits");
+  assert.match(rows[1].description, /31 Emily Akinola St → 7 Osaro Isokpan St/, 'Repeat names the LAST trip');
+  assert.match(rows[2].description, /7 Osaro Isokpan St → 31 Emily Akinola St/, 'Reverse names it backwards');
+
+  // A bare greeting with nothing going on is the menu too; and it never shows before consent.
+  await say(deps, who, 'hello');
+  assert.equal(last(sent).interactive?.action?.button, 'Menu');
+  delete process.env.SUPPORT_CONTACT;
+  await say(deps, who, 'menu');
+  assert.deepEqual(last(sent).interactive.action.sections.map((s) => s.title), ['Ride', 'Wallet'], 'no Support row when no contact is set');
+});
+
+test('QUICK ACTIONS: a new rider with no trips gets Book and History only — and History says so', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'menu');
+  assert.deepEqual(last(sent).interactive.action.sections[0].rows.map((r) => r.id), ['qa_book', 'qa_history']);
+  await tap(deps, who, 'qa_history', 'Ride history');
+  assert.match(textOf(last(sent)), /No rides yet/);
+});
+
+test('HISTORY is the places they have been, newest first, each one repeatable — Repeat re-plans the trip and lands on the trip card', async () => {
+  const { redis, deps, sent, who, user, older, newest } = await riderWithHistory();
+  await tap(deps, who, 'qa_history', 'Ride history');
+  const list = last(sent).interactive;
+  assert.equal(list.type, 'list');
+  assert.deepEqual(list.action.sections[0].rows.map((r) => r.id), [`qa_hist:${newest.id}`, `qa_hist:${older.id}`]);
+  assert.match(list.action.sections[0].rows[0].description, /31 Emily Akinola St → 7 Osaro Isokpan St · 1 stop/);
+  assert.match(list.action.sections[0].rows[0].title, /₦2,400/);
+
+  await tap(deps, who, `qa_hist:${newest.id}`, '22 Sep · ₦2,400');
+  const choice = last(sent).interactive;
+  assert.deepEqual(choice.action.buttons.map((b) => b.reply.id), [`qa_again:${newest.id}`, `qa_back:${newest.id}`]);
+  assert.match(choice.body.text, /📍 31 Emily[\s\S]*🔸 Sabo Market[\s\S]*🏁 7 Osaro/);
+
+  await tapButton(deps, who, `qa_again:${newest.id}`, 'Repeat this ride');
+  const card = last(sent).interactive;
+  assert.equal(card.type, 'flow', 'the ordinary trip card — Confirm or edit, then the price');
+  assert.match(card.body.text, /Same trip as before[\s\S]*Pickup: \*31 Emily[\s\S]*Stop 1: \*Sabo Market[\s\S]*Destination: \*7 Osaro/);
+  const route = await bidState.getPendingRoute(redis, user.id);
+  assert.deepEqual([route.pickupAddress, route.stops.map((s) => s.address), route.destAddress], [AKOKA.address, [SABO.address], YABA.address]);
+  assert.notEqual(route.confirmed, true, 'still theirs to confirm — and to price');
+  assert.ok(route.suggestedFareNgn > 0, 're-planned today, not the old fare');
+});
+
+test('REVERSE is the same trip backwards — ends swapped, stops in reverse order', async () => {
+  const { redis, deps, sent, who, user, newest } = await riderWithHistory();
+  await tapButton(deps, who, `qa_back:${newest.id}`, 'Reverse this ride');
+  assert.match(last(sent).interactive.body.text, /back the other way[\s\S]*Pickup: \*7 Osaro[\s\S]*Destination: \*31 Emily/);
+  const route = await bidState.getPendingRoute(redis, user.id);
+  assert.deepEqual([route.pickupAddress, route.destAddress], [YABA.address, AKOKA.address]);
+
+  // "Reverse last ride" from the menu is the same thing for the newest trip.
+  await tap(deps, who, 'qa_reverse', 'Reverse last ride');
+  assert.equal((await bidState.getPendingRoute(redis, user.id)).pickupAddress, YABA.address);
+});
+
+test('the RECEIPT carries Repeat / Reverse; a rating is still a typed 1–5; a group seat gets no such buttons', async () => {
+  const { sendRideCompletedNotification, setGroupRideChecker } = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
+  const sent = [];
+  global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
+  const meta = { metaAccessToken: 't', metaPhoneNumberId: '1' };
+  setGroupRideChecker(async (rideId) => rideId === 'seat-1');
+
+  await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'ride-1');
+  const receipt = sent[0].interactive;
+  assert.equal(receipt.type, 'button');
+  assert.match(receipt.body.text, /Trip complete![\s\S]*Fare: ₦[\s\S]*Balance: ₦7,600[\s\S]*Reply \*1–5\* to rate/);
+  assert.deepEqual(receipt.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['qa_again:ride-1', 'Repeat this ride'], ['qa_back:ride-1', 'Reverse this ride']]);
+
+  await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'seat-1');
+  assert.equal(sent[1].type, 'text', 'a group seat: the plain receipt');
+  setGroupRideChecker(async () => false);
+});
+
+test('mid-search the menu offers "Your current trip" instead of Book, and Repeat is refused until the ride is over', async () => {
+  const { redis, deps, sent, who, user, rideId } = await searchingRider(10_000);
+  await bidState.addBid(redis, rideId, offerFrom(await onlineDriver(), 2400));
+  await say(deps, who, 'menu');
+  const rows = last(sent).interactive.action.sections[0].rows;
+  assert.deepEqual(rows.map((r) => r.id), ['qa_current']);
+  await tap(deps, who, 'qa_current', 'Your current trip');
+  assert.match(textOf(last(sent)), /1 driver found|offers \*₦2,400\*|Accept ₦2,400/, 'the offers on the table, again');
+
+  await tap(deps, who, 'qa_repeat', 'Repeat last ride');
+  assert.match(textOf(last(sent)), /already have a ride going/);
+  assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'the live search was not touched');
+});
+
+test('the menu\'s numbered-text fallback answers a typed number the same as a tap', async () => {
+  const { deps, sent, who } = await riderWithHistory();
+  const send = global.fetch;
+  global.fetch = async (url, init) => (String(url).includes('graph.facebook.com') && JSON.parse(init.body).interactive?.type === 'list'
+    ? { ok: false, status: 400, json: async () => ({}), text: async () => 'list rejected' } : send(url, init));
+  await say(deps, who, 'menu');
+  assert.match(textOf(last(sent)), /\*1\.\* Book a ride[\s\S]*\*4\.\* Ride history[\s\S]*Reply with the number/);
+  await say(deps, who, '2');
+  assert.match(textOf(last(sent)), /Same trip as before/, '"2" was Repeat last ride');
+});
+
 /* ── always a way out ──────────────────────────────────────────────────── */
 
 test('the second reply the bot cannot use brings buttons, not the same prompt again', async () => {

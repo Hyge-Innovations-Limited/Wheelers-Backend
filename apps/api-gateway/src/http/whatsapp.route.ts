@@ -18,6 +18,10 @@ import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS, RIDE_PAGE_TOKEN_
 import type { RidePageChatEvent } from './ride-page.route';
 import { confirmRideWithOffer, offerKey, publishWhatsappRide } from '../rides/whatsapp-ride.service';
 import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
+import {
+  QUICK_ACTION_IDS, HISTORY_ROW, REPEAT_ROW, REVERSE_ROW, isQuickActionId, asksForMenu,
+  recentTrips, reversed, buildQuickActions, buildHistoryList, buildRepeatButtons, type PastTrip,
+} from './quick-actions';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser, provisionDepositAccount } from '../onboarding/user-onboarding';
 import {
@@ -896,6 +900,124 @@ async function driverPhotoUrl(deps: MetaWhatsappRouteDeps, driverId: string, whi
   }
 }
 
+/* ── quick actions: the menu, history, repeat / reverse ─────────────────── */
+
+/** The text fallback of the menu is numbered rows; a typed number maps back to the row's id by its title. */
+const MENU_TITLE_TO_ID: Record<string, string> = {
+  'Book a ride': QUICK_ACTION_IDS.book, 'Repeat last ride': QUICK_ACTION_IDS.repeat, 'Reverse last ride': QUICK_ACTION_IDS.reverse,
+  'Ride history': QUICK_ACTION_IDS.history, 'Your current trip': QUICK_ACTION_IDS.currentTrip,
+  'Add money': QUICK_ACTION_IDS.addMoney, 'Withdraw': QUICK_ACTION_IDS.withdraw, 'Contact support': QUICK_ACTION_IDS.support,
+};
+
+const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
+
+/** The menu. One message; the picker is inside it. Falls back to numbered text if WhatsApp refuses the list. */
+async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string): Promise<void> {
+  const [wallet, trips] = await Promise.all([walletClient.findByUserId(user.id).catch(() => null), recentTrips(user.id, 1)]);
+  const menu = buildQuickActions({
+    balanceNgn: wallet ? Number(wallet.balanceNgn) : 0,
+    lastTrip: trips[0] ?? null,
+    busy: Boolean(activeRideId),
+    supportContact: supportContact(),
+  });
+  await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: '[sent the quick actions menu]' }]);
+  if (await sendInteractive(deps, phone, menu)) return;
+  const rows = (menu['action'] as { sections: Array<{ rows: Array<{ title: string }> }> }).sections.flatMap((section) => section.rows);
+  await sendMetaReply(deps, phone, `What would you like to do?\n\n${rows.map((row, index) => `*${index + 1}.* ${row.title}`).join('\n')}\n\nReply with the number.`);
+  await storePendingGeoChoices(deps.redisClient, user.id, { context: 'menu', options: rows.map((row) => ({ lat: 0, lng: 0, address: row.title })) }).catch(() => undefined);
+}
+
+/**
+ * Book the same trip again — or the same trip backwards. The past ride's
+ * coordinates are re-planned so distance and fare are today's, then it lands
+ * on the ordinary trip card: Confirm or edit, then the price. Nothing new
+ * after that.
+ */
+async function bookFromPastTrip(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, log: string, trip: PastTrip, backwards: boolean): Promise<void> {
+  const { pickup, destination, stops } = backwards ? reversed(trip) : trip;
+  const planned = await planRouteSafe(deps, pickup, destination, stops);
+  if (!planned) {
+    await replyAndLog(deps, phone, log, `I could not plan that trip today — a road may have changed. 😕\n\nType it instead, e.g. *from ${shortAddress(pickup.address)} to ${shortAddress(destination.address)}*`);
+    return;
+  }
+  await Promise.all([clearPendingGeoChoices(deps.redisClient, user.id), clearPendingFarPlace(deps.redisClient, user.id), clearBookingMisses(deps.redisClient, user.id)].map((step) => step.catch(() => undefined)));
+  const route: PendingRouteData = {
+    pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
+    destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
+    stops,
+    distanceKm: planned.distanceKm,
+    durationSeconds: planned.durationSeconds,
+    suggestedFareNgn: planned.suggestedFareNgn,
+    minOfferNgn: planned.minOfferNgn,
+    ratePerKmNgn: planned.ratePerKmNgn,
+    route: planned.geometry,
+  };
+  await storePendingRoute(deps.redisClient, user.id, route);
+  const said = await sendTripConfirmation(deps, user, phone, route, backwards ? '🔁 *Same trip, back the other way*' : '🔁 *Same trip as before*');
+  await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: said }]);
+}
+const shortAddress = (address: string) => address.split(',')[0]?.trim() || address;
+
+/** A tap on the menu, the history list, or a Repeat/Reverse button. */
+async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, replyId: string, incoming: string, activeRideId: string | null): Promise<void> {
+  const log = incoming || `[tapped ${replyId}]`;
+  const tripFrom = async (id: string) => (await recentTrips(user.id, 10)).find((trip) => trip.rideId === id) ?? null;
+
+  if (replyId === QUICK_ACTION_IDS.addMoney) return sendWalletPageButton(deps, user, phone, log, 'deposit');
+  if (replyId === QUICK_ACTION_IDS.withdraw) return sendWalletPageButton(deps, user, phone, log, 'withdraw');
+  if (replyId === QUICK_ACTION_IDS.support) {
+    const contact = supportContact();
+    return replyAndLog(deps, phone, log, contact ? `🙋 *Wheelers support*\n\n${contact}\n\nA person will reply as soon as they can.` : 'Support is not set up yet — reply here and we will see it.');
+  }
+  if (replyId === QUICK_ACTION_IDS.currentTrip) {
+    if (!activeRideId) return sendQuickActions(deps, user, phone, null, log);
+    const state = await getRideState(deps.redisClient, activeRideId).catch(() => null);
+    if (state === 'confirmed' || state === 'in_progress') {
+      const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
+      return replyAndLog(deps, phone, log, `🚗 *${accepted?.driverName ?? 'Your driver'}* is ${state === 'in_progress' ? 'driving you now' : 'on the way'}.\n\nYour ride card is just above — tap *Track live trip* on it, or reply *cancel*.`);
+    }
+    const said = await sendCurrentOffers(deps, phone, activeRideId);
+    await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: said }]);
+    return;
+  }
+
+  // Everything below starts a booking: not while one is live.
+  if (activeRideId) {
+    return replyAndLog(deps, phone, log, 'You already have a ride going. Reply *cancel* to end it first, then book again.');
+  }
+  if (replyId === QUICK_ACTION_IDS.book) return replyAndLog(deps, phone, log, BOOKING_START_PROMPT);
+  if (replyId === QUICK_ACTION_IDS.history) {
+    const trips = await recentTrips(user.id, 5);
+    const list = buildHistoryList(trips);
+    if (!list) return replyAndLog(deps, phone, log, `No rides yet — your first one goes here. 🚗\n\n${BOOKING_START_PROMPT}`);
+    await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: `[sent ${trips.length} past rides to pick from]` }]);
+    if (!await sendInteractive(deps, phone, list)) {
+      await sendMetaReply(deps, phone, `Your recent rides:\n\n${trips.map((trip, index) => `*${index + 1}.* ${shortAddress(trip.pickup.address)} → ${shortAddress(trip.destination.address)}`).join('\n')}\n\nReply with the number to book it again.`);
+      await storePendingGeoChoices(deps.redisClient, user.id, { context: 'history', options: trips.map((trip) => ({ lat: 0, lng: 0, address: trip.rideId })) }).catch(() => undefined);
+    }
+    return;
+  }
+  if (replyId === QUICK_ACTION_IDS.repeat || replyId === QUICK_ACTION_IDS.reverse) {
+    const [last] = await recentTrips(user.id, 1);
+    if (!last) return replyAndLog(deps, phone, log, `No completed ride to repeat yet.\n\n${BOOKING_START_PROMPT}`);
+    return bookFromPastTrip(deps, user, phone, log, last, replyId === QUICK_ACTION_IDS.reverse);
+  }
+  const picked = HISTORY_ROW.exec(replyId);
+  if (picked) {
+    const trip = await tripFrom(picked[1]!);
+    if (!trip) return replyAndLog(deps, phone, log, 'That ride is not in your recent history any more. Reply *menu* to see the list again.');
+    await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: `[offered Repeat / Reverse for ${trip.rideId}]` }]);
+    if (!await sendInteractive(deps, phone, buildRepeatButtons(trip, '🕘 *This ride*'))) await bookFromPastTrip(deps, user, phone, log, trip, false);
+    return;
+  }
+  const again = REPEAT_ROW.exec(replyId) ?? REVERSE_ROW.exec(replyId);
+  if (again) {
+    const trip = await tripFrom(again[1]!);
+    if (!trip) return replyAndLog(deps, phone, log, 'That ride is not in your recent history any more. Reply *menu* to see the list again.');
+    return bookFromPastTrip(deps, user, phone, log, trip, REVERSE_ROW.test(replyId));
+  }
+}
+
 /** Everything about the ride, as one tidy list — the text under the driver's photo. */
 function rideDetailsText(ride: ConfirmedRideForChat): string {
   return [
@@ -1478,7 +1600,8 @@ async function requirePrivacyConsent(
       await handleIncomingMetaMessage(deps, { ...first, messageId: '' });
       return true;
     }
-    await replyAndLog(deps, phone, msgInfo.messageBody, `Thank you — you're all set. ✅\n\n${BOOKING_START_PROMPT}`);
+    await sendMetaReply(deps, phone, "Thank you — you're all set. ✅");
+    await sendQuickActions(deps, user, phone, null, msgInfo.messageBody);
     return true;
   }
 
@@ -3013,6 +3136,34 @@ async function handleIncomingMetaMessage(
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {
       await handleRideCardTap(deps, user.id, phone, msgInfo.replyId);
       return;
+    }
+
+    // ── Quick actions: the menu, history, repeat / reverse ───────────────
+    if (isQuickActionId(msgInfo.replyId)) {
+      await handleQuickAction(deps, user, phone, msgInfo.replyId!, incomingMessage, activeRideId);
+      return;
+    }
+
+    // "menu" at any point. Mid-search or mid-trip it offers "your current trip"
+    // in place of Book; a picker that is waiting for a number is not it.
+    if (!isLocation && asksForMenu(incomingMessage) && !(await getPendingGeoChoices(deps.redisClient, user.id))) {
+      await sendQuickActions(deps, user, phone, activeRideId, incomingMessage);
+      return;
+    }
+
+    // A number typed at the text fallback of the menu or the history list
+    // (WhatsApp refused the picker): the same tap, by other means.
+    if (!isLocation && /^[1-9]$/.test(incomingMessage.trim())) {
+      const choices = await getPendingGeoChoices(deps.redisClient, user.id);
+      if (choices?.context === 'menu' || choices?.context === 'history') {
+        const pick = choices.options[Number(incomingMessage.trim()) - 1];
+        await clearPendingGeoChoices(deps.redisClient, user.id);
+        if (pick) {
+          const id = choices.context === 'history' ? `qa_hist:${pick.address}` : MENU_TITLE_TO_ID[pick.address] ?? QUICK_ACTION_IDS.book;
+          await handleQuickAction(deps, user, phone, id, incomingMessage, activeRideId);
+          return;
+        }
+      }
     }
 
     // ── A tap on an offers message ───────────────────────────────────────
@@ -4999,6 +5150,12 @@ async function handleIncomingMetaMessage(
     // ══════════════════════════════════════════════════════════════════════
     // 6. NO ACTIVE RIDE, NO PENDING STATE — AI conversation / ride intent
     // ══════════════════════════════════════════════════════════════════════
+
+    // ── "menu", or a bare "hi" with nothing going on: the quick actions ──
+    if (isBookingOpener(incomingMessage)) {
+      await sendQuickActions(deps, user, phone, null, incomingMessage);
+      return;
+    }
 
     // ── "Search again" is a VERB, not a vibe. Handled BEFORE the intent
     // parser: fed "keep searching", the LLM re-read the old route out of

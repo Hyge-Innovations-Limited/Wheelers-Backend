@@ -58,6 +58,7 @@ import {
   sendDriverArrivedNotification,
   sendRideStartedNotification,
   sendRideCompletedNotification,
+  setGroupRideChecker,
   sendRideCancelledNotification,
   sendBidTimeoutNotification,
   sendOfferWithdrawnNotification,
@@ -93,6 +94,8 @@ interface RideParticipantState {
 }
 
 export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps): Promise<void> {
+  // The receipt's Repeat / Reverse buttons must not be offered for a group seat.
+  setGroupRideChecker(async (rideId) => Boolean(await getGroupSeat(deps.redisClient, rideId).catch(() => null)));
   const rideParticipants = new Map<string, RideParticipantState>();
 
   await deps.consumer.subscribe(
@@ -854,6 +857,7 @@ export async function handleRideEvent(
         await sendRideCompletedNotification(
           deps.whatsappNotifier, phone, event.fareNgn, event.distanceKm,
           riderWallet ? Number(riderWallet.balanceNgn) : undefined,
+          event.rideId,
         ).catch(() => {});
         // Arm the rating reply: a bare 1–5 in the next day rates this driver.
         const completedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);

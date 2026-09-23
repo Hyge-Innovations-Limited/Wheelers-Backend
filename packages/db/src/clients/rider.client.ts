@@ -148,6 +148,32 @@ export const rideClient = {
   countCompletedByRider: (riderId: string) =>
     prisma.ride.count({ where: { riderId, status: 'COMPLETED' } }),
 
+  /**
+   * The places a rider has actually been: their last completed trips, newest
+   * first, with the stops in order — enough to book the same trip again, or
+   * the same trip backwards. Coordinates, not just text, so a renamed street
+   * cannot break a repeat.
+   */
+  recentCompletedForRider: (riderId: string, limit = 5) =>
+    prisma.ride.findMany({
+      where: { riderId, status: 'COMPLETED' },
+      orderBy: { completedAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        completedAt: true,
+        createdAt: true,
+        pickupLat: true, pickupLng: true, pickupAddress: true,
+        destLat: true, destLng: true, destAddress: true,
+        agreedFareNgn: true, fareFinalNgn: true, riderOfferNgn: true,
+        routeStops: {
+          where: { type: 'INTERMEDIATE' },
+          orderBy: { stopOrder: 'asc' },
+          select: { lat: true, lng: true, address: true },
+        },
+      },
+    }),
+
   findRiderHistory: (riderId: string, limit = 20, cursor?: string) =>
     prisma.ride.findMany({
       where:   { riderId, status: { in: ['COMPLETED', 'CANCELLED'] } },
