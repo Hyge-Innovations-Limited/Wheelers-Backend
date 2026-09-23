@@ -10,13 +10,14 @@ export const RIDE = {
   // driver's card lives exactly as long as the rider's search. They used to
   // differ (150s card / 180s auction), which left drivers staring at an
   // empty feed during a live auction. If you change one, change both.
-  OFFER_TTL_SECONDS: 180,
+  OFFER_TTL_SECONDS: 90,
 
   // How long the whole search runs before the rider is told nobody took it.
-  // 90 s was tuned for a rider watching a chat; the rider now opens a form,
-  // reads the offers and taps — and a driver who first bid under the floor
-  // needs time to bid again. Both were losing rides at 90 s (2026-09-22).
-  BID_TIMEOUT_SECONDS: 180,
+  // Tried at 180 s on 2026-09-22 and pulled back the next day: too long for a
+  // rider to sit on. The cases that pushed it up are handled elsewhere now —
+  // a rider paying for a chosen driver is never timed out, and the driver app
+  // refuses a bid under the floor before it is sent.
+  BID_TIMEOUT_SECONDS: 90,
 
   // Maximum number of drivers to attempt before cancelling the ride
   // with a "no drivers available" reason.
