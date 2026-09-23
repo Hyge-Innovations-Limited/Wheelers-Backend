@@ -158,6 +158,7 @@ import {
   handleAdminGetUserRoute,
   handleAdminWithdrawalFreezeRoute,
   handleAdminOverviewRoute,
+  handleAdminServiceUsageRoute,
   handleAdminTimeseriesRoute,
   handleAdminCancellationsRoute,
   handleAdminGroupRideMetricsRoute,
@@ -194,6 +195,7 @@ import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
 // same guarded handlers as the chat bot. main keeps these unmounted.
 import { handleWhatsappFlowEndpoint } from "./whatsapp-flows/flow-endpoint";
+import { meterOutboundCalls } from "./usage/service-usage";
 import { handleRideSearchFlowEndpoint } from "./whatsapp-flows/ride-search-flow-endpoint";
 import { RedisClient } from "./redis/client";
 import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
@@ -403,6 +405,8 @@ async function bootstrap(): Promise<void> {
   const redisSubscriberClient = new RedisClient(sharedEnv.REDIS_URL);
 
   await redisCommandClient.connect();
+  // Every outbound call to Google, Gemini, Groq, Paystack, Meta… is counted for /admin/usage/services.
+  meterOutboundCalls(redisCommandClient);
   await redisSubscriberClient.connect();
 
   const publisher = new GatewayPublisher(producer);
@@ -1602,6 +1606,15 @@ async function bootstrap(): Promise<void> {
           return;
         }
         await handleAdminListRidesRoute(req, res, adminDeps, url);
+        return;
+      }
+
+      if (url.pathname === "/admin/usage/services") {
+        if (req.method !== "GET") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminServiceUsageRoute(req, res, { ...adminDeps, redisClient: redisCommandClient }, url);
         return;
       }
 

@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { RedisClient } from '../redis/client';
+import { serviceUsage } from '../usage/service-usage';
 import { activityClient, adminMetricsClient, safetyAlertClient, walletSecurityClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
@@ -409,5 +411,26 @@ export async function handleAdminWithdrawalFreezeRoute(
     });
   } catch (error) {
     fail(res, error, 'Could not change the withdrawal freeze');
+  }
+}
+
+/**
+ * GET /admin/usage/services?days=30 — every outside service the gateway
+ * calls, counted per day: calls, failures, average latency. The vendors' own
+ * consoles hold the bills; this is the one place to see, before the bill,
+ * that something started calling Google ten times as often on Tuesday.
+ */
+export async function handleAdminServiceUsageRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps & { redisClient: RedisClient },
+  url: URL,
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+  try {
+    const days = Math.min(90, Math.max(1, intParam(url, 'days', 30)));
+    sendJson(res, 200, { days, services: await serviceUsage(deps.redisClient, days) });
+  } catch (error) {
+    fail(res, error, 'could not load service usage');
   }
 }
