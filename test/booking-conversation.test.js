@@ -1697,11 +1697,14 @@ test('the search TIMES OUT while they are adding money for a chosen driver: no "
   await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');           // wallet short → Add money button, driver remembered
   await prisma.ride.update({ where: { id: rideId }, data: { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'No driver accepted in time', cancelledAt: new Date() } });   // what the ride service does at the timeout
 
+  await prisma.driverBid.create({ data: { rideId, driverId: bid.driverId, driverUserId: bid.driverUserId, amountNgn: 2400, status: 'PENDING' } }).catch(() => null);
   const before = sent.length;
+  const toDrivers = [];
   const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' };
   await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId, riderId: user.id, timestamp: new Date().toISOString() },
-    { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+    { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async (userId, type) => { toDrivers.push(type); }, hasUser: () => false } }, new Map());
   assert.equal(sent.length, before, 'not a word — they are at the bank app');
+  assert.deepEqual(toDrivers, [], 'and the chosen driver is NOT told "timed out" while the rider is paying for them');
   assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'the search is still theirs');
   assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, bid.bidId);
 

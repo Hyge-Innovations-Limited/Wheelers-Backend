@@ -535,6 +535,18 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_BID_TIMEOUT') {
+    // FIRST: the rider CHOSE a driver and is adding money for them. This search
+    // is not over, it is waiting on a bank transfer — nobody is told anything,
+    // least of all that driver, whose card must not read "timed out" while the
+    // rider is paying for them. The ride service accepts a driver after its
+    // own timeout (it revives the ride), so the deposit landing still confirms
+    // them; the chat state is kept for as long as the choice lives.
+    const pendingAccept = await getPendingAccept(deps.redisClient, event.riderId).catch(() => null);
+    if (pendingAccept?.rideId === event.rideId) {
+      console.info('[gateway] bid timeout held — rider is paying for a chosen driver', { rideId: event.rideId, driverId: pendingAccept.driverId });
+      return;
+    }
+
     // The rider is told "no driver found" — but the DRIVERS who bid were
     // never told anything, so their apps showed "waiting for rider" forever
     // over an auction that no longer existed. The bids table knows exactly
@@ -555,18 +567,6 @@ export async function handleRideEvent(
         rideId: event.rideId,
         status: timedOutRide.status,
       });
-      return;
-    }
-
-    // The rider CHOSE a driver and is adding money for them: this search is
-    // not over, it is waiting on a bank transfer. Saying "no driver took your
-    // price — search again" here was a lie that cost the ride. The ride
-    // service accepts a driver after its own timeout (it rebuilds from the
-    // DB), so the deposit landing still confirms them; the chat state is kept
-    // for as long as the choice lives, and the rider hears nothing.
-    const pendingAccept = await getPendingAccept(deps.redisClient, event.riderId).catch(() => null);
-    if (pendingAccept?.rideId === event.rideId) {
-      console.info('[gateway] bid timeout held — rider is paying for a chosen driver', { rideId: event.rideId, driverId: pendingAccept.driverId });
       return;
     }
 
