@@ -912,10 +912,11 @@ const MENU_TITLE_TO_ID: Record<string, string> = {
 const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
 
 /** The menu. One message; the picker is inside it. Falls back to numbered text if WhatsApp refuses the list. */
-async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string): Promise<void> {
-  const [wallet, trips] = await Promise.all([walletClient.findByUserId(user.id).catch(() => null), recentTrips(user.id, 1)]);
+async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string, greeting = false): Promise<void> {
+  const [who, trips] = await Promise.all([userClient.findById(user.id).catch(() => null), recentTrips(user.id, 1)]);
   const menu = buildQuickActions({
-    balanceNgn: wallet ? Number(wallet.balanceNgn) : 0,
+    greeting,
+    firstName: who?.name?.trim().split(/\s+/)[0] || null,
     lastTrip: trips[0] ?? null,
     busy: Boolean(activeRideId),
     supportContact: supportContact(),
@@ -923,7 +924,7 @@ async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string 
   await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: '[sent the quick actions menu]' }]);
   if (await sendInteractive(deps, phone, menu)) return;
   const rows = (menu['action'] as { sections: Array<{ rows: Array<{ title: string }> }> }).sections.flatMap((section) => section.rows);
-  await sendMetaReply(deps, phone, `What would you like to do?\n\n${rows.map((row, index) => `*${index + 1}.* ${row.title}`).join('\n')}\n\nReply with the number.`);
+  await sendMetaReply(deps, phone, `${greeting ? 'Hey! 👋 ' : ''}What would you like to do?\n\n${rows.map((row, index) => `*${index + 1}.* ${row.title}`).join('\n')}\n\nReply with the number.`);
   await storePendingGeoChoices(deps.redisClient, user.id, { context: 'menu', options: rows.map((row) => ({ lat: 0, lng: 0, address: row.title })) }).catch(() => undefined);
 }
 
@@ -5153,7 +5154,7 @@ async function handleIncomingMetaMessage(
 
     // ── "menu", or a bare "hi" with nothing going on: the quick actions ──
     if (isBookingOpener(incomingMessage)) {
-      await sendQuickActions(deps, user, phone, null, incomingMessage);
+      await sendQuickActions(deps, user, phone, null, incomingMessage, true);
       return;
     }
 

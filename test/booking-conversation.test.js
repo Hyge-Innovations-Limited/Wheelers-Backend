@@ -1935,16 +1935,19 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   const menu = last(sent).interactive;
   assert.equal(menu.type, 'list');
   assert.equal(menu.action.button, 'Actions');
-  assert.match(menu.body.text, /What would you like to do\?[\s\S]*Wallet: ₦/);
+  assert.match(menu.body.text, /everything I can do/);
+  assert.doesNotMatch(menu.body.text, /Wallet|₦/, 'nobody asked about money');
   const rows = menu.action.sections.flatMap((s) => s.rows);
   assert.deepEqual(rows.map((r) => r.id), ['qa_book', 'qa_repeat', 'qa_reverse', 'qa_history', 'qa_deposit', 'qa_withdraw', 'qa_support']);
   assert.ok(rows.every((r) => r.title.length <= 24 && r.description.length <= 72), "WhatsApp's row limits");
   assert.match(rows[1].description, /31 Emily Akinola St → 7 Osaro Isokpan St/, 'Repeat names the LAST trip');
   assert.match(rows[2].description, /7 Osaro Isokpan St → 31 Emily Akinola St/, 'Reverse names it backwards');
 
-  // A bare greeting with nothing going on is the menu too; and it never shows before consent.
+  // A bare greeting gets a greeting back, with the same Actions button under it.
   await say(deps, who, 'hello');
   assert.equal(last(sent).interactive?.action?.button, 'Actions');
+  assert.match(last(sent).interactive.body.text, /^Hey Test! 👋/);
+  assert.doesNotMatch(last(sent).interactive.body.text, /Wallet|₦/);
   delete process.env.SUPPORT_CONTACT;
   await say(deps, who, 'menu');
   assert.deepEqual(last(sent).interactive.action.sections.map((s) => s.title), ['Ride', 'Wallet'], 'no Support row when no contact is set');

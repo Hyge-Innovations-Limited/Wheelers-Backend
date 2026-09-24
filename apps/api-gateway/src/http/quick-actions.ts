@@ -74,7 +74,10 @@ const clip = (text: string, max: number) => (text.length <= max ? text : `${text
 export const shortPlace = (address: string) => address.split(',')[0]?.trim() || address;
 
 interface MenuInput {
-  balanceNgn: number;
+  /** "Hey" gets a hello; "menu" gets straight to it. */
+  greeting: boolean;
+  /** Their first name, when we have one — "Hi Timi" rather than "Hi". */
+  firstName?: string | null;
   lastTrip: PastTrip | null;
   /** A search or trip is live: Book/Repeat make no sense, "your current trip" does. */
   busy: boolean;
@@ -96,7 +99,11 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
 
   return {
     type: 'list',
-    body: { text: `👋 *What would you like to do?*\n\nWallet: ₦${input.balanceNgn.toLocaleString()}` },
+    // A greeting is answered like one. The balance is not here: nobody said
+    // "wallet", and a rider saying hello does not need to be told their money.
+    body: { text: input.greeting
+      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! 👋 Good to see you.\n\nTap *Actions* to book a ride, add money, or see where you have been.`
+      : `Here is everything I can do. 👇` },
     action: {
       button: 'Actions',
       sections: [
