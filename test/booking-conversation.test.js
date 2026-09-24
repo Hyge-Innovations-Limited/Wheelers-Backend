@@ -1028,18 +1028,19 @@ test('THE CAR shows up when it matters: "has arrived" is ONE message — the car
   assert.equal(sent[0].image.link, 'https://files.test/car.jpg');
   assert.match(sent[0].image.caption, /oke oyebade has arrived\* — look for the \*Camry\* \(LAG-CAMRY\)[\s\S]*Can't see them\? Call: \+2349015208515/);
 
-  // No photo on file → the words alone. They must never wait on a picture.
+  // No photo on file → the words alone (with Quick Actions under them). They must never wait on a picture.
   sent = [];
   await sendDriverArrivedNotification(meta, '+234', details);
-  assert.deepEqual(sent.map((m) => m.type), ['text']);
-  assert.match(sent[0].text.body, /has arrived\* — look for the \*Camry\*/);
+  assert.deepEqual(sent.map((m) => m.type), ['interactive']);
+  assert.match(sent[0].interactive.body.text, /has arrived\* — look for the \*Camry\*/);
+  assert.equal(sent[0].interactive.action.button, 'Quick Actions');
 
   // Meta refuses the picture → the same words, still one message.
   sent = [];
   global.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return { ok: body.type !== 'image', status: 200, text: async () => 'bad media' }; };
   await sendDriverArrivedNotification(meta, '+234', { ...details, carPhotoUrl: 'https://files.test/gone.jpg' });
-  assert.deepEqual(sent.map((m) => m.type), ['image', 'text']);
-  assert.match(sent[1].text.body, /has arrived/);
+  assert.deepEqual(sent.map((m) => m.type), ['image', 'interactive']);
+  assert.match(sent[1].interactive.body.text, /has arrived/);
 });
 
 test('Track live trip is a reply button, and a reply button cannot open a link — so the tap is answered with ONE message: the map\'s link button', async () => {
@@ -1906,6 +1907,38 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
 
 /* ── quick actions: menu, history, repeat / reverse ─────────────────────── */
 
+test('QUICK ACTIONS is under every plain reply — but not inside a booking step, where the rider is mid-answer', async () => {
+  const { redis, deps, sent, who, user } = await riderWithHistory();
+
+  // Idle: a plain reply carries the button.
+  await say(deps, who, 'what is my balance');
+  const idle = last(sent);
+  assert.equal(idle.interactive?.action?.button, 'Quick Actions');
+  assert.deepEqual(idle.interactive.action.sections.map((s) => s.title), ['Ride', 'Wallet', 'Help']);
+  assert.ok(idle.interactive.action.sections.flatMap((s) => s.rows).every((r) => r.title.length <= 24 && r.description.length <= 72));
+
+  // Mid-booking: "where are you going?" is plain text — no wallet rows under an address prompt.
+  await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
+  await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
+  await say(deps, who, 'hmm');
+  assert.equal(last(sent).type, 'text', 'a booking prompt stays plain');
+  await bidState.clearBookingStage(redis, user.id);
+  await bidState.clearPendingLocation(redis, user.id);
+
+  // A tapped row on ANY old message does the right thing for NOW: mid-search, Book is refused.
+  await bidState.setActiveRide(redis, user.id, 'ride-live');
+  await tap(deps, who, 'qa_book', 'Book a ride');
+  assert.match(textOf(last(sent)), /already have a ride going/);
+  await bidState.clearActiveRide(redis, user.id);
+
+  // WhatsApp refuses the list → the words alone, never silence.
+  const send = global.fetch;
+  global.fetch = async (url, init) => (String(url).includes('graph.facebook.com') && JSON.parse(init.body).interactive?.type === 'list'
+    ? { ok: false, status: 400, json: async () => ({}), text: async () => 'no lists' } : send(url, init));
+  await say(deps, who, 'what is my balance');
+  assert.equal(last(sent).type, 'text');
+});
+
 const quick = require('../apps/api-gateway/dist/http/quick-actions.js');
 
 /** A rider with two completed trips on record, idle in the chat. */
@@ -2016,7 +2049,7 @@ test('the RECEIPT carries Repeat / Reverse; a rating is still a typed 1–5; a g
   assert.deepEqual(receipt.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['qa_again:ride-1', 'Repeat this ride'], ['qa_back:ride-1', 'Reverse this ride']]);
 
   await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'seat-1');
-  assert.equal(sent[1].type, 'text', 'a group seat: the plain receipt');
+  assert.equal(sent[1].interactive.action.button, 'Quick Actions', 'a group seat: the receipt with the menu, not Repeat/Reverse');
   setGroupRideChecker(async () => false);
 });
 

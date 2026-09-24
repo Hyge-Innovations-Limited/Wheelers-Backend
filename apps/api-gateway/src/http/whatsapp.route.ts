@@ -95,6 +95,7 @@ import {
   storeLastRoute,
   getLastRoute,
   getLastCompletedRide,
+  lookupUserIdByPhone,
   clearLastCompletedRide,
 } from '../whatsapp-flows/bid-state';
 import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
@@ -103,6 +104,7 @@ import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED } from '../whatsapp-flows/flow-toggle';
+import { withQuickActions } from '../whatsapp-flows/whatsapp-notifier';
 import {
   CHANGE_PRICE_REPLY_ID,
   formatBidList,
@@ -214,6 +216,20 @@ function sendTypingIndicator(
     .catch(() => {});
 }
 
+/** The steps where a reply is a question the rider is in the middle of answering. */
+const BOOKING_STEPS: ReadonlySet<string> = new Set([
+  'awaiting_pickup', 'awaiting_destination', 'awaiting_trip_confirm', 'adding_stop', 'awaiting_price',
+  'awaiting_route_confirmation', 'editing_pickup', 'editing_destination', 'awaiting_cancel_reason',
+  'group_awaiting_pickup', 'group_awaiting_destination', 'group_awaiting_confirm', 'group_awaiting_face_photo',
+  'awaiting_withdrawal_amount', 'awaiting_withdrawal_bank', 'awaiting_withdrawal_account', 'awaiting_withdrawal_confirmation',
+]);
+async function inBookingStep(deps: MetaWhatsappRouteDeps, phone: string): Promise<boolean> {
+  const userId = await lookupUserIdByPhone(deps.redisClient, phone).catch(() => null);
+  if (!userId) return false;
+  const stage = await getBookingStage(deps.redisClient, userId).catch(() => null);
+  return Boolean(stage && BOOKING_STEPS.has(stage));
+}
+
 async function sendMetaReply(
   deps: MetaWhatsappRouteDeps,
   to: string,
@@ -226,22 +242,21 @@ async function sendMetaReply(
 
   const recipient = to.replace(/^\+/, '');
   const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
-
-  const response = await fetch(endpoint, {
+  const post = (payload: Record<string, unknown>) => fetch(endpoint, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${deps.metaAccessToken}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: recipient,
-      type: 'text',
-      text: { body: message },
-    }),
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: recipient, ...payload }),
   });
 
+  // Every plain reply carries the Quick Actions button — except inside a
+  // booking step, where "Where are you going?" with Add money / Withdraw under
+  // it invites a rider mid-address to wander off. A refused list falls back to
+  // the words alone.
+  if (!(await inBookingStep(deps, recipient))) {
+    const asList = await post({ type: 'interactive', interactive: withQuickActions(message) }).catch(() => null);
+    if (asList?.ok) return;
+  }
+  const response = await post({ type: 'text', text: { body: message } });
   if (!response.ok) {
     const payload = await response.text();
     console.error('[whatsapp] Meta reply failed', { status: response.status, payload });

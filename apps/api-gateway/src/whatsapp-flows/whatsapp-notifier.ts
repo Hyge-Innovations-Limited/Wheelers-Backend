@@ -203,6 +203,47 @@ async function postInteractive(deps: WhatsappNotifierDeps, phone: string, intera
   return true;
 }
 
+/**
+ * Any plain text, with the Quick Actions button under it.
+ *
+ * WhatsApp gives a bot no permanent menu, so the menu rides on every message
+ * that is only words — greetings, receipts, confirmations, cancellations,
+ * wallet news. It is the last thing on screen after every turn. Messages that
+ * already carry their own thing to tap (a form, Track/SOS, a picker, a photo)
+ * cannot have it; WhatsApp allows one kind of button per message.
+ *
+ * The rows are fixed here on purpose: the picker's one job is to be the same
+ * everywhere. What each row DOES is decided when it is tapped (whatsapp.route
+ * handleQuickAction) — mid-search, Book is refused and Your current trip is
+ * what they need — so a stale menu on an old message can never do harm.
+ */
+export const QUICK_ACTIONS_BUTTON = 'Quick Actions';
+export function withQuickActions(text: string): Record<string, unknown> {
+  return {
+    type: 'list',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      button: QUICK_ACTIONS_BUTTON,
+      sections: [
+        { title: 'Ride', rows: [
+          { id: 'qa_book', title: 'Book a ride', description: 'Tell me where you are going' },
+          { id: 'qa_repeat', title: 'Repeat last ride', description: 'Same trip as last time' },
+          { id: 'qa_reverse', title: 'Reverse last ride', description: 'Last trip, back the other way' },
+          { id: 'qa_history', title: 'Ride history', description: 'Places you have been — book any again' },
+          { id: 'qa_current', title: 'Your current trip', description: 'Where things are with a ride in progress' },
+        ] },
+        { title: 'Wallet', rows: [
+          { id: 'qa_deposit', title: 'Add money', description: 'Get your account number to transfer to' },
+          { id: 'qa_withdraw', title: 'Withdraw', description: 'Send money from your wallet to your bank' },
+        ] },
+        { title: 'Help', rows: [
+          { id: 'qa_support', title: 'Contact support', description: 'Talk to a person at Wheelers' },
+        ] },
+      ],
+    },
+  };
+}
+
 export async function sendMetaWhatsappMessage(
   deps: WhatsappNotifierDeps,
   to: string,
@@ -212,21 +253,17 @@ export async function sendMetaWhatsappMessage(
   const recipient = to.replace(/^\+/, '');
   const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
 
-  const response = await fetch(endpoint, {
+  const post = (message: Record<string, unknown>) => fetch(endpoint, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${deps.metaAccessToken}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: recipient,
-      type: 'text',
-      text: { body },
-    }),
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: recipient, ...message }),
   });
 
+  // Words + the Quick Actions button. If WhatsApp refuses the list (an old
+  // phone, a client that cannot show it), the words go on their own.
+  const asList = await post({ type: 'interactive', interactive: withQuickActions(body) }).catch(() => null);
+  if (asList?.ok) return;
+  const response = await post({ type: 'text', text: { body } });
   if (!response.ok) {
     const payload = await response.text();
     console.error('[whatsapp-notifier] Meta send failed', { status: response.status, payload });

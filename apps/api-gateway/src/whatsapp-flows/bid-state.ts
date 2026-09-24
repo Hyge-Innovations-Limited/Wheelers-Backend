@@ -231,12 +231,20 @@ export async function isWhatsappRider(
   return activeRide !== null;
 }
 
+const userLookupKey = (phone: string) => `whatsapp:phone:${phone.replace(/^\+/, '')}:user`;
+
+/** Both directions: the consumer needs user → phone; the reply sender needs phone → user. */
 export async function setPhoneLookup(
   redis: RedisClient,
   userId: string,
   phone: string,
 ): Promise<void> {
   await redis.set(phoneLookupKey(userId), phone, PHONE_LOOKUP_TTL);
+  await redis.set(userLookupKey(phone), userId, PHONE_LOOKUP_TTL);
+}
+
+export async function lookupUserIdByPhone(redis: RedisClient, phone: string): Promise<string | null> {
+  return redis.get(userLookupKey(phone));
 }
 
 export async function lookupPhoneByUserId(
