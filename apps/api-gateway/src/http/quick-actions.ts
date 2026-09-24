@@ -5,7 +5,7 @@ import type { RouteStop } from '../whatsapp-flows/bid-state';
  * Quick actions: the one place a rider can see everything the bot does.
  *
  * WhatsApp gives a bot no permanent menu, and reply buttons stop at three —
- * so this is a LIST message: one short body, one "Actions" button, and WhatsApp's
+ * so this is a LIST message: one short body, one "Quick Actions" button, and WhatsApp's
  * own picker behind it with up to ten rows. It is sent when the rider asks for
  * it ("menu", "help", a bare greeting with nothing going on), when the bot did
  * not understand and nothing is in progress, and right after the privacy
@@ -102,10 +102,10 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
     // A greeting is answered like one. The balance is not here: nobody said
     // "wallet", and a rider saying hello does not need to be told their money.
     body: { text: input.greeting
-      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! 👋 Good to see you.\n\nTap *Actions* to book a ride, add money, or see where you have been.`
+      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! 👋 Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
       : `Here is everything I can do. 👇` },
     action: {
-      button: 'Actions',
+      button: 'Quick Actions',
       sections: [
         { title: 'Ride', rows: ride },
         { title: 'Wallet', rows: [

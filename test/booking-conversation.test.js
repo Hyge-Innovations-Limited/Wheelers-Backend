@@ -1934,7 +1934,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   await say(deps, who, 'menu');
   const menu = last(sent).interactive;
   assert.equal(menu.type, 'list');
-  assert.equal(menu.action.button, 'Actions');
+  assert.equal(menu.action.button, 'Quick Actions');
   assert.match(menu.body.text, /everything I can do/);
   assert.doesNotMatch(menu.body.text, /Wallet|₦/, 'nobody asked about money');
   const rows = menu.action.sections.flatMap((s) => s.rows);
@@ -1945,7 +1945,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
 
   // A bare greeting gets a greeting back, with the same Actions button under it.
   await say(deps, who, 'hello');
-  assert.equal(last(sent).interactive?.action?.button, 'Actions');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
   assert.match(last(sent).interactive.body.text, /^Hey Test! 👋/);
   assert.doesNotMatch(last(sent).interactive.body.text, /Wallet|₦/);
   delete process.env.SUPPORT_CONTACT;
