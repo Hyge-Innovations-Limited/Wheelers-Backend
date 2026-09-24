@@ -5,7 +5,7 @@ import type { RouteStop } from '../whatsapp-flows/bid-state';
  * Quick actions: the one place a rider can see everything the bot does.
  *
  * WhatsApp gives a bot no permanent menu, and reply buttons stop at three —
- * so this is a LIST message: one short body, one "Menu" button, and WhatsApp's
+ * so this is a LIST message: one short body, one "Actions" button, and WhatsApp's
  * own picker behind it with up to ten rows. It is sent when the rider asks for
  * it ("menu", "help", a bare greeting with nothing going on), when the bot did
  * not understand and nothing is in progress, and right after the privacy
@@ -39,7 +39,7 @@ export const isQuickActionId = (id: string | undefined): boolean =>
 
 /** "menu", "options", "what can you do" — the words that open this without a button. */
 export function asksForMenu(message: string): boolean {
-  return /^(menu|options?|quick actions?|what can (you|u) do|help me|show menu|main menu)[\s!?.]*$/i.test(message.trim());
+  return /^(actions?|menu|options?|quick actions?|what can (you|u) do|help me|show (menu|actions)|main menu)[\s!?.]*$/i.test(message.trim());
 }
 
 /** A completed trip, as the history needs it: both ends, the stops in order, what it cost. */
@@ -98,7 +98,7 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
     type: 'list',
     body: { text: `👋 *What would you like to do?*\n\nWallet: ₦${input.balanceNgn.toLocaleString()}` },
     action: {
-      button: 'Menu',
+      button: 'Actions',
       sections: [
         { title: 'Ride', rows: ride },
         { title: 'Wallet', rows: [

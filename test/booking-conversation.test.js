@@ -1934,7 +1934,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   await say(deps, who, 'menu');
   const menu = last(sent).interactive;
   assert.equal(menu.type, 'list');
-  assert.equal(menu.action.button, 'Menu');
+  assert.equal(menu.action.button, 'Actions');
   assert.match(menu.body.text, /What would you like to do\?[\s\S]*Wallet: ₦/);
   const rows = menu.action.sections.flatMap((s) => s.rows);
   assert.deepEqual(rows.map((r) => r.id), ['qa_book', 'qa_repeat', 'qa_reverse', 'qa_history', 'qa_deposit', 'qa_withdraw', 'qa_support']);
@@ -1944,7 +1944,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
 
   // A bare greeting with nothing going on is the menu too; and it never shows before consent.
   await say(deps, who, 'hello');
-  assert.equal(last(sent).interactive?.action?.button, 'Menu');
+  assert.equal(last(sent).interactive?.action?.button, 'Actions');
   delete process.env.SUPPORT_CONTACT;
   await say(deps, who, 'menu');
   assert.deepEqual(last(sent).interactive.action.sections.map((s) => s.title), ['Ride', 'Wallet'], 'no Support row when no contact is set');
