@@ -1,4 +1,5 @@
 import { validateRiderOffer } from '@wheleers/config';
+import { userClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
@@ -6,10 +7,11 @@ import {
   changeRiderOffer,
   confirmRideWithOffer,
   offerKey,
+  publishWhatsappRide,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
-import { clearBids, clearPendingAccept, getActiveRide, getBids, getLastBatch, getRideMeta, getRideState, markOffersMessageOpened, setRideState, storeLastBatch } from './bid-state';
-import type { WhatsappBid } from './bid-state';
+import { clearBids, clearPendingAccept, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
+import type { LastRouteData, PendingRouteData, SearchTimedOut, WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
 
@@ -38,6 +40,11 @@ import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier
  *
  * A flow may only OPEN on its entry screen, so INIT always answers OFFERS — a
  * search that is over says so in the error line, with "Close" as the only choice.
+ *
+ * A search that ran out with no driver is NOT a chat message (the form's button
+ * is already there). It is this screen: "No driver took ₦X", with Search again
+ * (same route, same price) and Change my price (same route, a new price) —
+ * either starts a fresh search and lands back on the live list.
  */
 
 export interface OffersFormDeps {
@@ -52,6 +59,7 @@ export interface OffersFormDeps {
 type FlowScreen = { screen: string; data: Record<string, unknown> };
 
 const REFRESH = 'refresh';
+const SEARCH_AGAIN = 'search_again';
 const CHANGE_PRICE = 'change_price';
 const DECLINE_ALL = 'decline_all';
 /** How long "Check for more offers" waits for a driver before showing the list again (WhatsApp cuts a form off at ~10 s). */
@@ -122,17 +130,65 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
 async function priceScreen(deps: OffersFormDeps, rideId: string, error = ''): Promise<FlowScreen> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta) return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
-  const floor = validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn;
+  return priceBox({ offerNgn: meta.offerNgn, suggestedFareNgn: meta.suggestedFareNgn }, error);
+}
+
+function priceBox(trip: { offerNgn: number; suggestedFareNgn: number }, error = ''): FlowScreen {
+  const floor = validateRiderOffer(0, trip.suggestedFareNgn).minOfferNgn;
   return {
     screen: 'CHANGE_PRICE',
     data: {
-      current_price: String(meta.offerNgn),
-      offer_line: `Your price now: ${naira(meta.offerNgn)}`,
-      limits_line: `Lowest for this trip: ${naira(floor)} · suggested ${naira(meta.suggestedFareNgn)}`,
+      current_price: String(trip.offerNgn),
+      offer_line: `Your price now: ${naira(trip.offerNgn)}`,
+      limits_line: `Lowest for this trip: ${naira(floor)} · suggested ${naira(trip.suggestedFareNgn)}`,
       error,
       has_error: error.length > 0,
     },
   };
+}
+
+// ── the search ran out with no driver ──────────────────────────────────
+
+function endedSearchScreen(timedOut: SearchTimedOut, route: LastRouteData, error = ''): FlowScreen {
+  const price = timedOut.offerNgn || route.offerNgn;
+  const higher = Math.ceil((price * 1.1) / 100) * 100;
+  return {
+    screen: 'OFFERS',
+    data: {
+      route_line: clip(`${route.pickupAddress.split(',')[0]} → ${route.destAddress.split(',')[0]}`, 80),
+      offer_line: `No driver took ${naira(price)} this time.`,
+      count_line: 'Nothing was charged. Two ways forward: search again at the same price, or raise it — that usually gets drivers moving.',
+      choices: [
+        { id: SEARCH_AGAIN, title: 'Search again', description: `Same route, ${naira(price)} again, a fresh search` },
+        { id: CHANGE_PRICE, title: 'Change my price', description: `Same route at a new price — e.g. ${naira(higher)}` },
+        { id: CLOSE, title: 'Close', description: 'Go back to the chat' },
+      ],
+      error,
+      has_error: error.length > 0,
+    },
+  };
+}
+
+/**
+ * A fresh search on the last route, from inside a form (the offers form's Search
+ * again / Change my price, Quick Actions' Search again). The chat gets nothing:
+ * its See driver offers button already opens on whatever search is live.
+ */
+export async function republishLastSearch(deps: OffersFormDeps, userId: string, priceNgn: number, refuse: (error: string) => FlowScreen | Promise<FlowScreen>): Promise<FlowScreen> {
+  const route = await getLastRoute(deps.redisClient, userId);
+  if (!route) return done('That trip has expired', 'Send your pickup and destination again in the chat.');
+  const phone = (await userClient.findById(userId).catch(() => null))?.phone ?? '';
+  // The event schema wants the geometry as an object or absent — never null.
+  const trip: PendingRouteData = { ...route, route: route.route, confirmed: true };
+  const result = await publishWhatsappRide({ redisClient: deps.redisClient, publisher: deps.publisher }, { id: userId, phone }, trip, priceNgn);
+  if (!result.ok) {
+    if (result.code === 'BELOW_MINIMUM') return refuse(`The lowest price for this trip is ${naira(result.minOfferNgn)}.`);
+    if (result.code === 'PUBLISH_FAILED') return refuse('Could not start the search just now. Try again.');
+    const live = await getActiveRide(deps.redisClient, userId);          // ALREADY_PUBLISHING: a double tap — the first one is out
+    return live ? offersScreen(deps, live) : refuse('Could not start the search just now. Try again.');
+  }
+  await markOffersMessageSent(deps.redisClient, result.rideId).catch(() => undefined);   // the button in the chat is already there
+  return offersScreen(deps, result.rideId);
 }
 
 function cancelScreen(error = ''): FlowScreen {
@@ -154,6 +210,23 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     : typeof data['choice'] === 'string' ? 'offers_choice'
       : data['new_price'] !== undefined ? 'update_price'
         : typeof data['reason'] === 'string' ? 'cancel_search' : null;
+
+  // No live search: if the last one ran out with no driver, that is the screen — with the ways forward on it.
+  const ended = rideId ? null : await getSearchTimedOut(deps.redisClient, userId);
+  const lastRoute = ended ? await getLastRoute(deps.redisClient, userId) : null;
+  if (!rideId && ended && lastRoute) {
+    if (body.action !== 'data_exchange' || !action) return endedSearchScreen(ended, lastRoute);
+    if (action === 'update_price') {
+      const amount = Math.round(Number(String(data['new_price'] ?? '').replace(/[,\s₦]/g, '')));
+      if (!Number.isFinite(amount) || amount <= 0) return priceBox({ offerNgn: ended.offerNgn || lastRoute.offerNgn, suggestedFareNgn: lastRoute.suggestedFareNgn }, 'Enter your price in figures, e.g. 3000.');
+      return republishLastSearch(deps, userId, amount, (error) => priceBox({ offerNgn: amount, suggestedFareNgn: lastRoute.suggestedFareNgn }, error));
+    }
+    const choice = String(data['choice'] ?? '');
+    if (choice === CLOSE) return done('Wheelers', 'You can go back to the chat.');
+    if (choice === CHANGE_PRICE) return priceBox({ offerNgn: ended.offerNgn || lastRoute.offerNgn, suggestedFareNgn: lastRoute.suggestedFareNgn });
+    if (choice === SEARCH_AGAIN) return republishLastSearch(deps, userId, ended.offerNgn || lastRoute.offerNgn, (error) => endedSearchScreen(ended, lastRoute, error));
+    return endedSearchScreen(ended, lastRoute, action === 'cancel_search' ? '' : 'Pick one to continue.');
+  }
 
   if (body.action !== 'data_exchange' || !action) {
     if (!rideId) return closedOffers('This search has ended — nothing was charged. Send your trip again in the chat.');

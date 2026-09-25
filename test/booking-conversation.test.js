@@ -2480,3 +2480,67 @@ test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its scr
   assert.match(status.data.headline, /driving you now/);
   assert.equal(status.data.cta_label, 'Back to chat');
 });
+
+test('SEARCH RUNS OUT · with the form, no message: the form says "No driver took ₦X" with Search again / Change my price, and either starts a fresh search right there', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const at = await riderWithOffersForm(10_000);
+  await bidState.markOffersMessageSent(at.redis, at.rideId);                   // the "your bid is in" button is in the chat
+  await prisma.ride.update({ where: { id: at.rideId }, data: { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'No driver accepted in time', cancelledAt: new Date() } });
+  const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: at.deps.jwtSecret };
+  const before = at.sent.length;
+  await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId: at.rideId, riderId: at.user.id, timestamp: new Date().toISOString() },
+    { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  assert.equal(at.sent.length, before, 'not a word — the end of the search lives in the form');
+  assert.equal(await bidState.getActiveRide(at.redis, at.user.id), null);
+  assert.equal((await bidState.getSearchTimedOut(at.redis, at.user.id)).offerNgn, 2000);
+
+  const opened = await at.form('INIT');
+  assert.equal(opened.screen, 'OFFERS');
+  assert.match(opened.data.offer_line, /^No driver took ₦2,000 this time/);
+  assert.deepEqual(opened.data.choices.map((c) => c.id), ['search_again', 'change_price', 'close']);
+  assert.equal((await at.form('data_exchange', { action: 'offers_choice', choice: 'refresh' })).data.offer_line, opened.data.offer_line, 'a stale Check for more offers lands here too');
+
+  const again = await at.form('data_exchange', { action: 'offers_choice', choice: 'search_again' });
+  assert.equal(again.screen, 'OFFERS');
+  assert.match(again.data.offer_line, /Your price: ₦2,000/);
+  const second = await bidState.getActiveRide(at.redis, at.user.id);
+  assert.ok(second && second !== at.rideId, 'a fresh search');
+  assert.deepEqual(at.events('RIDE_REQUESTED').map((e) => e.riderOfferNgn).slice(-1), [2000]);
+  assert.equal(await bidState.getSearchTimedOut(at.redis, at.user.id), null, 'forgotten');
+  assert.equal(await bidState.hasOffersMessage(at.redis, second), true, 'the button in the chat already opens on this search');
+  assert.equal(at.sent.length, before, 'still not a word');
+
+  // It runs out again: this time they raise the price.
+  await bidState.clearActiveRide(at.redis, at.user.id);
+  await bidState.markSearchTimedOut(at.redis, at.user.id, { rideId: second, offerNgn: 2000, at: new Date().toISOString() });
+  const box = await at.form('data_exchange', { action: 'offers_choice', choice: 'change_price' });
+  assert.equal(box.screen, 'CHANGE_PRICE');
+  assert.equal(box.data.current_price, '2000');
+  const low = await at.form('data_exchange', { action: 'update_price', new_price: '100' });
+  assert.equal(low.screen, 'CHANGE_PRICE');
+  assert.match(low.data.error, /lowest price/);
+  const raised = await at.form('data_exchange', { action: 'update_price', new_price: '2,500' });
+  assert.equal(raised.screen, 'OFFERS');
+  assert.match(raised.data.offer_line, /Your price: ₦2,500/);
+  assert.deepEqual(at.events('RIDE_REQUESTED').map((e) => e.riderOfferNgn).slice(-1), [2500]);
+  assert.equal(at.sent.length, before, 'and still nothing in the chat');
+
+  // Quick Actions offers the same way back in.
+  await bidState.clearActiveRide(at.redis, at.user.id);
+  await bidState.markSearchTimedOut(at.redis, at.user.id, { rideId: 'x', offerNgn: 2500, at: new Date().toISOString() });
+  const menu = await menuForm(at)('INIT');
+  assert.equal(menu.data.choices[0].id, 'search_again');
+  assert.match(menu.data.choices[0].description, /No driver took ₦2,500/);
+  assert.equal((await menuForm(at)('data_exchange', { action: 'menu_choice', choice: 'search_again' }, 'MENU')).screen, 'OFFERS');
+});
+
+test('SEARCH RUNS OUT · without the form (no button in the chat), the rider is still told in the chat, as before', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const at = await searchingRider(10_000);
+  await prisma.ride.update({ where: { id: at.rideId }, data: { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: 'No driver accepted in time', cancelledAt: new Date() } });
+  const before = at.sent.length;
+  await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId: at.rideId, riderId: at.user.id, timestamp: new Date().toISOString() },
+    { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' }, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  assert.equal(at.sent.length, before + 1);
+  assert.match(textOf(last(at.sent)), /No driver took ₦2,000[\s\S]*search again/);
+});

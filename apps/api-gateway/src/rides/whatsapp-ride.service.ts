@@ -17,6 +17,7 @@ import {
   storeAcceptedBid,
   storeLastRoute,
   storeWhatsappRide,
+  clearSearchTimedOut,
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
 
@@ -118,6 +119,7 @@ export async function publishWhatsappRide(
   });
   await setActiveRide(deps.redisClient, rider.id, rideId);
   await storeLastRoute(deps.redisClient, rider.id, { ...pendingRoute, offerNgn });
+  await clearSearchTimedOut(deps.redisClient, rider.id);
   // The claim only had to cover the moment of publishing. Left to expire on its
   // own it blocked a rider who cancelled and searched again within 30 seconds;
   // a late second tap is harmless now — the quote it needs is already spent.

@@ -23,6 +23,7 @@ import {
   noteNotified,
   hasOffersMessage,
   markOffersMessageSent,
+  markSearchTimedOut,
   getGroupSeat,
   clearActiveRide,
   clearActiveRideIfMatches,
@@ -590,7 +591,12 @@ export async function handleRideEvent(
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
       if (phone) {
         const timedOutMeta = await getRideMeta(deps.redisClient, event.rideId).catch(() => null);
-        await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
+        // Remembered for the offers form: it says "no driver took ₦X" and offers Search again there.
+        await markSearchTimedOut(deps.redisClient, event.riderId, { rideId: event.rideId, offerNgn: timedOutMeta?.offerNgn ?? 0, at: new Date().toISOString() }).catch(() => undefined);
+        // With the form's button already in the chat, the end of the search is not a message:
+        // the rider opens the form when they like and finds the two ways forward inside it.
+        const formHoldsIt = offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, event.rideId);
+        if (!formHoldsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
       }
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});

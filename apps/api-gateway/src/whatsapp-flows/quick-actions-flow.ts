@@ -5,7 +5,7 @@ import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
   clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, clearPendingRoute,
-  getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState,
+  getAcceptedBid, getActiveRide, getBids, getGroupSeat, getLastRoute, getPendingRoute, getRideMeta, getRideState, getSearchTimedOut,
   markOffersMessageOpened, setBookingStage, storePendingRoute,
 } from './bid-state';
 import type { PendingRouteData } from './bid-state';
@@ -14,7 +14,7 @@ import {
   EXPIRED_NOTE, SEARCHING_NOTE, type EditTripFlowDeps,
 } from './edit-trip-flow';
 import type { FlowRequestBody } from './encryption';
-import { handleOffersFormFlow, offersScreen, type OffersFormDeps } from './offers-form-flow';
+import { handleOffersFormFlow, offersScreen, republishLastSearch, type OffersFormDeps } from './offers-form-flow';
 
 /**
  * Quick Actions — the menu as ONE WhatsApp Flow. One message, one button, and
@@ -73,7 +73,7 @@ export interface VirtualAccountLines { bankName: string; accountNumber: string; 
 type FlowScreen = { screen: string; data: Record<string, unknown> };
 
 export const MENU_IDS = {
-  resume: 'resume', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
+  resume: 'resume', searchAgain: 'search_again', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
   current: 'current', deposit: 'deposit', withdraw: 'withdraw', support: 'support',
 } as const;
 const MENU_ID_SET = new Set<string>(Object.values(MENU_IDS));
@@ -175,6 +175,11 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
     choices.push({ id: MENU_IDS.current, title: 'Your current trip', description });
   } else {
     if (trip) choices.push({ id: MENU_IDS.resume, title: 'Continue your booking', description: clip(`${shortPlace(trip.pickupAddress)} → ${shortPlace(trip.destAddress)}${trip.confirmed ? ' — name your price' : ''}`, 300) });
+    else {
+      // The last search ran out with no driver: the way back in is one row, not a message.
+      const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);
+      if (ended && last) choices.push({ id: MENU_IDS.searchAgain, title: 'Search again', description: clip(`No driver took ${naira(ended.offerNgn || last.offerNgn)} — ${shortPlace(last.pickupAddress)} → ${shortPlace(last.destAddress)}, fresh search`, 300) });
+    }
     choices.push({ id: MENU_IDS.book, title: 'Book a ride', description: 'Back in the chat: type where you are going, or share a pin' });
     const [last] = await recentTrips(userId, 1);
     if (last) {
@@ -222,6 +227,11 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
 
   // Everything below starts a booking: not while one is live.
   if (activeRideId) return menuScreen(userId, deps, BUSY_NOTE);
+  if (choice === MENU_IDS.searchAgain) {
+    const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);
+    if (!ended || !last) return menuScreen(userId, deps, 'That search is not there any more. Book a ride to start again.');
+    return republishLastSearch(offersDeps(deps), userId, ended.offerNgn || last.offerNgn, (error) => menuScreen(userId, deps, error));
+  }
   if (choice === MENU_IDS.resume) {
     const trip = await getPendingRoute(deps.redisClient, userId);
     if (!trip) return menuScreen(userId, deps, 'That booking has expired. Book a ride to start again.');

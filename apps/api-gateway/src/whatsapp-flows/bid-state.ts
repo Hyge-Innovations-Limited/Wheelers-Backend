@@ -61,10 +61,11 @@ export interface WhatsappBid {
   receivedAt: string;
 }
 
-const RIDE_META_TTL = 900;           // 15 minutes
-const BIDS_TTL = 900;                // 15 minutes
-const RIDE_STATE_TTL = 1800;         // 30 minutes
-const ACTIVE_RIDE_TTL = 1800;        // 30 minutes — while still looking for a driver
+// A search runs 30 minutes (RIDE.BID_TIMEOUT_SECONDS); everything a search needs lives longer.
+const RIDE_META_TTL = 7200;          // 2 hours
+const BIDS_TTL = 7200;               // 2 hours
+const RIDE_STATE_TTL = 7200;         // 2 hours
+const ACTIVE_RIDE_TTL = 3600;        // 1 hour — while still looking for a driver
 /**
  * Once a driver is assigned the pointer must outlive the trip. It used to
  * expire 30 minutes after booking, so on a long ride "cancel" fell into the
@@ -74,7 +75,7 @@ export const IN_TRIP_ACTIVE_RIDE_TTL = 3 * 60 * 60;
 const PENDING_LOCATION_TTL = 600;    // 10 minutes
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
 const DEBOUNCE_TTL = 15;             // offers that are not urgent are bundled this long
-const BID_BATCH_TTL = 900;           // 15 minutes — stores last batch sent to rider
+const BID_BATCH_TTL = 7200;          // 2 hours — stores last batch sent to rider
 
 function rideMetaKey(rideId: string): string {
   return `whatsapp:ride:${rideId}:meta`;
@@ -297,7 +298,7 @@ const UNOPENED_OFFERS_TTL = 120;
  * as long as the search does.
  */
 const offersMessageKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_message_sent`;
-const OFFERS_MESSAGE_TTL = 1800;
+const OFFERS_MESSAGE_TTL = 7200;
 
 export async function markOffersMessageSent(redis: RedisClient, rideId: string): Promise<void> {
   await redis.set(unopenedOffersKey(rideId), Date.now().toString(), UNOPENED_OFFERS_TTL);
@@ -311,6 +312,27 @@ export async function markOffersMessageOpened(redis: RedisClient, rideId: string
 }
 export async function hasUnopenedOffersMessage(redis: RedisClient, rideId: string): Promise<boolean> {
   return Boolean(await redis.get(unopenedOffersKey(rideId)).catch(() => null));
+}
+
+/**
+ * The last search ended with no driver. Nothing is sent to the chat about it: the
+ * rider finds out in the offers form (its button is already in the chat), which
+ * offers Search again and Change my price. Cleared the moment a new search starts.
+ */
+export interface SearchTimedOut { rideId: string; offerNgn: number; at: string }
+const searchTimedOutKey = (userId: string) => `whatsapp:user:${userId}:search_timed_out`;
+const SEARCH_TIMED_OUT_TTL = 86_400;
+
+export async function markSearchTimedOut(redis: RedisClient, userId: string, info: SearchTimedOut): Promise<void> {
+  await redis.set(searchTimedOutKey(userId), JSON.stringify(info), SEARCH_TIMED_OUT_TTL);
+}
+export async function getSearchTimedOut(redis: RedisClient, userId: string): Promise<SearchTimedOut | null> {
+  const raw = await redis.get(searchTimedOutKey(userId)).catch(() => null);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as SearchTimedOut; } catch { return null; }
+}
+export async function clearSearchTimedOut(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(searchTimedOutKey(userId)).catch(() => undefined);
 }
 
 /** An urgent offer went out regardless of the window: start a fresh one behind it. */

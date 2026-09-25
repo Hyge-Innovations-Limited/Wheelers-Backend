@@ -90,7 +90,8 @@ export const rideClient = {
   // A ride still in REQUESTED/MATCHING long after the bid window is dead —
   // nobody accepted and the timeout should have cancelled it. Don't let a
   // stale one block a rider from booking again while the sweeper catches up.
-  findActiveByRider: (riderId: string, unmatchedMaxAgeMs = 15 * 60 * 1000) =>
+  // A search runs 30 minutes (RIDE.BID_TIMEOUT_SECONDS): an unmatched ride is live that long, plus a margin.
+  findActiveByRider: (riderId: string, unmatchedMaxAgeMs = 35 * 60 * 1000) =>
     prisma.ride.findFirst({
       where: {
         riderId,
