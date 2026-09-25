@@ -92,6 +92,33 @@ In the Paystack dashboard:
 | `node scripts/run-with-env.cjs node scripts/audit-money.mjs` | Replays every wallet and compares the whole ledger to the live Paystack balance. |
 | `node scripts/run-with-env.cjs node scripts/reset-wallets.mjs` | **One-time, pre-launch.** Dry run by default. Rebuilds running totals, records any unexplained balance as an explicit `ADJUSTMENT` row, and zeroes every wallet (`--keep=<userId>,…` to carry some over). Refuses while money is in flight; snapshots to `logs/` first. |
 
+## Moving deposit accounts to another bank (Wema → Titan)
+
+`PAYSTACK_DVA_BANK` decides which bank issues NEW account numbers. Riders who
+already have one keep it — Paystack holds one dedicated account per customer,
+and nothing re-issues it by itself. To move everyone:
+
+1. In `.env`: `PAYSTACK_DVA_BANK=titan-paystack`, then `npm run pm2:restart`
+   (api-gateway and payment-service both read it). From here, new riders get
+   Titan accounts.
+2. Dry run: `node scripts/run-with-env.cjs node scripts/migrate-deposit-bank.mjs`
+   lists every rider still on Wema.
+3. Move ONE account first, your own:
+   `… scripts/migrate-deposit-bank.mjs --confirm --notify --user=<your user id>`,
+   then send a small transfer to the new number and watch it land.
+4. Move the rest: `… scripts/migrate-deposit-bank.mjs --confirm --notify`.
+
+For each rider the script retires the old account at Paystack (transfers to it
+bounce from then on), issues a new one at the target bank, saves it, and with
+`--notify` sends the rider a WhatsApp message with the new number. Balances are
+untouched: money lives in the ledger, the number is only the door it comes in
+by. Re-running skips anyone already moved.
+
+If Paystack answers "being assigned" for a rider, the row is marked
+`reassigning` and the `dedicatedaccount.assign.success` webhook saves the new
+number when it arrives. Until then Add money shows the retired number — re-run
+the script later to see whether any rider is still waiting.
+
 ## Tests
 
 | Command | Needs |

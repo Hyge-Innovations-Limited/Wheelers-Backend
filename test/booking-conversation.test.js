@@ -2457,3 +2457,26 @@ test('a place the rider did NOT say is dropped: the model filling the destinatio
   assert.equal(saidInMessage('13 Aiyetoro Street, Akoka, Lagos', 'I want to go from ilemere road'), false);
   assert.equal(saidInMessage('Lekki, Lagos', 'from Ikeja to Lekki'), true);
 });
+
+test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its screen sends them to the chat to pick by number; a long trip Redis has forgotten still reads as "driving you now" from the ride row', async () => {
+  const at = await searchingRider(10_000);
+  const form = menuForm(at);
+  await bidState.storeGroupSeat(at.redis, at.rideId, { anchorRideId: 'anchor-1', groupId: 'group-1', memberCount: 3 });
+  await bidState.addBid(at.redis, at.rideId, offerFrom(await onlineDriver(), 2400));
+  assert.match((await form('INIT')).data.choices[0].description, /group ride/);
+  const seat = await form('data_exchange', { action: 'menu_choice', choice: 'current' }, 'MENU');
+  assert.equal(seat.screen, 'STATUS', 'never the offers list: a seat is booked by number, by everyone in the car');
+  assert.match(seat.data.headline, /group ride/);
+  assert.match(seat.data.note, /Reply the number/);
+  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'DONE');
+
+  // Redis forgets the ride state after 30 minutes; a two-hour trip is still a trip.
+  await at.redis.del(`whatsapp:group_seat:${at.rideId}`);
+  await at.redis.del(`whatsapp:ride:${at.rideId}:state`);
+  await prisma.ride.update({ where: { id: at.rideId }, data: { status: 'IN_PROGRESS' } });
+  assert.match((await form('INIT')).data.choices[0].description, /driving you now/);
+  const status = await form('data_exchange', { action: 'menu_choice', choice: 'current' }, 'MENU');
+  assert.equal(status.screen, 'STATUS');
+  assert.match(status.data.headline, /driving you now/);
+  assert.equal(status.data.cta_label, 'Back to chat');
+});

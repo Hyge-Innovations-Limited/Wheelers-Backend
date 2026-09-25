@@ -116,10 +116,10 @@ export class PaymentsClient {
    * Paystack can also answer "in progress" and deliver the account later by
    * webhook — that surfaces here as ACCOUNT_PENDING, not as a failure.
    */
-  async createVirtualAccount(customerId: string): Promise<PaymentVirtualAccount> {
+  async createVirtualAccount(customerId: string, preferredBank?: string): Promise<PaymentVirtualAccount> {
     const res = await this.post<Json>('/dedicated_account', {
       customer: customerId,
-      preferred_bank: this.dvaBank,
+      preferred_bank: preferredBank?.trim() || this.dvaBank,
     });
     const account = mapVirtualAccount(res.data, customerId);
     if (!account) {
@@ -130,6 +130,20 @@ export class PaymentsClient {
       );
     }
     return account;
+  }
+
+  /**
+   * Retire a dedicated account: transfers to its number bounce from then on. Used when
+   * moving a customer to another issuing bank — Paystack keeps one account per customer,
+   * so the old one has to go before a new one can be issued.
+   */
+  async deactivateVirtualAccount(accountId: string): Promise<void> {
+    await this.request<Json>('DELETE', `/dedicated_account/${encodeURIComponent(accountId)}`);
+  }
+
+  /** The bank this client issues deposit accounts at ("test-bank" under a test key). */
+  get depositBank(): string {
+    return this.dvaBank;
   }
 
   /** The customer's dedicated account if Paystack has assigned one yet. */

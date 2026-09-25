@@ -1,11 +1,11 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
-import { userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
   clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, clearPendingRoute,
-  getAcceptedBid, getActiveRide, getBids, getPendingRoute, getRideMeta, getRideState,
+  getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState,
   markOffersMessageOpened, setBookingStage, storePendingRoute,
 } from './bid-state';
 import type { PendingRouteData } from './bid-state';
@@ -83,6 +83,21 @@ const BUSY_NOTE = 'You already have a ride going. Finish or cancel it first, the
 const ENDED_NOTE = 'Nothing was charged. Send your trip again in the chat.';
 const CHECK_OFFERS_MS = 3_500;
 
+/**
+ * Is a driver on this ride? Redis says so for 30 minutes; a long trip outlives that, and
+ * the pointer to the ride lives three hours. The ride row is the truth after Redis forgets.
+ */
+async function driverOnRide(redisClient: RedisClient, rideId: string): Promise<'on_the_way' | 'driving' | null> {
+  const state = await getRideState(redisClient, rideId).catch(() => null);
+  if (state === 'in_progress') return 'driving';
+  if (state === 'confirmed') return 'on_the_way';
+  if (state) return null;
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (ride?.status === 'IN_PROGRESS') return 'driving';
+  if (ride?.status === 'DRIVER_ASSIGNED' || ride?.status === 'DRIVER_EN_ROUTE' || ride?.status === 'ARRIVED') return 'on_the_way';
+  return null;
+}
+
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`);
 const naira = (amount: number) => `₦${amount.toLocaleString()}`;
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
@@ -150,9 +165,10 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
   const choices: Array<{ id: string; title: string; description: string }> = [];
 
   if (activeRideId) {
-    const state = await getRideState(deps.redisClient, activeRideId).catch(() => null);
-    const description = state === 'confirmed' || state === 'in_progress'
-      ? 'Your driver is on the way — where things are'
+    const [driver, seat] = await Promise.all([driverOnRide(deps.redisClient, activeRideId), getGroupSeat(deps.redisClient, activeRideId).catch(() => null)]);
+    const description = driver
+      ? (driver === 'driving' ? 'Your driver is driving you now' : 'Your driver is on the way — where things are')
+      : seat ? 'Your group ride — where things are'
       : await getBids(deps.redisClient, activeRideId).then((bids) => (bids.length === 0
         ? 'Still looking for drivers — check for offers'
         : bids.length === 1 ? '1 driver offer waiting for you' : `${bids.length} driver offers waiting for you`)).catch(() => 'Where things are with your ride');
@@ -269,7 +285,7 @@ function tripScreen(trip: PastTrip, error = ''): FlowScreen {
       stop_3_line: stop3 ? `Stop 3: ${stop3.address}` : '',
       has_stop_3: Boolean(stop3),
       destination_line: `Destination: ${trip.destination.address}`,
-      fare_line: `You paid ${naira(trip.fareNgn)} — today's fare is worked out when you pick`,
+      fare_line: trip.fareNgn > 0 ? `You paid ${naira(trip.fareNgn)} — today's fare is worked out when you pick` : "Today's fare is worked out when you pick",
       ride_id: trip.rideId,
       directions: [
         { id: MENU_IDS.repeat, title: 'Repeat this ride', description: `${shortPlace(trip.pickup.address)} → ${shortPlace(trip.destination.address)}` },
@@ -328,11 +344,11 @@ async function planPastTrip(trip: PastTrip, backwards: boolean, userId: string, 
  * a rider tapping it is effectively watching the search live.
  */
 async function statusOrOffers(rideId: string, userId: string, deps: QuickActionsFlowDeps, wait: boolean): Promise<FlowScreen> {
-  const [state, meta] = await Promise.all([getRideState(deps.redisClient, rideId).catch(() => null), getRideMeta(deps.redisClient, rideId)]);
+  const [driver, meta, seat] = await Promise.all([driverOnRide(deps.redisClient, rideId), getRideMeta(deps.redisClient, rideId), getGroupSeat(deps.redisClient, rideId).catch(() => null)]);
 
-  if (state === 'confirmed' || state === 'in_progress') {
+  if (driver) {
     const accepted = await getAcceptedBid(deps.redisClient, rideId).catch(() => null);
-    const driving = state === 'in_progress';
+    const driving = driver === 'driving';
     const eta = accepted ? Math.max(1, Math.ceil(accepted.etaSeconds / 60)) : 0;
     return {
       screen: 'STATUS',
@@ -349,6 +365,22 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
   }
 
   if (!meta) return doneScreen('This search has ended', ENDED_NOTE);
+  if (seat) {
+    // A seat in a shared car is booked by number in the chat: the car only moves when every
+    // rider picks the same driver. The offers form's Accept is for a rider alone in the car.
+    return {
+      screen: 'STATUS',
+      data: {
+        headline: 'Your group ride',
+        line_1: clip(`${shortPlace(meta.pickupAddress)} → ${shortPlace(meta.destinationAddress)}`, 200),
+        line_2: `Your seat: ${naira(meta.offerNgn)}`,
+        line_3: '',
+        has_line_3: false,
+        note: 'Driver offers for a shared car come to the chat. Reply the number of the driver you want there — everyone in the car has to pick the same one.',
+        cta_label: 'Back to chat',
+      },
+    };
+  }
   let bids = await getBids(deps.redisClient, rideId);
   if (wait && bids.length === 0) {
     const deadline = Date.now() + CHECK_OFFERS_MS;
@@ -381,11 +413,12 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
 async function statusNext(userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const activeRideId = await getActiveRide(deps.redisClient, userId);
   if (!activeRideId) return doneScreen('This search has ended', ENDED_NOTE);
-  const state = await getRideState(deps.redisClient, activeRideId).catch(() => null);
-  if (state === 'confirmed' || state === 'in_progress') {
+  const driver = await driverOnRide(deps.redisClient, activeRideId);
+  if (driver) {
     const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
-    return doneScreen(`${accepted?.driverName ?? 'Your driver'} is ${state === 'in_progress' ? 'driving you now' : 'on the way'}`, 'Their photo, car and plate are in your chat, with a button to track the trip live.');
+    return doneScreen(`${accepted?.driverName ?? 'Your driver'} is ${driver === 'driving' ? 'driving you now' : 'on the way'}`, 'Their photo, car and plate are in your chat, with a button to track the trip live.');
   }
+  if (await getGroupSeat(deps.redisClient, activeRideId).catch(() => null)) return doneScreen('Your group ride', 'Driver offers for a shared car come to the chat. Reply the number of the driver you want there.');
   return statusOrOffers(activeRideId, userId, deps, true);
 }
 
