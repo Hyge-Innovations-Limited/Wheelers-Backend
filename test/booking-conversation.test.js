@@ -691,7 +691,7 @@ test('THE CHAT, part 4 — "I want to go from Caleb University" gets the picker 
   await agree(redis, await findRider(who));
 
   await say(deps, who, 'I want to go from Caleb University');
-  assert.doesNotMatch(textOf(last(sent)), /To book a ride, type your pickup and destination/);
+  assert.doesNotMatch(textOf(last(sent)), /Send your \*pickup\* and your \*destination\*/);
   assert.equal(last(sent).interactive?.type, 'list');
   assert.match(textOf(last(sent)), /pick the right pickup/);
 });
@@ -710,7 +710,7 @@ test('only a destination given: it is remembered, the pickup is asked for, and t
   await say(deps, who, 'take me to caleb law');
   assert.match(textOf(last(sent)), /Heading to \*Caleb law\* — got it/);
   assert.match(textOf(last(sent)), /Where should we pick you up\?/);
-  assert.doesNotMatch(textOf(last(sent)), /To book a ride, type/);
+  assert.doesNotMatch(textOf(last(sent)), /Send your \*pickup\* and your \*destination\*/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
 
   // They answer with the pickup — and are NOT asked for the destination again.
@@ -2280,8 +2280,23 @@ test('QUICK ACTIONS FORM · Book a ride closes the form and the chat asks where 
   await settle();
   assert.equal(at.sent.length, before + 1, 'one prompt');
   assert.equal(last(at.sent).type, 'text', 'plain words: the next thing typed is the answer');
-  assert.match(textOf(last(at.sent)), /Where are you going\?[\s\S]*From \[pickup address\] to \[destination\][\s\S]*location pin/);
+  assert.match(textOf(last(at.sent)), /Where are you going\?[\s\S]*Send your \*pickup\* and your \*destination\*[\s\S]*From Ikeja City Mall to Unilag gate, Yaba[\s\S]*location pin first/);
   assert.equal(await bidState.getBookingStage(at.redis, at.user.id), null, 'idle: the chat parses whatever they type next, as it always has');
+});
+
+test('QUICK ACTIONS FORM · Book a ride starts CLEAN: a Repeat they walked away from is forgotten, so "from Ilemere" is a new pickup, not an edit that keeps the old destination', async () => {
+  const at = await riderWithHistory();
+  const form = menuForm(at);
+  assert.equal((await form('data_exchange', { action: 'menu_choice', choice: 'repeat' }, 'MENU')).screen, 'REVIEW_TRIP');
+  await bidState.setPendingLocation(at.redis, at.user.id, { ...AKOKA, savedAt: new Date().toISOString() });
+  assert.ok(await bidState.getPendingRoute(at.redis, at.user.id), 'a half-finished trip in memory');
+  assert.equal((await form('INIT')).data.choices[0].id, 'resume', 'offered as Continue your booking');
+
+  await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal(await bidState.getPendingRoute(at.redis, at.user.id), null, 'gone');
+  assert.equal(await bidState.getPendingLocation(at.redis, at.user.id), null, 'the old pin too');
+  assert.equal(await bidState.getBookingStage(at.redis, at.user.id), null);
+  assert.equal((await form('INIT')).data.choices[0].id, 'book', 'nothing to continue any more');
 });
 
 test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose button keeps checking for offers — and the offers list, right there, when one lands', async () => {

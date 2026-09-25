@@ -1934,7 +1934,7 @@ function isAffirmativeReply(message: string): boolean {
 }
 
 const BOOKING_START_PROMPT =
-  'To book a ride, type your pickup and destination like:\n\n*"From [pickup address] to [destination]"*\n\nOr share your pickup location pin';
+  'Send your *pickup* and your *destination*, e.g.\n*From Ikeja City Mall to Unilag gate, Yaba*\n\nOr share your pickup location pin first, then type the destination.';
 
 /** Throw the half-made booking away and begin again. */
 async function startBookingOver(

@@ -4,6 +4,7 @@ import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
+  clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, clearPendingRoute,
   getAcceptedBid, getActiveRide, getBids, getPendingRoute, getRideMeta, getRideState,
   markOffersMessageOpened, setBookingStage, storePendingRoute,
 } from './bid-state';
@@ -211,8 +212,16 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     return trip.confirmed ? priceScreen(trip) : reviewScreen(trip);
   }
   if (choice === MENU_IDS.book) {
+    // A clean slate. A half-finished trip left in memory (a Repeat they walked away from, an old
+    // pin, a picker waiting for a number) would make "from Ilemere" an EDIT of that trip's pickup,
+    // keeping its destination — the rider asked to book, not to change something.
+    await Promise.all([
+      clearPendingRoute(deps.redisClient, userId), clearBookingStage(deps.redisClient, userId), clearPendingLocation(deps.redisClient, userId),
+      clearPendingAreaHint(deps.redisClient, userId), clearPendingGeoChoices(deps.redisClient, userId), clearPendingFarPlace(deps.redisClient, userId),
+      clearBookingMisses(deps.redisClient, userId),
+    ].map((step) => step.catch(() => undefined)));
     void deps.onBookInChat?.(userId).catch((error) => console.error('[quick-actions] booking prompt not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return doneScreen('Where are you going?', 'Back in the chat, type your pickup and destination, e.g. from Ikeja City Mall to Yaba, or share your pickup location pin.');
+    return doneScreen('Where are you going?', 'Back in the chat, send your pickup and your destination, e.g. from Ikeja City Mall to Unilag gate, Yaba. Or share your pickup location pin first.');
   }
   if (choice === MENU_IDS.repeat || choice === MENU_IDS.reverse) {
     const [last] = await recentTrips(userId, 1);
