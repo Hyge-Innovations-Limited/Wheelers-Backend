@@ -972,7 +972,7 @@ function confirmationDeps(redis) {
   return deps;
 }
 
-test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it, and two buttons — Track live trip, 🆘 SOS', async () => {
+test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it, and two buttons — Track live trip, SOS', async () => {
   const deps = confirmationDeps(memoryRedis());
   const order = recordMeta();
   const driver = await driverWithPhotos();
@@ -983,7 +983,7 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   const card = order[0].body.interactive;
   assert.equal(card.type, 'button');
   assert.match(card.header.image.link, /selfie\.jpg$/, 'a FACE — the car belongs on "has arrived"');
-  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_track', 'Track live trip'], ['ride_sos', '🆘 SOS']]);
+  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_track', 'Track live trip'], ['ride_sos', 'SOS']]);
 
   const text = card.body.text;
   assert.ok(text.length <= 1024);
@@ -1005,7 +1005,7 @@ test('no driver photo on file, or WhatsApp refuses the picture: the SAME card go
   const noSelfie = await driverWithPhotos({ selfie: false });          // a car photo on file changes nothing here
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive']);
-  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS']);
+  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS']);
   assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
 
   order = recordMeta({ refuseCards: true });
@@ -1064,7 +1064,7 @@ test('Track live trip is a reply button, and a reply button cannot open a link �
   assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), deps.jwtSecret), { userId: user.id, scope: 'ride' });
 });
 
-/* ── 🆘 SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
+/* ── SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
 
 test('SOS: one tap records the emergency with the trip, the driver and the car\'s position; pressing again is ONE incident; "I\'m safe" withdraws it', async () => {
   const redis = memoryRedis();
@@ -1076,7 +1076,7 @@ test('SOS: one tap records the emergency with the trip, the driver and the car\'
   const driver = await onlineDriver();
   const ride = await prisma.ride.create({ data: { riderId: user.id, driverId: driver.driverId, status: 'IN_PROGRESS', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
 
-  await tapButton(deps, who, 'ride_sos', '🆘 SOS');
+  await tapButton(deps, who, 'ride_sos', 'SOS');
   const alerts = () => prisma.safetyAlert.findMany({ where: { userId: user.id }, orderBy: { createdAt: 'asc' } });
   const [alert] = await alerts();
   assert.deepEqual([alert.kind, alert.status, alert.raisedByRole, alert.rideId, alert.counterpartUserId], ['SOS', 'OPEN', 'RIDER', ride.id, driver.userId]);
@@ -1088,7 +1088,7 @@ test('SOS: one tap records the emergency with the trip, the driver and the car\'
   assert.match(heard.body.text, /SOS received[\s\S]*your trip, your driver and your location[\s\S]*Call \*112\*/);
   assert.deepEqual(heard.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_sos_cancel', "I'm safe"]]);
 
-  await tapButton(deps, who, 'ride_sos', '🆘 SOS');                       // a frightened thumb
+  await tapButton(deps, who, 'ride_sos', 'SOS');                       // a frightened thumb
   assert.equal((await alerts()).length, 1, 'one emergency, not two');
   assert.match(textOf(last(sent)), /We already have your alert/);
 
@@ -1107,7 +1107,7 @@ test('SOS is never stopped by anything else the chat is doing — not even the p
   const user = await findRider(who);
   assert.equal(user.privacyConsent, 'PENDING');
 
-  await tapButton(deps, who, 'ride_sos', '🆘 SOS');
+  await tapButton(deps, who, 'ride_sos', 'SOS');
   const alert = await prisma.safetyAlert.findFirst({ where: { userId: user.id } });
   assert.ok(alert, 'the alert must get recorded');
   assert.deepEqual([alert.rideId, alert.lat], [null, null]);
@@ -1581,7 +1581,7 @@ test('TAP an offer with money in the wallet: fare held, ride confirmed — no "r
 
   assert.deepEqual(accepted().map((e) => [e.rideId, e.bidId, e.agreedFareNgn, e.paymentMethod]), [[rideId, bid.bidId, 2400, 'WALLET']]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2400, 'the fare is held');
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
   assert.match(textOf(last(sent)), /Ride confirmed & paid[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
   assert.equal(sent.some((m) => /reply \*pay\*/i.test(textOf(m))), false);
 
@@ -1664,7 +1664,7 @@ test('SHORT WALLET: the tap remembers the driver and sends ONE "Add money" butto
   await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
   assert.equal(await finish({ userId: user.id, amountNgn: 1000, newBalanceNgn: 2400 }), true, 'the plain "deposit received" is not sent on top');
   assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
   assert.equal(await bidState.getPendingAccept(redis, user.id), null);
 });
 
@@ -1812,7 +1812,7 @@ test('ONE unopened offers message at a time: more offers send nothing until the 
   assert.match(textOf(last(sent)), /\*3 drivers found\*/);
 });
 
-test('OFFERS FORM · Change my price: a box, "Bid updated ✅" — drivers are told, and the chat gets NOTHING', async () => {
+test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told, and the chat gets NOTHING', async () => {
   const { redis, sent, rideId, form, events } = await riderWithOffersForm(10_000);
   await bidState.addBid(redis, rideId, offerFrom(await onlineDriver(), 2400));
 
@@ -1898,7 +1898,7 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
   assert.deepEqual(events('RIDE_OFFER_ACCEPTED').map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2900]]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2900);
   await settle();
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', '🆘 SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
 
   const after = await form('INIT');
   assert.match(after.data.error, /driver is already confirmed/);
@@ -1979,7 +1979,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   // A bare greeting gets a greeting back, with the same Actions button under it.
   await say(deps, who, 'hello');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
-  assert.match(last(sent).interactive.body.text, /^Hey Test! 👋/);
+  assert.match(last(sent).interactive.body.text, /^Hey Test! Good to see you/);
   assert.doesNotMatch(last(sent).interactive.body.text, /Wallet|₦/);
   delete process.env.SUPPORT_CONTACT;
   await say(deps, who, 'menu');
@@ -2011,7 +2011,7 @@ test('HISTORY is the places they have been, newest first, each one repeatable �
   await tap(deps, who, `qa_hist:${newest.id}`, '22 Sep · ₦2,400');
   const choice = last(sent).interactive;
   assert.deepEqual(choice.action.buttons.map((b) => b.reply.id), [`qa_again:${newest.id}`, `qa_back:${newest.id}`]);
-  assert.match(choice.body.text, /📍 31 Emily[\s\S]*🔸 Sabo Market[\s\S]*🏁 7 Osaro/);
+  assert.match(choice.body.text, /Pickup: 31 Emily[\s\S]*Stop 1: Sabo Market[\s\S]*Destination: 7 Osaro/);
 
   await tapButton(deps, who, `qa_again:${newest.id}`, 'Repeat this ride');
   const card = last(sent).interactive;

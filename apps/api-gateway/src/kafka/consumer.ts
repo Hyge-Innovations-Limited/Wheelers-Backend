@@ -712,7 +712,7 @@ export async function handleRideEvent(
         eventType: 'PUSH_SEND',
         notificationId: randomUUID(),
         userId: event.riderId,
-        title: 'Driver found! 🚗',
+        title: 'Driver found!',
         body: `${event.driverName} is on the way — they'll be with you in ~${etaMin} min.`,
         data: { type: 'ride:matched', rideId: event.rideId },
         priority: 'high',

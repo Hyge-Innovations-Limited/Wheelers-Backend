@@ -64,12 +64,12 @@ line('pool size per service', `${poolPerService}  (connection_limit in DATABASE_
 line('worst-case demand', `${services.count} × ${poolPerService} = ${demand}`);
 if (demand > usable) {
   const safe = Math.max(2, Math.floor((usable * 0.9) / services.count));
-  console.log(`\n  ❌ OVER-SUBSCRIBED by ${demand - usable}. Under load, services will be refused connections`);
+  console.log(`\n OVER-SUBSCRIBED by ${demand - usable}. Under load, services will be refused connections`);
   console.log('     ("too many clients already") while the server still looks idle.');
   console.log(`     Fix: set connection_limit=${safe} in DATABASE_URL (${services.count} × ${safe} = ${services.count * safe} ≤ ${usable}),`);
   console.log(`     or raise max_connections in postgresql.conf, or put PgBouncer in front.`);
 } else {
-  console.log(`\n  ✅ fits, with ${usable - demand} connections to spare.`);
+  console.log(`\n fits, with ${usable - demand} connections to spare.`);
 }
 
 /* 2 ── pressure right now ────────────────────────────────────────────── */
@@ -87,9 +87,9 @@ const waiting = n((await one(`SELECT COUNT(*)::int AS c FROM pg_stat_activity WH
 console.log('\n2. PRESSURE RIGHT NOW');
 line('connections in use', `${inUse} of ${usable} (${Math.round((inUse / usable) * 100)}%)`);
 for (const r of activity.slice(0, 6)) line(`  ${r.app} · ${r.state ?? 'background'}`, r.count);
-line('queries waiting on a lock', waiting === 0 ? '0 ✅' : `${waiting} ⚠`);
-if (stuck.length === 0) line('transactions open > 30s', '0 ✅');
-else for (const s of stuck) console.log(`  ⚠ open ${s.seconds}s (${s.state}): ${s.query}`);
+line('queries waiting on a lock', waiting === 0 ? '0 (ok)' : `${waiting} (warning)`);
+if (stuck.length === 0) line('transactions open > 30s', '0 (ok)');
+else for (const s of stuck) console.log(`  WARNING: open ${s.seconds}s (${s.state}): ${s.query}`);
 
 /* 3 ── health ────────────────────────────────────────────────────────── */
 const db = await one(`
@@ -98,9 +98,9 @@ const db = await one(`
 const hitRate = n(db.blks_hit) + n(db.blks_read) === 0 ? 100 : (n(db.blks_hit) / (n(db.blks_hit) + n(db.blks_read))) * 100;
 
 console.log('\n3. HEALTH (since the last stats reset)');
-line('cache hit rate', `${hitRate.toFixed(2)}%  ${hitRate >= 99 ? '✅' : hitRate >= 95 ? '— fine' : '⚠ the working set no longer fits in memory'}`);
-line('deadlocks', `${n(db.deadlocks)} ${n(db.deadlocks) === 0 ? '✅' : '⚠'}`);
-line('queries that spilled to disk', `${n(db.temp_files)} ${n(db.temp_files) < 50 ? '✅' : '⚠ raise work_mem or add an index'}`);
+line('cache hit rate', `${hitRate.toFixed(2)}%  ${hitRate >= 99 ? '(ok)' : hitRate >= 95 ? '— fine' : 'WARNING: the working set no longer fits in memory'}`);
+line('deadlocks', `${n(db.deadlocks)} ${n(db.deadlocks) === 0 ? '(ok)' : '(warning)'}`);
+line('queries that spilled to disk', `${n(db.temp_files)} ${n(db.temp_files) < 50 ? '(ok)' : 'WARNING: raise work_mem or add an index'}`);
 line('rollbacks', `${n(db.xact_rollback)} of ${n(db.xact_commit) + n(db.xact_rollback)} transactions`);
 
 /* 4 ── tables ────────────────────────────────────────────────────────── */
@@ -117,9 +117,9 @@ const unindexed = await many(`
   WHERE n_live_tup > 20000 AND seq_scan > 1000 AND seq_scan > COALESCE(idx_scan, 0)
   ORDER BY seq_scan * n_live_tup DESC LIMIT 5`);
 if (unindexed.length === 0) {
-  console.log('\n  ✅ no large table is being read row-by-row.');
+  console.log('\n no large table is being read row-by-row.');
 } else {
-  console.log('\n  ⚠ large tables mostly read WITHOUT an index — these slow down as they grow:');
+  console.log('\n large tables mostly read WITHOUT an index — these slow down as they grow:');
   for (const t of unindexed) console.log(`     ${t.table}: ${n(t.rows).toLocaleString()} rows, ${n(t.seq_scans).toLocaleString()} full scans vs ${n(t.idx_scans).toLocaleString()} index reads`);
 }
 

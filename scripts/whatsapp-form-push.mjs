@@ -85,10 +85,10 @@ if (!uploaded.ok) { console.error('flow.json upload failed:', JSON.stringify(upl
 const problems = uploaded.body?.validation_errors ?? [];
 for (const problem of problems) console.error(`  validation ${problem.error_type ?? ''}: ${problem.message} (${problem.pointers?.map((p) => p.path).join(', ') ?? ''})`);
 if (problems.length > 0) { console.error('the flow JSON has validation errors — nothing was published'); process.exit(1); }
-console.log('flow.json uploaded ✅');
+console.log('flow.json uploaded');
 
 const attached = await api(`/${flowId}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint_uri: ENDPOINT_URI }) });
-console.log(attached.ok ? `endpoint set ✅  ${ENDPOINT_URI}` : `endpoint not set: ${attached.body?.error?.message ?? JSON.stringify(attached.body)}`);
+console.log(attached.ok ? `endpoint set${ENDPOINT_URI}` : `endpoint not set: ${attached.body?.error?.message ?? JSON.stringify(attached.body)}`);
 
 // Meta health-checks the endpoint on publish. A garbage POST answered 421 proves it is alive.
 process.stdout.write('waiting for the endpoint');
@@ -97,7 +97,7 @@ for (let i = 0; i < 24 && !alive; i++) {
   try { const probe = await fetch(ENDPOINT_URI, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); alive = probe.status === 421 || probe.status === 200; } catch { /* not up yet */ }
   if (!alive) { process.stdout.write('.'); await new Promise((r) => setTimeout(r, 5000)); }
 }
-console.log(alive ? ' alive ✅' : ' still down after 2 min — trying to publish anyway');
+console.log(alive ? ' alive' : ' still down after 2 min — trying to publish anyway');
 
 let published;
 for (let attempt = 1; attempt <= 4; attempt++) {
@@ -111,7 +111,7 @@ if (!published.ok) {
   console.error(`(is ${ENDPOINT_URI} reachable from outside, and is WHATSAPP_FLOW_PRIVATE_KEY set on the server?)`);
   process.exit(1);
 }
-console.log('published ✅');
+console.log('published');
 
 if (flowId !== before) {
   const raw = readFileSync(envPath, 'utf8');

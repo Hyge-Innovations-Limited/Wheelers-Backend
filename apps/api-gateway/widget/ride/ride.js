@@ -304,7 +304,7 @@
     var position = trip.driverPosition;
     if (position) {
       if (!carMarker) {
-        carMarker = L.marker([position.lat, position.lng], { icon: pin('pin-car', '🚗'), keyboard: false, zIndexOffset: 1000 }).addTo(map);
+        carMarker = L.marker([position.lat, position.lng], { icon: pin('pin-car', 'CAR'), keyboard: false, zIndexOffset: 1000 }).addTo(map);
         if (carMarker._icon) carMarker._icon.className += ' car-marker';
       } else {
         carMarker.setLatLng([position.lat, position.lng]);

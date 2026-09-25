@@ -189,7 +189,7 @@ if (measured.length === 0 || (!lastHealthy && measured.length === 1)) {
   const usable = dbWork ? peak * 0.7 : peak * 0.7 / 3;
   console.log('');
   if (!dbWork) {
-    console.log('⚠ NO DATABASE WORK WAS MEASURED (no --token). Real requests run queries and cost roughly 3× more,');
+    console.log('NO DATABASE WORK WAS MEASURED (no --token). Real requests run queries and cost roughly 3× more,');
     console.log('  so the planning figures below already divide by three. Pass --token=… to measure instead of guess.');
   }
   console.log(`Plan on ~${Math.round(usable)} req/s (70% of the ceiling${dbWork ? '' : ', ÷3 for database work'}) so there is headroom for spikes:`);

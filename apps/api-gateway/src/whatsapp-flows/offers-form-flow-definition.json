@@ -288,7 +288,7 @@
       "data": {
         "headline": {
           "type": "string",
-          "__example__": "Bid updated ✅"
+          "__example__": "Bid updated"
         },
         "note": {
           "type": "string",

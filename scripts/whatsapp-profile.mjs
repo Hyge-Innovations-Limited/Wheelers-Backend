@@ -56,7 +56,7 @@ const profile = await api(`/${PHONE_ID}/whatsapp_business_profile`, {
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({
     messaging_product: 'whatsapp',
-    about: 'Your ride, your price. 🚗',
+    about: 'Your ride, your price.',
     description:
       'Wheelers — ride-hailing on WhatsApp. Book solo or group rides, set your own fare, and pay your way. Type "hi" to start.',
     website: ['https://wheelersng.com'],
@@ -64,7 +64,7 @@ const profile = await api(`/${PHONE_ID}/whatsapp_business_profile`, {
   }),
 });
 console.log('\n── Business profile update ──');
-console.log(profile.ok ? '✅ profile updated' : `❌ ${JSON.stringify(profile.body)}`);
+console.log(profile.ok ? 'profile updated' : `${JSON.stringify(profile.body)}`);
 
 // ── 3. Display name request ────────────────────────────────────────
 const name = await api(`/${PHONE_ID}`, {
@@ -73,7 +73,7 @@ const name = await api(`/${PHONE_ID}`, {
   body: JSON.stringify({ new_display_name: 'Wheelers' }),
 });
 console.log('\n── Display name request ("Wheelers") ──');
-console.log(name.ok ? '✅ submitted — Meta will review (check name_status)' : `❌ ${JSON.stringify(name.body)}`);
+console.log(name.ok ? 'submitted — Meta will review (check name_status)' : `${JSON.stringify(name.body)}`);
 
 // ── 4. Profile photo (optional arg) ────────────────────────────────
 const photoPath = process.argv[2];
@@ -82,7 +82,7 @@ if (photoPath) {
   const app = await api('/app?fields=id');
   const appId = app.body?.id;
   if (!appId) {
-    console.log('\n❌ could not resolve app id for photo upload:', JSON.stringify(app.body));
+    console.log('\n could not resolve app id for photo upload:', JSON.stringify(app.body));
   } else {
     const bytes = readFileSync(resolve(photoPath));
     const sessionRes = await api(
@@ -91,7 +91,7 @@ if (photoPath) {
     );
     const sessionId = sessionRes.body?.id;
     if (!sessionId) {
-      console.log('\n❌ upload session failed:', JSON.stringify(sessionRes.body));
+      console.log('\n upload session failed:', JSON.stringify(sessionRes.body));
     } else {
       const uploadRes = await fetch(`${BASE}/${sessionId}`, {
         method: 'POST',
@@ -101,7 +101,7 @@ if (photoPath) {
       const uploaded = await uploadRes.json().catch(() => ({}));
       const handle = uploaded?.h;
       if (!handle) {
-        console.log('\n❌ photo upload failed:', JSON.stringify(uploaded));
+        console.log('\n photo upload failed:', JSON.stringify(uploaded));
       } else {
         const setPhoto = await api(`/${PHONE_ID}/whatsapp_business_profile`, {
           method: 'POST',
@@ -109,7 +109,7 @@ if (photoPath) {
           body: JSON.stringify({ messaging_product: 'whatsapp', profile_picture_handle: handle }),
         });
         console.log('\n── Profile photo ──');
-        console.log(setPhoto.ok ? '✅ photo set' : `❌ ${JSON.stringify(setPhoto.body)}`);
+        console.log(setPhoto.ok ? 'photo set' : `${JSON.stringify(setPhoto.body)}`);
       }
     }
   }

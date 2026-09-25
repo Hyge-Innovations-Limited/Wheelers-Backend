@@ -552,7 +552,7 @@
             "children": [
               {
                 "type": "TextBody",
-                "text": "Trip confirmed ✅ Now name your price. Drivers see it and reply with their own — you only pay when you accept one."
+                "text": "Trip confirmed. Now name your price. Drivers see it and reply with their own — you only pay when you accept one."
               },
               {
                 "type": "TextCaption",
@@ -597,7 +597,7 @@
       "data": {
         "headline": {
           "type": "string",
-          "__example__": "You have successfully bid ₦2,500 ✅"
+          "__example__": "You have successfully bid ₦2,500"
         },
         "note": {
           "type": "string",

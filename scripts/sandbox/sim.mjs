@@ -319,7 +319,7 @@ async function commandE2e() {
   await prisma.$disconnect();
 
   const failed = checks.filter((c) => !c.ok);
-  console.log(`\n${failed.length === 0 ? '✅ E2E PASSED' : '❌ E2E FAILED'} — ${checks.length - failed.length}/${checks.length} checks\n`);
+  console.log(`\n${failed.length === 0 ? 'E2E PASSED' : 'E2E FAILED'} — ${checks.length - failed.length}/${checks.length} checks\n`);
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
@@ -473,7 +473,7 @@ async function commandE2eWave1() {
   [R1, R2, D1, D2].forEach((a) => a.close());
   await prisma.$disconnect();
   const failed = checks.filter((c) => !c.ok);
-  console.log(`\n${failed.length === 0 ? '✅ WAVE-1 E2E PASSED' : '❌ WAVE-1 E2E FAILED'} — ${checks.length - failed.length}/${checks.length} checks\n`);
+  console.log(`\n${failed.length === 0 ? 'WAVE-1 E2E PASSED' : 'WAVE-1 E2E FAILED'} — ${checks.length - failed.length}/${checks.length} checks\n`);
   process.exit(failed.length === 0 ? 0 : 1);
 }
 

@@ -35,12 +35,12 @@ for (const w of wallets) {
     console.log(
       `  ${t.createdAt.toISOString().slice(0, 16)}  ${t.type.padEnd(18)} ${t.direction.padEnd(6)} ` +
       `${fmt(Math.abs(amt)).padStart(12)} → after ${fmt(after).padStart(12)}  ` +
-      `ref=${String(t.referenceId).slice(0, 24)}${chainOk ? '' : '  ⛓️BREAK'}${dupe ? '  🔁DUPE-REF' : ''}`,
+      `ref=${String(t.referenceId).slice(0, 24)}${chainOk ? '' : '  CHAIN-BREAK'}${dupe ? '  DUPE-REF' : ''}`,
     );
     running = after;
   }
   if (running !== null && Math.abs(running - n(w.balanceNgn)) > 0.01) {
-    console.log(`  ⚠ HEAD: history ends at ${fmt(running)} but wallet says ${fmt(n(w.balanceNgn))}`);
+    console.log(`HEAD: history ends at ${fmt(running)} but wallet says ${fmt(n(w.balanceNgn))}`);
   }
 }
 await prisma.$disconnect();

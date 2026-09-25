@@ -180,7 +180,7 @@ export async function handleEditTripFlow(body: FlowRequestBody, userId: string, 
     return editScreen(Object.fromEntries(FIELDS.map((field) => [field, places[field]?.address ?? ''])), '', trip);
   }
 
-  if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching 🔍' : 'This trip has expired ⏳', deadEnd ?? EXPIRED_NOTE);
+  if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching' : 'This trip has expired', deadEnd ?? EXPIRED_NOTE);
   if (action === 'confirm_trip') return confirm(userId, trip, deps);
   if (action === 'set_price') return setPrice(data, userId, trip, deps);
   if (action === 'pick_places') return pickPlaces(data, userId, trip, deps);
@@ -207,7 +207,7 @@ async function setPrice(data: Record<string, unknown>, userId: string, trip: Pen
     if (result.code === 'PUBLISH_FAILED') return priceScreen(trip, 'Could not start the search just now. Tap Find drivers again.');
     // ALREADY_PUBLISHING: a double tap — the first one is out.
   }
-  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()} ✅`, 'Drivers see your price now. Their offers will come to your chat — you only pay when you accept one.');
+  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()}`, 'Drivers see your price now. Their offers will come to your chat — you only pay when you accept one.');
 }
 
 async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
@@ -246,7 +246,7 @@ async function pickPlaces(data: Record<string, unknown>, userId: string, trip: P
   const raw = await deps.redisClient.get(draftKey(userId)).catch(() => null);
   let draft: Draft | null = null;
   try { draft = raw ? (JSON.parse(raw) as Draft) : null; } catch { draft = null; }
-  if (!draft) return doneScreen('That took too long ⏳', 'Open the form again from the chat and make your change once more.');
+  if (!draft) return doneScreen('That took too long', 'Open the form again from the chat and make your change once more.');
 
   for (const field of FIELDS) {
     const options = draft.options[field];

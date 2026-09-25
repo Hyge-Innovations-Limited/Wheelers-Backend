@@ -90,7 +90,7 @@ function verifiedDeposit(reference, amountNgn, providerFeeNgn, extra = {}) {
 }
 
 test.before(async () => {
-  await prisma.user.create({ data: { id: userId, privyDid: `whatsapp:+234${accountNumber}`, role: 'RIDER', name: 'Olá🌸' } });
+  await prisma.user.create({ data: { id: userId, privyDid: `whatsapp:+234${accountNumber}`, role: 'RIDER', name: 'Olá\u{1F338}' } });
   walletId = (await prisma.wallet.create({ data: { userId } })).id;
   await prisma.virtualAccount.create({
     data: {

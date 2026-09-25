@@ -1,7 +1,7 @@
 /**
  * Banks only accept plain letters in an account holder's name — emoji, symbols
  * and decorative Unicode fonts are rejected or, worse, accepted and then
- * mangled by the bank network ("Olá🌸" became "OlÃƒÂ¡Ã‚Â¸ User"). WhatsApp
+ * mangled by the bank network ("Olá" plus a flower emoji became "OlÃƒÂ¡Ã‚Â¸ User"). WhatsApp
  * profile names carry all three, and a bad name means no usable deposit
  * account.
  *

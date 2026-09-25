@@ -432,7 +432,7 @@ test('one offer is an "Accept ₦X" button; several are a "Choose a driver" list
   assert.deepEqual(rows.map((r) => r.title), ['₦6,100 · Aisha', '₦6,400 · Chinedu', '₦6,800 · Babatunde']);
   assert.ok(rows.every((r) => r.title.length <= 24 && r.description.length <= 72), "WhatsApp's row limits");
   assert.deepEqual(list.action.sections[1].rows.map((r) => r.title), ['Change my price', 'Cancel search']);
-  assert.match(list.body.text, /^🔔 Aisha Bello joined at ₦6,100\n\n🚗 \*3 drivers have made offers\*/);
+  assert.match(list.body.text, /^Aisha Bello joined at ₦6,100\n\n\*3 drivers have made offers\*/);
   assert.match(list.body.text, /\*₦6,100\* — Aisha Bello[\s\S]*\*₦6,400\* — Chinedu Okafor/);
   for (const message of [single, list]) assert.doesNotMatch(message.body.text, /reply with|reply \*?\d/i);
 

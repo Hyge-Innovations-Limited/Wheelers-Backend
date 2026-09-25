@@ -6,7 +6,7 @@
  * afterwards: anyone without a LIVE account (never had one, or only has a
  * retired Rubies row from Pouch) gets a Paystack customer and a dedicated
  * account number. Bank-facing names are the letters-only version of the
- * display name, so "Olá🌸" is issued as "Ola User" — never mangled again.
+ * display name, so "Olá" with an emoji after it is issued as "Ola User" — never mangled again.
  *
  *   node scripts/run-with-env.cjs node scripts/provision-deposit-accounts.mjs            → dry run
  *   node scripts/run-with-env.cjs node scripts/provision-deposit-accounts.mjs --confirm  → provision

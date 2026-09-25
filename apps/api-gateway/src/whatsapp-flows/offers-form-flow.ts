@@ -24,7 +24,7 @@ import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier
  *   OFFERS         one list: every driver's offer, then Change my price,
  *                  Decline all, Cancel search                     [Continue]
  *     a driver       → the fare is held, the ride confirmed        → DONE
- *     Change price   → CHANGE_PRICE → "Bid updated ✅"             → DONE   (no chat message)
+ *     Change price   → CHANGE_PRICE → "Bid updated"             → DONE   (no chat message)
  *     Decline all    → offers dropped, the search carries on       → DONE   (no chat message)
  *     Cancel search  → CANCEL_SEARCH (why?) → cancelled            → DONE   (no chat message)
  *
@@ -156,7 +156,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   }
 
   if (!rideId) return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
-  if (confirmed) return done('Your driver is confirmed ✅', 'Their details are in the chat.');
+  if (confirmed) return done('Your driver is confirmed', 'Their details are in the chat.');
   const service = { redisClient: deps.redisClient, publisher: deps.publisher };
 
   if (action === 'update_price') {
@@ -168,14 +168,14 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
       return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
     }
     // No chat message: "Bid updated" is said HERE, and the next thing the chat hears is a driver answering it.
-    return done(`Bid updated to ${naira(result.offerNgn)} ✅`, 'Every driver looking at your request can see it. Their offers will come to your chat.');
+    return done(`Bid updated to ${naira(result.offerNgn)}`, 'Every driver looking at your request can see it. Their offers will come to your chat.');
   }
 
   if (action === 'cancel_search') {
     const reason = CANCEL_REASONS[String(data['reason'] ?? '')];
     if (!reason) return cancelScreen('Pick a reason to continue.');
     await cancelWhatsappRide(service, userId, rideId, reason);
-    return done('Search cancelled', 'Nothing was charged. Message Wheelers whenever you need a ride. 🚗');
+    return done('Search cancelled', 'Nothing was charged. Message Wheelers whenever you need a ride.');
   }
 
   const choice = String(data['choice'] ?? '');
@@ -202,7 +202,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (result.ok) {
     // Not awaited: the driver's photos take seconds to send, and WhatsApp cuts a form's request off at ~10.
     void deps.onRideConfirmed?.(userId, result.ride).catch((error) => console.error('[offers-form] ride confirmed but the chat was not told', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return done('Ride confirmed ✅', `${bid.driverName} is on the way. Their photo, car and plate are in your chat — with a button to track the trip live.`);
+    return done('Ride confirmed', `${bid.driverName} is on the way. Their photo, car and plate are in your chat — with a button to track the trip live.`);
   }
   switch (result.code) {
     case 'WALLET_SHORT':
@@ -214,7 +214,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     case 'DRIVER_TAKEN':
       return offersScreen(deps, rideId, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`);
     case 'ALREADY_CONFIRMING':
-      return done('One moment ⏳', `${bid.driverName} is being confirmed — check your chat.`);
+      return done('One moment', `${bid.driverName} is being confirmed — check your chat.`);
     case 'HOLD_FAILED':
       return offersScreen(deps, rideId, 'Could not hold the fare in your wallet just now — nothing was charged. Try again.');
     case 'CONFIRM_FAILED':

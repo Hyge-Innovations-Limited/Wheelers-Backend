@@ -20,7 +20,7 @@ test('test keys are detected, and force the test bank', { skip }, () => {
 });
 
 test('an emoji-named user gets a customer and one stable account number', { skip }, async () => {
-  const { firstName, lastName } = bankNameParts('Olá🌸');
+  const { firstName, lastName } = bankNameParts('Olá\u{1F338}');
   assert.deepEqual({ firstName, lastName }, { firstName: 'Ola', lastName: 'User' });
 
   const customer = await payments.createCustomer({ customerReference: userId, firstName, lastName, phoneNumber: '+2348012345678' });

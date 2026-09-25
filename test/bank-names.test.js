@@ -14,9 +14,9 @@ test('plain names split into first/last unchanged', () => {
 });
 
 test('emoji are stripped, the letters survive', () => {
-  assert.deepEqual(bankNameParts('Timi 🔥'), { firstName: 'Timi', lastName: 'User' });
-  assert.deepEqual(bankNameParts('✨Blessing✨ Okafor💃🏾'), { firstName: 'Blessing', lastName: 'Okafor' });
-  assert.deepEqual(bankNameParts('Timi🔥Olowu'), { firstName: 'Timi', lastName: 'Olowu' });
+  assert.deepEqual(bankNameParts('Timi \u{1F525}'), { firstName: 'Timi', lastName: 'User' });
+  assert.deepEqual(bankNameParts('\u2728Blessing\u2728 Okafor\u{1F483}\u{1F3FE}'), { firstName: 'Blessing', lastName: 'Okafor' });
+  assert.deepEqual(bankNameParts('Timi\u{1F525}Olowu'), { firstName: 'Timi', lastName: 'Olowu' });
 });
 
 test('decorative unicode fonts and accents fold to ASCII', () => {
@@ -26,7 +26,7 @@ test('decorative unicode fonts and accents fold to ASCII', () => {
 });
 
 test('nothing usable falls back to the default', () => {
-  assert.deepEqual(bankNameParts('🔥🔥🔥'), { firstName: 'Wheelers', lastName: 'User' });
+  assert.deepEqual(bankNameParts('\u{1F525}\u{1F525}\u{1F525}'), { firstName: 'Wheelers', lastName: 'User' });
   assert.deepEqual(bankNameParts(''), { firstName: 'Wheelers', lastName: 'User' });
   assert.deepEqual(bankNameParts(null), { firstName: 'Wheelers', lastName: 'User' });
   assert.deepEqual(bankNameParts(undefined, { firstName: 'Wheelers', lastName: 'Driver' }), {

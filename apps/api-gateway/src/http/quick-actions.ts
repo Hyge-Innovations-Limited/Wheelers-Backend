@@ -102,8 +102,8 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
     // A greeting is answered like one. The balance is not here: nobody said
     // "wallet", and a rider saying hello does not need to be told their money.
     body: { text: input.greeting
-      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! 👋 Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
-      : `Here is everything I can do. 👇` },
+      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
+      : `Here is everything I can do.` },
     action: {
       button: 'Quick Actions',
       sections: [
@@ -126,7 +126,7 @@ export function buildHistoryList(trips: PastTrip[]): Record<string, unknown> | n
   const day = (when: Date) => when.toLocaleDateString('en-NG', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' });
   return {
     type: 'list',
-    body: { text: `🕘 *Your recent rides*\n\nPick one to book it again — the same way, or back the other way.` },
+    body: { text: `*Your recent rides*\n\nPick one to book it again — the same way, or back the other way.` },
     action: {
       button: 'Choose a ride',
       sections: [{
@@ -145,7 +145,7 @@ export function buildHistoryList(trips: PastTrip[]): Record<string, unknown> | n
 export function buildRepeatButtons(trip: PastTrip, headline: string): Record<string, unknown> {
   return {
     type: 'button',
-    body: { text: `${headline}\n\n📍 ${trip.pickup.address}\n${trip.stops.map((stop) => `🔸 ${stop.address}\n`).join('')}🏁 ${trip.destination.address}` },
+    body: { text: `${headline}\n\nPickup: ${trip.pickup.address}\n${trip.stops.map((stop, index) => `Stop ${index + 1}: ${stop.address}\n`).join('')}Destination: ${trip.destination.address}` },
     action: {
       buttons: [
         { type: 'reply', reply: { id: `qa_again:${trip.rideId}`, title: 'Repeat this ride' } },

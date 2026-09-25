@@ -110,11 +110,11 @@ for (const [label, value] of [
   ['deposit fee', `₦${file.DEPOSIT_FEE_NGN || 30}${file.DEPOSIT_FEE_NGN ? '' : ' (default)'}, bank charge paid by ${file.DEPOSIT_PROVIDER_FEE_PAID_BY || 'user'}`],
   ['AI model', file.GEMINI_API_KEY
     ? `Gemini ${file.GEMINI_MODEL || 'gemini-3.8-flash'} · intent ${file.GEMINI_INTENT_MODEL || 'gemini-3.5-flash-lite'} — backup: ${file.GROQ_API_KEY ? `Groq ${file.GROQ_MODEL || 'openai/gpt-oss-120b'}` : 'NONE'}`
-    : `Groq only: ${file.GROQ_MODEL || 'openai/gpt-oss-120b'} · intent ${file.GROQ_INTENT_MODEL ?? 'openai/gpt-oss-20b'}  ⚠ GEMINI_API_KEY is not set — the free Groq tier allows ~8 intent reads a minute`],
+    : `Groq only: ${file.GROQ_MODEL || 'openai/gpt-oss-120b'} · intent ${file.GROQ_INTENT_MODEL ?? 'openai/gpt-oss-20b'}GEMINI_API_KEY is not set — the free Groq tier allows ~8 intent reads a minute`],
 ]) console.log(`  ${label.padEnd(32)} ${value}`);
 
 console.log('');
-for (const w of warnings) console.log(`  ⚠ ${w}`);
+for (const w of warnings) console.log(`${w}`);
 if (problems.length) {
   console.log('');
   for (const p of problems) console.log(`  ✗ ${p}`);

@@ -105,7 +105,7 @@ if (reportValidation(upload.body) > 0) {
   console.error('flow JSON has validation errors — fix before publishing');
   process.exit(1);
 }
-console.log('flow.json uploaded ✅');
+console.log('flow.json uploaded');
 
 // 2) Make sure the endpoint is attached (required before publish).
 const meta = await api(`/${targetId}`, {
@@ -116,7 +116,7 @@ const meta = await api(`/${targetId}`, {
 if (!meta.ok) {
   console.log('endpoint_uri set skipped:', meta.body?.error?.message ?? meta.body);
 } else {
-  console.log('endpoint_uri set ✅');
+  console.log('endpoint_uri set');
 }
 
 // 3) Wait for the endpoint to answer (a pm2 restart right before this
@@ -138,7 +138,7 @@ for (let i = 0; i < 24 && !ready; i++) {
     await new Promise((r) => setTimeout(r, 5000));
   }
 }
-console.log(ready ? ' alive ✅' : ' still down after 2 min — publishing anyway');
+console.log(ready ? ' alive' : ' still down after 2 min — publishing anyway');
 
 // 4) Publish — retry, Meta sometimes needs a couple of health probes.
 let published;
@@ -153,7 +153,7 @@ if (!published.ok) {
   console.error('(is https://app.wheelersng.com/webhooks/whatsapp-flow reachable from outside?)');
   process.exit(1);
 }
-console.log('published ✅');
+console.log('published');
 
 // 4) If we cloned, rewire .env so the button opens the new flow.
 if (targetId !== FLOW_ID) {
@@ -193,14 +193,14 @@ if (reportValidation(offersUpload.body) > 0) {
   console.error('offers flow JSON has validation errors');
   process.exit(1);
 }
-console.log('offers flow.json uploaded ✅');
+console.log('offers flow.json uploaded');
 
 const offersMeta = await api(`/${offersId}`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ endpoint_uri: ENDPOINT_URI }),
 });
-if (offersMeta.ok) console.log('offers endpoint_uri set ✅');
+if (offersMeta.ok) console.log('offers endpoint_uri set');
 
 let offersPublished;
 for (let attempt = 1; attempt <= 4; attempt++) {
@@ -213,4 +213,4 @@ if (!offersPublished.ok) {
   console.error('offers publish failed:', JSON.stringify(offersPublished.body));
   process.exit(1);
 }
-console.log('offers flow published ✅');
+console.log('offers flow published');

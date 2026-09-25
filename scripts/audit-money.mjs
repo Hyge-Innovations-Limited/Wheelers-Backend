@@ -162,7 +162,7 @@ console.log(`REAL cash-in (deposits): ${fmt(cashIn)}`);
 console.log(`REAL cash-out (withdrawals debited): ${fmt(cashOutSettled)}`);
 console.log(`REAL withdrawals SETTLED: ${settled._count} totalling ${fmt(n(settled._sum.requestedAmountNgn))}`);
 if (stuck.length) {
-  console.log(`⚠ in-flight/stuck withdrawals: ${stuck.length}`);
+  console.log(`in-flight/stuck withdrawals: ${stuck.length}`);
   for (const s of stuck) console.log(`   ${s.status} ${fmt(n(s.requestedAmountNgn))} user ${s.userId.slice(0,8)} since ${s.createdAt.toISOString()}`);
 }
 if (settlementNgn !== null) {
@@ -177,24 +177,24 @@ if (settlementNgn !== null) {
     console.log(`  ├ transfer balance:      ${fmt(transferBalanceNgn)}   ← the ONLY money that can pay a withdrawal right now`);
     console.log(`  └ pending settlement:    ${fmt(pendingSettlementNgn)}   ← deposits Paystack has received but not yet settled`);
     if (transferBalanceNgn < liabilitiesReal) {
-      console.log(`⚠ WITHDRAWALS WILL BE REFUSED: users hold ${fmt(liabilitiesReal)} but only ${fmt(transferBalanceNgn)} is in the transfer balance.`);
+      console.log(`WITHDRAWALS WILL BE REFUSED: users hold ${fmt(liabilitiesReal)} but only ${fmt(transferBalanceNgn)} is in the transfer balance.`);
       console.log('  Top up the Paystack balance (dashboard → Transfers → Top up), and ask Paystack to settle into your balance instead of your bank.');
     }
   }
   console.log(Math.abs(ledgerVsCash) < 0.01
-    ? '✅ BOOKS MATCH CASH: users + platform equals the provider balance exactly'
-    : `⚠ books differ from cash by ${fmt(ledgerVsCash)} (ledger − cash)`);
+    ? 'BOOKS MATCH CASH: users + platform equals the provider balance exactly'
+    : `books differ from cash by ${fmt(ledgerVsCash)} (ledger − cash)`);
   console.log(gap >= 0
-    ? `✅ SOLVENT: cash covers real-user liabilities with ${fmt(gap)} platform margin`
-    : `❌ SHORTFALL: real-user liabilities exceed cash by ${fmt(-gap)} — that money is promised but not backed`);
+    ? `SOLVENT: cash covers real-user liabilities with ${fmt(gap)} platform margin`
+    : `SHORTFALL: real-user liabilities exceed cash by ${fmt(-gap)} — that money is promised but not backed`);
 } else {
   console.log('(pass the settlement balance as an argument for the solvency verdict)');
 }
 console.log('──────────────────────────────────────────');
 if (problems.length === 0) {
-  console.log('✅ every wallet\'s history replays cleanly; no drift, no orphaned locks');
+  console.log('every wallet\'s history replays cleanly; no drift, no orphaned locks');
 } else {
-  console.log(`❌ ${problems.length} integrity problem(s):`);
+  console.log(`${problems.length} integrity problem(s):`);
   for (const p of problems) console.log('  ' + p);
 }
 await prisma.$disconnect();

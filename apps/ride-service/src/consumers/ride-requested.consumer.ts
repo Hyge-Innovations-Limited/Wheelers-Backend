@@ -248,7 +248,7 @@ export function createRideRequestedConsumer(params: {
 
     // An offer is on the table: give the rider a decision window instead of
     // the 90 s broadcast timeout. Clearing without re-arming left closure to
-    // the stale sweep, which fired 2–3 minutes after the ⏳ the driver saw.
+    // the stale sweep, which fired 2–3 minutes after the waiting indicator the driver saw.
     if (pending.timeout) {
       clearTimeout(pending.timeout);
       pending.timeout = null;

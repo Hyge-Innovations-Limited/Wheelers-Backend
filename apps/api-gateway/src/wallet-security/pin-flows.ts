@@ -158,8 +158,8 @@ export async function completePinReset(
   const state = await walletSecurityClient.getState(userId);
   if (state.phone && deps.notifyUser) {
     const message = verifiedByEmail
-      ? '🔐 Your Wheelers wallet PIN was just changed.\n\nIf this was not you, reply *FREEZE* right now to pause withdrawals.'
-      : '🔐 Your Wheelers wallet PIN was just reset.\n\nFor your safety, withdrawals are paused for 24 hours. Deposits and rides work as normal.\n\nIf this was not you, reply *FREEZE* right now and we will keep withdrawals locked.';
+      ? 'Your Wheelers wallet PIN was just changed.\n\nIf this was not you, reply *FREEZE* right now to pause withdrawals.'
+      : 'Your Wheelers wallet PIN was just reset.\n\nFor your safety, withdrawals are paused for 24 hours. Deposits and rides work as normal.\n\nIf this was not you, reply *FREEZE* right now and we will keep withdrawals locked.';
     void deps.notifyUser(state.phone, message).catch(() => {});
   }
   return {

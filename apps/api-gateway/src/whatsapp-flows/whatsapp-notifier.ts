@@ -65,14 +65,14 @@ export function buildOffersMessage(
 ): Record<string, unknown> | null {
   const offers = sortOffers(bids);
   if (offers.length === 0) return null;
-  const news = changes && changes.length > 0 ? `🔔 ${changes.join('\n🔔 ')}\n\n` : '';
+  const news = changes && changes.length > 0 ? `${changes.join('\n')}\n\n` : '';
 
   if (offers.length === 1) {
     const bid = offers[0]!;
     return {
       type: 'button',
       body: {
-        text: `${news}🚗 *${bid.driverName}* offers *₦${bid.counterOfferNgn.toLocaleString()}*\n${offerFacts(bid)}\n\nYour price: ₦${riderOfferNgn.toLocaleString()}`.slice(0, 1024),
+        text: `${news}*${bid.driverName}* offers *₦${bid.counterOfferNgn.toLocaleString()}*\n${offerFacts(bid)}\n\nYour price: ₦${riderOfferNgn.toLocaleString()}`.slice(0, 1024),
       },
       action: {
         buttons: [
@@ -91,7 +91,7 @@ export function buildOffersMessage(
     type: 'list',
     body: {
       text: [
-        `${news}🚗 *${offers.length} drivers have made offers* · your price ₦${riderOfferNgn.toLocaleString()}`,
+        `${news}*${offers.length} drivers have made offers* · your price ₦${riderOfferNgn.toLocaleString()}`,
         '',
         lines.join('\n\n'),
         ...(hidden > 0 ? ['', `…and ${hidden} more at higher prices.`] : []),
@@ -153,7 +153,7 @@ export async function sendOffersInChat(
         type: 'flow',
         body: {
           text: [
-            `🚗 *${bids.length === 1 ? '1 driver found' : `${bids.length} drivers found`}* for your ₦${riderOfferNgn.toLocaleString()} offer.`,
+            `*${bids.length === 1 ? '1 driver found' : `${bids.length} drivers found`}* for your ₦${riderOfferNgn.toLocaleString()} offer.`,
             '',
             'Tap below to see who — accept one, decline them all, change your price or cancel. More drivers may have answered by the time you open it.',
           ].join('\n'),
@@ -291,8 +291,8 @@ function formatBidList(
   // An update reads as a change to one conversation, not a fresh fanfare —
   // "1 driver found!" four times about the same man read as spam.
   const header = changes && changes.length > 0
-    ? `🔔 *Offer update*\n${changes.map((c) => `• ${c}`).join('\n')}\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`
-    : `🚗 *${count} driver offer${count === 1 ? '' : 's'}*\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`;
+    ? `*Offer update*\n${changes.map((c) => `• ${c}`).join('\n')}\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`
+    : `*${count} driver offer${count === 1 ? '' : 's'}*\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`;
 
   const lines = bids.map((bid, i) => {
     const num = i + 1;
@@ -338,8 +338,8 @@ export async function sendFlowOffersMessage(
   const count = bids.length;
   const body =
     count > 0
-      ? `🚗 ${count} driver offer${count === 1 ? '' : 's'} on your ₦${meta.offerNgn.toLocaleString()} request!\nLowest: ₦${Math.min(...bids.map((b) => b.counterOfferNgn)).toLocaleString()}. Tap below to view and accept.`
-      : `🔎 We're finding drivers for your ₦${meta.offerNgn.toLocaleString()} request!\nOffers land right here — tap below anytime to check them.`;
+      ? `${count} driver offer${count === 1 ? '' : 's'} on your ₦${meta.offerNgn.toLocaleString()} request!\nLowest: ₦${Math.min(...bids.map((b) => b.counterOfferNgn)).toLocaleString()}. Tap below to view and accept.`
+      : `We're finding drivers for your ₦${meta.offerNgn.toLocaleString()} request!\nOffers land right here — tap below anytime to check them.`;
 
   if (!META_FLOWS_ENABLED || !deps.offersFlowId || !deps.flowTokenSecret) {
     await sendMetaWhatsappMessage(deps, to, body);
@@ -361,7 +361,7 @@ export async function sendFlowOffersMessage(
       type: 'interactive',
       interactive: {
         type: 'flow',
-        header: { type: 'text', text: 'Driver offers 🚗' },
+        header: { type: 'text', text: 'Driver offers' },
         body: { text: body },
         footer: { text: 'Wheelers' },
         action: {
@@ -415,7 +415,7 @@ export async function sendRideMatchedNotification(
   const etaMin = Math.ceil(etaSeconds / 60);
   const fees = calculateRideFees(fareNgn);
   const msg = [
-    `✅ *Ride confirmed!*`,
+    `*Ride confirmed!*`,
     ``,
     `Driver: *${driverName}*`,
     `Vehicle: ${vehicleModel} (${vehiclePlate})`,
@@ -423,7 +423,7 @@ export async function sendRideMatchedNotification(
     `Fare: ₦${fees.totalNgn.toLocaleString()}`,
     ...(formatTappablePhone(driverPhone) ? [`Call your driver: ${formatTappablePhone(driverPhone)}`] : []),
     ``,
-    `🚗 ${driverName} is on the way — they'll be with you in ~${etaMin} min.`,
+    `${driverName} is on the way — they'll be with you in ~${etaMin} min.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -448,7 +448,7 @@ export async function sendDriverArrivedNotification(
     : '';
   const call = formatTappablePhone(details?.driverPhone);
   const text = [
-    `✅ *${details?.driverName ?? 'Your driver'} has arrived*${car}.`,
+    `*${details?.driverName ?? 'Your driver'} has arrived*${car}.`,
     ...(call ? [``, `Can't see them? Call: ${call}`] : []),
   ].join('\n');
 
@@ -486,7 +486,7 @@ export async function sendRideStartedNotification(
   phone: string,
 ): Promise<void> {
   await sendMetaWhatsappMessage(deps, phone, [
-    `🚗 *Trip started*`,
+    `*Trip started*`,
     ``,
     `Sit back and stay safe. We'll send your receipt when you arrive.`,
   ].join('\n'));
@@ -505,13 +505,13 @@ async function sendRideCompletedNotification(
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
-    `🏁 *Trip complete!*`,
+    `*Trip complete!*`,
     ``,
     `Distance: ${distanceKm.toFixed(1)} km`,
     `Fare: ₦${fees.totalNgn.toLocaleString()} — paid from your wallet`,
     ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
-    `How was your driver? Reply *1–5* to rate them ⭐`,
+    `How was your driver? Reply *1–5* to rate them`,
   ].join('\n');
 
   // The rating stays a typed digit: a message has three buttons at most, and
@@ -561,17 +561,17 @@ export async function sendRideCancelledNotification(
         ? 'This ride was cancelled.'
         : 'Your ride has been cancelled.';
 
-  const lines = [`❌ ${who}`];
+  const lines = [`${who}`];
   if (details.refundedNgn && details.refundedNgn > 0) {
     lines.push(
       '',
-      `💰 Your ₦${details.refundedNgn.toLocaleString()} is back in your wallet` +
+      `Your ₦${details.refundedNgn.toLocaleString()} is back in your wallet` +
         (details.balanceNgn !== undefined
           ? ` — balance: ₦${details.balanceNgn.toLocaleString()}.`
           : '.'),
     );
   }
-  lines.push('', 'Book another ride anytime — just send your route. 🚗');
+  lines.push('', 'Book another ride anytime — just send your route.');
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 
@@ -584,10 +584,10 @@ export async function sendOfferWithdrawnNotification(
 ): Promise<void> {
   const who = driverName ? `*${driverName}*` : 'One driver';
   const next = remaining > 0
-    ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table 👇`
+    ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table`
     : 'Other offers will land here as drivers respond.';
   await sendMetaWhatsappMessage(deps, phone, [
-    `ℹ️ ${who} is no longer available — their offer has been removed.`,
+    `${who} is no longer available — their offer has been removed.`,
     ``,
     next,
   ].join('\n'));
@@ -602,8 +602,8 @@ export async function sendBidTimeoutNotification(
   // forward, in order of what actually works.
   const lines = [
     offerNgn
-      ? `😕 No driver took ₦${offerNgn.toLocaleString()} this time.`
-      : '😕 No driver accepted this request.',
+      ? `No driver took ₦${offerNgn.toLocaleString()} this time.`
+      : 'No driver accepted this request.',
     '',
     'Two ways forward:',
     `• Reply *search again* — same route, fresh search`,
@@ -623,11 +623,11 @@ export async function sendRiderPaidNotification(
     deps,
     phone,
     [
-      `✅ *Payment received*`,
+      `*Payment received*`,
       ``,
       `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
       ``,
-      `Your driver has been told — they are on the way. 🚗`,
+      `Your driver has been told — they are on the way.`,
     ].join('\n'),
   );
 }
@@ -639,12 +639,12 @@ export async function sendDepositConfirmation(
   newBalanceNgn: number,
 ): Promise<void> {
   const msg = [
-    `✅ *Deposit received*`,
+    `*Deposit received*`,
     ``,
     `Amount: ₦${amountNgn.toLocaleString()}`,
     `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
     ``,
-    `Your wallet is ready — book a ride anytime. 🚗`,
+    `Your wallet is ready — book a ride anytime.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -660,15 +660,15 @@ export async function sendSearchingNotification(
 ): Promise<void> {
   const payLabel = paymentMethod === 'WALLET' ? 'Wallet' : 'Cash';
   const msg = [
-    `🔍 *Looking for drivers!*`,
+    `*Looking for drivers!*`,
     ``,
-    `📍 ${pickupAddress}`,
-    `📍 ${destAddress}`,
+    `From: ${pickupAddress}`,
+    `To: ${destAddress}`,
     ``,
     `Offer: ₦${offerNgn.toLocaleString()}`,
     `Payment: ${payLabel}`,
     ``,
-    `I'll message you when drivers respond! 🚗`,
+    `I'll message you when drivers respond!`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -683,12 +683,12 @@ export async function sendGroupRideGroupedNotification(
 ): Promise<void> {
   const durationMin = Math.max(1, Math.ceil(totalDurationSeconds / 60));
   const msg = [
-    `🎉 *Group found!*`,
+    `*Group found!*`,
     ``,
     `You've been matched with ${riderCount - 1} other rider${riderCount - 1 === 1 ? '' : 's'} heading your way.`,
     `Shared route: ${totalDistanceKm.toFixed(1)} km · ~${durationMin} min`,
     ``,
-    `We're finding a driver for your group now — I'll message you the moment one accepts. 🚗`,
+    `We're finding a driver for your group now — I'll message you the moment one accepts.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -705,13 +705,13 @@ export async function sendGroupRideDriverAssignedNotification(
 ): Promise<void> {
   const etaMin = Math.max(1, Math.ceil(etaSeconds / 60));
   const msg = [
-    `✅ *Driver found for your group ride!*`,
+    `*Driver found for your group ride!*`,
     ``,
     `Driver: *${driverName}*`,
     `Vehicle: ${vehicleModel}${vehiclePlate ? ` (${vehiclePlate})` : ''}`,
     `Rating: ${driverRating.toFixed(1)}★`,
     ``,
-    `🚗 ${driverName} is on the way — they'll reach the first pickup in ~${etaMin} min.`,
+    `${driverName} is on the way — they'll reach the first pickup in ~${etaMin} min.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -723,7 +723,7 @@ export async function sendGroupRideDispatchNotification(
   seatOfferNgn: number,
 ): Promise<void> {
   const msg = [
-    `🚗 *Drivers are seeing your group ride now!*`,
+    `*Drivers are seeing your group ride now!*`,
     ``,
     `Your seat is offered at *₦${seatOfferNgn.toLocaleString()}* — driver offers for YOUR seat will land here as a numbered list.`,
     ``,
@@ -739,7 +739,7 @@ export async function sendGroupRideWaitNudge(
   waitedMinutes: number,
 ): Promise<void> {
   const msg = [
-    `⏳ *Still looking for co-riders* — it's been ~${waitedMinutes} minutes with no group yet.`,
+    `*Still looking for co-riders* — it's been ~${waitedMinutes} minutes with no group yet.`,
     ``,
     `Reply:`,
     `• *normal* — book this trip as a normal ride right now`,

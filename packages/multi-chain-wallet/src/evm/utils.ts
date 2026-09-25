@@ -811,7 +811,7 @@ export async function performSwap(params: {
         console.log('routeSummary.swaps exists:', !!routeSummary.swaps);
 
         // Safe logging that handles undefined swaps
-        console.log('✅ Best route found:', {
+        console.log('Best route found:', {
             tokenIn: routeSummary.tokenIn,
             tokenOut: routeSummary.tokenOut,
             amountIn: routeSummary.amountIn,
@@ -847,7 +847,7 @@ export async function performSwap(params: {
 
         const { data: encodedData, gas, routerAddress: finalRouterAddress } = buildResponse.data;
 
-        console.log('✅ Transaction built successfully:', {
+        console.log('Transaction built successfully:', {
             to: finalRouterAddress,
             dataLength: encodedData.length,
             gasEstimate: gas,
@@ -864,7 +864,7 @@ export async function performSwap(params: {
         };
 
     } catch (error) {
-        console.error('❌ KyberSwap aggregation failed:', error);
+        console.error('KyberSwap aggregation failed:', error);
         
         // More detailed error logging
         if (error instanceof Error) {
