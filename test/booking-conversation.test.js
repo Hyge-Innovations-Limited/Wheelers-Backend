@@ -2313,7 +2313,7 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose butt
   assert.equal(at.sent.length, before + 1, 'the ride card — the one thing the chat must keep');
 });
 
-test('QUICK ACTIONS FORM · Add money shows the account number ON the screen, Support shows the contact — and only Withdraw sends the chat its button', async () => {
+test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy from, Support shows the contact — no chat message for either; only Withdraw sends the chat its button', async () => {
   process.env.SUPPORT_CONTACT = '+2348000000000';
   const at = await riderWithHistory();
   const form = menuForm(at);
@@ -2327,6 +2327,7 @@ test('QUICK ACTIONS FORM · Add money shows the account number ON the screen, Su
   const support = await form('data_exchange', { action: 'menu_choice', choice: 'support' }, 'MENU');
   assert.equal(support.screen, 'SUPPORT');
   assert.equal(support.data.contact_line, '+2348000000000');
+  await settle();
   assert.equal(at.sent.length, before, 'not one chat message');
 
   const withdraw = await form('data_exchange', { action: 'menu_choice', choice: 'withdraw' }, 'MENU');
@@ -2339,8 +2340,9 @@ test('QUICK ACTIONS FORM · Add money shows the account number ON the screen, Su
 
 test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it carries the trip and offers screens unchanged', () => {
   const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'DONE']);
-  const box = qa.screens.ADD_MONEY.layout.children[0].children.find((c) => c.type === 'TextInput');
-  assert.deepEqual([box.name, box['init-value']], ['account_number', '${data.account_number}'], 'the account number sits in a box the rider can copy from');
+  const addMoney = qa.screens.ADD_MONEY.layout.children[0];
+  assert.deepEqual(addMoney['init-values'], { account_number: '${data.account_number}' }, 'v5.1 prefills through the Form, never init-value on the input (Meta refused that)');
+  assert.ok(addMoney.children.some((c) => c.type === 'TextInput' && c.name === 'account_number' && !('init-value' in c)), 'the number sits in a box the rider can copy from');
   assert.deepEqual(qa.footer('MENU')['on-click-action'].payload, { action: 'menu_choice', choice: '${form.choice}' });
   assert.deepEqual(qa.footer('HISTORY')['on-click-action'].payload, { action: 'history_pick', trip: '${form.trip}' });
   assert.deepEqual(qa.footer('TRIP')['on-click-action'].payload, { action: 'trip_direction', ride_id: '${data.ride_id}', direction: '${form.direction}' });

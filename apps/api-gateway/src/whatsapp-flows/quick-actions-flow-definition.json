@@ -949,6 +949,9 @@
           {
             "type": "Form",
             "name": "add_money_form",
+            "init-values": {
+              "account_number": "${data.account_number}"
+            },
             "children": [
               {
                 "type": "TextHeading",
@@ -968,7 +971,6 @@
                 "label": "${data.account_label}",
                 "input-type": "text",
                 "required": false,
-                "init-value": "${data.account_number}",
                 "helper-text": "Long-press the number to copy it"
               },
               {
