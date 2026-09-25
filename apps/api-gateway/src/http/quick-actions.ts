@@ -88,8 +88,9 @@ interface MenuInput {
 export function quickActionsBody(greeting: boolean, firstName?: string | null): string {
   // A greeting is answered like one. The balance is not here: nobody said
   // "wallet", and a rider saying hello does not need to be told their money.
+  // A greeting is answered with one, then the ask: want a ride? — and how. The button is under it regardless.
   return greeting
-    ? `Hey${firstName ? ` ${firstName}` : ''}! Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
+    ? `Hey${firstName ? ` ${firstName}` : ''}! Good to see you.\n\nWant to book a ride? Send your *pickup* and your *destination*, e.g. *From Ikeja City Mall to Unilag gate, Yaba* — or share your pickup location pin first.\n\nOr tap *Quick Actions* for your recent rides and more.`
     : `Here is everything I can do.`;
 }
 

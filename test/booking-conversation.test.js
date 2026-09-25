@@ -1986,7 +1986,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   // A bare greeting gets a greeting back, with the same Actions button under it.
   await say(deps, who, 'hello');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
-  assert.match(last(sent).interactive.body.text, /^Hey Test! Good to see you/);
+  assert.match(last(sent).interactive.body.text, /^Hey Test! Good to see you\.\n\nWant to book a ride\? Send your \*pickup\* and your \*destination\*[\s\S]*From Ikeja City Mall to Unilag gate, Yaba[\s\S]*location pin[\s\S]*\*Quick Actions\*/, 'greeted back, asked if they want a ride and told how, the button still there');
   assert.doesNotMatch(last(sent).interactive.body.text, /Wallet|₦/);
   delete process.env.SUPPORT_CONTACT;
   await say(deps, who, 'menu');
