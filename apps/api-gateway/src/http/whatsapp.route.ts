@@ -20,7 +20,7 @@ import { confirmRideWithOffer, offerKey, publishWhatsappRide } from '../rides/wh
 import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
 import {
   QUICK_ACTION_IDS, HISTORY_ROW, REPEAT_ROW, REVERSE_ROW, isQuickActionId, asksForMenu,
-  recentTrips, reversed, buildQuickActions, buildHistoryList, buildRepeatButtons, type PastTrip,
+  recentTrips, reversed, buildQuickActions, buildHistoryList, buildRepeatButtons, quickActionsBody, type PastTrip,
 } from './quick-actions';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { onboardWhatsappUser, provisionDepositAccount } from '../onboarding/user-onboarding';
@@ -102,9 +102,9 @@ import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingGeoChoices, PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
-import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
-import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED } from '../whatsapp-flows/flow-toggle';
-import { withQuickActions } from '../whatsapp-flows/whatsapp-notifier';
+import { sendFlowOffersMessage, sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
+import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from '../whatsapp-flows/flow-toggle';
+import { withQuickActions, withQuickActionsForm } from '../whatsapp-flows/whatsapp-notifier';
 import {
   CHANGE_PRICE_REPLY_ID,
   formatBidList,
@@ -141,6 +141,8 @@ export interface MetaWhatsappRouteDeps {
   whatsappEditTripFlowId?: string;
   /** Published offers form. Unset = offers arrive with reply buttons / the Choose list. */
   whatsappOffersFormFlowId?: string;
+  /** Published Quick Actions form. Unset = the menu is WhatsApp's list picker. */
+  whatsappQuickActionsFlowId?: string;
 }
 
 /* ─── Meta Cloud API helpers ─── */
@@ -253,6 +255,13 @@ async function sendMetaReply(
   // it invites a rider mid-address to wander off. A refused list falls back to
   // the words alone.
   if (!(await inBookingStep(deps, recipient))) {
+    if (QUICK_ACTIONS_FLOW_ENABLED && deps.whatsappQuickActionsFlowId) {
+      const riderId = await lookupUserIdByPhone(deps.redisClient, recipient).catch(() => null);
+      if (riderId) {
+        const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(message, deps.whatsappQuickActionsFlowId, riderId, deps.jwtSecret) }).catch(() => null);
+        if (asForm?.ok) return;
+      }
+    }
     const asList = await post({ type: 'interactive', interactive: withQuickActions(message) }).catch(() => null);
     if (asList?.ok) return;
   }
@@ -261,6 +270,17 @@ async function sendMetaReply(
     const payload = await response.text();
     console.error('[whatsapp] Meta reply failed', { status: response.status, payload });
   }
+}
+
+/** Words alone — no button under them. For a prompt whose answer is the next thing typed. */
+async function sendMetaText(deps: MetaWhatsappRouteDeps, to: string, message: string): Promise<void> {
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return;
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: to.replace(/^\+/, ''), type: 'text', text: { body: message } }),
+  }).catch(() => null);
+  if (!response?.ok) console.error('[whatsapp] Meta text failed', { status: response?.status ?? null });
 }
 
 const OPENER_WORDS = new Set([
@@ -868,13 +888,25 @@ async function sendQuoteWithPriceButton(
   return quote;
 }
 
-/** "Finding drivers" — the one chat message a search needs. Offers follow it, in the chat. */
+/**
+ * The one chat message a search needs. With the offers form: "your bid is in" with
+ * the button that opens it — and no offers message ever follows, the form shows
+ * them live. Without the form: "Finding you a driver", and offers follow in the chat.
+ */
 async function sendSearchStarted(
   deps: MetaWhatsappRouteDeps,
   user: { id: string },
   phone: string,
   trip: { pickupAddress: string; destAddress: string; offerNgn: number; stopAddresses?: string[] },
 ): Promise<string> {
+  if (deps.metaAccessToken && deps.metaPhoneNumberId) {
+    const notifier = { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret };
+    if (await sendBidPlacedMessage(notifier, phone, user.id, trip)) {
+      const rideId = await getActiveRide(deps.redisClient, user.id).catch(() => null);
+      if (rideId) await markOffersMessageSent(deps.redisClient, rideId).catch(() => undefined);
+      return `[your bid of ₦${trip.offerNgn.toLocaleString()} is in — sent the See driver offers button]`;
+    }
+  }
   const url = ridePageUrl(deps, user.id);
   const lines = [
     `*Finding you a driver!*`,
@@ -926,12 +958,39 @@ const MENU_TITLE_TO_ID: Record<string, string> = {
 
 const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
 
-/** The menu. One message; the picker is inside it. Falls back to numbered text if WhatsApp refuses the list. */
+/**
+ * The menu. One message with ONE button. With the Quick Actions form published,
+ * the button opens it and every action is a screen inside (quick-actions-flow.ts);
+ * otherwise it is WhatsApp's list picker, and numbered text if that is refused.
+ */
 async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string, greeting = false): Promise<void> {
-  const [who, trips] = await Promise.all([userClient.findById(user.id).catch(() => null), recentTrips(user.id, 1)]);
+  const who = await userClient.findById(user.id).catch(() => null);
+  const firstName = who?.name?.trim().split(/\s+/)[0] || null;
+  if (QUICK_ACTIONS_FLOW_ENABLED && deps.whatsappQuickActionsFlowId) {
+    const sent = await sendInteractive(deps, phone, {
+      type: 'flow',
+      body: { text: quickActionsBody(greeting, firstName) },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_id: deps.whatsappQuickActionsFlowId,
+          flow_token: signFlowToken(`menu:${user.id}`, deps.jwtSecret),
+          flow_cta: 'Quick Actions',
+          // data_exchange: opening calls our endpoint, so the menu is built for right now.
+          flow_action: 'data_exchange',
+        },
+      },
+    });
+    if (sent) {
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: '[sent the quick actions form]' }]);
+      return;
+    }
+  }
+  const trips = await recentTrips(user.id, 1);
   const menu = buildQuickActions({
     greeting,
-    firstName: who?.name?.trim().split(/\s+/)[0] || null,
+    firstName,
     lastTrip: trips[0] ?? null,
     busy: Boolean(activeRideId),
     supportContact: supportContact(),
@@ -1361,6 +1420,46 @@ async function acceptOfferInChat(
  * price, declining and cancelling are answered inside the form and cost the
  * chat nothing.
  */
+/**
+ * What the Quick Actions form needs from the chat: the offers hooks (its OFFERS
+ * screen is the offers form), where support points, the Withdraw button, and a
+ * way to open an account number for a rider who has none yet.
+ */
+export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
+  return {
+    ...createOffersFormChatHooks(deps),
+    supportContact,
+    /** A bid placed inside a form (Edit trip or Quick Actions): the chat gets its one message, the See driver offers button. */
+    onBidPlaced: async (userId: string, rideId: string, offerNgn: number): Promise<void> => {
+      const [who, meta] = await Promise.all([userClient.findById(userId).catch(() => null), getRideMeta(deps.redisClient, rideId)]);
+      if (!who?.phone || !meta) return;
+      const said = await sendSearchStarted(deps, { id: userId }, who.phone, {
+        pickupAddress: meta.pickupAddress, destAddress: meta.destinationAddress, stopAddresses: (meta.stops ?? []).map((stop) => stop.address), offerNgn,
+      });
+      await appendWhatsappConversation(deps.redisClient, who.phone, [{ role: 'user', content: `[bid ₦${offerNgn.toLocaleString()} in the form]` }, { role: 'assistant', content: said }]);
+    },
+    /** Book a ride from Quick Actions: booking is the chat's job — one clear prompt, no menu under it. */
+    onBookInChat: async (userId: string): Promise<void> => {
+      const phone = (await userClient.findById(userId).catch(() => null))?.phone;
+      if (!phone) return;
+      const prompt = `Where are you going?\n\n${BOOKING_START_PROMPT}`;
+      await sendMetaText(deps, phone, prompt);
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: '[chose Book a ride in Quick Actions]' }, { role: 'assistant', content: prompt }]);
+    },
+    onWithdraw: async (userId: string): Promise<void> => {
+      const phone = (await userClient.findById(userId).catch(() => null))?.phone;
+      if (!phone) return;
+      await sendWalletPageButton(deps, { id: userId }, phone, '[chose Withdraw in Quick Actions]', 'withdraw');
+    },
+    ensureDepositAccount: async (userId: string) => {
+      const who = await userClient.findById(userId).catch(() => null);
+      await provisionDepositAccount(deps.paymentsClient, userId, who?.name ?? undefined, who?.phone ?? undefined).catch(() => undefined);
+      const account = await virtualAccountClient.findByUserId(userId).catch(() => null);
+      return account ? { bankName: account.bankName, accountNumber: account.accountNumber, accountName: account.accountName } : null;
+    },
+  };
+}
+
 export function createOffersFormChatHooks(deps: MetaWhatsappRouteDeps) {
   const phoneOf = async (userId: string) => (await userClient.findById(userId).catch(() => null))?.phone ?? null;
   return {

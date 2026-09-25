@@ -21,7 +21,7 @@ import {
   addBid,
   shouldNotify,
   noteNotified,
-  hasUnopenedOffersMessage,
+  hasOffersMessage,
   markOffersMessageSent,
   getGroupSeat,
   clearActiveRide,
@@ -286,10 +286,10 @@ export async function announceOffers(
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
   if (!groupSeat) {
-    // The offers form: ONE unopened message at a time. It opens on the live list,
-    // so more offers while it sits unopened need no second message — the next one
-    // goes out only after they have looked (opening the form clears the mark).
-    if (offersFormIsOn(deps.whatsappNotifier) && await hasUnopenedOffersMessage(deps.redisClient, rideId)) return;
+    // The offers form: ONE message per search, ever — sent when the bid went in, or
+    // by the first offer if that was missed. It opens on the live list and has its
+    // own "Check for more offers" row, so no offer after it sends anything.
+    if (offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, rideId)) return;
     const sent = await sendOffersInChat(deps.whatsappNotifier, phone, bids, riderOfferNgn, changes, riderId);
     if (sent === 'form') await markOffersMessageSent(deps.redisClient, rideId).catch(() => undefined);
     if (sent) return;

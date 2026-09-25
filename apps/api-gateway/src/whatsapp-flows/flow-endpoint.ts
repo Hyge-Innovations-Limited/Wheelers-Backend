@@ -11,6 +11,7 @@ import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { META_FLOWS_ENABLED } from './flow-toggle';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
+import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
 import type { FlowRequestBody } from './encryption';
@@ -65,6 +66,13 @@ export interface WhatsappFlowEndpointDeps {
   /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
   onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
   onWalletShort?: OffersFormDeps['onWalletShort'];
+  /** Quick Actions form: where support points, the Withdraw button, opening an account number. */
+  supportContact?: QuickActionsFlowDeps['supportContact'];
+  onWithdraw?: QuickActionsFlowDeps['onWithdraw'];
+  ensureDepositAccount?: QuickActionsFlowDeps['ensureDepositAccount'];
+  onBookInChat?: QuickActionsFlowDeps['onBookInChat'];
+  /** A bid placed in the Edit-trip or Quick Actions form: the chat gets the See driver offers button. */
+  onBidPlaced?: QuickActionsFlowDeps['onBidPlaced'];
 }
 
 const POLL_INTERVAL_MS = 1_000;
@@ -195,6 +203,7 @@ async function handleFlowAction(
       googleMapsApiKey: deps.googleMapsApiKey,
       routePlanner: deps.routePlanner,
       publisher: deps.publisher,
+      onBidPlaced: deps.onBidPlaced,
     });
   }
 
@@ -205,6 +214,23 @@ async function handleFlowAction(
       publisher: deps.publisher,
       onRideConfirmed: deps.onRideConfirmed,
       onWalletShort: deps.onWalletShort,
+    });
+  }
+
+  // ── Quick Actions (token `menu:<userId>`): the menu and everything behind it ──
+  if (rideId === 'menu') {
+    return handleQuickActionsFlow(body, userId, {
+      redisClient: deps.redisClient,
+      publisher: deps.publisher,
+      googleMapsApiKey: deps.googleMapsApiKey,
+      routePlanner: deps.routePlanner,
+      supportContact: deps.supportContact,
+      onRideConfirmed: deps.onRideConfirmed,
+      onWalletShort: deps.onWalletShort,
+      onWithdraw: deps.onWithdraw,
+      ensureDepositAccount: deps.ensureDepositAccount,
+      onBookInChat: deps.onBookInChat,
+      onBidPlaced: deps.onBidPlaced,
     });
   }
 

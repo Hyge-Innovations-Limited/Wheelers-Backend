@@ -84,6 +84,15 @@ interface MenuInput {
   supportContact: string | null;
 }
 
+/** The one line under which the button sits — the same whether the button opens the form or the list. */
+export function quickActionsBody(greeting: boolean, firstName?: string | null): string {
+  // A greeting is answered like one. The balance is not here: nobody said
+  // "wallet", and a rider saying hello does not need to be told their money.
+  return greeting
+    ? `Hey${firstName ? ` ${firstName}` : ''}! Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
+    : `Here is everything I can do.`;
+}
+
 /** The quick-actions message, as WhatsApp wants it. */
 export function buildQuickActions(input: MenuInput): Record<string, unknown> {
   const ride = input.busy
@@ -99,11 +108,7 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
 
   return {
     type: 'list',
-    // A greeting is answered like one. The balance is not here: nobody said
-    // "wallet", and a rider saying hello does not need to be told their money.
-    body: { text: input.greeting
-      ? `Hey${input.firstName ? ` ${input.firstName}` : ''}! Good to see you.\n\nTap *Quick Actions* to book a ride, add money, or see where you have been.`
-      : `Here is everything I can do.` },
+    body: { text: quickActionsBody(input.greeting, input.firstName) },
     action: {
       button: 'Quick Actions',
       sections: [

@@ -1,5 +1,5 @@
 import { signFlowToken } from './encryption';
-import { META_FLOWS_ENABLED, OFFERS_FORM_FLOW_ENABLED } from './flow-toggle';
+import { META_FLOWS_ENABLED, OFFERS_FORM_FLOW_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
 
@@ -11,6 +11,10 @@ export interface WhatsappNotifierDeps {
   flowTokenSecret?: string;
   /** Published offers FORM (offers-form-flow.ts). With it, offers are one message with one button. */
   offersFormFlowId?: string;
+  /** Published Quick Actions form (quick-actions-flow.ts): every plain message carries its button instead of the list. */
+  quickActionsFlowId?: string;
+  /** The form's token names the rider; a message knows only the phone. */
+  riderIdFor?: (phone: string) => Promise<string | null>;
 }
 
 /* ── offers, in the chat, as things to TAP ─────────────────────────────── */
@@ -174,6 +178,44 @@ export async function sendOffersInChat(
   return (await postInteractive(deps, phone, buttons)) ? 'buttons' : false;
 }
 
+/**
+ * The ONE message a search gets with the offers form: sent the moment the bid is
+ * in. Its button opens the form, which shows the offers as they come and has its
+ * own "Check for more offers" row — so no "N drivers found" message ever follows.
+ * False when the form is not published: the caller sends its older message.
+ */
+export async function sendBidPlacedMessage(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  riderId: string,
+  trip: { pickupAddress: string; destAddress: string; stopAddresses?: string[]; offerNgn: number },
+): Promise<boolean> {
+  if (!offersFormIsOn(deps)) return false;
+  const text = [
+    `*Your bid of ₦${trip.offerNgn.toLocaleString()} is in*`,
+    '',
+    `Pickup: ${trip.pickupAddress}`,
+    ...(trip.stopAddresses ?? []).map((stop, index) => `Stop ${index + 1}: ${stop}`),
+    `Destination: ${trip.destAddress}`,
+    '',
+    'Drivers near you can see it now. Tap below to see their offers as they come in. Accept one, change your price, or cancel the search, all in one place.',
+  ].join('\n');
+  return postInteractive(deps, phone, {
+    type: 'flow',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: deps.offersFormFlowId,
+        flow_token: signFlowToken(`bids:${riderId}`, deps.flowTokenSecret!),
+        flow_cta: 'See driver offers',
+        flow_action: 'data_exchange',
+      },
+    },
+  });
+}
+
 /** True when offers go out as the form message (one button) rather than reply buttons. */
 export function offersFormIsOn(deps: WhatsappNotifierDeps): boolean {
   return OFFERS_FORM_FLOW_ENABLED && Boolean(deps.offersFormFlowId && deps.flowTokenSecret);
@@ -218,6 +260,26 @@ async function postInteractive(deps: WhatsappNotifierDeps, phone: string, intera
  * what they need — so a stale menu on an old message can never do harm.
  */
 export const QUICK_ACTIONS_BUTTON = 'Quick Actions';
+
+/** The same words with the Quick Actions FORM's button under them (quick-actions-flow.ts). */
+export function withQuickActionsForm(text: string, flowId: string, riderId: string, tokenSecret: string): Record<string, unknown> {
+  return {
+    type: 'flow',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: flowId,
+        flow_token: signFlowToken(`menu:${riderId}`, tokenSecret),
+        flow_cta: QUICK_ACTIONS_BUTTON,
+        // data_exchange: opening calls our endpoint, so the menu is built for right now.
+        flow_action: 'data_exchange',
+      },
+    },
+  };
+}
+
 export function withQuickActions(text: string): Record<string, unknown> {
   return {
     type: 'list',
@@ -259,8 +321,16 @@ export async function sendMetaWhatsappMessage(
     body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: recipient, ...message }),
   });
 
-  // Words + the Quick Actions button. If WhatsApp refuses the list (an old
-  // phone, a client that cannot show it), the words go on their own.
+  // Words + the Quick Actions button: the form's when it is published and the
+  // rider is known, else the list. If WhatsApp refuses both (an old phone, a
+  // client that cannot show it), the words go on their own.
+  if (QUICK_ACTIONS_FLOW_ENABLED && deps.quickActionsFlowId && deps.flowTokenSecret && deps.riderIdFor) {
+    const riderId = await deps.riderIdFor(recipient).catch(() => null);
+    if (riderId) {
+      const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(body, deps.quickActionsFlowId, riderId, deps.flowTokenSecret) }).catch(() => null);
+      if (asForm?.ok) return;
+    }
+  }
   const asList = await post({ type: 'interactive', interactive: withQuickActions(body) }).catch(() => null);
   if (asList?.ok) return;
   const response = await post({ type: 'text', text: { body } });

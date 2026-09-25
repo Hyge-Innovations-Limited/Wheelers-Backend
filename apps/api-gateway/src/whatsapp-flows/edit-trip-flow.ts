@@ -39,6 +39,11 @@ import type { FlowRequestBody } from './encryption';
  * the chat and the form never disagree about what the trip is. Confirming sets
  * `confirmed` and moves to the price; a price typed in the chat meanwhile still
  * works (stage awaiting_price). The chat hears nothing until a driver answers.
+ *
+ * The screens and their handlers are exported: the Quick Actions form carries
+ * the same five screens, so Book a ride and Repeat a ride there run THIS code.
+ * There the trip may not exist yet (`trip` is null): every typed box is looked
+ * up and the planned trip is simply new.
  */
 
 export interface EditTripFlowDeps {
@@ -46,6 +51,8 @@ export interface EditTripFlowDeps {
   googleMapsApiKey: string;
   routePlanner: GoogleMapsRoutePlanner;
   publisher: GatewayPublisher;
+  /** The bid is in: the chat gets its ONE message, the See driver offers button. */
+  onBidPlaced?: (userId: string, rideId: string, offerNgn: number) => Promise<void>;
 }
 
 type FlowScreen = { screen: string; data: Record<string, unknown> };
@@ -86,7 +93,7 @@ function summaryOf(trip: PendingRouteData): string {
   return `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}`;
 }
 
-function editScreen(values: Partial<Record<Field, string>>, error = '', trip?: PendingRouteData): FlowScreen {
+export function editScreen(values: Partial<Record<Field, string>>, error = '', trip?: PendingRouteData | null): FlowScreen {
   return {
     screen: 'EDIT_TRIP',
     data: {
@@ -120,7 +127,7 @@ function pickScreen(draft: Draft, error = ''): FlowScreen {
   return { screen: 'PICK_PLACES', data };
 }
 
-function reviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
+export function reviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
   const stops = trip.stops ?? [];
   return {
     screen: 'REVIEW_TRIP',
@@ -140,7 +147,7 @@ function reviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
   };
 }
 
-function priceScreen(trip: PendingRouteData, error = ''): FlowScreen {
+export function priceScreen(trip: PendingRouteData, error = ''): FlowScreen {
   return {
     screen: 'SET_PRICE',
     data: {
@@ -153,12 +160,12 @@ function priceScreen(trip: PendingRouteData, error = ''): FlowScreen {
   };
 }
 
-function doneScreen(headline: string, note: string): FlowScreen {
+export function doneScreen(headline: string, note: string): FlowScreen {
   return { screen: 'DONE', data: { headline, note } };
 }
 
-const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
-const SEARCHING_NOTE = 'Drivers are already looking at this trip. To change it, reply "cancel" in the chat and send the new trip.';
+export const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
+export const SEARCHING_NOTE = 'Drivers are already looking at this trip. To change it, reply "cancel" in the chat and send the new trip.';
 
 /** Every request the Edit-trip flow makes: opening it, going back, and its two Continue buttons. */
 export async function handleEditTripFlow(body: FlowRequestBody, userId: string, deps: EditTripFlowDeps): Promise<FlowScreen> {
@@ -188,7 +195,7 @@ export async function handleEditTripFlow(body: FlowRequestBody, userId: string, 
 }
 
 /** "This trip is right": now the price — on the next screen, not in the chat. */
-async function confirm(userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+export async function confirm(userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const confirmed: PendingRouteData = { ...trip, confirmed: true };
   await storePendingRoute(deps.redisClient, userId, confirmed);
   await setBookingStage(deps.redisClient, userId, 'awaiting_price');     // a price typed in the chat still works
@@ -197,7 +204,7 @@ async function confirm(userId: string, trip: PendingRouteData, deps: EditTripFlo
 }
 
 /** Find drivers: the same publish as a typed price and as the page. No chat message — the next one is a driver's offer. */
-async function setPrice(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+export async function setPrice(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const amount = Math.round(Number(String(data['price'] ?? '').replace(/[,\s₦]/g, '')));
   if (!Number.isFinite(amount) || amount <= 0) return priceScreen(trip, 'Enter your price in figures, e.g. 2500.');
   const phone = (await userClient.findById(userId).catch(() => null))?.phone ?? '';
@@ -206,17 +213,21 @@ async function setPrice(data: Record<string, unknown>, userId: string, trip: Pen
     if (result.code === 'BELOW_MINIMUM') return priceScreen(trip, `The lowest price for this trip is ₦${result.minOfferNgn.toLocaleString()}.`);
     if (result.code === 'PUBLISH_FAILED') return priceScreen(trip, 'Could not start the search just now. Tap Find drivers again.');
     // ALREADY_PUBLISHING: a double tap — the first one is out.
+  } else {
+    // Not awaited: WhatsApp cuts a form's request off at ~10 s, and the chat message is not the form's to wait for.
+    void deps.onBidPlaced?.(userId, result.rideId, amount).catch((error) => console.error('[edit-trip] bid placed but the chat was not told', { userId, error: error instanceof Error ? error.message : String(error) }));
   }
-  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()}`, 'Drivers see your price now. Their offers will come to your chat — you only pay when you accept one.');
+  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()}`, 'Drivers see your price now. Back in the chat, tap See driver offers to watch their offers come in. You only pay when you accept one.');
 }
 
-async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+export async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData | null, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const typed = Object.fromEntries(FIELDS.map((field) => [field, text(data[field])])) as Record<Field, string>;
   if (!typed.pickup || !typed.destination) return editScreen(typed, 'A trip needs a pickup and a destination.', trip);
 
-  const current = currentPlaces(trip);
+  // A new trip (Book a ride in the Quick Actions form) has nothing to compare against: every box is looked up.
+  const current: Partial<Record<Field, RouteStop>> = trip ? currentPlaces(trip) : {};
   const draft: Draft = { typed, resolved: {}, options: {} };
-  const ends = { pickup: current.pickup!, destination: current.destination! };
+  const ends = { pickup: current.pickup, destination: current.destination };
 
   // Look up only what changed — all at once: five lookups one after another would flirt with WhatsApp's 10-second limit.
   const misses: Field[] = [];
@@ -225,7 +236,7 @@ async function editTrip(data: Record<string, unknown>, userId: string, trip: Pen
     const existing = current[field];
     if (existing && same(existing.address, typed[field])) { draft.resolved[field] = existing; return; }
     const near = field === 'pickup' ? ends.destination : ends.pickup;
-    const matches = await findPlaceOptions(deps.googleMapsApiKey, typed[field], { near }).catch(() => []);
+    const matches = await findPlaceOptions(deps.googleMapsApiKey, typed[field], near ? { near } : {}).catch(() => []);
     const places = matches.slice(0, 8).map((match) => ({ lat: match.lat, lng: match.lng, address: match.formattedAddress }));
     if (places.length === 0) misses.push(field);
     else if (places.length === 1) draft.resolved[field] = places[0]!;
@@ -242,7 +253,7 @@ async function editTrip(data: Record<string, unknown>, userId: string, trip: Pen
   return finish(draft, userId, trip, deps, (error) => editScreen(typed, error, trip));
 }
 
-async function pickPlaces(data: Record<string, unknown>, userId: string, trip: PendingRouteData, deps: EditTripFlowDeps): Promise<FlowScreen> {
+export async function pickPlaces(data: Record<string, unknown>, userId: string, trip: PendingRouteData | null, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const raw = await deps.redisClient.get(draftKey(userId)).catch(() => null);
   let draft: Draft | null = null;
   try { draft = raw ? (JSON.parse(raw) as Draft) : null; } catch { draft = null; }
@@ -265,7 +276,7 @@ async function pickPlaces(data: Record<string, unknown>, userId: string, trip: P
 async function finish(
   draft: Draft,
   userId: string,
-  trip: PendingRouteData,
+  trip: PendingRouteData | null,
   deps: EditTripFlowDeps,
   refuse: (error: string) => FlowScreen,
 ): Promise<FlowScreen> {
@@ -293,12 +304,14 @@ async function finish(
     }
   }
 
-  const before = currentPlaces(trip);
-  const beforeStops = trip.stops ?? [];
-  const unchanged = before.pickup!.address === pickup.address && before.destination!.address === destination.address
-    && beforeStops.length === stops.length && stops.every((stop, index) => stop.address === beforeStops[index]!.address);
-  // Nothing changed and they tapped Confirm trip: that IS the confirmation.
-  if (unchanged) return confirm(userId, trip, deps);
+  if (trip) {
+    const before = currentPlaces(trip);
+    const beforeStops = trip.stops ?? [];
+    const unchanged = before.pickup!.address === pickup.address && before.destination!.address === destination.address
+      && beforeStops.length === stops.length && stops.every((stop, index) => stop.address === beforeStops[index]!.address);
+    // Nothing changed and they tapped Confirm trip: that IS the confirmation.
+    if (unchanged) return confirm(userId, trip, deps);
+  }
 
   const planned = await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
   if (!planned) return refuse('I could not find a driving route through those places. Check them and try again.');

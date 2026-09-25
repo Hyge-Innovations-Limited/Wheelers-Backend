@@ -8,7 +8,7 @@ import {
   offerKey,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
-import { clearBids, clearPendingAccept, getActiveRide, getBids, getRideMeta, getRideState, markOffersMessageOpened, setRideState, storeLastBatch } from './bid-state';
+import { clearBids, clearPendingAccept, getActiveRide, getBids, getLastBatch, getRideMeta, getRideState, markOffersMessageOpened, setRideState, storeLastBatch } from './bid-state';
 import type { WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
@@ -21,8 +21,11 @@ import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier
  * reply buttons, "Change my price" and "Cancel search" each cost more chat
  * messages (a prompt, a typed answer, a reply). Here they cost none:
  *
- *   OFFERS         one list: every driver's offer, then Change my price,
- *                  Decline all, Cancel search                     [Continue]
+ *   OFFERS         one list: every driver's offer, then Check for more
+ *                  offers, Change my price, Decline all, Cancel search [Continue]
+ *     Check more     → waits a few seconds for drivers, the list again — so
+ *                      the rider watches the search HERE, and no "N drivers
+ *                      found" message is ever sent after the first button
  *     a driver       → the fare is held, the ride confirmed        → DONE
  *     Change price   → CHANGE_PRICE → "Bid updated"             → DONE   (no chat message)
  *     Decline all    → offers dropped, the search carries on       → DONE   (no chat message)
@@ -48,8 +51,12 @@ export interface OffersFormDeps {
 
 type FlowScreen = { screen: string; data: Record<string, unknown> };
 
+const REFRESH = 'refresh';
 const CHANGE_PRICE = 'change_price';
 const DECLINE_ALL = 'decline_all';
+/** How long "Check for more offers" waits for a driver before showing the list again (WhatsApp cuts a form off at ~10 s). */
+const REFRESH_WAIT_MS = 3_500;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const CANCEL_SEARCH = 'cancel_search';
 const CLOSE = 'close';
 
@@ -80,7 +87,7 @@ function closedOffers(message: string): FlowScreen {
   };
 }
 
-async function offersScreen(deps: OffersFormDeps, rideId: string, error = ''): Promise<FlowScreen> {
+export async function offersScreen(deps: OffersFormDeps, rideId: string, error = ''): Promise<FlowScreen> {
   const [meta, bids] = await Promise.all([getRideMeta(deps.redisClient, rideId), getBids(deps.redisClient, rideId)]);
   if (!meta) return closedOffers('This search has ended — nothing was charged. Send your trip again in the chat.');
   const offers = sortOffers(bids);
@@ -95,12 +102,13 @@ async function offersScreen(deps: OffersFormDeps, rideId: string, error = ''): P
       count_line: offers.length === 0 ? 'No offers yet — drivers are still looking at your request.'
         : offers.length === 1 ? '1 driver has made an offer' : `${offers.length} drivers have made offers — cheapest first`,
       choices: [
-        ...offers.slice(0, 10).map((bid) => ({
+        ...offers.slice(0, 9).map((bid) => ({
           // The price rides in the id: a screen left open while the driver re-prices must not hold the new fare.
           id: offerReplyId(bid),
           title: clip(`${naira(bid.counterOfferNgn)} · ${bid.driverName}`, 30),
           description: clip([bid.vehicleModel, bid.vehiclePlate, `${bid.driverRating.toFixed(1)}★`, `${Math.max(1, Math.ceil(bid.etaSeconds / 60))} min away`].filter(Boolean).join(' · '), 300),
         })),
+        { id: REFRESH, title: 'Check for more offers', description: offers.length === 0 ? 'Drivers usually answer within a minute' : 'See if more drivers have answered' },
         { id: CHANGE_PRICE, title: 'Change my price', description: 'Offer drivers a different amount' },
         ...(offers.length > 0 ? [{ id: DECLINE_ALL, title: 'Decline all', description: 'None of these drivers — keep searching' }] : []),
         { id: CANCEL_SEARCH, title: 'Cancel search', description: 'Stop looking. Nothing is charged.' },
@@ -180,6 +188,18 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
 
   const choice = String(data['choice'] ?? '');
   if (choice === CLOSE) return done('Wheelers', 'You can go back to the chat.');
+  if (choice === REFRESH) {
+    // Anything new since the list they are looking at shows at once; otherwise wait a few
+    // seconds for a driver to answer or re-price, then the list again either way.
+    const fingerprint = (bids: WhatsappBid[]) => bids.map((bid) => `${offerKey(bid)}@${bid.counterOfferNgn}`).sort().join('|');
+    const seen = fingerprint(await getLastBatch(deps.redisClient, rideId).catch(() => []));
+    const deadline = Date.now() + REFRESH_WAIT_MS;
+    while (fingerprint(await getBids(deps.redisClient, rideId)) === seen && Date.now() < deadline) {
+      await sleep(Math.min(700, Math.max(1, deadline - Date.now())));
+    }
+    await markOffersMessageOpened(deps.redisClient, rideId).catch(() => undefined);
+    return offersScreen(deps, rideId);
+  }
   if (choice === CHANGE_PRICE) return priceScreen(deps, rideId);
   if (choice === CANCEL_SEARCH) return cancelScreen();
   if (choice === DECLINE_ALL) {

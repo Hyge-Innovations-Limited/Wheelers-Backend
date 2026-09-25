@@ -113,6 +113,7 @@ import {
   startLocationHistoryCleanup,
 } from "./http/live-map.route";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
+import { lookupUserIdByPhone } from "./whatsapp-flows/bid-state";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -176,7 +177,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createOffersFormChatHooks } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createQuickActionsChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -546,6 +547,7 @@ async function bootstrap(): Promise<void> {
     whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
     whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
     whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+    whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
   });
 
   const server = createServer(async (req, res) => {
@@ -914,6 +916,7 @@ async function bootstrap(): Promise<void> {
         whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
         whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
         whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+    whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
       };
 
       if (req.method === "GET") {
@@ -947,7 +950,7 @@ async function bootstrap(): Promise<void> {
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
         routePlanner,
         kycStorage: driverKycStorage ?? undefined,
-        ...createOffersFormChatHooks(buildMetaWhatsappDeps()),
+        ...createQuickActionsChatHooks(buildMetaWhatsappDeps()),
         notifier:
           gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
             ? {
@@ -955,6 +958,8 @@ async function bootstrap(): Promise<void> {
                 metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
                 offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
                 flowTokenSecret: gatewayEnv.JWT_SECRET,
+                quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+                riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
               }
             : undefined,
       });
@@ -2212,6 +2217,8 @@ async function bootstrap(): Promise<void> {
             offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
             flowTokenSecret: gatewayEnv.JWT_SECRET,
             offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+            quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+            riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
           }
         : undefined,
     kycStorage: driverKycStorage ?? undefined,
@@ -2228,6 +2235,9 @@ async function bootstrap(): Promise<void> {
         ? {
             metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+            flowTokenSecret: gatewayEnv.JWT_SECRET,
+            quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+            riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
           }
         : undefined,
   });

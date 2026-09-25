@@ -34,3 +34,13 @@ export const EDIT_TRIP_FLOW_ENABLED = true;
  * (Not the old "Wheelers Driver Offers" flow behind META_FLOWS_ENABLED — that stays off.)
  */
 export const OFFERS_FORM_FLOW_ENABLED = true;
+
+/**
+ * The Quick Actions form (quick-actions-flow.ts): the menu is ONE message with
+ * ONE button, and everything behind it — book, repeat or reverse a ride, the
+ * history, the current trip and its offers, the account number to add money,
+ * support — is screens that link to each other inside the form. Needs
+ * WHATSAPP_QUICK_ACTIONS_FLOW_ID (`npm run flow:push:quick-actions`). Without
+ * it, the menu is WhatsApp's list picker exactly as before.
+ */
+export const QUICK_ACTIONS_FLOW_ENABLED = true;

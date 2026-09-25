@@ -290,8 +290,21 @@ const unopenedOffersKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_me
 // the next offer after that — silence must never be why a driver was missed.
 const UNOPENED_OFFERS_TTL = 120;
 
+/**
+ * With the offers form, a search gets ONE message with the button — sent the moment
+ * the bid goes in, or by the first offer when nothing was sent — and never another:
+ * the form shows the live list, and its own row checks for more. This mark lives
+ * as long as the search does.
+ */
+const offersMessageKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_message_sent`;
+const OFFERS_MESSAGE_TTL = 1800;
+
 export async function markOffersMessageSent(redis: RedisClient, rideId: string): Promise<void> {
   await redis.set(unopenedOffersKey(rideId), Date.now().toString(), UNOPENED_OFFERS_TTL);
+  await redis.set(offersMessageKey(rideId), Date.now().toString(), OFFERS_MESSAGE_TTL);
+}
+export async function hasOffersMessage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return Boolean(await redis.get(offersMessageKey(rideId)).catch(() => null));
 }
 export async function markOffersMessageOpened(redis: RedisClient, rideId: string): Promise<void> {
   await redis.del(unopenedOffersKey(rideId));

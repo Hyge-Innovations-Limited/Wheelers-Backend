@@ -5,6 +5,7 @@
  *
  *   npm run flow:push:edit-trip     the "Confirm or edit trip" form
  *   npm run flow:push:offers        the offers form (accept / change price / decline / cancel)
+ *   npm run flow:push:quick-actions the Quick Actions menu and everything behind it
  *   npm run flow:push:forms         both, one after the other
  *                                   (run ON THE SERVER, from the repo root)
  *
@@ -36,6 +37,7 @@ const env = readEnv();
 const FORMS = {
   'edit-trip': { envKey: 'WHATSAPP_EDIT_TRIP_FLOW_ID', name: 'Wheelers Edit Trip', json: 'edit-trip-flow-definition.json' },
   offers: { envKey: 'WHATSAPP_OFFERS_FORM_FLOW_ID', name: 'Wheelers Offers Form', json: 'offers-form-flow-definition.json' },
+  'quick-actions': { envKey: 'WHATSAPP_QUICK_ACTIONS_FLOW_ID', name: 'Wheelers Quick Actions', json: 'quick-actions-flow-definition.json' },
 };
 const which = process.argv[2];
 const chosen = FORMS[which];
