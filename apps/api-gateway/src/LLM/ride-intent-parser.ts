@@ -56,7 +56,7 @@ Rules:
 - If payment method not mentioned, set to null
 - "wallet" or "use wallet" = "WALLET" (means Naira wallet by default)
 - "crypto wallet" or "pay with crypto" or "USDC" = "CRYPTO_WALLET"
-- For "ride_request" intent ONLY, look at conversation history to fill in missing pickup/destination if mentioned earlier
+- NEVER fill a pickup or destination from earlier messages, from the assistant's own replies, or from memory, unless the rider's CURRENT message refers to it ("home", "work", "the usual", "same place as last time"). A message that names only one end names only that end: leave the other null. "I want to go from Ilemere" → pickup Ilemere, destination null — even if a destination was discussed a minute ago.
 - For "edit_pickup" / "edit_destination" intents, ONLY extract the location being changed. Do NOT fill in the other location from history.
 
 Examples:
@@ -110,6 +110,51 @@ export function repairFromOnly(intent: RideIntent, message: string): void {
   if (/\sto\s/.test(withoutVerbs)) return;
   intent.pickup = intent.destination;
   intent.destination = null;
+}
+
+/**
+ * A place the rider did not say is not theirs. Models fill the other end of a trip
+ * from the chat above (the bot's own trip card, an old booking) or from memory —
+ * measured live: "I want to go from Ilemere road" came back with the destination of
+ * a trip discussed minutes earlier. So every place the model returns must be traceable
+ * to the CURRENT message: a word of the address appears in it (typos and prefixes
+ * allowed), an abbreviation the prompt permits ("VI", "Unilag"), or a memory cue
+ * ("home", "work", "the usual"). Anything else is dropped, never guessed.
+ */
+const MEMORY_CUES = /\b(home|house|my place|work|office|usual|same place|last time|yesterday|last night|this morning|earlier|again|back)\b/i;
+const FILLER = new Set(['lagos', 'nigeria', 'state', 'street', 'road', 'rd', 'st', 'avenue', 'ave', 'close', 'estate', 'area', 'the', 'and', 'of', 'bus', 'stop', 'junction']);
+const ALIASES: Record<string, string[]> = { vi: ['victoria', 'island'], unilag: ['university', 'lagos'], lasu: ['lagos', 'state', 'university'], mmia: ['murtala', 'muhammed', 'airport'] };
+const tokensOf = (text: string) => text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((token) => token.length >= 2);
+function similar(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a))) return true;
+  if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 2) return false;
+  // Levenshtein ≤ 2: "ilemre" is "ilemere".
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= a.length; row++) {
+    const current = [row];
+    for (let column = 1; column <= b.length; column++) {
+      current[column] = Math.min(previous[column]! + 1, current[column - 1]! + 1, previous[column - 1]! + (a[row - 1] === b[column - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]! <= 2;
+}
+export function saidInMessage(address: string, message: string): boolean {
+  if (MEMORY_CUES.test(message)) return true;
+  const said = tokensOf(message).flatMap((token) => [token, ...(ALIASES[token] ?? [])]);
+  const named = tokensOf(address).filter((token) => !FILLER.has(token));
+  if (named.length === 0) return true;
+  return named.some((token) => said.some((word) => similar(word, token)));
+}
+export function groundToMessage(intent: RideIntent, message: string): void {
+  for (const end of ['pickup', 'destination'] as const) {
+    const place = intent[end];
+    if (place?.address && !saidInMessage(place.address, message)) {
+      console.info('[ride-intent] dropped a place the rider did not say', { end, address: place.address, message: message.slice(0, 80) });
+      intent[end] = null;
+    }
+  }
 }
 
 /** Regex fallback for critical intents when Groq is unavailable. */
@@ -193,6 +238,7 @@ export async function parseRideIntent(
       return null;
     }
 
+    groundToMessage(intent, message);
     repairFromOnly(intent, message);
     intent.outsideNigeria = intent.outsideNigeria === true;
     if (typeof intent.offerNgn === 'string') {

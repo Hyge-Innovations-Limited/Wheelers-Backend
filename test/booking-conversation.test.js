@@ -2439,3 +2439,21 @@ test('BID IS IN · a price TYPED in the chat gets the same one message with the 
   assert.match(message.body.text, /Your bid of ₦2,500 is in/);
   assert.ok(await bidState.hasOffersMessage(at.redis, await bidState.getActiveRide(at.redis, at.user.id)), 'marked: the consumer will not send another');
 });
+
+test('a place the rider did NOT say is dropped: the model filling the destination from the chat above or from memory is refused — typos, prefixes, "VI" and "home" still pass', async () => {
+  const { parseRideIntent, saidInMessage } = require('../apps/api-gateway/dist/LLM/ride-intent-parser.js');
+  const model = (answer) => ({ configured: true, completeJson: async () => answer });
+  const filled = { intent: 'ride_request', pickup: { address: 'Ilemere Road, Ikorodu, Lagos', area: 'Ikorodu', specific: true }, destination: { address: '13 Aiyetoro Street, Akoka, Lagos', area: 'Akoka', specific: true }, offerNgn: null, paymentMethod: null };
+
+  const result = await parseRideIntent(model(filled), 'I want to go from ilemere road', [{ role: 'assistant', content: 'Destination: *13 Aiyetoro Street, Akoka, Lagos*' }], 'What we know about this rider: recent trip to 13 Aiyetoro Street, Akoka');
+  assert.equal(result.pickup.address, 'Ilemere Road, Ikorodu, Lagos');
+  assert.equal(result.destination, null, 'the rider never said Aiyetoro — it came from the chat above');
+
+  assert.equal(saidInMessage('Ilemere Road, Ikorodu, Lagos', 'from ilemre'), true, 'a typo is still the place');
+  assert.equal(saidInMessage('Victoria Island, Lagos', 'take me to VI'), true, 'an abbreviation the prompt allows');
+  assert.equal(saidInMessage('University of Lagos, Akoka', 'unilag gate'), true);
+  assert.equal(saidInMessage('12 Adebayo Street, Surulere, Lagos', 'take me home'), true, 'a memory cue: the model may fill from memory');
+  assert.equal(saidInMessage('Shoprite, Ikeja, Lagos', 'shoprite'), true);
+  assert.equal(saidInMessage('13 Aiyetoro Street, Akoka, Lagos', 'I want to go from ilemere road'), false);
+  assert.equal(saidInMessage('Lekki, Lagos', 'from Ikeja to Lekki'), true);
+});
