@@ -8,7 +8,6 @@ import type { RedisClient } from '../redis/client';
 import { readRawBody, sendJson } from '../http/utils';
 import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encryption';
 import { sendFlowOffersMessage } from './whatsapp-notifier';
-import { META_FLOWS_ENABLED } from './flow-toggle';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
@@ -63,6 +62,8 @@ export interface WhatsappFlowEndpointDeps {
   kycStorage?: DriverKycStorage;
   /** When set, Find Drivers drops a 'Check offers' re-entry button in chat. */
   notifier?: WhatsappNotifierDeps;
+  /** The original booking + offers flows. Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
+  legacyFlowsEnabled?: boolean;
   /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
   onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
   onWalletShort?: OffersFormDeps['onWalletShort'];
@@ -1026,7 +1027,7 @@ async function handleFindDrivers(
   // Drop a re-entry button in the chat right away: if the rider closes the
   // form while we search, tapping it re-opens the offers page any time —
   // they are never stranded waiting for the first bid.
-  if (META_FLOWS_ENABLED && deps.notifier && phone) {
+  if (deps.legacyFlowsEnabled && deps.notifier && phone) {
     const entryMeta = {
       riderId: userId,
       phone,

@@ -1,5 +1,4 @@
 import { signFlowToken } from './encryption';
-import { META_FLOWS_ENABLED, OFFERS_FORM_FLOW_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
 import { tripLines } from './trip-text';
@@ -16,6 +15,8 @@ export interface WhatsappNotifierDeps {
   quickActionsFlowId?: string;
   /** The form's token names the rider; a message knows only the phone. */
   riderIdFor?: (phone: string) => Promise<string | null>;
+  /** The original "Driver Offers" flow (offersFlowId). Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
+  legacyFlowsEnabled?: boolean;
 }
 
 /* ── offers, in the chat, as things to TAP ─────────────────────────────── */
@@ -153,7 +154,7 @@ export async function sendOffersInChat(
   // Its message says HOW MANY drivers, never who or how much: it is not sent again
   // while it sits unopened (see announceOffers), so anything more specific would go
   // stale. The form shows the live list the moment it opens.
-  const form = riderId && OFFERS_FORM_FLOW_ENABLED && deps.offersFormFlowId && deps.flowTokenSecret
+  const form = riderId && deps.offersFormFlowId && deps.flowTokenSecret
     ? {
         type: 'flow',
         body: {
@@ -239,7 +240,7 @@ export async function sendOffersReentryMessage(deps: WhatsappNotifierDeps, phone
 
 /** True when offers go out as the form message (one button) rather than reply buttons. */
 export function offersFormIsOn(deps: WhatsappNotifierDeps): boolean {
-  return OFFERS_FORM_FLOW_ENABLED && Boolean(deps.offersFormFlowId && deps.flowTokenSecret);
+  return Boolean(deps.offersFormFlowId && deps.flowTokenSecret);
 }
 
 async function postInteractive(deps: WhatsappNotifierDeps, phone: string, interactive: Record<string, unknown>): Promise<boolean> {
@@ -345,7 +346,7 @@ export async function sendMetaWhatsappMessage(
   // Words + the Quick Actions button: the form's when it is published and the
   // rider is known, else the list. If WhatsApp refuses both (an old phone, a
   // client that cannot show it), the words go on their own.
-  if (QUICK_ACTIONS_FLOW_ENABLED && deps.quickActionsFlowId && deps.flowTokenSecret && deps.riderIdFor) {
+  if (deps.quickActionsFlowId && deps.flowTokenSecret && deps.riderIdFor) {
     const riderId = await deps.riderIdFor(recipient).catch(() => null);
     if (riderId) {
       const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(body, deps.quickActionsFlowId, riderId, deps.flowTokenSecret) }).catch(() => null);
@@ -432,7 +433,7 @@ export async function sendFlowOffersMessage(
       ? `${count} driver offer${count === 1 ? '' : 's'} on your ₦${meta.offerNgn.toLocaleString()} request!\nLowest: ₦${Math.min(...bids.map((b) => b.counterOfferNgn)).toLocaleString()}. Tap below to view and accept.`
       : `We're finding drivers for your ₦${meta.offerNgn.toLocaleString()} request!\nOffers land right here — tap below anytime to check them.`;
 
-  if (!META_FLOWS_ENABLED || !deps.offersFlowId || !deps.flowTokenSecret) {
+  if (!deps.legacyFlowsEnabled || !deps.offersFlowId || !deps.flowTokenSecret) {
     await sendMetaWhatsappMessage(deps, to, body);
     return;
   }

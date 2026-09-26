@@ -548,6 +548,7 @@ async function bootstrap(): Promise<void> {
     whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
     whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
     whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+    legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
   });
 
   const server = createServer(async (req, res) => {
@@ -917,6 +918,7 @@ async function bootstrap(): Promise<void> {
         whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
         whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
     whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+    legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
       };
 
       if (req.method === "GET") {
@@ -950,6 +952,7 @@ async function bootstrap(): Promise<void> {
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
         routePlanner,
         kycStorage: driverKycStorage ?? undefined,
+        legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
         ...createQuickActionsChatHooks(buildMetaWhatsappDeps()),
         notifier:
           gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
@@ -957,6 +960,7 @@ async function bootstrap(): Promise<void> {
                 metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
                 metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
                 offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+                legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
                 flowTokenSecret: gatewayEnv.JWT_SECRET,
                 quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
                 riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
@@ -2215,6 +2219,7 @@ async function bootstrap(): Promise<void> {
             metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
             offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+            legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
             flowTokenSecret: gatewayEnv.JWT_SECRET,
             offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
             quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,

@@ -103,7 +103,6 @@ import type { PendingGeoChoices, PendingRouteData, RouteStop } from '../whatsapp
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage, sendBidPlacedMessage, sendOffersReentryMessage } from '../whatsapp-flows/whatsapp-notifier';
-import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from '../whatsapp-flows/flow-toggle';
 import { withQuickActions, withQuickActionsForm } from '../whatsapp-flows/whatsapp-notifier';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import {
@@ -144,6 +143,8 @@ export interface MetaWhatsappRouteDeps {
   whatsappOffersFormFlowId?: string;
   /** Published Quick Actions form. Unset = the menu is WhatsApp's list picker. */
   whatsappQuickActionsFlowId?: string;
+  /** The two original flows (booking form, "Driver Offers"). Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
+  legacyFlowsEnabled?: boolean;
 }
 
 /* ─── Meta Cloud API helpers ─── */
@@ -256,7 +257,7 @@ async function sendMetaReply(
   // it invites a rider mid-address to wander off. A refused list falls back to
   // the words alone.
   if (!(await inBookingStep(deps, recipient))) {
-    if (QUICK_ACTIONS_FLOW_ENABLED && deps.whatsappQuickActionsFlowId) {
+    if (deps.whatsappQuickActionsFlowId) {
       const riderId = await lookupUserIdByPhone(deps.redisClient, recipient).catch(() => null);
       if (riderId) {
         const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(message, deps.whatsappQuickActionsFlowId, riderId, deps.jwtSecret) }).catch(() => null);
@@ -935,7 +936,7 @@ async function sendQuoteWithPriceButton(
 
   // With the trip form on, bidding is in the form — never the web page. This is
   // the fallback for a phone that could not open it: the price is typed here.
-  const url = EDIT_TRIP_FLOW_ENABLED && deps.whatsappEditTripFlowId ? null : ridePageUrl(deps, user.id);
+  const url = deps.whatsappEditTripFlowId ? null : ridePageUrl(deps, user.id);
   if (!url) {
     await sendMetaReply(deps, phone, quote);
     return quote;
@@ -1023,7 +1024,7 @@ const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
 async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string, greeting = false, bodyText?: string): Promise<void> {
   const who = await userClient.findById(user.id).catch(() => null);
   const firstName = who?.name?.trim().split(/\s+/)[0] || null;
-  if (QUICK_ACTIONS_FLOW_ENABLED && deps.whatsappQuickActionsFlowId) {
+  if (deps.whatsappQuickActionsFlowId) {
     const sent = await sendInteractive(deps, phone, {
       type: 'flow',
       body: { text: bodyText ?? quickActionsBody(greeting, firstName) },
@@ -2318,7 +2319,7 @@ async function sendTripConfirmation(
   // WhatsApp allows a message reply buttons OR one form button — never both. With
   // the form published, the card is ONE message with ONE button: confirming,
   // editing and stops all happen in the form, and the price step follows it.
-  if (EDIT_TRIP_FLOW_ENABLED && deps.whatsappEditTripFlowId) {
+  if (deps.whatsappEditTripFlowId) {
     const formCard = [
       headline ?? '*Check your trip*',
       ``,
@@ -2389,7 +2390,7 @@ const TRIP_FORM_CTA = 'Confirm or edit trip';
  * on with reply buttons in the chat.
  */
 async function sendTripForm(deps: MetaWhatsappRouteDeps, userId: string, phone: string, body: string, cta: string): Promise<boolean> {
-  if (!EDIT_TRIP_FLOW_ENABLED || !deps.whatsappEditTripFlowId) return false;
+  if (!deps.whatsappEditTripFlowId) return false;
   return sendInteractive(deps, phone, {
     type: 'flow',
     body: { text: body.slice(0, 1024) },
@@ -3491,7 +3492,7 @@ async function handleIncomingMetaMessage(
     // A greeting while a flow-booked ride is live re-sends the offers button
     // — the booking form would only dead-end on 'you have a ride in progress'.
     if (
-      META_FLOWS_ENABLED &&
+      deps.legacyFlowsEnabled &&
       deps.whatsappOffersFlowId &&
       deps.metaAccessToken &&
       deps.metaPhoneNumberId &&
@@ -3521,7 +3522,7 @@ async function handleIncomingMetaMessage(
       }
     }
 
-    if (META_FLOWS_ENABLED && deps.whatsappFlowId && !activeRideId && isBookingOpener(incomingMessage)) {
+    if (deps.legacyFlowsEnabled && deps.whatsappFlowId && !activeRideId && isBookingOpener(incomingMessage)) {
       const flowToken = signFlowToken(`new:${user.id}`, deps.jwtSecret);
       const sent = await sendMetaFlowMessage(deps, phone, flowToken);
       console.info('[whatsapp] booking opener', {

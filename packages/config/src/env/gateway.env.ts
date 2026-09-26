@@ -37,6 +37,10 @@ const GatewayEnvSchema = z.object({
   TWILIO_KYC_CONTENT_SID: z.string().min(1).optional(),
   // WhatsApp Flows
   WHATSAPP_FLOW_PRIVATE_KEY: z.string().min(1).optional(),
+  // The forms that are ON are the ones whose id is set: WHATSAPP_EDIT_TRIP_FLOW_ID,
+  // WHATSAPP_OFFERS_FORM_FLOW_ID, WHATSAPP_QUICK_ACTIONS_FLOW_ID. The two original
+  // flows (booking + "Driver Offers", the ids below) stay off unless this says so.
+  WHATSAPP_LEGACY_FLOWS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   WHATSAPP_FLOW_ID: z.string().min(1).optional(),
   WHATSAPP_OFFERS_FLOW_ID: z.string().min(1).optional(),
   WHATSAPP_EDIT_TRIP_FLOW_ID: z.string().min(1).optional(),
