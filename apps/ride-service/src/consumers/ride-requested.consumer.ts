@@ -20,19 +20,20 @@ import { matchDriver } from '../handlers/match-driver.handler';
 
 /** How long one offer card rings on a driver's phone. */
 const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
-/** How long the whole search runs before the rider is told nobody took it. */
+/** How long the whole search runs before it gives up. A driver's bid does not shorten it: the rider reads offers in the form when they like. */
 const BID_TIMEOUT_MS = RIDE.BID_TIMEOUT_SECONDS * 1000;
-/** How long a rider gets to pick (and fund) an offer once one exists. */
-const DECISION_WINDOW_MS = 10 * 60_000;
+/** A rebuilt auction (after a restart) gets at least this long, whatever is left of its window. */
+const REBUILT_MIN_WINDOW_MS = 60_000;
 
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
   rideEnv: RideEnv;
   rideEventsProducer: RideEventsProducer;
-}): { handle: (value: unknown, ctx: MessageContext) => Promise<void> } {
+}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number> } {
   const { state, rideEnv, rideEventsProducer } = params;
 
   return {
+    rehydrate: rehydrateOpenSearches,
     async handle(value, ctx) {
       if (ctx.topic !== TOPICS.RIDE_EVENTS) return;
       const event = safeParseKafkaEvent(TOPICS.RIDE_EVENTS, value);
@@ -243,17 +244,14 @@ export function createRideRequestedConsumer(params: {
   }
 
   async function handleCounterOffer(event: RideCounterOfferEvent): Promise<void> {
-    const pending = findPendingForRideId(event.rideId);
+    const pending = findPendingForRideId(event.rideId) ?? await rebuildPending(event.rideId);
     if (!pending) return;
 
-    // An offer is on the table: give the rider a decision window instead of
-    // the 90 s broadcast timeout. Clearing without re-arming left closure to
-    // the stale sweep, which fired 2–3 minutes after the waiting indicator the driver saw.
-    if (pending.timeout) {
-      clearTimeout(pending.timeout);
-      pending.timeout = null;
-    }
-    startBidTimeout(pending.rideRequested, DECISION_WINDOW_MS);
+    // The auction's clock is untouched by a bid. It used to shrink to a ten-minute
+    // "decision window" here — fine when the rider sat watching the chat, wrong now
+    // that offers wait in a form the rider opens when they like: a bid at minute 5
+    // closed the search at minute 15, and a rider looking at minute 20 was told no
+    // driver had come. The search runs its full window; a bid is simply on the table.
 
     // Store driver info so we can use it when the rider accepts
     pending.counterOfferDrivers.set(event.driverId, {
@@ -273,7 +271,10 @@ export function createRideRequestedConsumer(params: {
   }
 
   async function handleRiderCounterOffer(event: RideRiderCounterOfferEvent): Promise<void> {
-    const pending = findPendingForRideId(event.rideId);
+    // No auction in memory for a live ride means the service restarted mid-search.
+    // Rebuild it from the database — silently dropping the new price left drivers
+    // on the old one while the rider's form said "Bid updated".
+    const pending = findPendingForRideId(event.rideId) ?? await rebuildPending(event.rideId);
     if (!pending) return;
 
     // A group member countering on THEIR seat: update that seat's offer and
@@ -513,45 +514,20 @@ export function createRideRequestedConsumer(params: {
     }
   }
 
-  /**
-   * Rebuilds the ride request from the database and re-runs matching, skipping
-   * the driver who just cancelled so they cannot immediately be re-offered the
-   * same job they walked away from.
-   */
-  async function redispatchAfterDriverCancel(event: RideCancelledEvent): Promise<void> {
-    const ride = await rideClient.findById(event.rideId).catch((err) => {
-      console.error('[ride-service] cannot re-match after driver cancel — ride lookup failed', {
-        rideId: event.rideId,
-        error: (err as any)?.message ?? err,
-      });
-      return null;
-    });
-
-    if (!ride) return;
-    if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') {
-      return;
-    }
-
-    await rideClient.markMatching(event.rideId).catch((err) => {
-      console.warn('[ride-service] could not reset ride to MATCHING', {
-        rideId: event.rideId,
-        error: (err as any)?.message ?? err,
-      });
-    });
-
-    const routeStops = await rideClient.findRouteStops(event.rideId).catch(() => []);
-    const stops = routeStops
+  /** The ride row as the event that started it — for auctions the service has to rebuild. */
+  function rideRequestedFromRow(
+    ride: NonNullable<Awaited<ReturnType<typeof rideClient.findById>>>,
+  ): RideRequestedEvent {
+    const stops = ride.routeStops
       .filter((stop) => stop.type === 'INTERMEDIATE' && stop.status !== 'COMPLETED')
       .map((stop) => ({ lat: stop.lat, lng: stop.lng, address: stop.address }));
-
     const distanceKm = ride.distanceKm ?? 0;
     const pricing = calculateSuggestedFare(distanceKm);
     const riderOfferNgn =
       ride.riderOfferNgn !== null && ride.riderOfferNgn !== undefined
         ? Number(ride.riderOfferNgn)
         : pricing.suggestedFareNgn;
-
-    const rideRequested: RideRequestedEvent = {
+    return {
       eventType: 'RIDE_REQUESTED',
       rideId: ride.id,
       riderId: ride.riderId,
@@ -571,51 +547,116 @@ export function createRideRequestedConsumer(params: {
       plannedDurationSeconds: ride.durationSeconds ?? undefined,
       timestamp: new Date().toISOString(),
     };
+  }
 
-    const result = await matchDriver({
-      rideEnv,
-      onlineDrivers: state.onlineDrivers,
-      rideRequested,
+  /**
+   * Put a live search back into memory from its ride row: re-run matching, offer
+   * it to every nearby driver (their apps replace cards by ride id, so a driver
+   * who already has it sees nothing new), and arm what is left of its window.
+   * Null when the ride is not open any more. `excludeDriverId` keeps a driver
+   * who just walked away from being offered the same job again.
+   */
+  async function rebuildPending(
+    rideId: string,
+    options: { excludeDriverId?: string; resetStatus?: boolean } = {},
+  ): Promise<PendingRideMatch | null> {
+    const ride = await rideClient.findById(rideId).catch((err) => {
+      console.error('[ride-service] cannot rebuild search — ride lookup failed', {
+        rideId,
+        error: (err as any)?.message ?? err,
+      });
+      return null;
     });
+    if (!ride) return null;
+    if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') return null;
+    if (options.resetStatus) {
+      await rideClient.markMatching(rideId).catch((err) => {
+        console.warn('[ride-service] could not reset ride to MATCHING', { rideId, error: (err as any)?.message ?? err });
+      });
+    } else if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') {
+      return null;
+    }
 
+    const rideRequested = rideRequestedFromRow(ride);
+    state.routeByRideId.set(ride.id, [
+      ...rideRequested.stops.map((stop, index) => ({ stopOrder: index, type: 'intermediate' as const, status: 'pending' as const, lat: stop.lat, lng: stop.lng, address: stop.address })),
+      { stopOrder: rideRequested.stops.length, type: 'final' as const, status: 'pending' as const, lat: ride.destLat, lng: ride.destLng, address: ride.destAddress },
+    ]);
+
+    const result = await matchDriver({ rideEnv, onlineDrivers: state.onlineDrivers, rideRequested });
     const drivers = result.ok
-      ? result.drivers.filter((driver) => driver.driverId !== event.driverId)
+      ? result.drivers.filter((driver) => driver.driverId !== options.excludeDriverId)
       : [];
 
-    // Remember the departing driver so the retry loop never circles back to
-    // them, even if they are still the closest car on the map.
     const attemptedDriverIds = new Set<string>();
-    if (event.driverId) attemptedDriverIds.add(event.driverId);
+    if (options.excludeDriverId) attemptedDriverIds.add(options.excludeDriverId);
 
-    state.pendingMatchesByRideId.set(event.rideId, {
+    const existing = state.pendingMatchesByRideId.get(ride.id);
+    if (existing?.timeout) clearTimeout(existing.timeout);
+    const pending: PendingRideMatch = {
       rideRequested,
       candidates: drivers,
       attemptedDriverIds,
       offeredDriverId: null,
       timeout: null,
       counterOfferDrivers: new Map(),
+    };
+    state.pendingMatchesByRideId.set(ride.id, pending);
+
+    // What is left of the window, never less than a minute: the rider is told either
+    // way, and a re-match with no drivers left must not strand them in a silent search.
+    const elapsedMs = Date.now() - ride.createdAt.getTime();
+    startBidTimeout(rideRequested, options.resetStatus ? BID_TIMEOUT_MS : Math.max(REBUILT_MIN_WINDOW_MS, BID_TIMEOUT_MS - elapsedMs));
+
+    if (drivers.length > 0) {
+      await rideEventsProducer.broadcastRideOffer({
+        drivers,
+        rideRequested,
+        expiresAt: new Date(Date.now() + OFFER_TTL_MS),
+      });
+    }
+    console.info('[ride-service] search rebuilt from the database', {
+      rideId: ride.id,
+      drivers: drivers.length,
+      ageSeconds: Math.round(elapsedMs / 1000),
+      reason: options.excludeDriverId ? 'driver cancelled' : 'not in memory',
     });
+    return pending;
+  }
 
-    // Arm the timeout first so the rider is told either way — a re-match with
-    // no drivers left must not strand them in a silent search.
-    startBidTimeout(rideRequested);
+  /**
+   * On start: every solo search still inside its window goes back into memory.
+   * The auction used to live in this process only, so a deploy mid-search left
+   * riders changing their price into the void and late drivers offered nothing,
+   * until the stale sweep closed the ride. Group seats are the group dispatcher's.
+   */
+  async function rehydrateOpenSearches(): Promise<number> {
+    const open = await rideClient.findOpenSearches(BID_TIMEOUT_MS).catch((err) => {
+      console.error('[ride-service] could not load open searches on start', { error: (err as any)?.message ?? err });
+      return [];
+    });
+    let rebuilt = 0;
+    for (const ride of open) {
+      if (state.pendingMatchesByRideId.has(ride.id)) continue;
+      if (await rebuildPending(ride.id)) rebuilt += 1;
+    }
+    if (open.length > 0) console.info('[ride-service] open searches on start', { found: open.length, rebuilt });
+    return rebuilt;
+  }
 
-    if (drivers.length === 0) {
-      console.log(
-        `[ride-service] driver ${event.driverId} cancelled ride ${event.rideId}; no other drivers available`,
-      );
+  /**
+   * A driver bailing after they accepted is not the end of the ride — the rider
+   * is still standing there. Put it back into matching and offer it to every
+   * nearby driver except the one who left.
+   */
+  async function redispatchAfterDriverCancel(event: RideCancelledEvent): Promise<void> {
+    const pending = await rebuildPending(event.rideId, { excludeDriverId: event.driverId ?? undefined, resetStatus: true });
+    if (!pending) return;
+    if (pending.candidates.length === 0) {
+      console.log(`[ride-service] driver ${event.driverId} cancelled ride ${event.rideId}; no other drivers available`);
       return;
     }
-
-    await rideEventsProducer.broadcastRideOffer({
-      drivers,
-      rideRequested,
-      expiresAt: new Date(Date.now() + OFFER_TTL_MS),
-    });
-
-    console.log(
-      `[ride-service] driver ${event.driverId} cancelled ride ${event.rideId} — re-broadcast to ${drivers.length} drivers`,
-    );
+    console.log(`[ride-service] driver ${event.driverId} cancelled ride ${event.rideId} — re-broadcast to ${pending.candidates.length} drivers`);
   }
 
   function clearPendingMatch(rideId: string): void {

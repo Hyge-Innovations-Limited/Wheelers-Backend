@@ -262,6 +262,11 @@ async function bootstrap(): Promise<void> {
     },
   );
 
+  // A deploy mid-search must not lose the auction: rebuild every open one from the database.
+  void rideRequestedConsumer.rehydrate().catch((err) => {
+    console.error(`[${SERVICE_ID}] rehydrating open searches failed`, (err as any)?.message ?? err);
+  });
+
   startGpsMonitor({
     state,
     rideEnv,

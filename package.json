@@ -53,6 +53,7 @@
     "test:mcp-server": "npm -w @wheleers/mcp-server run build && node --test --test-force-exit test/mcp-server.test.js",
     "test:wallet-payment-integration": "npm run build && tsc -p test/tsconfig.json && node test/dist/payment-wallet.integration.js",
     "test:driver-reonline": "tsc -p test/tsconfig.json && node test/dist/driver-reonline.integration.js",
+    "test:ride-rehydrate": "npm -w @wheleers/db run build && npm -w @wheleers/ride-service run build && node --test --test-force-exit test/ride-rehydrate.test.js",
     "test:driver-bids": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/driver-bids.test.js",
     "test:whatsapp-amounts": "npm -w @wheleers/api-gateway run build && node --test test/whatsapp-amounts.test.js",
     "test:rider-memory": "npm -w @wheleers/api-gateway run build && node --test test/rider-memory.test.js",

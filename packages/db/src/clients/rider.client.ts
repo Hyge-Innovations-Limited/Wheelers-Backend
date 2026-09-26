@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import type { RidePaymentMethod, RideStatus, RideStopStatus, RideStopType } from '@prisma/client';
 
@@ -111,6 +112,30 @@ export const rideClient = {
   // sweep killed it within a minute. Age by last activity instead, and leave
   // a ride alone while a driver's offer is still fresh on the table — the
   // rider may be topping up to pay for it.
+  /**
+   * Every solo search still inside its window — what a freshly (re)started ride
+   * service must pick back up, or riders who change their price mid-search are
+   * talking to nobody. Group seats are left out: their auction lives under the
+   * group's own id and is rebuilt by the group dispatcher.
+   */
+  findOpenSearches: async (maxAgeMs: number) => {
+    const since = new Date(Date.now() - maxAgeMs);
+    const [rides, groups] = await Promise.all([
+      prisma.ride.findMany({
+        where: { status: { in: ['REQUESTED', 'MATCHING'] }, createdAt: { gte: since } },
+        include: { routeStops: { orderBy: { stopOrder: 'asc' } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.groupRideMatchRequest.findMany({
+        where: { updatedAt: { gte: new Date(Date.now() - 2 * 86_400_000) }, NOT: { matchedRideIds: { equals: Prisma.DbNull } } },
+        select: { matchedRideIds: true },
+      }),
+    ]);
+    const seats = new Set<string>();
+    for (const group of groups) for (const id of (Array.isArray(group.matchedRideIds) ? group.matchedRideIds : []) as unknown[]) if (typeof id === 'string') seats.add(id);
+    return rides.filter((ride) => !seats.has(ride.id));
+  },
+
   findStaleUnmatched: (cutoff: Date, limit = 200, pendingBidGraceMs = 10 * 60_000) =>
     prisma.ride.findMany({
       where: {
