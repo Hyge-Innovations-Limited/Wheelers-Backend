@@ -1,5 +1,6 @@
 import { rideClient } from '@wheleers/db';
 import type { RouteStop } from '../whatsapp-flows/bid-state';
+import { tripBlock } from '../whatsapp-flows/trip-text';
 
 /**
  * Quick actions: the one place a rider can see everything the bot does.
@@ -151,7 +152,7 @@ export function buildHistoryList(trips: PastTrip[]): Record<string, unknown> | n
 export function buildRepeatButtons(trip: PastTrip, headline: string): Record<string, unknown> {
   return {
     type: 'button',
-    body: { text: `${headline}\n\nPickup: ${trip.pickup.address}\n${trip.stops.map((stop, index) => `Stop ${index + 1}: ${stop.address}\n`).join('')}Destination: ${trip.destination.address}` },
+    body: { text: `${headline}\n\n${tripBlock({ pickupAddress: trip.pickup.address, destAddress: trip.destination.address, stops: trip.stops })}` },
     action: {
       buttons: [
         { type: 'reply', reply: { id: `qa_again:${trip.rideId}`, title: 'Repeat this ride' } },

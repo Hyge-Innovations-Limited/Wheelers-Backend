@@ -55,7 +55,6 @@ import {
   offersFormIsOn,
   sortOffers,
   sendFlowOffersMessage,
-  sendRideMatchedNotification,
   sendDriverArrivedNotification,
   sendRideStartedNotification,
   sendRideCompletedNotification,
@@ -673,17 +672,9 @@ export async function handleRideEvent(
         // Non-critical
       }
 
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
-        const acceptedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
-        await sendRideMatchedNotification(
-          deps.whatsappNotifier, phone,
-          event.driverName, event.vehicleModel,
-          event.vehiclePlate ?? '', event.etaSeconds,
-          event.agreedFareNgn, event.driverRating ?? 0,
-          acceptedBid?.driverPhone,
-        ).catch(() => {});
-      }
+      // The chat already has the ride card (photo, car, plate, Track live trip, SOS) from
+      // the accept itself — the chat tap, the offers form, the page and the deposit finisher
+      // all send it. A second "Ride confirmed!" text here was the same news twice.
     } else {
       const riderMatchFees = calculateRideFees(event.agreedFareNgn);
 

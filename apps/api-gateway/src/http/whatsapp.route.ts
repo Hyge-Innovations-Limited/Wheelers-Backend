@@ -105,6 +105,7 @@ import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { sendFlowOffersMessage, sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from '../whatsapp-flows/flow-toggle';
 import { withQuickActions, withQuickActionsForm } from '../whatsapp-flows/whatsapp-notifier';
+import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import {
   CHANGE_PRICE_REPLY_ID,
   formatBidList,
@@ -270,6 +271,17 @@ async function sendMetaReply(
     const payload = await response.text();
     console.error('[whatsapp] Meta reply failed', { status: response.status, payload });
   }
+}
+
+/**
+ * A price under the floor is not refused, it is nudged: the lowest price for the
+ * trip, with one button that offers exactly that. Typing a higher amount still works.
+ */
+async function sendFloorNudge(deps: MetaWhatsappRouteDeps, phone: string, incomingMessage: string, offeredNgn: number, floorNgn: number): Promise<void> {
+  const body = `₦${offeredNgn.toLocaleString()} is under the lowest price for this trip, ₦${floorNgn.toLocaleString()}.\n\nTap below to offer ₦${floorNgn.toLocaleString()}, or type a higher amount.`;
+  await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: body }]);
+  const sent = await sendInteractive(deps, phone, { type: 'button', body: { text: body }, action: { buttons: [{ type: 'reply', reply: { id: `offer_floor:${floorNgn}`, title: `Offer ₦${floorNgn.toLocaleString()}` } }] } });
+  if (!sent) await sendMetaReply(deps, phone, body);
 }
 
 /** Words alone — no button under them. For a prompt whose answer is the next thing typed. */
@@ -669,12 +681,50 @@ function stripDirectionPrefix(message: string): string {
   return stripped.length >= 3 ? stripped : message.trim();
 }
 
+/**
+ * Two points of a trip that are the same place — Google answers those with an
+ * empty route ("missing route distance"), which read as an outage. Named here
+ * so the reply can say which two, and ask which to change.
+ */
+/** Google returns no route for two points this close — one building, one gate. */
+const NO_ROUTE_KM = 0.05;
+
+function samePlacePair(
+  pickup: { lat: number; lng: number },
+  destination: { lat: number; lng: number },
+  stops: RouteStop[] = [],
+  withinKm: number = SAME_PLACE_KM,
+): [string, string] | null {
+  const points = [
+    { label: 'pickup', ...pickup },
+    ...stops.map((stop, index) => ({ label: `stop ${index + 1}`, lat: stop.lat, lng: stop.lng })),
+    { label: 'destination', ...destination },
+  ];
+  for (let a = 0; a < points.length; a++) {
+    for (let b = a + 1; b < points.length; b++) {
+      if (kmBetween(points[a]!, points[b]!) < withinKm) return [points[a]!.label, points[b]!.label];
+    }
+  }
+  return null;
+}
+
+/** "Your pickup and destination are the same place" — with what to do about it. */
+function samePlaceReply(pair: [string, string], address: string): string {
+  return `Your ${pair[0]} and your ${pair[1]} are the same place: *${address}*.\n\nSend a different ${pair[1]}, or say which one to change — e.g. *change pickup to Ikeja City Mall*.`;
+}
+
 async function planRouteSafe(
   deps: MetaWhatsappRouteDeps,
   pickup: { lat: number; lng: number; address: string },
   destination: { lat: number; lng: number; address: string },
   stops: RouteStop[] = [],
 ): Promise<Awaited<ReturnType<GoogleMapsRoutePlanner['planRoute']>> | null> {
+  // Only the truly identical case is refused here (a 300 m hop is still a ride); the edit
+  // paths ask about anything under SAME_PLACE_KM before they get this far.
+  if (samePlacePair(pickup, destination, stops, NO_ROUTE_KM)) {
+    console.info('[whatsapp] route not planned — two points are the same place', { pickup: pickup.address, destination: destination.address });
+    return null;
+  }
   try {
     return await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) });
   } catch (error) {
@@ -688,7 +738,7 @@ async function planRouteSafe(
 }
 
 const ROUTE_PLAN_FAILED_REPLY =
-  'Could not find a driving route between those two points.\n\nPlease double-check the addresses, or share a location pin';
+  'I could not find a driving route between those points.\n\nCheck the addresses, or share a location pin.';
 
 /**
  * Every normal booking is a potential group ride. Appended to the fare quote
@@ -911,9 +961,8 @@ async function sendSearchStarted(
   const lines = [
     `*Finding you a driver!*`,
     ``,
-    `Pickup: *${trip.pickupAddress}*`,
-    ...(trip.stopAddresses ?? []).map((stop, index) => `Stop ${index + 1}: *${stop}*`),
-    `Destination: *${trip.destAddress}*`,
+    ...sharedTripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: (trip.stopAddresses ?? []).map((address) => ({ address })) }),
+    ``,
     `Your offer: ₦${trip.offerNgn.toLocaleString()}`,
     ``,
     `Drivers' offers will land right here in this chat — tap the one you want.`,
@@ -1108,10 +1157,11 @@ function rideDetailsText(ride: ConfirmedRideForChat): string {
     `Plate: *${ride.vehiclePlate}* — check it before you get in`,
     ``,
     `*YOUR TRIP*`,
-    ...(ride.pickupAddress ? [`From: ${ride.pickupAddress}`] : []),
-    ...(ride.stopAddresses ?? []).map((stop, index) => `Stop ${index + 1}: ${stop}`),
-    ...(ride.destAddress ? [`To: ${ride.destAddress}`] : []),
-    `₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
+    ...(ride.pickupAddress && ride.destAddress
+      ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
+      : []),
+    ``,
+    `Fare: ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
     `Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
     ``,
     `*Track live trip* — watch your driver on the map.`,
@@ -2112,6 +2162,13 @@ async function replanPendingRoute(
   const pickup = isPickup ? place : { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress };
   const destination = isPickup ? { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress } : place;
 
+  const clash = samePlacePair(pickup, destination, pendingRoute.stops);
+  if (clash) {
+    await setBookingStage(deps.redisClient, user.id, isPickup ? 'editing_pickup' : 'editing_destination');
+    await replyAndLog(deps, phone, incomingMessage, `${samePlaceReply(clash, place.address)}\n\nYour booking is unchanged.`);
+    return;
+  }
+
   const plannedRoute = await planRouteSafe(deps, pickup, destination, pendingRoute.stops);
   if (!plannedRoute) {
     await replyAndLog(deps, phone, incomingMessage, `${ROUTE_PLAN_FAILED_REPLY}\n\nYour booking is unchanged.`);
@@ -2160,16 +2217,78 @@ const TRIP_ADD_STOP_ID = 'trip_add_stop';
 const TRIP_EDIT_ID = 'trip_edit';
 const TRIP_EDIT_PICKUP_ID = 'trip_edit_pickup';
 const TRIP_EDIT_DESTINATION_ID = 'trip_edit_destination';
+/** "Which one is it?" after a lone place: the place waits here for the tap. */
+const TRIP_DRAFT_PICKUP_ID = 'trip_draft_pickup';
+const TRIP_DRAFT_DESTINATION_ID = 'trip_draft_destination';
+const TRIP_DRAFT_STOP_ID = 'trip_draft_stop';
+const endDraftKey = (userId: string) => `whatsapp:user:${userId}:end_draft`;
+
+/**
+ * Does the message itself say WHICH end it is about? "from X" and "pick me at X" name
+ * the pickup; "to X", "going to X", "drop me at X" the destination. "Change it to X"
+ * and a bare place name say neither — the model used to guess destination, and a
+ * rider who meant the pickup got the wrong trip.
+ */
+function namedEnd(message: string): 'pickup' | 'destination' | null {
+  const m = ` ${message.trim().toLowerCase()} `;
+  if (/\b(pick\s*-?\s*up|pick me|from|origin|start(ing)? point|where i am|i am at|i'm at)\b/.test(m)) return 'pickup';
+  if (/\b(destination|drop|dropoff|drop-off|going to|heading to|take me to|headed to|dest)\b/.test(m) || /^\s*to\s+/.test(m)) return 'destination';
+  return null;
+}
+
+/** The lone place is kept, and the rider is asked which end (or stop) it is. */
+async function askWhichEnd(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, incomingMessage: string, trip: PendingRouteData, address: string): Promise<void> {
+  await deps.redisClient.set(endDraftKey(user.id), JSON.stringify({ address }), 600);
+  const body = [
+    `Got *${address}*. Which one is it?`,
+    ``,
+    `Pickup now: *${trip.pickupAddress}*`,
+    ``,
+    `Destination now: *${trip.destAddress}*`,
+  ].join('\n');
+  const buttons = [
+    { id: TRIP_DRAFT_PICKUP_ID, title: 'New pickup' },
+    { id: TRIP_DRAFT_DESTINATION_ID, title: 'New destination' },
+    ...((trip.stops?.length ?? 0) < MAX_CHAT_STOPS ? [{ id: TRIP_DRAFT_STOP_ID, title: 'Add as a stop' }] : []),
+  ];
+  await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: body }]);
+  const sent = await sendInteractive(deps, phone, { type: 'button', body: { text: body }, action: { buttons: buttons.map((button) => ({ type: 'reply', reply: button })) } });
+  if (!sent) await sendMetaReply(deps, phone, `${body}\n\nReply *pickup*, *destination* or *stop*.`);
+}
+
+/**
+ * A place typed with no end named: is it a refinement of one of the ends already on
+ * the trip? "No, Caleb law" when the destination is Caleb University shares a word
+ * with it — that is the destination, corrected. A place that shares nothing with
+ * either end is new, and only the rider knows which end it is.
+ */
+const PLACE_FILLER = new Set(['lagos', 'nigeria', 'street', 'road', 'close', 'avenue', 'estate', 'state', 'bus', 'stop', 'junction', 'the', 'and', 'of']);
+function refinedEnd(address: string, trip: PendingRouteData): 'pickup' | 'destination' | null {
+  const words = (text: string) => new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((word) => word.length >= 4 && !PLACE_FILLER.has(word)));
+  const typed = words(address);
+  const overlaps = (end: string) => [...words(end)].some((word) => typed.has(word));
+  const pickup = overlaps(trip.pickupAddress);
+  const destination = overlaps(trip.destAddress);
+  if (pickup === destination) return null;
+  return pickup ? 'pickup' : 'destination';
+}
+
+/** Where a change with no end named goes: the end the message names, the end it refines, or the question. */
+async function changeEndOrAsk(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, incomingMessage: string, trip: PendingRouteData, modelSaid: 'pickup' | 'destination', address: string): Promise<void> {
+  const field = namedEnd(incomingMessage) ?? refinedEnd(address, trip);
+  if (field) return replanPendingRoute(deps, user, phone, incomingMessage, trip, field, address);
+  // The model picked an end for a place that names none and refines neither — that is the guess that put a
+  // rider's new pickup in as the destination. Ask.
+  void modelSaid;
+  return askWhichEnd(deps, user, phone, incomingMessage, trip, address);
+}
 const TRIP_CANCEL_ID = 'trip_cancel';
 const TRIP_REMOVE_STOP = /^trip_remove_stop_(\d)$/;
 
 /** Pickup, every stop in order, destination — the same lines on the card, the quote and the edit list. */
+/** The trip as text — see trip-text.ts, the one template every message uses. */
 function tripLines(trip: PendingRouteData): string[] {
-  return [
-    `Pickup: *${trip.pickupAddress}*`,
-    ...(trip.stops ?? []).map((stop, index) => `Stop ${index + 1}: *${stop.address}*`),
-    `Destination: *${trip.destAddress}*`,
-  ];
+  return sharedTripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: trip.stops });
 }
 
 /**
@@ -2514,6 +2633,19 @@ async function handleTripTap(
   if (replyId === TRIP_ADD_STOP_ID) return askForStop(deps, user, phone, incomingMessage, trip);
   if (replyId === TRIP_EDIT_PICKUP_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'pickup');
   if (replyId === TRIP_EDIT_DESTINATION_ID) return askForNewEnd(deps, user, phone, incomingMessage, trip, 'destination');
+  if (replyId === TRIP_DRAFT_PICKUP_ID || replyId === TRIP_DRAFT_DESTINATION_ID || replyId === TRIP_DRAFT_STOP_ID) {
+    const raw = await deps.redisClient.get(endDraftKey(user.id)).catch(() => null);
+    await deps.redisClient.del(endDraftKey(user.id)).catch(() => undefined);
+    let draft: { address: string } | null = null;
+    try { draft = raw ? (JSON.parse(raw) as { address: string }) : null; } catch { draft = null; }
+    if (!draft?.address) {
+      const said = await sendTripConfirmation(deps, user, phone, trip, 'That place has expired — this is the trip I have for you');
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: said }]);
+      return;
+    }
+    if (replyId === TRIP_DRAFT_STOP_ID) return addStopToTrip(deps, user, phone, incomingMessage, trip, draft.address);
+    return replanPendingRoute(deps, user, phone, incomingMessage, trip, replyId === TRIP_DRAFT_PICKUP_ID ? 'pickup' : 'destination', draft.address);
+  }
   if (replyId === TRIP_CANCEL_ID) {
     await setBookingStage(deps.redisClient, user.id, 'awaiting_cancel_reason');
     return replyAndLog(deps, phone, incomingMessage, CANCELLATION_REASON_PROMPT);
@@ -3250,6 +3382,13 @@ async function handleIncomingMetaMessage(
     // ── SOS. Before consent, before any booking step, before anything. ────
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {
       await handleRideCardTap(deps, user.id, phone, msgInfo.replyId);
+      return;
+    }
+
+    // ── "Offer ₦X" on a too-low price: the tap IS the price ──────────────
+    const floorTap = /^offer_floor:(\d+)$/.exec(msgInfo.replyId ?? '');
+    if (floorTap) {
+      await handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', replyId: undefined, messageBody: floorTap[1]! });
       return;
     }
 
@@ -5011,7 +5150,7 @@ async function handleIncomingMetaMessage(
       }
       if (wanted.intent === 'change_pickup' || wanted.intent === 'change_destination') {
         const field = wanted.intent === 'change_pickup' ? 'pickup' : 'destination';
-        if (wanted.address) await replanPendingRoute(deps, user, phone, incomingMessage, trip, field, wanted.address);
+        if (wanted.address) await changeEndOrAsk(deps, user, phone, incomingMessage, trip, field, wanted.address);
         else await askForNewEnd(deps, user, phone, incomingMessage, trip, field);
         return;
       }
@@ -5134,7 +5273,7 @@ async function handleIncomingMetaMessage(
             const field = wanted.intent === 'change_pickup' ? 'pickup' : 'destination';
             await clearBookingMisses(deps.redisClient, user.id);
             if (wanted.address) {
-              await replanPendingRoute(deps, user, phone, incomingMessage, pendingRoute, field, wanted.address);
+              await changeEndOrAsk(deps, user, phone, incomingMessage, pendingRoute, field, wanted.address);
               return;
             }
             const current = field === 'pickup' ? pendingRoute.pickupAddress : pendingRoute.destAddress;
@@ -5197,12 +5336,7 @@ async function handleIncomingMetaMessage(
         await clearBookingMisses(deps.redisClient, user.id);
 
         if (offerNgn < pendingRoute.minOfferNgn) {
-          const reply = `Your offer ₦${offerNgn.toLocaleString()} is below the minimum fare of ₦${pendingRoute.minOfferNgn.toLocaleString()}.\n\nPlease send a higher amount.`;
-          await appendWhatsappConversation(deps.redisClient, phone, [
-            { role: 'user', content: incomingMessage },
-            { role: 'assistant', content: reply },
-          ]);
-          await sendMetaReply(deps, phone, reply);
+          await sendFloorNudge(deps, phone, incomingMessage, offerNgn, pendingRoute.minOfferNgn);
           return;
         }
 
@@ -5212,7 +5346,7 @@ async function handleIncomingMetaMessage(
         if (!published.ok) {
           if (published.code === 'ALREADY_PUBLISHING') return;
           const reply = published.code === 'BELOW_MINIMUM'
-            ? `Your offer ₦${offerNgn.toLocaleString()} is below the minimum fare of ₦${published.minOfferNgn.toLocaleString()}.\n\nPlease send a higher amount.`
+            ? `The lowest price for this trip is ₦${published.minOfferNgn.toLocaleString()}. Send that, or a higher amount.`
             : 'Could not start the search just now. Send your price again to retry.';
           await replyAndLog(deps, phone, incomingMessage, reply);
           return;
@@ -5491,6 +5625,14 @@ async function handleIncomingMetaMessage(
         await clearPendingLocation(deps.redisClient, user.id).catch(() => {});
         const pickup = { lat: pickupGeo.lat, lng: pickupGeo.lng, address: pickupGeo.formattedAddress };
         const destination = { lat: destGeo.lat, lng: destGeo.lng, address: destGeo.formattedAddress };
+
+        // The same place twice ("from Admiralty Way to Admiralty Way"): keep the pickup, ask where they are going.
+        if (samePlacePair(pickup, destination)) {
+          await setPendingLocation(deps.redisClient, user.id, { ...pickup, savedAt: new Date().toISOString() });
+          await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
+          await replyAndLog(deps, phone, incomingMessage, `Your pickup and your destination are the same place: *${pickup.address}*.\n\nPickup kept. Where are you going? Type the destination or share a pin.`);
+          return;
+        }
 
         // A destination in another city: keep the pickup, and ask before quoting.
         // Their answer ("yes", or the address again with the area) is handled by

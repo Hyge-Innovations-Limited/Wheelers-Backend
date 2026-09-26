@@ -991,7 +991,7 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   const at = (needle) => { const i = text.indexOf(needle); assert.ok(i >= 0, `the info carries "${needle}"`); return i; };
   const sequence = ['Ride confirmed & paid', '*YOUR DRIVER*', 'Chinedu Okafor', '4.9 · 412 rides', '+2348031234567',
     '*THE CAR*', 'Toyota Corolla', 'Plate: *LND-174XA*',
-    '*YOUR TRIP*', 'From: Ikorodu Garage', 'To: Caleb University College of Law', '₦6,200 — held in your wallet', 'Arrives in about 4 min',
+    '*YOUR TRIP*', 'Pickup: *Ikorodu Garage', 'Destination: *Caleb University College of Law', 'Fare: ₦6,200 — held in your wallet', 'Arrives in about 4 min',
     '*Track live trip*', '*SOS*'].map(at);
   assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, then SOS');
   // Every section stands apart — no wall of text.
@@ -1362,7 +1362,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
 
   const low = await form('data_exchange', { action: 'set_price', price: '100' });
   assert.equal(low.screen, 'SET_PRICE');
-  assert.match(low.data.error, /lowest price for this trip is ₦/);
+  assert.match(low.data.error, /lowest price for this trip, ₦/);
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0);
 
   const out = await form('data_exchange', { price: '2,500' });          // no `action` tag: the payload's shape says it
@@ -1835,7 +1835,7 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
 
   const low = await form('data_exchange', { action: 'update_price', new_price: '100' });
   assert.equal(low.screen, 'CHANGE_PRICE');
-  assert.match(low.data.error, /lowest price for this trip is ₦/);
+  assert.match(low.data.error, /lowest price for this trip, ₦/);
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
   const updated = await form('data_exchange', { new_price: '2,800' });        // no `action` tag: the payload's shape says it
@@ -2018,7 +2018,7 @@ test('HISTORY is the places they have been, newest first, each one repeatable �
   await tap(deps, who, `qa_hist:${newest.id}`, '22 Sep · ₦2,400');
   const choice = last(sent).interactive;
   assert.deepEqual(choice.action.buttons.map((b) => b.reply.id), [`qa_again:${newest.id}`, `qa_back:${newest.id}`]);
-  assert.match(choice.body.text, /Pickup: 31 Emily[\s\S]*Stop 1: Sabo Market[\s\S]*Destination: 7 Osaro/);
+  assert.match(choice.body.text, /Pickup: \*31 Emily[\s\S]*\n\nStop 1: \*Sabo Market[\s\S]*\n\nDestination: \*7 Osaro/, 'the one trip template: bold places, a blank line between');
 
   await tapButton(deps, who, `qa_again:${newest.id}`, 'Repeat this ride');
   const card = last(sent).interactive;
@@ -2415,7 +2415,7 @@ test('BID IS IN · with the offers form, a bid placed in the trip form sends the
   assert.equal(message.type, 'flow');
   assert.equal(message.action.parameters.flow_cta, 'See driver offers');
   assert.equal(verifyFlowToken(message.action.parameters.flow_token, at.deps.jwtSecret), `bids:${at.user.id}`);
-  assert.match(message.body.text, /\*Your bid of ₦2,500 is in\*[\s\S]*Pickup: 31 Emily[\s\S]*Destination: 7 Osaro[\s\S]*offers as they come in/);
+  assert.match(message.body.text, /\*Your bid of ₦2,500 is in\*[\s\S]*Pickup: \*31 Emily[\s\S]*\n\nDestination: \*7 Osaro[\s\S]*offers as they come in/);
   const rideId = await bidState.getActiveRide(at.redis, at.user.id);
   assert.ok(rideId);
 
@@ -2543,4 +2543,84 @@ test('SEARCH RUNS OUT · without the form (no button in the chat), the rider is 
     { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' }, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
   assert.equal(at.sent.length, before + 1);
   assert.match(textOf(last(at.sent)), /No driver took ₦2,000[\s\S]*search again/);
+});
+
+/* ── the first batch of fixes from the co-founder's list ─────────────────── */
+
+test('a LONE place while a trip is pending asks which end it is — tapping New pickup applies it there; a place that refines an end needs no question', async () => {
+  const ILEMERE = { lat: 6.6178, lng: 3.5106, address: 'Ilemere Rd, Ikorodu, Lagos' };
+  const at = await riderAtTripCard({ geocode: (q) => (/ilemere/i.test(q) ? ILEMERE : YABA), places: (q) => (/ilemere/i.test(q) ? ILEMERE : null), intent: () => ({ intent: 'change_destination', address: 'Ilemere road' }) });
+  const before = at.sent.length;
+  await say(at.deps, at.who, 'Ilemere road');
+  const ask = last(at.sent).interactive;
+  assert.equal(ask?.type, 'button', 'the model said destination; the message named no end and refines neither — so we ask');
+  assert.deepEqual(ask.action.buttons.map((b) => b.reply.id), ['trip_draft_pickup', 'trip_draft_destination', 'trip_draft_stop']);
+  assert.match(ask.body.text, /Got \*Ilemere road\*\. Which one is it\?[\s\S]*Pickup now: \*31 Emily[\s\S]*Destination now: \*7 Osaro/);
+  assert.equal(at.sent.length, before + 1);
+  assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).destAddress, YABA.address, 'nothing changed yet');
+
+  await tapButton(at.deps, at.who, 'trip_draft_pickup', 'New pickup');
+  const route = await bidState.getPendingRoute(at.redis, at.user.id);
+  assert.match(route.pickupAddress, /Ilemere/, `the lone place became the PICKUP, as they said — last said: ${textOf(last(at.sent))}`);
+  assert.equal(route.destAddress, YABA.address, 'and the destination they never mentioned is untouched');
+  assert.match(textOf(last(at.sent)), /Pickup updated!/);
+});
+
+test('a lone place that names its end ("from Ilemere") or refines the destination ("no, Osaro street") is applied without a question', async () => {
+  const ILEMERE = { lat: 6.6178, lng: 3.5106, address: 'Ilemere Rd, Ikorodu, Lagos' };
+  const at = await riderAtTripCard({ geocode: (q) => (/ilemere/i.test(q) ? ILEMERE : YABA), places: (q) => (/ilemere/i.test(q) ? ILEMERE : /osaro/i.test(q) ? YABA : null), intent: (m) => (/ilemere/i.test(m) ? { intent: 'change_destination', address: 'Ilemere road' } : { intent: 'change_destination', address: 'Osaro Isokpan street' }) });
+  await say(at.deps, at.who, 'from Ilemere road');
+  assert.equal(last(at.sent).interactive?.type === 'button' && last(at.sent).interactive.action.buttons[0].reply.id === 'trip_draft_pickup', false, 'no question');
+  assert.match((await bidState.getPendingRoute(at.redis, at.user.id)).pickupAddress, /Ilemere/, `"from" names the pickup, whatever the model said — last said: ${textOf(last(at.sent))}`);
+  await say(at.deps, at.who, 'no, Osaro Isokpan street');
+  assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).destAddress, YABA.address, 'a word shared with the destination on the trip: that end, corrected');
+});
+
+test('a price under the floor is a NUDGE with one button that offers the floor — and the tap is the price', async () => {
+  const at = await riderAtTripCard();
+  await tapButton(at.deps, at.who, 'trip_confirm', 'Confirm trip');
+  const floor = (await bidState.getPendingRoute(at.redis, at.user.id)).minOfferNgn;
+  await say(at.deps, at.who, '100');
+  const nudge = last(at.sent).interactive;
+  assert.equal(nudge?.type, 'button');
+  assert.match(nudge.body.text, new RegExp(`₦100 is under the lowest price for this trip, ₦${floor.toLocaleString()}`));
+  assert.deepEqual(nudge.action.buttons.map((b) => [b.reply.id, b.reply.title]), [[`offer_floor:${floor}`, `Offer ₦${floor.toLocaleString()}`]]);
+  assert.equal(at.published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0, 'nothing published on a too-low price');
+
+  await tapButton(at.deps, at.who, `offer_floor:${floor}`, `Offer ₦${floor.toLocaleString()}`);
+  const requested = at.published.map((p) => p.event).filter((e) => e?.eventType === 'RIDE_REQUESTED');
+  assert.deepEqual(requested.map((e) => e.riderOfferNgn), [floor], 'the tap placed the bid at the floor');
+});
+
+test("a driver's bid has no band: below the rider's price, at it, above it — only a typo is refused; the rider's floor is unchanged", () => {
+  const { validateDriverOffer, validateRiderOffer } = require('../packages/config/dist/index.js');
+  assert.equal(validateDriverOffer(2500, 10_000).valid, true, 'a quarter of the rider\'s price is a bid');
+  assert.equal(validateDriverOffer(10_000, 10_000).valid, true, 'accepting the rider\'s price');
+  assert.equal(validateDriverOffer(10_000, 2_500).valid, true, 'a rider paying four times the suggested fare can be accepted at that price');
+  assert.equal(validateDriverOffer(300_000, 2_500).valid, false, 'ten times the rider\'s price is a typo');
+  assert.equal(validateDriverOffer(2500.5, 2_500).valid, false, 'whole naira only');
+  assert.equal(validateRiderOffer(100, 10_000).valid, false, 'the RIDER still has a floor');
+});
+
+test('the same place twice on a fresh booking keeps the pickup and asks where they are going — no Google call, no "could not find a route"', async () => {
+  const at = await riderAtTripCard({ geocode: () => AKOKA, places: () => AKOKA, intent: () => ({ intent: 'ride_request', pickup: { address: AKOKA.address, area: 'Akoka', specific: true }, destination: { address: AKOKA.address, area: 'Akoka', specific: true } }) });
+  await bidState.clearPendingRoute(at.redis, at.user.id);
+  await bidState.clearBookingStage(at.redis, at.user.id);
+  await bidState.clearPendingLocation(at.redis, at.user.id);
+  await say(at.deps, at.who, `from ${AKOKA.address} to ${AKOKA.address}`);
+  assert.match(textOf(last(at.sent)), /same place: \*31 Emily[\s\S]*Pickup kept\. Where are you going\?/);
+  assert.doesNotMatch(textOf(last(at.sent)), /could not find a driving route/i);
+  assert.equal(await bidState.getBookingStage(at.redis, at.user.id), 'awaiting_destination');
+});
+
+test('ONE confirmation: the driver-assigned event sends the WhatsApp rider no plain "Ride confirmed!" text — the ride card from the accept is the only message', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const at = await searchingRider(10_000);
+  const driver = await onlineDriver();
+  const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' };
+  const before = at.sent.length;
+  await handleRideEvent({ eventType: 'RIDE_DRIVER_ASSIGNED', rideId: at.rideId, riderId: at.user.id, driverId: driver.driverId, driverUserId: driver.userId, driverName: 'Chinedu Okafor', vehicleModel: 'Corolla', vehiclePlate: 'LND-1', etaSeconds: 240, agreedFareNgn: 2400, driverRating: 4.9, timestamp: new Date().toISOString() },
+    { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  assert.equal(at.sent.length, before, 'not a word from the event');
+  assert.equal(await bidState.getRideState(at.redis, at.rideId), 'confirmed', 'the state still moves');
 });

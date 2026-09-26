@@ -127,10 +127,10 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
   };
 }
 
-async function priceScreen(deps: OffersFormDeps, rideId: string, error = ''): Promise<FlowScreen> {
+async function priceScreen(deps: OffersFormDeps, rideId: string, error = '', prefillNgn?: number): Promise<FlowScreen> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta) return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
-  return priceBox({ offerNgn: meta.offerNgn, suggestedFareNgn: meta.suggestedFareNgn }, error);
+  return priceBox({ offerNgn: prefillNgn ?? meta.offerNgn, suggestedFareNgn: meta.suggestedFareNgn }, error);
 }
 
 function priceBox(trip: { offerNgn: number; suggestedFareNgn: number }, error = ''): FlowScreen {
@@ -182,7 +182,7 @@ export async function republishLastSearch(deps: OffersFormDeps, userId: string, 
   const trip: PendingRouteData = { ...route, route: route.route, confirmed: true };
   const result = await publishWhatsappRide({ redisClient: deps.redisClient, publisher: deps.publisher }, { id: userId, phone }, trip, priceNgn);
   if (!result.ok) {
-    if (result.code === 'BELOW_MINIMUM') return refuse(`The lowest price for this trip is ${naira(result.minOfferNgn)}.`);
+    if (result.code === 'BELOW_MINIMUM') return refuse(`${naira(priceNgn)} is under the lowest price for this trip, ${naira(result.minOfferNgn)}. Offer that, or more.`);
     if (result.code === 'PUBLISH_FAILED') return refuse('Could not start the search just now. Try again.');
     const live = await getActiveRide(deps.redisClient, userId);          // ALREADY_PUBLISHING: a double tap — the first one is out
     return live ? offersScreen(deps, live) : refuse('Could not start the search just now. Try again.');
@@ -245,7 +245,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     if (!Number.isFinite(amount) || amount <= 0) return priceScreen(deps, rideId, 'Enter your price in figures, e.g. 3000.');
     const result = await changeRiderOffer(service, userId, rideId, amount);
     if (!result.ok) {
-      if (result.code === 'BELOW_MINIMUM') return priceScreen(deps, rideId, `The lowest price for this trip is ${naira(result.minOfferNgn)}.`);
+      if (result.code === 'BELOW_MINIMUM') return priceScreen(deps, rideId, `${naira(amount)} is under the lowest price for this trip, ${naira(result.minOfferNgn)}. It is in the box now — tap Update price to offer it, or type more.`, result.minOfferNgn);
       return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
     }
     // No chat message: "Bid updated" is said HERE, and the next thing the chat hears is a driver answering it.

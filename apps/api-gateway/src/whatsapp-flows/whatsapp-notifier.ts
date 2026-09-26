@@ -2,6 +2,7 @@ import { signFlowToken } from './encryption';
 import { META_FLOWS_ENABLED, OFFERS_FORM_FLOW_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from './flow-toggle';
 import { calculateRideFees } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
+import { tripLines } from './trip-text';
 
 export interface WhatsappNotifierDeps {
   metaAccessToken: string;
@@ -194,9 +195,7 @@ export async function sendBidPlacedMessage(
   const text = [
     `*Your bid of ₦${trip.offerNgn.toLocaleString()} is in*`,
     '',
-    `Pickup: ${trip.pickupAddress}`,
-    ...(trip.stopAddresses ?? []).map((stop, index) => `Stop ${index + 1}: ${stop}`),
-    `Destination: ${trip.destAddress}`,
+    ...tripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: (trip.stopAddresses ?? []).map((address) => ({ address })) }),
     '',
     'Drivers near you can see it now. Tap below to see their offers as they come in. Accept one, change your price, or cancel the search, all in one place.',
   ].join('\n');

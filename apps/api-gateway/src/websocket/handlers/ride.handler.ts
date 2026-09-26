@@ -92,10 +92,12 @@ async function assertOfferWithinBand(
     return;
   }
 
-  const { suggestedFareNgn, distanceKm } = context;
+  const { suggestedFareNgn, distanceKm, riderOfferNgn } = context;
+  // A driver is measured against what the rider is offering, never the suggested fare:
+  // any amount is a bid, and accepting a rider's generous price must always go through.
   const validation =
     who === 'driver'
-      ? validateDriverOffer(offerNgn, suggestedFareNgn, distanceKm)
+      ? validateDriverOffer(offerNgn, riderOfferNgn ?? suggestedFareNgn)
       : validateRiderOffer(offerNgn, suggestedFareNgn);
 
   if (!validation.valid) {
@@ -119,10 +121,11 @@ async function assertOfferWithinBand(
  */
 async function resolveFareContext(
   rideId: string,
-): Promise<{ suggestedFareNgn: number; distanceKm?: number } | null> {
+): Promise<{ suggestedFareNgn: number; distanceKm?: number; riderOfferNgn?: number } | null> {
   const ride = await rideClient.findById(rideId).catch(() => null);
   if (ride) {
     return {
+      riderOfferNgn: ride.riderOfferNgn !== null && ride.riderOfferNgn !== undefined ? Number(ride.riderOfferNgn) : undefined,
       suggestedFareNgn:
         ride.fareEstimateNgn !== null && ride.fareEstimateNgn !== undefined
           ? Number(ride.fareEstimateNgn)

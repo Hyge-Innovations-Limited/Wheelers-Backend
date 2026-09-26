@@ -111,31 +111,33 @@ export function resolveMaxOfferNgn(distanceKm: number | undefined): number {
   );
 }
 
+/** A bid this many times the rider's price is a typo, not an offer. */
+export const DRIVER_BID_TYPO_MULTIPLE = 10;
+
 /**
- * A driver's bid clears the same floor as a rider's offer AND a ceiling of
- * ₦500/km, so a driver cannot answer a ₦3,800 request with ₦20,000.
+ * A driver's bid has no band. Below the rider's price, at it, or above it — the
+ * rider decides, and a rider who offers more than the suggested fare must be
+ * acceptable at that price (the old ₦500/km ceiling refused exactly that). The
+ * only refusals: not a positive whole amount, or so far above the rider's price
+ * that it can only be a typo.
  */
 export function validateDriverOffer(
   offerNgn: number,
-  suggestedFareNgn: number,
-  distanceKm?: number,
+  riderOfferNgn: number,
 ): { valid: boolean; minOfferNgn: number; maxOfferNgn: number; reason?: string } {
-  const maxOfferNgn = resolveMaxOfferNgn(distanceKm);
-  const floor = validateRiderOffer(offerNgn, suggestedFareNgn);
-  if (!floor.valid) {
-    return { valid: false, minOfferNgn: floor.minOfferNgn, maxOfferNgn, reason: floor.reason };
+  const maxOfferNgn = Math.max(MIN_FARE_NGN, Math.round(riderOfferNgn) * DRIVER_BID_TYPO_MULTIPLE);
+  if (!Number.isFinite(offerNgn) || offerNgn <= 0 || Math.round(offerNgn) !== offerNgn) {
+    return { valid: false, minOfferNgn: 1, maxOfferNgn, reason: 'Bid must be a whole amount in naira.' };
   }
-
   if (offerNgn > maxOfferNgn) {
     return {
       valid: false,
-      minOfferNgn: floor.minOfferNgn,
+      minOfferNgn: 1,
       maxOfferNgn,
-      reason: `Maximum bid for this trip is ${maxOfferNgn.toLocaleString('en-NG')} NGN (${MAX_RATE_PER_KM_NGN} NGN per km).`,
+      reason: `That looks like a typo — the rider offered ${Math.round(riderOfferNgn).toLocaleString('en-NG')} NGN. Bids above ${maxOfferNgn.toLocaleString('en-NG')} NGN are not sent.`,
     };
   }
-
-  return { valid: true, minOfferNgn: floor.minOfferNgn, maxOfferNgn };
+  return { valid: true, minOfferNgn: 1, maxOfferNgn };
 }
 
 export type RideFeeBreakdown = {
