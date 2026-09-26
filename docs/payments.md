@@ -75,6 +75,7 @@ Rules the code holds to:
 | `DEPOSIT_FEE_NGN` | Default `20`. |
 | `DEPOSIT_PROVIDER_FEE_PAID_BY` | `user` (default) or `platform`. |
 | `WITHDRAWAL_MIN_NGN` | Default `50`. |
+| `PAYOUT_MODE` | `auto` (default): a Paystack transfer is created; when the transfer float cannot cover it the withdrawal is **queued** and sent by the sweep as soon as it can be, oldest first. `manual`: every withdrawal is queued for an admin to pay by hand. |
 
 In the Paystack dashboard:
 
@@ -83,6 +84,27 @@ In the Paystack dashboard:
   is on, Paystack answers every transfer with `otp` and no withdrawal can
   complete. The code reports this loudly and releases the user's money. Never
   finalise such a transfer by hand afterwards — its funds were already released.
+
+## The withdrawal queue
+
+A withdrawal is never refused for lack of float any more. The rider's money is set
+aside (`QUEUED`), the page says so, and:
+
+- in `auto` mode a sweep in api-gateway (every two minutes) sends queued withdrawals
+  through Paystack as the float allows, oldest first, stopping at the first it cannot pay;
+- in `manual` mode nothing is sent automatically — an admin pays each from the Paystack
+  dashboard or a bank app and marks it paid.
+
+Admin API (same auth as the rest of `/admin`):
+
+| Call | What it does |
+| --- | --- |
+| `GET /admin/withdrawals?status=QUEUED` | The queue, oldest first, with the payout mode and the live float. Any other status lists that status, newest first. |
+| `POST /admin/withdrawals/:id/mark-paid` `{ reference? }` | The admin sent the money by hand: the request settles, the reservation is consumed, the ledger books it. |
+| `POST /admin/withdrawals/:id/send-now` | Create the Paystack transfer now, float or not — the provider has the final word. |
+| `POST /admin/withdrawals/:id/cancel` `{ reason? }` | Give the money back to the wallet. |
+
+The reconciler ignores `QUEUED` rows: nothing is in flight for them.
 
 ## Scripts
 

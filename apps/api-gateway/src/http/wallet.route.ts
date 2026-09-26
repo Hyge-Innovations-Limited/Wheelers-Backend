@@ -19,7 +19,7 @@ import {
   type PaymentsClient,
 } from "@wheleers/payments";
 import { provisionDepositAccount } from "../onboarding/user-onboarding";
-import { submitWithdrawal, WithdrawalError } from "../payments/withdrawal";
+import { submitWithdrawal, WithdrawalError, WITHDRAWAL_QUEUED_MESSAGE } from "../payments/withdrawal";
 import { getBanks } from "../payments/banks";
 import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
@@ -550,10 +550,13 @@ export async function handleCreateWalletWithdrawalRoute(
         );
         reservedRequestId = requestId;
         const createdRequest = await withdrawalClient.findById(requestId);
+        const queued = createdRequest?.status === "QUEUED";
         return {
           statusCode: 200,
           body: {
             withdrawal: createdRequest ? mapWithdrawalRequest(createdRequest) : null,
+            queued,
+            ...(queued ? { message: WITHDRAWAL_QUEUED_MESSAGE } : {}),
           },
         };
       },

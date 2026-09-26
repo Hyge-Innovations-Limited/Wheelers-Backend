@@ -749,6 +749,9 @@ enum WalletReservationStatus {
 enum WithdrawalRequestStatus {
   PENDING
   FUNDS_RESERVED
+  /// Money set aside, transfer not yet created: the Paystack float could not cover it, or
+  /// payouts are manual. Sent by the queue sweep when the float allows, or by an admin.
+  QUEUED
   PAYOUT_CREATED
   PROCESSING
   SETTLED

@@ -11,15 +11,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import {
-  getAcceptedBid,
-  getActiveRide,
-  getBids,
-  getPendingRoute,
-  getRideMeta,
-  getRideState,
-  markRidePageSeen,
-} from '../whatsapp-flows/bid-state';
+import { getAcceptedBid, getActiveRide, getBids, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute } from '../whatsapp-flows/bid-state';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
@@ -174,6 +166,11 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
 
   // A driver is assigned: this is the tracking page now.
   if (trip) {
+    // The planned road, saved when the search was published — drawn under the car so
+    // "how far?" is answered by the line, not just the badge.
+    const planned = await getLastRoute(deps.redisClient, userId).catch(() => null);
+    const geometry = planned?.route as { coordinates?: Array<{ lat: number; lng: number }> } | undefined;
+    const line = Array.isArray(geometry?.coordinates) ? geometry.coordinates.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number') : [];
     return {
       phase: 'confirmed' as const, rideId: trip.rideId, balanceNgn, route: trip.route, offerNgn: trip.fareNgn,
       driver: {
@@ -189,6 +186,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         positionFresh: trip.driver.positionFresh,
         etaMin: trip.etaMin,
         map: trip.map,
+        line,
       },
     };
   }

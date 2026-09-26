@@ -264,7 +264,7 @@
 
   /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
 
-  var map = null, carMarker = null, followCar = true, mapFitted = false;
+  var map = null, carMarker = null, routeLine = null, followCar = true, mapFitted = false;
 
   var TRIP_COPY = {
     DRIVER_ASSIGNED: ['Ride confirmed', 'Your driver is ', 'on the way'],
@@ -299,6 +299,10 @@
       L.marker([trip.destination.lat, trip.destination.lng], { icon: smallPin('pin-dest'), keyboard: false }).addTo(map).bindTooltip('Destination');
       // Once they move the map themselves, stop dragging it back to the car.
       map.on('dragstart', function () { followCar = false; });
+    }
+    // The planned road, once: pickup to destination through the stops.
+    if (!routeLine && trip.line && trip.line.length > 1) {
+      routeLine = L.polyline(trip.line.map(function (p) { return [p.lat, p.lng]; }), { color: '#F97316', weight: 5, opacity: 0.85 }).addTo(map);
     }
 
     var position = trip.driverPosition;

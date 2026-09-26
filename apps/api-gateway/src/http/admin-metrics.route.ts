@@ -1,10 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { PaymentsClient } from '@wheleers/payments';
+import type { GatewayPublisher } from '../websocket/publisher';
+import { cancelQueued, currentPayoutMode, markQueuedPaid, sendQueuedNow, WithdrawalError } from '../payments/withdrawal';
 import type { RedisClient } from '../redis/client';
 import { serviceUsage } from '../usage/service-usage';
-import { activityClient, adminMetricsClient, safetyAlertClient, walletSecurityClient } from '@wheleers/db';
+import { activityClient, adminMetricsClient, safetyAlertClient, walletSecurityClient, withdrawalClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
+import { logActivity } from '../analytics/log-activity';
 import { isRecord } from '../utils/object';
 
 /**
@@ -19,6 +23,12 @@ import { isRecord } from '../utils/object';
 interface MetricsDeps {
   adminApiKey: string;
   jwtSecret: string;
+}
+
+/** The withdrawal queue's actions move money, so they need the payments client and the bus. */
+export interface WithdrawalAdminDeps extends MetricsDeps {
+  paymentsClient: PaymentsClient;
+  publisher: GatewayPublisher;
 }
 
 async function requireAdmin(
@@ -432,5 +442,88 @@ export async function handleAdminServiceUsageRoute(
     sendJson(res, 200, { days, services: await serviceUsage(deps.redisClient, days) });
   } catch (error) {
     fail(res, error, 'could not load service usage');
+  }
+}
+
+/* ── the withdrawal queue ───────────────────────────────────────────────── */
+
+const WITHDRAWAL_STATUSES = new Set(['PENDING', 'FUNDS_RESERVED', 'QUEUED', 'PAYOUT_CREATED', 'PROCESSING', 'SETTLED', 'FAILED', 'EXPIRED', 'CANCELLED']);
+
+function withdrawalRow(request: Awaited<ReturnType<typeof withdrawalClient.listQueued>>[number]) {
+  return {
+    id: request.id,
+    status: request.status,
+    amountNgn: Number(request.requestedAmountNgn),
+    bank: { code: request.bankNetworkId, accountNumber: request.bankAccountNumber, accountName: request.bankAccountName },
+    user: { id: request.user.id, name: request.user.name, phone: request.user.phone },
+    providerReference: request.providerReference,
+    failureReason: request.failureReason,
+    createdAt: request.createdAt.toISOString(),
+    updatedAt: request.updatedAt.toISOString(),
+    settledAt: request.settledAt?.toISOString() ?? null,
+  };
+}
+
+/**
+ * GET /admin/withdrawals?status=QUEUED — the withdrawals waiting to be paid (the
+ * default), or any other status. Oldest first for the queue, newest first otherwise.
+ * Carries the payout mode and the live Paystack float, so the admin knows whether
+ * the sweep will send these or whether they are theirs to pay.
+ */
+export async function handleAdminWithdrawalsRoute(req: IncomingMessage, res: ServerResponse, deps: WithdrawalAdminDeps, url: URL): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+  const status = (url.searchParams.get('status') ?? 'QUEUED').toUpperCase();
+  if (!WITHDRAWAL_STATUSES.has(status)) {
+    sendJson(res, 400, { error: `Unknown status. One of: ${[...WITHDRAWAL_STATUSES].join(', ')}` });
+    return;
+  }
+  try {
+    const [rows, floatNgn] = await Promise.all([
+      status === 'QUEUED' ? withdrawalClient.listQueued(200) : withdrawalClient.listByStatus(status as never, 200),
+      deps.paymentsClient.getBalanceNgn().catch(() => null),
+    ]);
+    const queuedNgn = rows.filter((r) => r.status === 'QUEUED').reduce((sum, r) => sum + Number(r.requestedAmountNgn), 0);
+    sendJson(res, 200, { status, payoutMode: currentPayoutMode(), floatNgn, queuedNgn, count: rows.length, withdrawals: rows.map(withdrawalRow) });
+  } catch (error) {
+    fail(res, error, 'Could not list withdrawals');
+  }
+}
+
+/**
+ * POST /admin/withdrawals/:id/mark-paid  { reference? } — the admin sent the money by hand
+ * POST /admin/withdrawals/:id/send-now                 — create the Paystack transfer now
+ * POST /admin/withdrawals/:id/cancel     { reason? }    — give the money back to the wallet
+ * Each only applies to a QUEUED withdrawal.
+ */
+export async function handleAdminWithdrawalActionRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WithdrawalAdminDeps,
+  requestId: string,
+  action: 'mark-paid' | 'send-now' | 'cancel',
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+  const body = await readJsonBody(req).catch(() => ({})) as Record<string, unknown>;
+  try {
+    if (action === 'mark-paid') {
+      const settled = await markQueuedPaid(requestId, typeof body.reference === 'string' ? body.reference : undefined);
+      logActivity({ userId: settled?.userId ?? 'admin', eventType: 'withdrawal_marked_paid', source: 'admin', metadata: { requestId } });
+      sendJson(res, 200, { id: requestId, status: settled?.status ?? 'SETTLED' });
+      return;
+    }
+    if (action === 'send-now') {
+      await sendQueuedNow({ paymentsClient: deps.paymentsClient, publisher: deps.publisher }, requestId);
+      const after = await withdrawalClient.findById(requestId);
+      sendJson(res, 200, { id: requestId, status: after?.status ?? 'PAYOUT_CREATED' });
+      return;
+    }
+    const released = await cancelQueued(requestId, typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim() : undefined);
+    sendJson(res, 200, { id: requestId, status: released ? 'CANCELLED' : 'unknown' });
+  } catch (error) {
+    if (error instanceof WithdrawalError) {
+      sendJson(res, 409, { error: error.message, code: error.code });
+      return;
+    }
+    fail(res, error, `Could not ${action} withdrawal`);
   }
 }

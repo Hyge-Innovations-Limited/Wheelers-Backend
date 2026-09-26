@@ -62,6 +62,9 @@ const GatewayEnvSchema = z.object({
   // Paystack's "test-bank", whatever this says.
   PAYSTACK_DVA_BANK: z.enum(['wema-bank', 'titan-paystack']).default('wema-bank'),
   PAYSTACK_CUSTOMER_EMAIL_DOMAIN: z.string().min(3).default('users.wheelersng.com'),
+  // How withdrawals leave: "auto" creates a Paystack transfer (queued while the float is
+  // short, sent when it can be); "manual" queues every one for an admin to pay by hand.
+  PAYOUT_MODE: z.enum(['auto', 'manual']).default('auto'),
   // Wallet PIN on the MOBILE APP's withdrawal route. "required" (default):
   // no PIN, no withdrawal — an app build without the PIN screens must update.
   // "if_set": a user who never set a PIN may still withdraw without one; only
