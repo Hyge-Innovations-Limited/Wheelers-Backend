@@ -105,6 +105,14 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Every request the Quick Actions form makes: opening it, and every Continue button on every screen. */
 export async function handleQuickActionsFlow(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const screen = await answerQuickActions(body, userId, deps);
+  // The DONE screen's completion payload says whether the chat needs a fresh button; a screen
+  // borrowed from another form may not have said — default to yes.
+  if (screen.screen === 'DONE' && screen.data['rearm'] === undefined) screen.data['rearm'] = 'true';
+  return screen;
+}
+
+async function answerQuickActions(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const data = body.data ?? {};
   const action = inferAction(data, body.screen ?? '');
   if (body.action !== 'data_exchange' || !action) return menuScreen(userId, deps);
@@ -193,7 +201,8 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
   }
   // Add money sits after the ride rows in both lists; Withdraw is not offered mid-ride (the fare is held).
   choices.splice(activeRideId ? 1 : choices.length - 1, 0, { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number to transfer to' });
-  if (support) choices.push({ id: MENU_IDS.support, title: 'Contact support', description: 'Talk to a person at Wheelers' });
+  // Mid-ride the menu is two things: the trip, and money for it.
+  if (support && !activeRideId) choices.push({ id: MENU_IDS.support, title: 'Contact support', description: 'Talk to a person at Wheelers' });
 
   return {
     screen: 'MENU',
@@ -217,7 +226,7 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
   if (choice === MENU_IDS.withdraw) {
     if (activeRideId) return menuScreen(userId, deps, 'Withdrawals wait until your ride is over — the fare is held in your wallet.');
     void deps.onWithdraw?.(userId).catch((error) => console.error('[quick-actions] withdraw button not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return doneScreen('Withdraw to your bank', 'The Withdraw button is in your chat. Tap it, pick the amount and the account, and confirm with your wallet PIN.');
+    return doneScreen('Withdraw to your bank', 'The Withdraw button is in your chat. Tap it, pick the amount and the account, and confirm with your wallet PIN.', false);
   }
   if (choice === MENU_IDS.support) {
     const contact = deps.supportContact?.() ?? null;
@@ -247,7 +256,7 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
       clearBookingMisses(deps.redisClient, userId),
     ].map((step) => step.catch(() => undefined)));
     void deps.onBookInChat?.(userId).catch((error) => console.error('[quick-actions] booking prompt not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return doneScreen('Where are you going?', 'Back in the chat, send your pickup and your destination, e.g. from Ikeja City Mall to Unilag gate, Yaba. Or share your pickup location pin first.');
+    return doneScreen('Where are you going?', 'Back in the chat, send your pickup and your destination, e.g. from Ikeja City Mall to Unilag gate, Yaba. Or share your pickup location pin first.', false);
   }
   if (choice === MENU_IDS.repeat || choice === MENU_IDS.reverse) {
     const [last] = await recentTrips(userId, 1);

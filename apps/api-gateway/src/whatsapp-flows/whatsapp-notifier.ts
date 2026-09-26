@@ -215,6 +215,28 @@ export async function sendBidPlacedMessage(
   });
 }
 
+/**
+ * The rider closed the offers form while the search is still on: WhatsApp disabled the
+ * button they used, so here is another — the search is not over just because a form was.
+ */
+export async function sendOffersReentryMessage(deps: WhatsappNotifierDeps, phone: string, riderId: string, offerNgn: number): Promise<boolean> {
+  if (!offersFormIsOn(deps)) return false;
+  return postInteractive(deps, phone, {
+    type: 'flow',
+    body: { text: `Your ₦${offerNgn.toLocaleString()} search is still on. Tap below any time to see driver offers, change your price, or cancel.` },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: deps.offersFormFlowId,
+        flow_token: signFlowToken(`bids:${riderId}`, deps.flowTokenSecret!),
+        flow_cta: 'See driver offers',
+        flow_action: 'data_exchange',
+      },
+    },
+  });
+}
+
 /** True when offers go out as the form message (one button) rather than reply buttons. */
 export function offersFormIsOn(deps: WhatsappNotifierDeps): boolean {
   return OFFERS_FORM_FLOW_ENABLED && Boolean(deps.offersFormFlowId && deps.flowTokenSecret);

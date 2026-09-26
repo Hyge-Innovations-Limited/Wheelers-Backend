@@ -79,8 +79,9 @@ const CANCEL_REASONS: Record<string, string> = {
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`);
 const naira = (amount: number) => `₦${amount.toLocaleString()}`;
 
-function done(headline: string, note: string): FlowScreen {
-  return { screen: 'DONE', data: { headline, note } };
+/** `rearm`: when the form closes, does the chat need a fresh See driver offers button? Not when the form just sent something. */
+function done(headline: string, note: string, rearm = true): FlowScreen {
+  return { screen: 'DONE', data: { headline, note, rearm: rearm ? 'true' : 'false' } };
 }
 
 /** A terminal-sounding state on the ENTRY screen (the only screen a flow may open on): one choice, "Close". */
@@ -256,7 +257,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     const reason = CANCEL_REASONS[String(data['reason'] ?? '')];
     if (!reason) return cancelScreen('Pick a reason to continue.');
     await cancelWhatsappRide(service, userId, rideId, reason);
-    return done('Search cancelled', 'Nothing was charged. Message Wheelers whenever you need a ride.');
+    return done('Search cancelled', 'Nothing was charged. Message Wheelers whenever you need a ride.', false);
   }
 
   const choice = String(data['choice'] ?? '');
@@ -295,13 +296,13 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (result.ok) {
     // Not awaited: the driver's photos take seconds to send, and WhatsApp cuts a form's request off at ~10.
     void deps.onRideConfirmed?.(userId, result.ride).catch((error) => console.error('[offers-form] ride confirmed but the chat was not told', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return done('Ride confirmed', `${bid.driverName} is on the way. Their photo, car and plate are in your chat — with a button to track the trip live.`);
+    return done('Ride confirmed', `${bid.driverName} is on the way. Their photo, car and plate are in your chat — with a button to track the trip live.`, false);
   }
   switch (result.code) {
     case 'WALLET_SHORT':
       await deps.onWalletShort?.(userId, rideId, bid, result).catch((error) => console.error('[offers-form] wallet short but the Add money button was not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
       return done(`Add ${naira(result.shortNgn)} to ride with ${bid.driverName.split(' ')[0]}`,
-        `Your wallet has ${naira(result.balanceNgn)} and the fare is ${naira(result.fareNgn)}. The Add money button is in your chat — the moment it lands, ${bid.driverName.split(' ')[0]} is confirmed by itself.`);
+        `Your wallet has ${naira(result.balanceNgn)} and the fare is ${naira(result.fareNgn)}. The Add money button is in your chat — the moment it lands, ${bid.driverName.split(' ')[0]} is confirmed by itself.`, false);
     case 'DRIVER_UNAVAILABLE':
       return offersScreen(deps, rideId, `${bid.driverName} can't be reached right now — your money has not moved. Pick another driver.`);
     case 'DRIVER_TAKEN':

@@ -118,11 +118,16 @@ export const rideClient = {
    * talking to nobody. Group seats are left out: their auction lives under the
    * group's own id and is rebuilt by the group dispatcher.
    */
-  findOpenSearches: async (maxAgeMs: number) => {
+  findOpenSearches: async (maxAgeMs: number, riderId?: string, excludeRideId?: string) => {
     const since = new Date(Date.now() - maxAgeMs);
     const [rides, groups] = await Promise.all([
       prisma.ride.findMany({
-        where: { status: { in: ['REQUESTED', 'MATCHING'] }, createdAt: { gte: since } },
+        where: {
+          status: { in: ['REQUESTED', 'MATCHING'] },
+          createdAt: { gte: since },
+          ...(riderId ? { riderId } : {}),
+          ...(excludeRideId ? { NOT: { id: excludeRideId } } : {}),
+        },
         include: { routeStops: { orderBy: { stopOrder: 'asc' } } },
         orderBy: { createdAt: 'asc' },
       }),

@@ -161,8 +161,9 @@ export function priceScreen(trip: PendingRouteData, error = '', prefillNgn?: num
   };
 }
 
-export function doneScreen(headline: string, note: string): FlowScreen {
-  return { screen: 'DONE', data: { headline, note } };
+/** `rearm`: when the form closes, does the chat need a fresh button? Not when the form just sent one. */
+export function doneScreen(headline: string, note: string, rearm = true): FlowScreen {
+  return { screen: 'DONE', data: { headline, note, rearm: rearm ? 'true' : 'false' } };
 }
 
 export const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
@@ -218,7 +219,7 @@ export async function setPrice(data: Record<string, unknown>, userId: string, tr
     // Not awaited: WhatsApp cuts a form's request off at ~10 s, and the chat message is not the form's to wait for.
     void deps.onBidPlaced?.(userId, result.rideId, amount).catch((error) => console.error('[edit-trip] bid placed but the chat was not told', { userId, error: error instanceof Error ? error.message : String(error) }));
   }
-  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()}`, 'Drivers see your price now. Back in the chat, tap See driver offers to watch their offers come in. You only pay when you accept one.');
+  return doneScreen(`You have successfully bid ₦${amount.toLocaleString()}`, 'Drivers see your price now. Back in the chat, tap See driver offers to watch their offers come in. You only pay when you accept one.', false);
 }
 
 export async function editTrip(data: Record<string, unknown>, userId: string, trip: PendingRouteData | null, deps: EditTripFlowDeps): Promise<FlowScreen> {

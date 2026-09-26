@@ -986,7 +986,10 @@
                 "label": "Back to chat",
                 "on-click-action": {
                   "name": "complete",
-                  "payload": {}
+                  "payload": {
+                    "flow": "quick_actions",
+                    "rearm": "true"
+                  }
                 }
               }
             ]
@@ -1036,7 +1039,10 @@
                 "label": "Back to chat",
                 "on-click-action": {
                   "name": "complete",
-                  "payload": {}
+                  "payload": {
+                    "flow": "quick_actions",
+                    "rearm": "true"
+                  }
                 }
               }
             ]
@@ -1055,7 +1061,11 @@
         },
         "note": {
           "type": "string",
-          "__example__": "Drivers see your price now. Their offers will come to your chat."
+          "__example__": "Drivers see your price now."
+        },
+        "rearm": {
+          "type": "string",
+          "__example__": "true"
         }
       },
       "layout": {
@@ -1078,7 +1088,10 @@
                 "label": "Back to chat",
                 "on-click-action": {
                   "name": "complete",
-                  "payload": {}
+                  "payload": {
+                    "flow": "quick_actions",
+                    "rearm": "${data.rearm}"
+                  }
                 }
               }
             ]

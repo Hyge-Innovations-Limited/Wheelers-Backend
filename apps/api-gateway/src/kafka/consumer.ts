@@ -933,10 +933,12 @@ export async function handleRideEvent(
     );
 
     // Notify rider
+    // A search replaced by the rider's own newer request: clean up, say nothing — they asked for it.
+    const superseded = event.cancelledBy === 'system' && /newer request/i.test(event.reason ?? '');
     const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
     if (waRider && deps.whatsappNotifier) {
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
+      if (phone && !superseded) {
         await sendRideCancelledNotification(deps.whatsappNotifier, phone, {
           reason: event.reason,
           cancelledBy: event.cancelledBy,

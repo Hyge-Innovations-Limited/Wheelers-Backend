@@ -75,6 +75,8 @@ const clip = (text: string, max: number) => (text.length <= max ? text : `${text
 export const shortPlace = (address: string) => address.split(',')[0]?.trim() || address;
 
 interface MenuInput {
+  /** Words of our own above the button (mid-trip: the driver line). */
+  bodyText?: string;
   /** "Hey" gets a hello; "menu" gets straight to it. */
   greeting: boolean;
   /** Their first name, when we have one — "Hi Timi" rather than "Hi". */
@@ -110,16 +112,17 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
 
   return {
     type: 'list',
-    body: { text: quickActionsBody(input.greeting, input.firstName) },
+    body: { text: input.bodyText ?? quickActionsBody(input.greeting, input.firstName) },
     action: {
       button: 'Quick Actions',
       sections: [
         { title: 'Ride', rows: ride },
+        // Mid-ride the menu is two things: the trip, and money for it. Withdraw waits (the fare is held).
         { title: 'Wallet', rows: [
           { id: QUICK_ACTION_IDS.addMoney, title: 'Add money', description: 'Get your account number to transfer to' },
-          { id: QUICK_ACTION_IDS.withdraw, title: 'Withdraw', description: 'Send money from your wallet to your bank' },
+          ...(input.busy ? [] : [{ id: QUICK_ACTION_IDS.withdraw, title: 'Withdraw', description: 'Send money from your wallet to your bank' }]),
         ] },
-        ...(input.supportContact ? [{ title: 'Help', rows: [
+        ...(input.supportContact && !input.busy ? [{ title: 'Help', rows: [
           { id: QUICK_ACTION_IDS.support, title: 'Contact support', description: 'Talk to a person at Wheelers' },
         ] }] : []),
       ],

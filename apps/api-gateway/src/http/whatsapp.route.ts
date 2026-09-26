@@ -102,7 +102,7 @@ import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingGeoChoices, PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
-import { sendFlowOffersMessage, sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
+import { sendFlowOffersMessage, sendBidPlacedMessage, sendOffersReentryMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { EDIT_TRIP_FLOW_ENABLED, META_FLOWS_ENABLED, QUICK_ACTIONS_FLOW_ENABLED } from '../whatsapp-flows/flow-toggle';
 import { withQuickActions, withQuickActionsForm } from '../whatsapp-flows/whatsapp-notifier';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
@@ -417,6 +417,8 @@ interface MetaMessageInfo {
   imageMimeType?: string;
   /** The id of the button or list row that was tapped — what it MEANS, where the title is only what it said. */
   replyId?: string;
+  /** A form was closed with its last button. WhatsApp disables that message's button, so the chat may need a fresh one. */
+  flowCompleted?: { flow: string; rearm: boolean };
 }
 
 function extractMetaMessages(body: unknown): MetaMessageInfo[] {
@@ -526,10 +528,16 @@ function parseMetaMessage(
             replyId: typeof buttonReply?.id === 'string' ? buttonReply.id : undefined,
           };
         }
-        // A Flow that was closed with its last button. Whatever the form did, it
-        // already told the chat (the Edit-trip form sends the updated card when
-        // it saves) — answering this too would be a second message about nothing.
-        if (interactive?.type === 'nfm_reply') return null;
+        // A Flow was closed with its last button. WhatsApp disables THAT message's button,
+        // so a form the rider will want again (Quick Actions, the offers) says so in its
+        // completion payload and gets a fresh button — unless it just sent one itself.
+        if (interactive?.type === 'nfm_reply') {
+          const reply = interactive.nfm_reply as Record<string, unknown> | undefined;
+          let response: Record<string, unknown> = {};
+          try { response = typeof reply?.response_json === 'string' ? JSON.parse(reply.response_json) as Record<string, unknown> : {}; } catch { response = {}; }
+          if (typeof response.flow !== 'string') return null;
+          return { messageId: wamid, phone, profileName, messageBody: '', isLocation: false, flowCompleted: { flow: response.flow, rearm: String(response.rearm ?? 'true') !== 'false' } };
+        }
         if (interactive?.type === 'list_reply') {
           const listReply = interactive.list_reply as Record<string, unknown>;
           return {
@@ -1012,13 +1020,13 @@ const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
  * the button opens it and every action is a screen inside (quick-actions-flow.ts);
  * otherwise it is WhatsApp's list picker, and numbered text if that is refused.
  */
-async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string, greeting = false): Promise<void> {
+async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, activeRideId: string | null, log: string, greeting = false, bodyText?: string): Promise<void> {
   const who = await userClient.findById(user.id).catch(() => null);
   const firstName = who?.name?.trim().split(/\s+/)[0] || null;
   if (QUICK_ACTIONS_FLOW_ENABLED && deps.whatsappQuickActionsFlowId) {
     const sent = await sendInteractive(deps, phone, {
       type: 'flow',
-      body: { text: quickActionsBody(greeting, firstName) },
+      body: { text: bodyText ?? quickActionsBody(greeting, firstName) },
       action: {
         name: 'flow',
         parameters: {
@@ -1032,12 +1040,13 @@ async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: string 
       },
     });
     if (sent) {
-      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: '[sent the quick actions form]' }]);
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: bodyText ?? '[sent the quick actions form]' }]);
       return;
     }
   }
   const trips = await recentTrips(user.id, 1);
   const menu = buildQuickActions({
+    bodyText,
     greeting,
     firstName,
     lastTrip: trips[0] ?? null,
@@ -3379,6 +3388,21 @@ async function handleIncomingMetaMessage(
       },
     });
 
+    // ── A form closed: give the chat its button back, unless the form just sent a message itself ──
+    if (msgInfo.flowCompleted) {
+      if (!msgInfo.flowCompleted.rearm) return;
+      if (msgInfo.flowCompleted.flow === 'quick_actions') {
+        await sendQuickActions(deps, user, phone, activeRideId, '[closed Quick Actions]');
+      } else if (msgInfo.flowCompleted.flow === 'offers' && activeRideId && deps.metaAccessToken && deps.metaPhoneNumberId) {
+        const meta = await getRideMeta(deps.redisClient, activeRideId);
+        if (meta) {
+          const sent = await sendOffersReentryMessage({ metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret }, phone, user.id, meta.offerNgn);
+          if (sent) await markOffersMessageSent(deps.redisClient, activeRideId).catch(() => undefined);
+        }
+      }
+      return;
+    }
+
     // ── SOS. Before consent, before any booking step, before anything. ────
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {
       await handleRideCardTap(deps, user.id, phone, msgInfo.replyId);
@@ -3712,16 +3736,15 @@ async function handleIncomingMetaMessage(
           await sendMetaReply(deps, phone, CANCELLATION_REASON_PROMPT);
           return;
         }
+        // Quiet mode. From confirmed to complete, whatever they type gets the same short
+        // answer and a menu of two (Your current trip, Add money) — no model, no booking
+        // parser, no wallet chat. "cancel" above and SOS on the card still work.
         const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
-        const driverName = accepted?.driverName ?? 'your driver';
+        const driverName = accepted?.driverName ?? 'Your driver';
         const reply = rideState === 'in_progress'
-          ? `Your ride with *${driverName}* is in progress. Sit tight!\n\nReply *cancel* if you need to cancel.`
-          : `*${driverName}* is on the way to you.\n\nReply *cancel* if you need to cancel.`;
-        await appendWhatsappConversation(deps.redisClient, phone, [
-          { role: 'user', content: incomingMessage },
-          { role: 'assistant', content: reply },
-        ]);
-        await sendMetaReply(deps, phone, reply);
+          ? `*${driverName}* is driving you now.\n\nYour ride card is above — tap *Track live trip* on it. Reply *cancel* if you need to.`
+          : `*${driverName}* is on the way.\n\nYour ride card is above — tap *Track live trip* on it. Reply *cancel* if you need to.`;
+        await sendQuickActions(deps, user, phone, activeRideId, incomingMessage, false, reply);
         return;
       }
 

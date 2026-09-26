@@ -293,6 +293,10 @@
         "note": {
           "type": "string",
           "__example__": "Drivers can see your new price. Their offers will come to your chat."
+        },
+        "rearm": {
+          "type": "string",
+          "__example__": "true"
         }
       },
       "layout": {
@@ -315,7 +319,10 @@
                 "label": "Back to chat",
                 "on-click-action": {
                   "name": "complete",
-                  "payload": {}
+                  "payload": {
+                    "flow": "offers",
+                    "rearm": "${data.rearm}"
+                  }
                 }
               }
             ]

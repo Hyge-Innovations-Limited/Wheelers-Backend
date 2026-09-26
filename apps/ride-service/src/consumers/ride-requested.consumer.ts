@@ -24,6 +24,8 @@ const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
 const BID_TIMEOUT_MS = RIDE.BID_TIMEOUT_SECONDS * 1000;
 /** A rebuilt auction (after a restart) gets at least this long, whatever is left of its window. */
 const REBUILT_MIN_WINDOW_MS = 60_000;
+/** A rider has one search at a time: a new request ends the older one, wherever it came from. */
+const SUPERSEDED_REASON = 'Replaced by a newer request';
 
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
@@ -139,7 +141,28 @@ export function createRideRequestedConsumer(params: {
     },
   };
 
+  async function supersedeOlderSearches(event: RideRequestedEvent): Promise<void> {
+    const older = await rideClient.findOpenSearches(BID_TIMEOUT_MS + 5 * 60_000, event.riderId, event.rideId).catch(() => []);
+    for (const ride of older) {
+      clearPendingMatch(ride.id);
+      state.routeByRideId.delete(ride.id);
+      await rideClient.cancelIfUnmatched(ride.id, SUPERSEDED_REASON).catch(() => undefined);
+      // The gateway hears this: the fare hold goes back, drivers with bids are told, the
+      // rider is not (they asked for the new search; this is housekeeping).
+      await rideEventsProducer.rideCancelled({
+        eventType: 'RIDE_CANCELLED',
+        rideId: ride.id,
+        riderId: ride.riderId,
+        reason: SUPERSEDED_REASON,
+        cancelledBy: 'system',
+        timestamp: new Date().toISOString(),
+      }).catch((err) => console.warn('[ride-service] could not cancel a superseded search', { rideId: ride.id, error: (err as any)?.message ?? err }));
+      console.info('[ride-service] older search superseded', { rideId: ride.id, by: event.rideId, riderId: event.riderId });
+    }
+  }
+
   async function handleRideRequested(event: RideRequestedEvent): Promise<void> {
+    await supersedeOlderSearches(event);
     state.routeByRideId.set(event.rideId, [
       ...event.stops.map((stop, index) => ({
         stopOrder: index,

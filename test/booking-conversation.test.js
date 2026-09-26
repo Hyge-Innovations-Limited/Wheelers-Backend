@@ -2363,7 +2363,13 @@ test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it car
   assert.deepEqual(qa.footer('TRIP')['on-click-action'].payload, { action: 'trip_direction', ride_id: '${data.ride_id}', direction: '${form.direction}' });
   assert.deepEqual(qa.footer('STATUS')['on-click-action'].payload, { action: 'status_next' });
   assert.equal(qa.footer('STATUS').label, '${data.cta_label}', 'Check for offers while searching, Back to chat once a driver is confirmed');
-  for (const id of ['REVIEW_TRIP', 'SET_PRICE', 'DONE']) assert.deepEqual(qa.screens[id], EDIT_TRIP_FLOW.screens.find((s) => s.id === id), `${id} is the Edit-trip form's screen`);
+  for (const id of ['REVIEW_TRIP', 'SET_PRICE']) assert.deepEqual(qa.screens[id], EDIT_TRIP_FLOW.screens.find((s) => s.id === id), `${id} is the Edit-trip form's screen`);
+  // Completing a form disables its button in the chat: every way out says which form closed and whether the chat needs a fresh button.
+  assert.deepEqual(qa.footer('DONE')['on-click-action'].payload, { flow: 'quick_actions', rearm: '${data.rearm}' });
+  assert.deepEqual(qa.footer('ADD_MONEY')['on-click-action'].payload, { flow: 'quick_actions', rearm: 'true' });
+  assert.deepEqual(qa.footer('SUPPORT')['on-click-action'].payload, { flow: 'quick_actions', rearm: 'true' });
+  const OFFERS_JSON = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
+  assert.deepEqual(OFFERS_JSON.screens.find((s) => s.id === 'DONE').layout.children[0].children.find((c) => c.type === 'Footer')['on-click-action'].payload, { flow: 'offers', rearm: '${data.rearm}' });
   const OFFERS_FORM = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
   for (const id of ['OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH']) assert.deepEqual(qa.screens[id], OFFERS_FORM.screens.find((s) => s.id === id), `${id} is the offers form's screen`);
   assert.deepEqual(QUICK_ACTIONS_FLOW.screens.filter((s) => s.terminal).map((s) => s.id), ['ADD_MONEY', 'SUPPORT', 'DONE']);
@@ -2623,4 +2629,88 @@ test('ONE confirmation: the driver-assigned event sends the WhatsApp rider no pl
     { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
   assert.equal(at.sent.length, before, 'not a word from the event');
   assert.equal(await bidState.getRideState(at.redis, at.rideId), 'confirmed', 'the state still moves');
+});
+
+/** WhatsApp's word that a form was closed with its last button. */
+async function closeForm(deps, who, response) {
+  messageCounter += 1;
+  const payload = { object: 'whatsapp_business_account', entry: [{ changes: [{ value: {
+    contacts: [{ profile: { name: who.name }, wa_id: who.phone }],
+    messages: [{ id: `wamid.nfm.${Date.now()}.${messageCounter}`, from: who.phone, type: 'interactive', interactive: { type: 'nfm_reply', nfm_reply: { name: 'flow', body: 'Sent', response_json: JSON.stringify(response) } } }],
+  } }] }] };
+  const raw = Buffer.from(JSON.stringify(payload));
+  await handleMetaWhatsappWebhookRoute({ method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield raw; } }, { statusCode: 0, setHeader() {}, writeHead() { return this; }, end() {} }, deps);
+}
+
+test('QUICK ACTIONS never expires: closing the form gives the chat a fresh button — unless the form just sent a message itself', async () => {
+  const at = await riderWithHistory();
+  at.deps.whatsappQuickActionsFlowId = 'flow-quick-actions-1';
+  const before = at.sent.length;
+  await closeForm(at.deps, at.who, { flow: 'quick_actions', rearm: 'true' });
+  assert.equal(at.sent.length, before + 1);
+  assert.equal(last(at.sent).interactive.type, 'flow');
+  assert.equal(last(at.sent).interactive.action.parameters.flow_cta, 'Quick Actions');
+  await closeForm(at.deps, at.who, { flow: 'quick_actions', rearm: 'false' });
+  assert.equal(at.sent.length, before + 1, 'Book a ride / Withdraw already sent something — no second button');
+  await closeForm(at.deps, at.who, { flow_token: 'x' });
+  assert.equal(at.sent.length, before + 1, 'a form that does not ask (the trip form) gets nothing');
+});
+
+test('closing the OFFERS form mid-search gives the chat a fresh See driver offers button; after the search is over, nothing', async () => {
+  const at = await riderWithOffersForm(10_000);
+  const before = at.sent.length;
+  await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'true' });
+  assert.equal(at.sent.length, before + 1);
+  assert.equal(last(at.sent).interactive.action.parameters.flow_cta, 'See driver offers');
+  assert.match(last(at.sent).interactive.body.text, /search is still on/);
+  assert.equal(await bidState.hasOffersMessage(at.redis, at.rideId), true);
+  await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'false' });
+  assert.equal(at.sent.length, before + 1, 'ride confirmed / wallet short / cancelled: the form already sent what mattered');
+  await bidState.clearActiveRide(at.redis, at.user.id);
+  await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'true' });
+  assert.equal(at.sent.length, before + 1, 'no live search: no button to a dead search');
+});
+
+test('IN A TRIP the bot is quiet: whatever they type gets the driver line, the ride card pointer and a menu of two — no model', async () => {
+  const at = await searchingRider(10_000);
+  at.deps.whatsappQuickActionsFlowId = 'flow-quick-actions-1';
+  await bidState.setRideState(at.redis, at.rideId, 'confirmed');
+  await bidState.storeAcceptedBid(at.redis, at.rideId, { driverName: 'Chinedu Okafor', driverPhone: '', driverUserId: 'u', vehicleModel: 'Corolla', vehiclePlate: 'LND-1', vehicleColor: '', driverRating: 4.9, totalRides: 12, etaSeconds: 240, fareNgn: 2400 });
+  const before = at.sent.length;
+  await say(at.deps, at.who, 'where is he now abeg');
+  assert.equal(at.sent.length, before + 1, 'one message');
+  const quiet = last(at.sent).interactive;
+  assert.equal(quiet.type, 'flow', 'the driver line with the Quick Actions button under it');
+  assert.match(quiet.body.text, /\*Chinedu Okafor\* is on the way\.[\s\S]*Track live trip[\s\S]*cancel/);
+  // The list fallback carries the same two rows and nothing else.
+  const menuForm2 = menuForm(at);
+  assert.deepEqual((await menuForm2('INIT')).data.choices.map((c) => c.id), ['current', 'deposit']);
+  delete at.deps.whatsappQuickActionsFlowId;
+  await say(at.deps, at.who, 'hello?');
+  const list = last(at.sent).interactive;
+  assert.equal(list.type, 'list');
+  assert.deepEqual(list.action.sections.flatMap((s) => s.rows.map((r) => r.id)), ['qa_current', 'qa_deposit'], 'mid-ride: the trip and money for it, nothing else');
+});
+
+test('ONE open search per rider: a new request ends the older one — silently, with its hold released, wherever it came from', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const { createRideRequestedConsumer } = require('../apps/ride-service/dist/consumers/ride-requested.consumer.js');
+  const at = await searchingRider(10_000);
+  // The ride service, with the older search in memory, hears a NEW request from the same rider.
+  const state = { onlineDrivers: new Map(), assignedDriversByRideId: new Map(), rideParticipantsByRideId: new Map(), gpsByRideId: new Map(), routeByRideId: new Map(), pendingMatchesByRideId: new Map() };
+  const produced = [];
+  const producer = new Proxy({}, { get: (_t, name) => async (payload) => { produced.push({ name: String(name), payload }); } });
+  const consumer = createRideRequestedConsumer({ state, rideEnv: { MATCH_RADIUS_KM: '5', MAX_MATCH_ATTEMPTS: '5' }, rideEventsProducer: producer });
+  const newRideId = require('node:crypto').randomUUID();
+  await consumer.handle(JSON.stringify({ eventType: 'RIDE_REQUESTED', rideId: newRideId, riderId: at.user.id, pickup: AKOKA, destination: YABA, stops: [], fareEstimateNgn: 2800, paymentMethod: 'WALLET', riderOfferNgn: 2600, suggestedFareNgn: 2800, minOfferNgn: 2300, ratePerKmNgn: 375, timestamp: new Date().toISOString() }), { topic: 'ride.events' });
+  const cancelled = produced.filter((p) => p.name === 'rideCancelled').map((p) => p.payload);
+  assert.deepEqual(cancelled.map((c) => [c.rideId, c.cancelledBy]), [[at.rideId, 'system']], 'the OLDER search is cancelled by the system');
+  assert.equal((await prisma.ride.findUnique({ where: { id: at.rideId } })).status, 'CANCELLED');
+  assert.ok(state.pendingMatchesByRideId.has(newRideId), 'the new one is the live auction');
+  for (const p of state.pendingMatchesByRideId.values()) clearTimeout(p.timeout);
+
+  // The gateway hears that cancel: housekeeping, not a message to the rider.
+  const before = at.sent.length;
+  await handleRideEvent(cancelled[0], { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' }, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  assert.equal(at.sent.length, before, 'not a word — they asked for the new search');
 });
