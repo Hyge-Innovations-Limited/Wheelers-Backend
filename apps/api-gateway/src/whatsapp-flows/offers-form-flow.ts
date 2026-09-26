@@ -287,7 +287,9 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     await storeLastBatch(deps.redisClient, rideId, []).catch(() => undefined);
     await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
     await setRideState(deps.redisClient, rideId, 'searching').catch(() => undefined);
-    return done('Offers declined', 'Still searching — new offers will come to your chat. Raising your price usually gets drivers moving.');
+    // Straight back to the live search, not a dead end: the list is empty now, with Check for
+    // more offers, Change my price and Cancel still on it.
+    return offersScreen(deps, rideId, 'Offers declined. The search is still on — raising your price usually gets drivers moving.');
   }
 
   const tapped = parseOfferReplyId(choice);

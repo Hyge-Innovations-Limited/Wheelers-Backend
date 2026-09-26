@@ -1852,8 +1852,9 @@ test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why 
   const before = sent.length;
 
   const declined = await form('data_exchange', { action: 'offers_choice', choice: 'decline_all' });
-  assert.equal(declined.screen, 'NOTE');
-  assert.match(declined.data.headline, /Offers declined/);
+  assert.equal(declined.screen, 'OFFERS', 'back on the live search, not a dead-end note');
+  assert.match(declined.data.error, /Offers declined/);
+  assert.deepEqual(declined.data.choices.map((c) => c.id), ['refresh', 'change_price', 'cancel_search']);
   assert.deepEqual(await bidState.getBids(redis, rideId), []);
   assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'still searching');
   assert.equal(events('RIDE_CANCELLED').length, 0);
