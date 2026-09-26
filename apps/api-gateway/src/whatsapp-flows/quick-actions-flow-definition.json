@@ -1657,10 +1657,6 @@
               {
                 "type": "TextBody",
                 "text": "${data.note}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "Close this with the X. Quick Actions stays in your chat."
               }
             ]
           }

@@ -112,12 +112,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Every request the Quick Actions form makes: opening it, and every Continue button on every screen. */
 export async function handleQuickActionsFlow(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const screen = await answerQuickActions(body, userId, deps);
-  // Quick Actions never completes. Completing a form disables the button in the chat, and
-  // nothing is ever sent to replace it (that would be the second message the rider does not
-  // want). So every ending — a bid placed, a search cancelled, Add money, the driver's status —
-  // is a NOTE the rider closes with the X, and the button they tapped stays live for good.
-  // DONE exists in the form's JSON only because Meta requires one terminal screen.
-  if (screen.screen === 'DONE') return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
+  // Completing the form (DONE, "Back to chat") disables the Quick Actions button in the
+  // chat, and nothing is ever sent to replace it — that would be the second message the
+  // rider does not want. So DONE only when the form has just put a NEW button in the chat
+  // itself (rearm false): a bid placed sends See driver offers, a cancelled search gets a
+  // reply that carries Quick Actions. Every other ending — Add money, Support, "already
+  // searching", the driver's status — is a NOTE with no button: the rider closes it with the
+  // X and the Quick Actions button they tapped stays live.
+  if (screen.screen === 'DONE' && screen.data['rearm'] !== 'false') {
+    return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
+  }
   return screen;
 }
 

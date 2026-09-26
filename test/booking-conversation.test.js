@@ -2232,7 +2232,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).confirmed, true);
 
   const done = await form('data_exchange', { price: String(route.suggestedFareNgn) }, 'SET_PRICE');   // no `action` tag: the screen Meta names says it
-  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
+  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
   assert.match(done.data.headline, /You have successfully bid/);
   const requested = at.published.map((p) => p.event).filter((e) => e?.eventType === 'RIDE_REQUESTED');
   assert.equal(requested.length, 1);
@@ -2304,7 +2304,7 @@ test('QUICK ACTIONS FORM · Book a ride is screens: where to → the places foun
   const price = await form('data_exchange', { action: 'confirm_trip' }, 'BOOK_REVIEW');
   assert.equal(price.screen, 'SET_PRICE');
   const done = await form('data_exchange', { action: 'set_price', price: price.data.suggested_price }, 'SET_PRICE');
-  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
+  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
   assert.match(done.data.headline, /successfully bid/);
   assert.ok(await bidState.getActiveRide(at.redis, at.user.id), 'the search is live');
   await settle();
@@ -2349,7 +2349,7 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose butt
   const before = at.sent.length;
   const bid = (await bidState.getBids(at.redis, at.rideId))[0];
   const done = await form('data_exchange', { action: 'offers_choice', choice: offerId(bid) }, 'OFFERS');
-  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
+  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
   assert.match(done.data.headline, /Ride confirmed/);
   assert.equal(at.accepted().length, 1);
   await settle();

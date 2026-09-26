@@ -313,10 +313,6 @@
               {
                 "type": "TextBody",
                 "text": "${data.note}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "Close this with the X. See driver offers stays in your chat."
               }
             ]
           }
