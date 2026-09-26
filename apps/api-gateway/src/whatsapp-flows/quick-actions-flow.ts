@@ -1,5 +1,6 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
@@ -8,7 +9,8 @@ import {
   getAcceptedBid, getActiveRide, getBids, getGroupSeat, getLastRoute, getPendingRoute, getRideMeta, getRideState, getSearchTimedOut,
   markOffersMessageOpened, setBookingStage, storePendingRoute,
 } from './bid-state';
-import type { PendingRouteData } from './bid-state';
+import type { PendingRouteData, RouteStop } from './bid-state';
+import { tripSummaryLine } from './trip-text';
 import {
   confirm, doneScreen, priceScreen, reviewScreen, setPrice,
   EXPIRED_NOTE, SEARCHING_NOTE, type EditTripFlowDeps,
@@ -26,8 +28,12 @@ import { handleOffersFormFlow, offersScreen, republishLastSearch, type OffersFor
  *                 what makes sense right now                       [Continue]
  *   HISTORY       the last ten trips                → TRIP
  *   TRIP          one past trip, Repeat or Reverse  → REVIEW_TRIP
- *   (Book a ride)  closes the form: booking is the chat's job — a location pin,
- *                 "from X to Y", the place picker — one clear prompt goes there
+ *   BOOK_WHERE    Book a ride: pickup and destination boxes         [Find places]
+ *   BOOK_PLACES   what was found for each, ALWAYS shown — they see what Google
+ *                 understood before anything is planned            [Continue]
+ *   BOOK_TRIP     the planned trip, its fare, up to three stop boxes [Confirm trip]
+ *   BOOK_STOP_PLACES  only when a typed stop has several matches
+ *   BOOK_REVIEW   the trip with its stops, one more look            [Confirm trip]
  *   REVIEW_TRIP   the planned trip and its fare      [Confirm trip] → SET_PRICE
  *   SET_PRICE     the price                          [Find drivers] → DONE
  *   STATUS        the current trip: the driver on the way, or the search with
@@ -129,6 +135,13 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
     return action === 'confirm_trip' ? confirm(userId, trip, editDeps(deps)) : setPrice(data, userId, trip, editDeps(deps));
   }
 
+  if (action === 'where_to' || action === 'book_places' || action === 'book_trip' || action === 'book_stop_places') {
+    if (await getActiveRide(deps.redisClient, userId)) return doneScreen('Already searching', SEARCHING_NOTE);
+    if (action === 'where_to') return bookWhereTo(data, userId, deps);
+    if (action === 'book_places') return bookPlaces(data, userId, deps);
+    if (action === 'book_trip') return bookTrip(data, userId, deps);
+    return bookStopPlaces(data, userId, deps);
+  }
   if (action === 'menu_choice') return menuChoice(text(data['choice']), userId, deps);
   if (action === 'history_pick') return historyPick(text(data['trip']), userId, deps);
   if (action === 'trip_direction') return tripDirection(text(data['ride_id']), text(data['direction']), userId, deps);
@@ -143,6 +156,10 @@ function inferAction(data: Record<string, unknown>, screen: string): string | nu
     if (screen === 'OFFERS') return 'offers_choice';
     return MENU_ID_SET.has(data['choice']) ? 'menu_choice' : 'offers_choice';
   }
+  if (typeof data['pickup'] === 'string' && typeof data['destination'] === 'string') return 'where_to';
+  if (typeof data['pick_pickup'] === 'string' || typeof data['pick_destination'] === 'string') return 'book_places';
+  if (['pick_stop_1', 'pick_stop_2', 'pick_stop_3'].some((field) => typeof data[field] === 'string')) return 'book_stop_places';
+  if (screen === 'BOOK_TRIP' || typeof data['stop_1'] === 'string') return 'book_trip';
   if (typeof data['trip'] === 'string') return 'history_pick';
   if (typeof data['direction'] === 'string') return 'trip_direction';
   if (data['price'] !== undefined) return 'set_price';
@@ -188,7 +205,7 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);
       if (ended && last) choices.push({ id: MENU_IDS.searchAgain, title: 'Search again', description: clip(`No driver took ${naira(ended.offerNgn || last.offerNgn)} — ${shortPlace(last.pickupAddress)} → ${shortPlace(last.destAddress)}, fresh search`, 300) });
     }
-    choices.push({ id: MENU_IDS.book, title: 'Book a ride', description: 'Back in the chat: type where you are going, or share a pin' });
+    choices.push({ id: MENU_IDS.book, title: 'Book a ride', description: 'Pickup, destination, stops and your price — right here' });
     const [last] = await recentTrips(userId, 1);
     if (last) {
       choices.push(
@@ -255,8 +272,8 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
       clearPendingAreaHint(deps.redisClient, userId), clearPendingGeoChoices(deps.redisClient, userId), clearPendingFarPlace(deps.redisClient, userId),
       clearBookingMisses(deps.redisClient, userId),
     ].map((step) => step.catch(() => undefined)));
-    void deps.onBookInChat?.(userId).catch((error) => console.error('[quick-actions] booking prompt not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-    return doneScreen('Where are you going?', 'Back in the chat, send your pickup and your destination, e.g. from Ikeja City Mall to Unilag gate, Yaba. Or share your pickup location pin first.', false);
+    await deps.redisClient.del(bookDraftKey(userId)).catch(() => undefined);
+    return whereToScreen({});
   }
   if (choice === MENU_IDS.repeat || choice === MENU_IDS.reverse) {
     const [last] = await recentTrips(userId, 1);
@@ -472,4 +489,219 @@ async function addMoneyScreen(userId: string, deps: QuickActionsFlowDeps): Promi
         : 'Your account number is being created. Open Quick Actions again in a minute and it will be here.',
     },
   };
+}
+
+// ── Book a ride ───────────────────────────────────────────────────────────
+
+/** What the rider typed and what it became, kept between the booking screens. */
+interface BookDraft {
+  typed: { pickup: string; destination: string };
+  options: { pickup: RouteStop[]; destination: RouteStop[] };
+  pickup?: RouteStop;
+  destination?: RouteStop;
+  stopsTyped?: string[];
+  stopOptions?: Record<number, RouteStop[]>;
+  stopsResolved?: Record<number, RouteStop>;
+}
+const BOOK_DRAFT_TTL_SECONDS = 900;
+const bookDraftKey = (userId: string) => `whatsapp:user:${userId}:book_draft`;
+const NONE = 'none';
+const MAX_MATCHES = 5;
+
+async function loadDraft(deps: QuickActionsFlowDeps, userId: string): Promise<BookDraft | null> {
+  const raw = await deps.redisClient.get(bookDraftKey(userId)).catch(() => null);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as BookDraft; } catch { return null; }
+}
+const saveDraft = (deps: QuickActionsFlowDeps, userId: string, draft: BookDraft) =>
+  deps.redisClient.set(bookDraftKey(userId), JSON.stringify(draft), BOOK_DRAFT_TTL_SECONDS);
+
+function whereToScreen(values: { pickup?: string; destination?: string }, error = ''): FlowScreen {
+  return { screen: 'BOOK_WHERE', data: { pickup: values.pickup ?? '', destination: values.destination ?? '', error, has_error: error.length > 0 } };
+}
+
+function placeRows(places: RouteStop[], field: string) {
+  return [
+    ...places.map((place, index) => {
+      const [name, ...rest] = place.address.split(',');
+      return { id: String(index), title: clip((name ?? place.address).trim(), 30), description: clip(rest.join(',').trim() || place.address, 300) };
+    }),
+    // WhatsApp refuses an empty data-source even on a hidden group: always hand it the way out.
+    { id: NONE, title: 'None of these', description: `Go back and type the ${field} again with the area` },
+  ];
+}
+
+function placesScreen(draft: BookDraft, error = ''): FlowScreen {
+  return {
+    screen: 'BOOK_PLACES',
+    data: {
+      pickup_options: placeRows(draft.options.pickup, 'pickup'),
+      show_pickup: true,
+      destination_options: placeRows(draft.options.destination, 'destination'),
+      show_destination: true,
+      error,
+      has_error: error.length > 0,
+    },
+  };
+}
+
+function tripScreenFor(trip: PendingRouteData, stopsTyped: string[] = [], error = ''): FlowScreen {
+  return {
+    screen: 'BOOK_TRIP',
+    data: {
+      pickup_line: `Pickup: ${trip.pickupAddress}`,
+      destination_line: `Destination: ${trip.destAddress}`,
+      summary_line: tripSummaryLine(trip),
+      stop_1: stopsTyped[0] ?? '',
+      stop_2: stopsTyped[1] ?? '',
+      stop_3: stopsTyped[2] ?? '',
+      error,
+      has_error: error.length > 0,
+    },
+  };
+}
+
+function stopPlacesScreen(draft: BookDraft, error = ''): FlowScreen {
+  const data: Record<string, unknown> = { error, has_error: error.length > 0 };
+  for (const index of [1, 2, 3]) {
+    const options = draft.stopOptions?.[index] ?? [];
+    data[`show_stop_${index}`] = options.length > 0;
+    data[`stop_${index}_options`] = placeRows(options, `stop ${index}`);
+  }
+  return { screen: 'BOOK_STOP_PLACES', data };
+}
+
+function bookReviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
+  const stops = trip.stops ?? [];
+  return {
+    screen: 'BOOK_REVIEW',
+    data: {
+      pickup_line: `Pickup: ${trip.pickupAddress}`,
+      stop_1_line: stops[0] ? `Stop 1: ${stops[0].address}` : '', has_stop_1: Boolean(stops[0]),
+      stop_2_line: stops[1] ? `Stop 2: ${stops[1].address}` : '', has_stop_2: Boolean(stops[1]),
+      stop_3_line: stops[2] ? `Stop 3: ${stops[2].address}` : '', has_stop_3: Boolean(stops[2]),
+      destination_line: `Destination: ${trip.destAddress}`,
+      summary_line: tripSummaryLine(trip),
+      error,
+      has_error: error.length > 0,
+    },
+  };
+}
+
+const toStop = (match: { lat: number; lng: number; formattedAddress: string }): RouteStop => ({ lat: match.lat, lng: match.lng, address: match.formattedAddress });
+
+/** Both boxes typed: look both up at once (the form has ~10 s), then show what was found — always. */
+async function bookWhereTo(data: Record<string, unknown>, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const typed = { pickup: text(data['pickup']).slice(0, 200), destination: text(data['destination']).slice(0, 200) };
+  if (typed.pickup.length < 2 || typed.destination.length < 2) return whereToScreen(typed, 'A trip needs a pickup and a destination.');
+  const [pickup, destination] = await Promise.all([
+    findPlaceOptions(deps.googleMapsApiKey, typed.pickup, { limit: MAX_MATCHES }).catch(() => []),
+    findPlaceOptions(deps.googleMapsApiKey, typed.destination, { limit: MAX_MATCHES }).catch(() => []),
+  ]);
+  if (pickup.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.pickup, 40)}". Add the area or a landmark — e.g. "Shoprite, Ikeja".`);
+  if (destination.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.destination, 40)}". Add the area or a landmark — e.g. "Unilag gate, Yaba".`);
+  const draft: BookDraft = { typed, options: { pickup: pickup.map(toStop), destination: destination.map(toStop) } };
+  await saveDraft(deps, userId, draft);
+  return placesScreen(draft);
+}
+
+/** The places chosen: sanity (same city, not the same place), then the road and the fare. */
+async function bookPlaces(data: Record<string, unknown>, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const draft = await loadDraft(deps, userId);
+  if (!draft) return whereToScreen({}, 'That took too long — type the trip again.');
+  const pickPickup = text(data['pick_pickup']);
+  const pickDestination = text(data['pick_destination']);
+  if (pickPickup === NONE) return placesScreen(draft, 'No problem — tap ← at the top and type the pickup again with the area or a landmark.');
+  if (pickDestination === NONE) return placesScreen(draft, 'No problem — tap ← at the top and type the destination again with the area or a landmark.');
+  const pickup = draft.options.pickup[Number(pickPickup)];
+  const destination = draft.options.destination[Number(pickDestination)];
+  if (!pickup || !destination) return placesScreen(draft, 'Pick a pickup and a destination to continue.');
+  if (kmBetween(pickup, destination) > SAME_CITY_KM) {
+    return placesScreen(draft, `Those are about ${Math.round(kmBetween(pickup, destination)).toLocaleString()} km apart — one of them is in another city. Tap ← and add the area, or type it in the chat if you really are going that far.`);
+  }
+  if (kmBetween(pickup, destination) < SAME_PLACE_KM) return placesScreen(draft, 'Your pickup and your destination are the same place. Pick a different one.');
+
+  const planned = await deps.routePlanner.planRoute({ origin: pickup, destination }).catch(() => null);
+  if (!planned) return placesScreen(draft, 'I could not find a driving route between those two. Check them and try again.');
+  const trip: PendingRouteData = {
+    pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
+    destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
+    stops: [],
+    distanceKm: planned.distanceKm, durationSeconds: planned.durationSeconds,
+    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn,
+    route: planned.geometry,
+  };
+  await storePendingRoute(deps.redisClient, userId, trip);
+  await setBookingStage(deps.redisClient, userId, 'awaiting_trip_confirm');
+  await saveDraft(deps, userId, { ...draft, pickup, destination });
+  return tripScreenFor(trip);
+}
+
+/** Confirm trip on Your trip: no stops → the price; stops → looked up, picked if ambiguous, planned, reviewed. */
+async function bookTrip(data: Record<string, unknown>, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const trip = await getPendingRoute(deps.redisClient, userId);
+  const draft = await loadDraft(deps, userId);
+  if (!trip || !draft?.pickup || !draft.destination) return whereToScreen({}, 'That trip has expired — type it again.');
+  const stopsTyped = [text(data['stop_1']), text(data['stop_2']), text(data['stop_3'])].map((s) => s.slice(0, 200));
+  if (stopsTyped.every((s) => !s)) return confirm(userId, { ...trip, stops: [] }, editDeps(deps));
+
+  const found = await Promise.all(stopsTyped.map((typed) => (typed
+    ? findPlaceOptions(deps.googleMapsApiKey, typed, { near: draft.pickup, limit: MAX_MATCHES }).catch(() => [])
+    : Promise.resolve([]))));
+  const missing = stopsTyped.findIndex((typed, index) => typed && found[index]!.length === 0);
+  if (missing >= 0) return tripScreenFor(trip, stopsTyped, `I could not find "${clip(stopsTyped[missing]!, 40)}" (stop ${missing + 1}). Add the area or a landmark.`);
+
+  const stopOptions: Record<number, RouteStop[]> = {};
+  const stopsResolved: Record<number, RouteStop> = {};
+  stopsTyped.forEach((typed, index) => {
+    if (!typed) return;
+    const places = found[index]!.map(toStop);
+    if (places.length === 1) stopsResolved[index + 1] = places[0]!;
+    else stopOptions[index + 1] = places;
+  });
+  await saveDraft(deps, userId, { ...draft, stopsTyped, stopOptions, stopsResolved });
+  if (Object.keys(stopOptions).length > 0) return stopPlacesScreen({ ...draft, stopOptions });
+  return planWithStops(userId, deps, draft, [1, 2, 3].map((i) => stopsResolved[i]).filter((s): s is RouteStop => Boolean(s)), (error) => tripScreenFor(trip, stopsTyped, error));
+}
+
+async function bookStopPlaces(data: Record<string, unknown>, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const draft = await loadDraft(deps, userId);
+  const trip = await getPendingRoute(deps.redisClient, userId);
+  if (!draft?.pickup || !draft.destination || !trip) return whereToScreen({}, 'That trip has expired — type it again.');
+  const resolved: Record<number, RouteStop> = { ...(draft.stopsResolved ?? {}) };
+  for (const index of [1, 2, 3]) {
+    const options = draft.stopOptions?.[index];
+    if (!options) continue;
+    const picked = text(data[`pick_stop_${index}`]);
+    if (!picked) return stopPlacesScreen(draft, `Pick the right stop ${index} to continue.`);
+    if (picked === NONE) return stopPlacesScreen(draft, `No problem — tap ← at the top and type stop ${index} again with the area or a landmark.`);
+    const place = options[Number(picked)];
+    if (!place) return stopPlacesScreen(draft, `Pick the right stop ${index} to continue.`);
+    resolved[index] = place;
+  }
+  return planWithStops(userId, deps, draft, [1, 2, 3].map((i) => resolved[i]).filter((s): s is RouteStop => Boolean(s)), (error) => stopPlacesScreen(draft, error));
+}
+
+async function planWithStops(userId: string, deps: QuickActionsFlowDeps, draft: BookDraft, stops: RouteStop[], refuse: (error: string) => FlowScreen): Promise<FlowScreen> {
+  const pickup = draft.pickup!;
+  const destination = draft.destination!;
+  const far = stops.find((stop) => kmBetween(pickup, stop) > SAME_CITY_KM);
+  if (far) return refuse(`${clip(far.address, 60)} is about ${Math.round(kmBetween(pickup, far)).toLocaleString()} km from your pickup — another city. Add the area, or leave that stop out.`);
+  const points = [{ label: 'pickup', place: pickup }, ...stops.map((place, i) => ({ label: `stop ${i + 1}`, place })), { label: 'destination', place: destination }];
+  for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++) {
+    if (kmBetween(points[a]!.place, points[b]!.place) < SAME_PLACE_KM) return refuse(`Your ${points[a]!.label} and your ${points[b]!.label} are the same place. Change one of them.`);
+  }
+  const planned = await deps.routePlanner.planRoute({ origin: pickup, destination, stops }).catch(() => null);
+  if (!planned) return refuse('I could not find a driving route through those places. Check them and try again.');
+  const trip: PendingRouteData = {
+    pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
+    destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
+    stops,
+    distanceKm: planned.distanceKm, durationSeconds: planned.durationSeconds,
+    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn,
+    route: planned.geometry,
+  };
+  await storePendingRoute(deps.redisClient, userId, trip);
+  await setBookingStage(deps.redisClient, userId, 'awaiting_trip_confirm');
+  return bookReviewScreen(trip);
 }

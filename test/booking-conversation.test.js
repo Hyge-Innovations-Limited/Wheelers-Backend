@@ -2270,18 +2270,46 @@ test('QUICK ACTIONS FORM · Ride history → one trip → Reverse: ends swapped,
   assert.equal((await form('data_exchange', { action: 'menu_choice', choice: 'resume' }, 'MENU')).screen, 'REVIEW_TRIP');
 });
 
-test('QUICK ACTIONS FORM · Book a ride closes the form and the chat asks where they are going — one plain prompt, then booking is the chat\'s as before', async () => {
+test('QUICK ACTIONS FORM · Book a ride is screens: where to → the places found (always) → your trip with stops → review → price → ONE chat message', async () => {
   const at = await riderWithHistory();
+  const { sent } = installWorld({ geocode: (q) => (/akoka|emily/i.test(q) ? AKOKA : /sabo/i.test(q) ? SABO : YABA), places: (q) => (/akoka|emily/i.test(q) ? AKOKA : /sabo/i.test(q) ? SABO : /yaba|osaro/i.test(q) ? YABA : null), intent: () => ({ intent: 'other' }) });
+  at.deps.whatsappOffersFormFlowId = 'flow-offers-form-1';
   const form = menuForm(at);
-  const before = at.sent.length;
-  const done = await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+
+  const where = await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal(where.screen, 'BOOK_WHERE');
+  assert.match((await form('data_exchange', { action: 'where_to', pickup: 'Akoka', destination: 'A' }, 'BOOK_WHERE')).data.error, /needs a pickup and a destination/);
+
+  const places = await form('data_exchange', { action: 'where_to', pickup: 'Akoka', destination: 'Yaba' }, 'BOOK_WHERE');
+  assert.equal(places.screen, 'BOOK_PLACES', 'the places found are ALWAYS shown, even one match: they see what was understood');
+  assert.deepEqual(places.data.pickup_options.map((o) => o.id), ['0', 'none']);
+  assert.match(places.data.pickup_options[0].title, /31 Emily/);
+  assert.match(places.data.destination_options[0].title, /7 Osaro/);
+
+  assert.match((await form('data_exchange', { action: 'book_places', pick_pickup: 'none', pick_destination: '0' }, 'BOOK_PLACES')).data.error, /type the pickup again/);
+  const trip = await form('data_exchange', { action: 'book_places', pick_pickup: '0', pick_destination: '0' }, 'BOOK_PLACES');
+  assert.equal(trip.screen, 'BOOK_TRIP');
+  assert.match(trip.data.pickup_line, /^Pickup: 31 Emily/);
+  assert.match(trip.data.summary_line, /km · ~\d+ min · suggested fare ₦/);
+  const pending = await bidState.getPendingRoute(at.redis, at.user.id);
+  assert.match(pending.destAddress, /7 Osaro Isokpan/);
+  assert.notEqual(pending.confirmed, true);
+
+  // A stop typed on Your trip: looked up near the pickup, one match, planned, reviewed.
+  const review = await form('data_exchange', { action: 'book_trip', stop_1: 'Sabo', stop_2: '', stop_3: '' }, 'BOOK_TRIP');
+  assert.equal(review.screen, 'BOOK_REVIEW');
+  assert.match(review.data.stop_1_line, /Stop 1: Sabo Market/);
+  assert.deepEqual((await bidState.getPendingRoute(at.redis, at.user.id)).stops.map((s) => s.address), [SABO.address]);
+
+  const price = await form('data_exchange', { action: 'confirm_trip' }, 'BOOK_REVIEW');
+  assert.equal(price.screen, 'SET_PRICE');
+  const done = await form('data_exchange', { action: 'set_price', price: price.data.suggested_price }, 'SET_PRICE');
   assert.equal(done.screen, 'DONE');
-  assert.match(done.data.headline, /Where are you going/);
+  assert.match(done.data.headline, /successfully bid/);
+  assert.ok(await bidState.getActiveRide(at.redis, at.user.id), 'the search is live');
   await settle();
-  assert.equal(at.sent.length, before + 1, 'one prompt');
-  assert.equal(last(at.sent).type, 'text', 'plain words: the next thing typed is the answer');
-  assert.match(textOf(last(at.sent)), /Where are you going\?[\s\S]*Send your \*pickup\* and your \*destination\*[\s\S]*From Ikeja City Mall to Unilag gate, Yaba[\s\S]*location pin first/);
-  assert.equal(await bidState.getBookingStage(at.redis, at.user.id), null, 'idle: the chat parses whatever they type next, as it always has');
+  assert.equal(sent.length, 1, 'ONE chat message for the whole booking');
+  assert.equal(last(sent).interactive.action.parameters.flow_cta, 'See driver offers');
 });
 
 test('QUICK ACTIONS FORM · Book a ride starts CLEAN: a Repeat they walked away from is forgotten, so "from Ilemere" is a new pickup, not an edit that keeps the old destination', async () => {
@@ -2292,7 +2320,7 @@ test('QUICK ACTIONS FORM · Book a ride starts CLEAN: a Repeat they walked away 
   assert.ok(await bidState.getPendingRoute(at.redis, at.user.id), 'a half-finished trip in memory');
   assert.equal((await form('INIT')).data.choices[0].id, 'resume', 'offered as Continue your booking');
 
-  await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal((await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU')).screen, 'BOOK_WHERE');
   assert.equal(await bidState.getPendingRoute(at.redis, at.user.id), null, 'gone');
   assert.equal(await bidState.getPendingLocation(at.redis, at.user.id), null, 'the old pin too');
   assert.equal(await bidState.getBookingStage(at.redis, at.user.id), null);
@@ -2354,7 +2382,10 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
 });
 
 test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it carries the trip and offers screens unchanged', () => {
-  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'DONE']);
+  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'DONE']);
+  assert.deepEqual(qa.footer('BOOK_WHERE')['on-click-action'].payload, { action: 'where_to', pickup: '${form.pickup}', destination: '${form.destination}' });
+  assert.deepEqual(qa.footer('BOOK_TRIP')['on-click-action'].payload, { action: 'book_trip', stop_1: '${form.stop_1}', stop_2: '${form.stop_2}', stop_3: '${form.stop_3}' });
+  assert.deepEqual(qa.footer('BOOK_REVIEW')['on-click-action'].payload, { action: 'confirm_trip' });
   const addMoney = qa.screens.ADD_MONEY.layout.children[0];
   assert.deepEqual(addMoney['init-values'], { account_number: '${data.account_number}' }, 'v5.1 prefills through the Form, never init-value on the input (Meta refused that)');
   assert.ok(addMoney.children.some((c) => c.type === 'TextInput' && c.name === 'account_number' && !('init-value' in c)), 'the number sits in a box the rider can copy from');
