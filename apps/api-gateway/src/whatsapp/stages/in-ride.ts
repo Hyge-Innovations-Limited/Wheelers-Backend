@@ -1,4 +1,4 @@
-import { cleanupRideKeys, clearAcceptedSeats, clearActiveRide, clearPendingAccept, getAcceptedBid, getGroupSeat, getGroupSeatMembers, getLastBatch, getPendingAccept, getRideMeta, getRideState, recordAcceptedSeat, setActiveRide, setBookingStage, storePendingRoute } from '../../whatsapp-flows/bid-state';
+import { cleanupRideKeys, clearAcceptedSeats, clearActiveRide, clearPendingAccept, getAcceptedBid, getGroupSeat, getGroupSeatMembers, getLastBatch, getPendingAccept, getRideMeta, getRideState, recordAcceptedSeat, setActiveRide, setBookingStage, storePendingRoute, storeRiderOfferChange } from '../../whatsapp-flows/bid-state';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, isMoreCommand, parseAcceptCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { replyAndLog, sendMetaLinkButton, sendMetaReply } from '../../whatsapp/send';
 import { sendQuickActions } from '../../whatsapp/menu';
@@ -354,13 +354,8 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
           return true;
         }
 
-        // Update the rider's offer in Redis
-        meta.offerNgn = counterOffer;
-        await deps.redisClient.set(
-          `whatsapp:ride:${activeRideId}:meta`,
-          JSON.stringify(meta),
-          900,
-        );
+        // Update the rider's offer in Redis (the search's TTL, and the remembered route)
+        await storeRiderOfferChange(deps.redisClient, activeRideId, meta, counterOffer);
 
         // Publish counter-offer to ride-service so all drivers see the updated price
         await deps.publisher.publishRideEvent({

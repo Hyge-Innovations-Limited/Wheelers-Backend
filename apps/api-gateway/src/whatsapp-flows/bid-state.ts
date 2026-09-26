@@ -121,6 +121,25 @@ export async function storeWhatsappRide(
   ]);
 }
 
+/**
+ * The rider changed their price mid-search. The meta is rewritten with the
+ * SEARCH's TTL (it used to be re-set for 15 minutes here, which told a rider who
+ * raised their price at minute 2 that the search had ended at minute 17 while the
+ * auction was still live), and the remembered route learns the new price so
+ * "Search again" and the ended-search screen repeat what the rider last asked.
+ */
+export async function storeRiderOfferChange(
+  redis: RedisClient,
+  rideId: string,
+  meta: WhatsappRideMeta,
+  offerNgn: number,
+): Promise<void> {
+  meta.offerNgn = offerNgn;
+  await redis.set(rideMetaKey(rideId), JSON.stringify(meta), RIDE_META_TTL);
+  const route = await getLastRoute(redis, meta.riderId);
+  if (route) await storeLastRoute(redis, meta.riderId, { ...route, offerNgn });
+}
+
 export async function getRideMeta(
   redis: RedisClient,
   rideId: string,

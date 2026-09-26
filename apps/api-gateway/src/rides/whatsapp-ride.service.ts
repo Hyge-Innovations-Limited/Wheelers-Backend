@@ -16,6 +16,7 @@ import {
   setRideState,
   storeAcceptedBid,
   storeLastRoute,
+  storeRiderOfferChange,
   storeWhatsappRide,
   clearSearchTimedOut,
 } from '../whatsapp-flows/bid-state';
@@ -149,8 +150,7 @@ export async function changeRiderOffer(
   const validation = validateRiderOffer(amountNgn, meta.suggestedFareNgn);
   if (!validation.valid) return { ok: false, code: 'BELOW_MINIMUM', minOfferNgn: validation.minOfferNgn };
 
-  meta.offerNgn = amountNgn;
-  await deps.redisClient.set(`whatsapp:ride:${rideId}:meta`, JSON.stringify(meta), 900);
+  await storeRiderOfferChange(deps.redisClient, rideId, meta, amountNgn);
   await deps.publisher.publishRideEvent({
     eventType: 'RIDE_RIDER_COUNTER_OFFER',
     rideId,

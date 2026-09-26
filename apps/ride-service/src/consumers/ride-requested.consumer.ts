@@ -146,7 +146,13 @@ export function createRideRequestedConsumer(params: {
     for (const ride of older) {
       clearPendingMatch(ride.id);
       state.routeByRideId.delete(ride.id);
-      await rideClient.cancelIfUnmatched(ride.id, SUPERSEDED_REASON).catch(() => undefined);
+      // A driver may have been assigned between the lookup and this update; then the
+      // trip is theirs and nothing is cancelled or announced.
+      const cancelled = await rideClient.cancelIfUnmatched(ride.id, SUPERSEDED_REASON).catch(() => ({ count: 0 }));
+      if (cancelled.count === 0) {
+        console.info('[ride-service] older search already matched, left alone', { rideId: ride.id, by: event.rideId });
+        continue;
+      }
       // The gateway hears this: the fare hold goes back, drivers with bids are told, the
       // rider is not (they asked for the new search; this is housekeeping).
       await rideEventsProducer.rideCancelled({

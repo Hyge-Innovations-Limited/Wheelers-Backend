@@ -49,7 +49,9 @@ const atTarget = (bankName) => (bankName ?? '').toLowerCase().includes(targetWor
 const rows = await prisma.virtualAccount.findMany({
   where: {
     provider: 'paystack',
-    status: 'active',
+    // 'reassigning' is a rider whose old account was retired on an earlier run while
+    // Paystack was still assigning the new one; a re-run finishes them.
+    status: { in: ['active', 'reassigning'] },
     ...(USER_ID ? { userId: USER_ID } : {}),
     user: { NOT: [{ privyDid: { startsWith: 'seed:' } }, { privyDid: { startsWith: 'parked:' } }, { privyDid: { startsWith: 'platform:' } }, { privyDid: { startsWith: 'deleted:' } }] },
   },
@@ -85,7 +87,7 @@ let moved = 0, pending = 0, failed = 0, told = 0;
 for (const row of moving.slice(0, LIMIT)) {
   try {
     // Paystack keeps one account per customer: the old one goes first, then the new one is issued.
-    await payments.deactivateVirtualAccount(row.providerAccountId);
+    if (row.status !== 'reassigning') await payments.deactivateVirtualAccount(row.providerAccountId);
     let account;
     try {
       account = await payments.createVirtualAccount(row.providerCustomerId, TARGET);
