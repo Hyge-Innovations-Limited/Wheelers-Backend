@@ -13,6 +13,7 @@ import {
 import { clearBids, clearPendingAccept, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
 import type { LastRouteData, PendingRouteData, SearchTimedOut, WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
+import { actionFor } from './flow-dispatch';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
 
 /**
@@ -199,6 +200,9 @@ function cancelScreen(error = ''): FlowScreen {
   };
 }
 
+/** The one Continue button on each screen. */
+export const OFFERS_FORM_ACTIONS = { OFFERS: 'offers_choice', CHANGE_PRICE: 'update_price', CANCEL_SEARCH: 'cancel_search' } as const;
+
 /** Every request the offers form makes. */
 export async function handleOffersFormFlow(body: FlowRequestBody, userId: string, deps: OffersFormDeps): Promise<FlowScreen> {
   const rideId = await getActiveRide(deps.redisClient, userId);
@@ -206,11 +210,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   const confirmed = state === 'confirmed' || state === 'in_progress';
 
   const data = body.data ?? {};
-  // Phones cache flow JSON and old copies drop our `action` tag — the payload's shape still says what it is.
-  const action = typeof data['action'] === 'string' ? data['action']
-    : typeof data['choice'] === 'string' ? 'offers_choice'
-      : data['new_price'] !== undefined ? 'update_price'
-        : typeof data['reason'] === 'string' ? 'cancel_search' : null;
+  const action = actionFor(body, OFFERS_FORM_ACTIONS);
 
   // No live search: if the last one ran out with no driver, that is the screen — with the ways forward on it.
   const ended = rideId ? null : await getSearchTimedOut(deps.redisClient, userId);

@@ -13,10 +13,11 @@ import type { PendingRouteData, RouteStop } from './bid-state';
 import { tripSummaryLine } from './trip-text';
 import {
   confirm, doneScreen, priceScreen, reviewScreen, setPrice,
-  EXPIRED_NOTE, SEARCHING_NOTE, type EditTripFlowDeps,
+  EDIT_TRIP_ACTIONS, EXPIRED_NOTE, SEARCHING_NOTE, type EditTripFlowDeps,
 } from './edit-trip-flow';
 import type { FlowRequestBody } from './encryption';
-import { handleOffersFormFlow, offersScreen, republishLastSearch, type OffersFormDeps } from './offers-form-flow';
+import { actionFor } from './flow-dispatch';
+import { handleOffersFormFlow, offersScreen, republishLastSearch, OFFERS_FORM_ACTIONS, type OffersFormDeps } from './offers-form-flow';
 
 /**
  * Quick Actions — the menu as ONE WhatsApp Flow. One message, one button, and
@@ -82,7 +83,6 @@ export const MENU_IDS = {
   resume: 'resume', searchAgain: 'search_again', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
   current: 'current', deposit: 'deposit', withdraw: 'withdraw', support: 'support',
 } as const;
-const MENU_ID_SET = new Set<string>(Object.values(MENU_IDS));
 const TRIP_ROW = /^trip:([0-9a-f-]{36})$/;
 
 const BUSY_NOTE = 'You already have a ride going. Finish or cancel it first, then book again.';
@@ -120,8 +120,8 @@ export async function handleQuickActionsFlow(body: FlowRequestBody, userId: stri
 
 async function answerQuickActions(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const data = body.data ?? {};
-  const action = inferAction(data, body.screen ?? '');
-  if (body.action !== 'data_exchange' || !action) return menuScreen(userId, deps);
+  const action = actionFor(body, QUICK_ACTIONS_ACTIONS);
+  if (!action) return menuScreen(userId, deps);
 
   // The offers form's screens, verbatim: its handler reads the active ride itself.
   if (action === 'offers_choice' || action === 'update_price' || action === 'cancel_search') {
@@ -149,26 +149,15 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
   return menuScreen(userId, deps);
 }
 
-/** Phones cache flow JSON and old copies drop our `action` tag — the payload's shape and the screen still say what it is. */
-function inferAction(data: Record<string, unknown>, screen: string): string | null {
-  if (typeof data['action'] === 'string') return data['action'];
-  if (typeof data['choice'] === 'string') {
-    if (screen === 'OFFERS') return 'offers_choice';
-    return MENU_ID_SET.has(data['choice']) ? 'menu_choice' : 'offers_choice';
-  }
-  if (typeof data['pickup'] === 'string' && typeof data['destination'] === 'string') return 'where_to';
-  if (typeof data['pick_pickup'] === 'string' || typeof data['pick_destination'] === 'string') return 'book_places';
-  if (['pick_stop_1', 'pick_stop_2', 'pick_stop_3'].some((field) => typeof data[field] === 'string')) return 'book_stop_places';
-  if (screen === 'BOOK_TRIP' || typeof data['stop_1'] === 'string') return 'book_trip';
-  if (typeof data['trip'] === 'string') return 'history_pick';
-  if (typeof data['direction'] === 'string') return 'trip_direction';
-  if (data['price'] !== undefined) return 'set_price';
-  if (data['new_price'] !== undefined) return 'update_price';
-  if (typeof data['reason'] === 'string') return 'cancel_search';
-  if (screen === 'REVIEW_TRIP') return 'confirm_trip';
-  if (screen === 'STATUS') return 'status_next';
-  return null;
-}
+/** The one Continue button on each screen. The trip and offers screens are the other forms' own. */
+export const QUICK_ACTIONS_ACTIONS = {
+  MENU: 'menu_choice',
+  BOOK_WHERE: 'where_to', BOOK_PLACES: 'book_places', BOOK_TRIP: 'book_trip', BOOK_STOP_PLACES: 'book_stop_places', BOOK_REVIEW: 'confirm_trip',
+  HISTORY: 'history_pick', TRIP: 'trip_direction',
+  ...EDIT_TRIP_ACTIONS,
+  STATUS: 'status_next',
+  ...OFFERS_FORM_ACTIONS,
+} as const;
 
 const editDeps = (deps: QuickActionsFlowDeps): EditTripFlowDeps => ({
   redisClient: deps.redisClient, googleMapsApiKey: deps.googleMapsApiKey, routePlanner: deps.routePlanner, publisher: deps.publisher, onBidPlaced: deps.onBidPlaced,

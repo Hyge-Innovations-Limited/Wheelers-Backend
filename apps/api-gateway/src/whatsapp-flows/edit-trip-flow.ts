@@ -7,6 +7,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { getActiveRide, getPendingRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from './bid-state';
 import type { PendingRouteData, RouteStop } from './bid-state';
 import type { FlowRequestBody } from './encryption';
+import { actionFor } from './flow-dispatch';
 
 /**
  * The "Confirm or edit trip" form — the ONE WhatsApp Flow that is switched on.
@@ -169,18 +170,16 @@ export function doneScreen(headline: string, note: string, rearm = true): FlowSc
 export const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
 export const SEARCHING_NOTE = 'Drivers are already looking at this trip. To change it, reply "cancel" in the chat and send the new trip.';
 
+/** The one Continue button on each screen. */
+export const EDIT_TRIP_ACTIONS = { EDIT_TRIP: 'edit_trip', PICK_PLACES: 'pick_places', REVIEW_TRIP: 'confirm_trip', SET_PRICE: 'set_price' } as const;
+
 /** Every request the Edit-trip flow makes: opening it, going back, and its two Continue buttons. */
 export async function handleEditTripFlow(body: FlowRequestBody, userId: string, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const [trip, activeRideId] = await Promise.all([getPendingRoute(deps.redisClient, userId), getActiveRide(deps.redisClient, userId)]);
   const deadEnd = activeRideId ? SEARCHING_NOTE : !trip ? EXPIRED_NOTE : null;
 
   const data = body.data ?? {};
-  // Phones cache flow JSON and old copies drop our `action` tag — read the intent from the payload's shape and the screen.
-  const action = typeof data['action'] === 'string' ? data['action']
-    : typeof data['pickup'] === 'string' ? 'edit_trip'
-      : FIELDS.some((field) => typeof data[`pick_${field}`] === 'string') ? 'pick_places'
-        : data['price'] !== undefined ? 'set_price'
-          : body.screen === 'REVIEW_TRIP' ? 'confirm_trip' : null;
+  const action = actionFor(body, EDIT_TRIP_ACTIONS);
 
   if (body.action !== 'data_exchange' || !action) {
     // INIT, BACK, or something we do not know: the boxes, as the trip stands. (A flow can only open on this screen.)

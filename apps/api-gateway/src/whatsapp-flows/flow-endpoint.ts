@@ -14,6 +14,7 @@ import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actio
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
 import type { FlowRequestBody } from './encryption';
+import { actionFor } from './flow-dispatch';
 import { geocodeAddress } from '../LLM/geocoding';
 import {
   getBids,
@@ -75,6 +76,9 @@ export interface WhatsappFlowEndpointDeps {
   /** A bid placed in the Edit-trip or Quick Actions form: the chat gets the See driver offers button. */
   onBidPlaced?: QuickActionsFlowDeps['onBidPlaced'];
 }
+
+/** The one Continue button on each screen of the two original flows. */
+const LEGACY_FLOW_ACTIONS = { RIDE_SETUP: 'estimate_fare', FARE_CONFIRM: 'find_drivers', BID_LIST: 'bid_action', TOP_UP: 'topup_check', RIDE_CONFIRMED: 'view_driver_profile', DRIVER_PROFILE: 'view_payment' } as const;
 
 const POLL_INTERVAL_MS = 1_000;
 const POLL_MAX_MS = 4_000;
@@ -263,25 +267,7 @@ async function handleFlowAction(
 
   if (body.action === 'data_exchange') {
     const data = body.data ?? {};
-    let action = data.action as string | undefined;
-
-    // Phones cache flow JSON aggressively: an old cached screen submits the
-    // form fields without our `action` tag. Infer the intent instead of
-    // falling through to a terminal screen (which reads as a crash).
-    if (!action && typeof data.pickup_address === 'string') {
-      action = data.offer_amount !== undefined && data.offer_amount !== '' ? 'find_drivers' : 'estimate_fare';
-    } else if (!action && body.screen === 'BID_LIST') {
-      action = 'bid_action';
-    } else if (!action && body.screen === 'TOP_UP') {
-      action = 'topup_check';
-    } else if (!action && body.screen === 'RIDE_CONFIRMED') {
-      action = 'view_driver_profile';
-    } else if (!action && body.screen === 'DRIVER_PROFILE') {
-      action = 'view_payment';
-    }
-    if (!(data.action as string | undefined) && action) {
-      console.info('[whatsapp-flow] inferred action', { screen: body.screen ?? null, action });
-    }
+    const action = actionFor(body, LEGACY_FLOW_ACTIONS) ?? undefined;
 
     // ── RIDE_SETUP: estimate fare, show FARE_CONFIRM ────────────────────
     if (action === 'estimate_fare') {

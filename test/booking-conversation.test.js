@@ -1365,7 +1365,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
   assert.match(low.data.error, /lowest price for this trip, ₦/);
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0);
 
-  const out = await form('data_exchange', { price: '2,500' });          // no `action` tag: the payload's shape says it
+  const out = await form('data_exchange', { price: '2,500' }, 'SET_PRICE');          // no `action` tag: the screen Meta names says it
   assert.equal(out.screen, 'DONE');
   assert.match(out.data.headline, /You have successfully bid ₦2,500/);
   const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event;
@@ -1430,7 +1430,7 @@ test('THE FORM: more than one match → a screen to pick from, in the same form 
   assert.match(none.data.error, /tap ← at the top and type the stop 1 again/);
   assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null, 'nothing saved');
 
-  const picked = await form('data_exchange', { pick_stop_1: '1' });      // no `action` tag: the payload's shape says it
+  const picked = await form('data_exchange', { pick_stop_1: '1' }, 'PICK_PLACES');      // no `action` tag: the screen Meta names says it
   assert.equal(picked.screen, 'REVIEW_TRIP');
   assert.match(picked.data.stop_1_line, /Tejuosho Market/);
   assert.equal(sent.length, before, 'still nothing in the chat — they have not confirmed');
@@ -1750,7 +1750,7 @@ async function riderWithOffersForm(walletNgn) {
   const at = await searchingRider(walletNgn);
   at.deps.whatsappOffersFormFlowId = 'flow-offers-form-1';
   const formDeps = { redisClient: at.redis, publisher: at.deps.publisher, ...createOffersFormChatHooks(at.deps) };
-  const form = (action, data) => handleOffersFormFlow({ version: '3.0', action, flow_token: 'x', data }, at.user.id, formDeps);
+  const form = (action, data, screen) => handleOffersFormFlow({ version: '3.0', action, flow_token: 'x', data, screen }, at.user.id, formDeps);
   const events = (type) => at.publishedEvents().filter((e) => e.eventType === type);
   return { ...at, form, events };
 }
@@ -1838,7 +1838,7 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
   assert.match(low.data.error, /lowest price for this trip, ₦/);
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
-  const updated = await form('data_exchange', { new_price: '2,800' });        // no `action` tag: the payload's shape says it
+  const updated = await form('data_exchange', { new_price: '2,800' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
   assert.equal(updated.screen, 'DONE');
   assert.match(updated.data.headline, /Bid updated to ₦2,800/);
   assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [2800]);
@@ -2231,7 +2231,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   assert.equal(price.data.suggested_price, String(route.suggestedFareNgn));
   assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).confirmed, true);
 
-  const done = await form('data_exchange', { price: String(route.suggestedFareNgn) }, 'SET_PRICE');   // no `action` tag: the payload's shape says it
+  const done = await form('data_exchange', { price: String(route.suggestedFareNgn) }, 'SET_PRICE');   // no `action` tag: the screen Meta names says it
   assert.equal(done.screen, 'DONE');
   assert.match(done.data.headline, /You have successfully bid/);
   const requested = at.published.map((p) => p.event).filter((e) => e?.eventType === 'RIDE_REQUESTED');
@@ -2245,7 +2245,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
 test('QUICK ACTIONS FORM · Ride history → one trip → Reverse: ends swapped, stops reversed, the same review screen — and an unfinished booking is the first row next time', async () => {
   const at = await riderWithHistory();
   const form = menuForm(at);
-  const history = await form('data_exchange', { choice: 'history' }, 'MENU');   // no `action` tag: a menu id in `choice` says it
+  const history = await form('data_exchange', { choice: 'history' }, 'MENU');   // no `action` tag: the screen Meta names says it
   assert.equal(history.screen, 'HISTORY');
   assert.deepEqual(history.data.choices.map((c) => c.id), [`trip:${at.newest.id}`, `trip:${at.older.id}`], 'newest first');
   assert.match(history.data.choices[0].description, /31 Emily Akinola St → 7 Osaro Isokpan St · 1 stop/);
