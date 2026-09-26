@@ -80,9 +80,15 @@ const CANCEL_REASONS: Record<string, string> = {
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`);
 const naira = (amount: number) => `₦${amount.toLocaleString()}`;
 
-/** `rearm`: when the form closes, does the chat need a fresh See driver offers button? Not when the form just sent something. */
+/**
+ * `rearm`: is See driver offers still wanted after this? Then the ending is a NOTE the rider
+ * closes with the X and the button in the chat lives on. Only when the form's job is over
+ * (ride confirmed, search cancelled, Add money sent) does DONE complete the form — WhatsApp
+ * disables the button then, and no second message is ever sent to replace it.
+ */
 function done(headline: string, note: string, rearm = true): FlowScreen {
-  return { screen: 'DONE', data: { headline, note, rearm: rearm ? 'true' : 'false' } };
+  if (rearm) return { screen: 'NOTE', data: { headline, note } };
+  return { screen: 'DONE', data: { headline, note, rearm: 'false' } };
 }
 
 /** A terminal-sounding state on the ENTRY screen (the only screen a flow may open on): one choice, "Close". */

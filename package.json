@@ -60,6 +60,7 @@
     "test:wallet-intent": "npm -w @wheleers/api-gateway run build && node --test test/wallet-intent.test.js",
     "places:check": "node scripts/check-places.mjs",
     "test:llm": "npm -w @wheleers/api-gateway run build && node --test test/llm-provider.test.js",
+    "flow:gen:quick-actions": "node scripts/gen-quick-actions-flow.mjs",
     "flow:push:edit-trip": "node scripts/whatsapp-form-push.mjs edit-trip",
     "flow:push:offers": "node scripts/whatsapp-form-push.mjs offers",
     "flow:push:quick-actions": "node scripts/whatsapp-form-push.mjs quick-actions",

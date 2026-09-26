@@ -12,62 +12,77 @@
       "OFFERS",
       "ADD_MONEY",
       "SUPPORT",
+      "NOTE",
       "DONE"
     ],
     "BOOK_WHERE": [
       "BOOK_PLACES",
+      "NOTE",
       "DONE"
     ],
     "BOOK_PLACES": [
       "BOOK_TRIP",
+      "NOTE",
       "DONE"
     ],
     "BOOK_TRIP": [
       "BOOK_STOP_PLACES",
       "BOOK_REVIEW",
       "SET_PRICE",
+      "NOTE",
       "DONE"
     ],
     "BOOK_STOP_PLACES": [
       "BOOK_REVIEW",
+      "NOTE",
       "DONE"
     ],
     "BOOK_REVIEW": [
       "SET_PRICE",
+      "NOTE",
       "DONE"
     ],
     "HISTORY": [
       "TRIP",
+      "NOTE",
       "DONE"
     ],
     "TRIP": [
       "REVIEW_TRIP",
+      "NOTE",
       "DONE"
     ],
     "REVIEW_TRIP": [
       "SET_PRICE",
+      "NOTE",
       "DONE"
     ],
     "SET_PRICE": [
+      "NOTE",
       "DONE"
     ],
     "STATUS": [
       "OFFERS",
+      "NOTE",
       "DONE"
     ],
     "OFFERS": [
       "CHANGE_PRICE",
       "CANCEL_SEARCH",
+      "NOTE",
       "DONE"
     ],
     "CHANGE_PRICE": [
+      "NOTE",
       "DONE"
     ],
     "CANCEL_SEARCH": [
+      "NOTE",
       "DONE"
     ],
     "ADD_MONEY": [],
     "SUPPORT": [],
+    "NOTE": [],
     "DONE": []
   },
   "screens": [
@@ -1499,7 +1514,7 @@
     {
       "id": "ADD_MONEY",
       "title": "Add money",
-      "terminal": true,
+      "terminal": false,
       "data": {
         "headline": {
           "type": "string",
@@ -1567,17 +1582,6 @@
               {
                 "type": "TextCaption",
                 "text": "${data.note_line}"
-              },
-              {
-                "type": "Footer",
-                "label": "Back to chat",
-                "on-click-action": {
-                  "name": "complete",
-                  "payload": {
-                    "flow": "quick_actions",
-                    "rearm": "true"
-                  }
-                }
               }
             ]
           }
@@ -1587,7 +1591,7 @@
     {
       "id": "SUPPORT",
       "title": "Support",
-      "terminal": true,
+      "terminal": false,
       "data": {
         "headline": {
           "type": "string",
@@ -1620,17 +1624,44 @@
               {
                 "type": "TextBody",
                 "text": "${data.note_line}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NOTE",
+      "title": "Wheelers",
+      "terminal": false,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Already searching"
+        },
+        "note": {
+          "type": "string",
+          "__example__": "Your search is still on. Tap See driver offers in the chat to watch it."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "note_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
               },
               {
-                "type": "Footer",
-                "label": "Back to chat",
-                "on-click-action": {
-                  "name": "complete",
-                  "payload": {
-                    "flow": "quick_actions",
-                    "rearm": "true"
-                  }
-                }
+                "type": "TextBody",
+                "text": "${data.note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Close this with the X. Quick Actions stays in your chat."
               }
             ]
           }

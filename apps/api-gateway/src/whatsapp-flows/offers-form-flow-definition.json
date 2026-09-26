@@ -5,14 +5,18 @@
     "OFFERS": [
       "CHANGE_PRICE",
       "CANCEL_SEARCH",
+      "NOTE",
       "DONE"
     ],
     "CHANGE_PRICE": [
+      "NOTE",
       "DONE"
     ],
     "CANCEL_SEARCH": [
+      "NOTE",
       "DONE"
     ],
+    "NOTE": [],
     "DONE": []
   },
   "screens": [
@@ -275,6 +279,44 @@
                     "reason": "${form.reason}"
                   }
                 }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NOTE",
+      "title": "Wheelers",
+      "terminal": false,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Offers declined"
+        },
+        "note": {
+          "type": "string",
+          "__example__": "Still searching. New offers will come to your chat."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "note_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Close this with the X. See driver offers stays in your chat."
               }
             ]
           }

@@ -15,9 +15,9 @@ import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '.
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
-import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, markOffersMessageSent, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide } from '../whatsapp-flows/bid-state';
+import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
-import { sendFlowOffersMessage, sendOffersReentryMessage } from '../whatsapp-flows/whatsapp-notifier';
+import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { CHANGE_PRICE_REPLY_ID, parseOfferReplyId } from '../whatsapp-flows/whatsapp-notifier';
 import { readRawBody, sendJson } from './utils';
 import { MetaWhatsappRouteDeps } from '../whatsapp/deps';
@@ -172,20 +172,9 @@ async function handleIncomingMetaMessage(
       },
     });
 
-    // ── A form closed: give the chat its button back, unless the form just sent a message itself ──
-    if (msgInfo.flowCompleted) {
-      if (!msgInfo.flowCompleted.rearm) return;
-      if (msgInfo.flowCompleted.flow === 'quick_actions') {
-        await sendQuickActions(deps, user, phone, activeRideId, '[closed Quick Actions]');
-      } else if (msgInfo.flowCompleted.flow === 'offers' && activeRideId && deps.metaAccessToken && deps.metaPhoneNumberId) {
-        const meta = await getRideMeta(deps.redisClient, activeRideId);
-        if (meta) {
-          const sent = await sendOffersReentryMessage({ metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret }, phone, user.id, meta.offerNgn);
-          if (sent) await markOffersMessageSent(deps.redisClient, activeRideId).catch(() => undefined);
-        }
-      }
-      return;
-    }
+    // ── A form completed. Nothing goes out: a form only completes when it has already put a
+    // message with a fresh button in the chat, and every other ending keeps the old button alive.
+    if (msgInfo.flowCompleted) return;
 
     // ── SOS. Before consent, before any booking step, before anything. ────
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {

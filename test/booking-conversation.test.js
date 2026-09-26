@@ -1515,7 +1515,7 @@ test('the forms on Meta and the server agree: every binding exists, every box th
   assert.equal(trip.footer('DONE')['on-click-action'].name, 'complete');
 
   const OFFERS_FORM = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
-  const offers = checkFormJson(OFFERS_FORM, ['OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'DONE']);
+  const offers = checkFormJson(OFFERS_FORM, ['OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'NOTE', 'DONE']);
   assert.deepEqual(offers.footer('OFFERS')['on-click-action'].payload, { action: 'offers_choice', choice: '${form.choice}' });
   assert.deepEqual(offers.footer('CHANGE_PRICE')['on-click-action'].payload, { action: 'update_price', new_price: '${form.new_price}' });
   assert.deepEqual(offers.footer('CANCEL_SEARCH')['on-click-action'].payload, { action: 'cancel_search', reason: '${form.reason}' });
@@ -1839,7 +1839,7 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
   const updated = await form('data_exchange', { new_price: '2,800' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
-  assert.equal(updated.screen, 'DONE');
+  assert.equal(updated.screen, 'NOTE');
   assert.match(updated.data.headline, /Bid updated to ₦2,800/);
   assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [2800]);
   assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 2800);
@@ -1852,7 +1852,7 @@ test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why 
   const before = sent.length;
 
   const declined = await form('data_exchange', { action: 'offers_choice', choice: 'decline_all' });
-  assert.equal(declined.screen, 'DONE');
+  assert.equal(declined.screen, 'NOTE');
   assert.match(declined.data.headline, /Offers declined/);
   assert.deepEqual(await bidState.getBids(redis, rideId), []);
   assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'still searching');
@@ -2232,7 +2232,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).confirmed, true);
 
   const done = await form('data_exchange', { price: String(route.suggestedFareNgn) }, 'SET_PRICE');   // no `action` tag: the screen Meta names says it
-  assert.equal(done.screen, 'DONE');
+  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
   assert.match(done.data.headline, /You have successfully bid/);
   const requested = at.published.map((p) => p.event).filter((e) => e?.eventType === 'RIDE_REQUESTED');
   assert.equal(requested.length, 1);
@@ -2304,7 +2304,7 @@ test('QUICK ACTIONS FORM · Book a ride is screens: where to → the places foun
   const price = await form('data_exchange', { action: 'confirm_trip' }, 'BOOK_REVIEW');
   assert.equal(price.screen, 'SET_PRICE');
   const done = await form('data_exchange', { action: 'set_price', price: price.data.suggested_price }, 'SET_PRICE');
-  assert.equal(done.screen, 'DONE');
+  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
   assert.match(done.data.headline, /successfully bid/);
   assert.ok(await bidState.getActiveRide(at.redis, at.user.id), 'the search is live');
   await settle();
@@ -2349,7 +2349,7 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose butt
   const before = at.sent.length;
   const bid = (await bidState.getBids(at.redis, at.rideId))[0];
   const done = await form('data_exchange', { action: 'offers_choice', choice: offerId(bid) }, 'OFFERS');
-  assert.equal(done.screen, 'DONE');
+  assert.equal(done.screen, 'NOTE');   // Quick Actions never completes: its button in the chat stays live
   assert.match(done.data.headline, /Ride confirmed/);
   assert.equal(at.accepted().length, 1);
   await settle();
@@ -2374,7 +2374,7 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
   assert.equal(at.sent.length, before, 'not one chat message');
 
   const withdraw = await form('data_exchange', { action: 'menu_choice', choice: 'withdraw' }, 'MENU');
-  assert.equal(withdraw.screen, 'DONE');
+  assert.equal(withdraw.screen, 'NOTE');
   await settle();
   assert.equal(at.sent.length, before + 1, 'the Withdraw button: the PIN and the bank stay on the page');
   assert.match(textOf(last(at.sent)), /Withdraw to your bank/);
@@ -2382,7 +2382,7 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
 });
 
 test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it carries the trip and offers screens unchanged', () => {
-  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'DONE']);
+  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE']);
   assert.deepEqual(qa.footer('BOOK_WHERE')['on-click-action'].payload, { action: 'where_to', pickup: '${form.pickup}', destination: '${form.destination}' });
   assert.deepEqual(qa.footer('BOOK_TRIP')['on-click-action'].payload, { action: 'book_trip', stop_1: '${form.stop_1}', stop_2: '${form.stop_2}', stop_3: '${form.stop_3}' });
   assert.deepEqual(qa.footer('BOOK_REVIEW')['on-click-action'].payload, { action: 'confirm_trip' });
@@ -2395,15 +2395,16 @@ test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it car
   assert.deepEqual(qa.footer('STATUS')['on-click-action'].payload, { action: 'status_next' });
   assert.equal(qa.footer('STATUS').label, '${data.cta_label}', 'Check for offers while searching, Back to chat once a driver is confirmed');
   for (const id of ['REVIEW_TRIP', 'SET_PRICE']) assert.deepEqual(qa.screens[id], EDIT_TRIP_FLOW.screens.find((s) => s.id === id), `${id} is the Edit-trip form's screen`);
-  // Completing a form disables its button in the chat: every way out says which form closed and whether the chat needs a fresh button.
+  // Completing a form disables its button in the chat, and nothing replaces it: only DONE completes (after the form sent a message with a fresh button); Add money, Support and NOTE are closed with the X and the button lives on.
   assert.deepEqual(qa.footer('DONE')['on-click-action'].payload, { flow: 'quick_actions', rearm: '${data.rearm}' });
-  assert.deepEqual(qa.footer('ADD_MONEY')['on-click-action'].payload, { flow: 'quick_actions', rearm: 'true' });
-  assert.deepEqual(qa.footer('SUPPORT')['on-click-action'].payload, { flow: 'quick_actions', rearm: 'true' });
+  assert.equal(qa.footer('ADD_MONEY'), undefined);
+  assert.equal(qa.footer('SUPPORT'), undefined);
+  assert.equal(qa.footer('NOTE'), undefined);
   const OFFERS_JSON = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
   assert.deepEqual(OFFERS_JSON.screens.find((s) => s.id === 'DONE').layout.children[0].children.find((c) => c.type === 'Footer')['on-click-action'].payload, { flow: 'offers', rearm: '${data.rearm}' });
   const OFFERS_FORM = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
   for (const id of ['OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH']) assert.deepEqual(qa.screens[id], OFFERS_FORM.screens.find((s) => s.id === id), `${id} is the offers form's screen`);
-  assert.deepEqual(QUICK_ACTIONS_FLOW.screens.filter((s) => s.terminal).map((s) => s.id), ['ADD_MONEY', 'SUPPORT', 'DONE']);
+  assert.deepEqual(QUICK_ACTIONS_FLOW.screens.filter((s) => s.terminal).map((s) => s.id), ['DONE']);
 });
 
 test('QUICK ACTIONS FORM · with the form published, EVERY plain reply carries its button — the chat and the notifier alike — and the list only when the rider is unknown or the form is refused', async () => {
@@ -2505,7 +2506,7 @@ test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its scr
   assert.equal(seat.screen, 'STATUS', 'never the offers list: a seat is booked by number, by everyone in the car');
   assert.match(seat.data.headline, /group ride/);
   assert.match(seat.data.note, /Reply the number/);
-  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'DONE');
+  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'NOTE');
 
   // Redis forgets the ride state after 30 minutes; a two-hour trip is still a trip.
   await at.redis.del(`whatsapp:group_seat:${at.rideId}`);
@@ -2673,33 +2674,29 @@ async function closeForm(deps, who, response) {
   await handleMetaWhatsappWebhookRoute({ method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield raw; } }, { statusCode: 0, setHeader() {}, writeHead() { return this; }, end() {} }, deps);
 }
 
-test('QUICK ACTIONS never expires: closing the form gives the chat a fresh button — unless the form just sent a message itself', async () => {
+test('QUICK ACTIONS never expires and never comes back as a second message: a completed form is swallowed, whatever it says', async () => {
   const at = await riderWithHistory();
   at.deps.whatsappQuickActionsFlowId = 'flow-quick-actions-1';
   const before = at.sent.length;
   await closeForm(at.deps, at.who, { flow: 'quick_actions', rearm: 'true' });
-  assert.equal(at.sent.length, before + 1);
-  assert.equal(last(at.sent).interactive.type, 'flow');
-  assert.equal(last(at.sent).interactive.action.parameters.flow_cta, 'Quick Actions');
   await closeForm(at.deps, at.who, { flow: 'quick_actions', rearm: 'false' });
-  assert.equal(at.sent.length, before + 1, 'Book a ride / Withdraw already sent something — no second button');
   await closeForm(at.deps, at.who, { flow_token: 'x' });
-  assert.equal(at.sent.length, before + 1, 'a form that does not ask (the trip form) gets nothing');
+  assert.equal(at.sent.length, before, 'not one message: the form only completes after it sent one itself, and every other ending keeps the old button alive');
 });
 
-test('closing the OFFERS form mid-search gives the chat a fresh See driver offers button; after the search is over, nothing', async () => {
+test('the OFFERS form closing mid-search sends nothing either — and an ending that keeps the search going is a NOTE, not a completion', async () => {
   const at = await riderWithOffersForm(10_000);
   const before = at.sent.length;
   await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'true' });
-  assert.equal(at.sent.length, before + 1);
-  assert.equal(last(at.sent).interactive.action.parameters.flow_cta, 'See driver offers');
-  assert.match(last(at.sent).interactive.body.text, /search is still on/);
-  assert.equal(await bidState.hasOffersMessage(at.redis, at.rideId), true);
   await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'false' });
-  assert.equal(at.sent.length, before + 1, 'ride confirmed / wallet short / cancelled: the form already sent what mattered');
+  assert.equal(at.sent.length, before, 'not one message');
+  const OFFERS_JSON = require('../apps/api-gateway/src/whatsapp-flows/offers-form-flow-definition.json');
+  const note = OFFERS_JSON.screens.find((s) => s.id === 'NOTE');
+  assert.equal(note.terminal, false);
+  assert.ok(!note.layout.children[0].children.some((c) => c.type === 'Footer'), 'nothing on it completes the form');
   await bidState.clearActiveRide(at.redis, at.user.id);
   await closeForm(at.deps, at.who, { flow: 'offers', rearm: 'true' });
-  assert.equal(at.sent.length, before + 1, 'no live search: no button to a dead search');
+  assert.equal(at.sent.length, before, 'and nothing after the search is over either');
 });
 
 test('IN A TRIP the bot is quiet: whatever they type gets the driver line, the ride card pointer and a menu of two — no model', async () => {

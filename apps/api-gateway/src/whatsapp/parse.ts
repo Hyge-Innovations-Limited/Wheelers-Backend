@@ -146,9 +146,8 @@ export function parseMetaMessage(
             replyId: typeof buttonReply?.id === 'string' ? buttonReply.id : undefined,
           };
         }
-        // A Flow was closed with its last button. WhatsApp disables THAT message's button,
-        // so a form the rider will want again (Quick Actions, the offers) says so in its
-        // completion payload and gets a fresh button — unless it just sent one itself.
+        // A Flow was completed with its last button. The webhook only needs to know so it
+        // does not treat the empty message as chat; nothing is sent back.
         if (interactive?.type === 'nfm_reply') {
           const reply = interactive.nfm_reply as Record<string, unknown> | undefined;
           let response: Record<string, unknown> = {};
