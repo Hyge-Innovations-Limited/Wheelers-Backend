@@ -175,6 +175,14 @@ export const EDIT_TRIP_ACTIONS = { EDIT_TRIP: 'edit_trip', PICK_PLACES: 'pick_pl
 
 /** Every request the Edit-trip flow makes: opening it, going back, and its two Continue buttons. */
 export async function handleEditTripFlow(body: FlowRequestBody, userId: string, deps: EditTripFlowDeps): Promise<FlowScreen> {
+  const screen = await answerEditTrip(body, userId, deps);
+  // Nothing completes the form: a completion disables the Book now button on its message and
+  // posts "Response sent" in the chat. Every ending is a NOTE the rider swipes down from.
+  if (screen.screen === 'DONE') return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
+  return screen;
+}
+
+async function answerEditTrip(body: FlowRequestBody, userId: string, deps: EditTripFlowDeps): Promise<FlowScreen> {
   const [trip, activeRideId] = await Promise.all([getPendingRoute(deps.redisClient, userId), getActiveRide(deps.redisClient, userId)]);
   const deadEnd = activeRideId ? SEARCHING_NOTE : !trip ? EXPIRED_NOTE : null;
 

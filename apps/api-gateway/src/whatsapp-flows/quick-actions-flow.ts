@@ -111,16 +111,11 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Every request the Quick Actions form makes: opening it, and every Continue button on every screen. */
 export async function handleQuickActionsFlow(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const screen = await answerQuickActions(body, userId, deps);
-  // Completing the form (DONE, "Back to chat") disables the Quick Actions button in the
-  // chat, and nothing is ever sent to replace it — that would be the second message the
-  // rider does not want. So DONE only when the form has just put a NEW button in the chat
-  // itself (rearm false): a bid placed sends See driver offers, a cancelled search gets a
-  // reply that carries Quick Actions. Every other ending — Add money, Support, "already
-  // searching", the driver's status — is a NOTE with no button: the rider closes it with the
-  // X and the Quick Actions button they tapped stays live.
-  if (screen.screen === 'DONE' && screen.data['rearm'] !== 'false') {
-    return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
-  }
+  // No ending completes the form. Completing disables the button on the message it came
+  // from and posts "Response sent" in the chat; the rider wants neither, ever. So every
+  // ending is a NOTE the rider swipes down from, and the Quick Actions button stays live.
+  // DONE exists in the form's JSON only because Meta requires one terminal screen.
+  if (screen.screen === 'DONE') return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
   return screen;
 }
 
@@ -385,7 +380,7 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
         line_3: accepted && !driving ? `Arrives in about ${eta} min` : '',
         has_line_3: Boolean(accepted && !driving),
         note: 'Your ride card is in the chat — tap Track live trip on it, or reply cancel there.',
-        cta_label: 'Back to chat',
+        cta_label: 'Done',
       },
     };
   }
@@ -403,7 +398,7 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
         line_3: '',
         has_line_3: false,
         note: 'Driver offers for a shared car come to the chat. Reply the number of the driver you want there — everyone in the car has to pick the same one.',
-        cta_label: 'Back to chat',
+        cta_label: 'Done',
       },
     };
   }

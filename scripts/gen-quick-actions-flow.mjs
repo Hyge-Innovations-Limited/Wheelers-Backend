@@ -2,11 +2,9 @@
 // Run from the repo root: node scripts/gen-quick-actions-flow.mjs (npm run flow:gen:quick-actions), then push it.
 //
 // Completing a form (a Footer whose action is `complete`) DISABLES that message's button in the
-// chat, and the rider must never get a second message to bring it back. So the server sends
-// DONE ("Back to chat") only when the form has just put a new button in the chat itself — a bid
-// placed sends See driver offers, a cancelled search gets a reply carrying Quick Actions. Every
-// other ending — Add money, Support, "already searching", the driver's status — is a NOTE with
-// no button: the rider closes it with the X and the button they tapped stays live.
+// chat and posts "Response sent" there. The rider wants neither, so the server never sends DONE:
+// every ending is a NOTE with no button, closed by swiping down, and the button stays live.
+// DONE is here only because Meta requires one terminal screen.
 import { readFileSync, writeFileSync } from 'node:fs';
 const dir = 'apps/api-gateway/src/whatsapp-flows/';
 const trip = JSON.parse(readFileSync(dir + 'edit-trip-flow-definition.json', 'utf8'));
@@ -249,6 +247,7 @@ const NOTE = {
   layout: form('note_form', [
     { type: 'TextHeading', text: '${data.headline}' },
     { type: 'TextBody', text: '${data.note}' },
+    { type: 'TextCaption', text: 'Swipe down to go back to the chat.' },
   ]),
 };
 

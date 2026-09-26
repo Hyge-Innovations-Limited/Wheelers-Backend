@@ -1366,7 +1366,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0);
 
   const out = await form('data_exchange', { price: '2,500' }, 'SET_PRICE');          // no `action` tag: the screen Meta names says it
-  assert.equal(out.screen, 'DONE');
+  assert.equal(out.screen, 'NOTE');
   assert.match(out.data.headline, /You have successfully bid ₦2,500/);
   const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event;
   assert.deepEqual([request.riderOfferNgn, request.paymentMethod], [2500, 'WALLET']);
@@ -1470,7 +1470,7 @@ test('THE FORM on a dead or running booking: it still OPENS on its first screen 
   const searching = await form('INIT');
   assert.equal(searching.screen, 'EDIT_TRIP');
   assert.match(searching.data.error, /Drivers are already looking at a trip of yours/);
-  assert.equal((await submit({ stop_1: 'sabo market' })).screen, 'DONE', 'and it edits nothing');
+  assert.equal((await submit({ stop_1: 'sabo market' })).screen, 'NOTE', 'and it edits nothing');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null);
 
   await bidState.clearActiveRide(redis, user.id);
@@ -1505,7 +1505,7 @@ function checkFormJson(flow, screenIds) {
 
 test('the forms on Meta and the server agree: every binding exists, every box the server reads is sent, and the screens only go forward', () => {
   const fields = ['pickup', 'stop_1', 'stop_2', 'stop_3', 'destination'];
-  const trip = checkFormJson(EDIT_TRIP_FLOW, ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'SET_PRICE', 'DONE']);
+  const trip = checkFormJson(EDIT_TRIP_FLOW, ['EDIT_TRIP', 'PICK_PLACES', 'REVIEW_TRIP', 'SET_PRICE', 'NOTE', 'DONE']);
   assert.equal(trip.footer('EDIT_TRIP').label, 'Confirm trip');
   assert.deepEqual(Object.keys(trip.footer('EDIT_TRIP')['on-click-action'].payload).sort(), ['action', ...fields].sort());
   assert.deepEqual(Object.keys(trip.footer('PICK_PLACES')['on-click-action'].payload).sort(), ['action', ...fields.map((f) => `pick_${f}`)].sort());
@@ -1894,14 +1894,14 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
 
   // More than the wallet holds: the choice is remembered and ONE Add money button goes to the chat.
   const short = await form('data_exchange', { action: 'offers_choice', choice: `offer:9000:${dear.bidId}` });
-  assert.equal(short.screen, 'DONE');
+  assert.equal(short.screen, 'NOTE');
   assert.match(short.data.headline, /Add ₦6,000 to ride with Tunde/);
   assert.equal(last(sent).interactive.action.parameters.display_text, 'Add money');
   assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, dear.bidId);
   assert.equal(events('RIDE_OFFER_ACCEPTED').length, 0);
 
   const ok = await form('data_exchange', { action: 'offers_choice', choice: `offer:2900:${bid.bidId}` });
-  assert.equal(ok.screen, 'DONE');
+  assert.equal(ok.screen, 'NOTE');
   assert.match(ok.data.headline, /Ride confirmed/);
   assert.deepEqual(events('RIDE_OFFER_ACCEPTED').map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2900]]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2900);
@@ -2233,7 +2233,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   assert.equal((await bidState.getPendingRoute(at.redis, at.user.id)).confirmed, true);
 
   const done = await form('data_exchange', { price: String(route.suggestedFareNgn) }, 'SET_PRICE');   // no `action` tag: the screen Meta names says it
-  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
+  assert.equal(done.screen, 'NOTE');   // nothing completes: the button in the chat stays live
   assert.match(done.data.headline, /You have successfully bid/);
   const requested = at.published.map((p) => p.event).filter((e) => e?.eventType === 'RIDE_REQUESTED');
   assert.equal(requested.length, 1);
@@ -2305,7 +2305,7 @@ test('QUICK ACTIONS FORM · Book a ride is screens: where to → the places foun
   const price = await form('data_exchange', { action: 'confirm_trip' }, 'BOOK_REVIEW');
   assert.equal(price.screen, 'SET_PRICE');
   const done = await form('data_exchange', { action: 'set_price', price: price.data.suggested_price }, 'SET_PRICE');
-  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
+  assert.equal(done.screen, 'NOTE');   // nothing completes: the button in the chat stays live
   assert.match(done.data.headline, /successfully bid/);
   assert.ok(await bidState.getActiveRide(at.redis, at.user.id), 'the search is live');
   await settle();
@@ -2350,7 +2350,7 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose butt
   const before = at.sent.length;
   const bid = (await bidState.getBids(at.redis, at.rideId))[0];
   const done = await form('data_exchange', { action: 'offers_choice', choice: offerId(bid) }, 'OFFERS');
-  assert.equal(done.screen, 'DONE');   // the form just put a new button in the chat, so this one may complete
+  assert.equal(done.screen, 'NOTE');   // nothing completes: the button in the chat stays live
   assert.match(done.data.headline, /Ride confirmed/);
   assert.equal(at.accepted().length, 1);
   await settle();
@@ -2375,7 +2375,7 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
   assert.equal(at.sent.length, before, 'not one chat message');
 
   const withdraw = await form('data_exchange', { action: 'menu_choice', choice: 'withdraw' }, 'MENU');
-  assert.equal(withdraw.screen, 'DONE', 'Back to chat, where the Withdraw button now is');
+  assert.equal(withdraw.screen, 'NOTE', 'Back to chat, where the Withdraw button now is');
   await settle();
   assert.equal(at.sent.length, before + 1, 'the Withdraw button: the PIN and the bank stay on the page');
   assert.match(textOf(last(at.sent)), /Withdraw to your bank/);
@@ -2446,7 +2446,7 @@ test('BID IS IN · with the offers form, a bid placed in the trip form sends the
   await form('data_exchange', { action: 'confirm_trip' }, 'REVIEW_TRIP');
   const before = at.sent.length;
   const done = await form('data_exchange', { action: 'set_price', price: '2500' }, 'SET_PRICE');
-  assert.equal(done.screen, 'DONE');
+  assert.equal(done.screen, 'NOTE');
   assert.match(done.data.note, /See driver offers/);
   await settle();
   assert.equal(at.sent.length, before + 1, 'one message');
@@ -2507,7 +2507,7 @@ test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its scr
   assert.equal(seat.screen, 'STATUS', 'never the offers list: a seat is booked by number, by everyone in the car');
   assert.match(seat.data.headline, /group ride/);
   assert.match(seat.data.note, /Reply the number/);
-  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'DONE');
+  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'NOTE');
 
   // Redis forgets the ride state after 30 minutes; a two-hour trip is still a trip.
   await at.redis.del(`whatsapp:group_seat:${at.rideId}`);
@@ -2517,7 +2517,7 @@ test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its scr
   const status = await form('data_exchange', { action: 'menu_choice', choice: 'current' }, 'MENU');
   assert.equal(status.screen, 'STATUS');
   assert.match(status.data.headline, /driving you now/);
-  assert.equal(status.data.cta_label, 'Back to chat');
+  assert.equal(status.data.cta_label, 'Done');
 });
 
 test('SEARCH RUNS OUT · with the form, no message: the form says "No driver took ₦X" with Search again / Change my price, and either starts a fresh search right there', async () => {

@@ -81,14 +81,12 @@ const clip = (text: string, max: number) => (text.length <= max ? text : `${text
 const naira = (amount: number) => `₦${amount.toLocaleString()}`;
 
 /**
- * `rearm`: is See driver offers still wanted after this? Then the ending is a NOTE the rider
- * closes with the X and the button in the chat lives on. Only when the form's job is over
- * (ride confirmed, search cancelled, Add money sent) does DONE complete the form — WhatsApp
- * disables the button then, and no second message is ever sent to replace it.
+ * Every ending is a NOTE: something to read, then swipe down. Nothing completes the form,
+ * because completing disables the button on the message and posts "Response sent" in the
+ * chat, and the rider wants neither. `rearm` is kept for the call sites; it changes nothing.
  */
-function done(headline: string, note: string, rearm = true): FlowScreen {
-  if (rearm) return { screen: 'NOTE', data: { headline, note } };
-  return { screen: 'DONE', data: { headline, note, rearm: 'false' } };
+function done(headline: string, note: string, _rearm = true): FlowScreen {
+  return { screen: 'NOTE', data: { headline, note } };
 }
 
 /** A terminal-sounding state on the ENTRY screen (the only screen a flow may open on): one choice, "Close". */

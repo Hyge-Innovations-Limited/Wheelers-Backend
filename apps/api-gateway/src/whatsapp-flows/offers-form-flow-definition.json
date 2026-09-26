@@ -313,6 +313,10 @@
               {
                 "type": "TextBody",
                 "text": "${data.note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Swipe down to go back to the chat."
               }
             ]
           }

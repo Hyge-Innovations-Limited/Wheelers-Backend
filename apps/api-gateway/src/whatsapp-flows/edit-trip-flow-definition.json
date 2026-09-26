@@ -6,6 +6,7 @@
       "PICK_PLACES",
       "REVIEW_TRIP",
       "SET_PRICE",
+      "NOTE",
       "DONE"
     ],
     "PICK_PLACES": [
@@ -13,11 +14,14 @@
     ],
     "REVIEW_TRIP": [
       "SET_PRICE",
+      "NOTE",
       "DONE"
     ],
     "SET_PRICE": [
+      "NOTE",
       "DONE"
     ],
+    "NOTE": [],
     "DONE": []
   },
   "screens": [
@@ -584,6 +588,44 @@
                     "price": "${form.price}"
                   }
                 }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NOTE",
+      "title": "Wheelers",
+      "terminal": false,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "You have successfully bid ₦2,500"
+        },
+        "note": {
+          "type": "string",
+          "__example__": "Drivers see your price now. Their offers will come to your chat."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "note_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Swipe down to go back to the chat."
               }
             ]
           }
