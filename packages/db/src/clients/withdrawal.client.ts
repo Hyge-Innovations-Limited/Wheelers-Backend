@@ -17,8 +17,6 @@ function asJson(value: Record<string, unknown> | undefined) {
   return (value ?? undefined) as Prisma.InputJsonValue | undefined;
 }
 
-export type WithdrawalRequestStatusValue = 'PENDING' | 'FUNDS_RESERVED' | 'QUEUED' | 'PAYOUT_CREATED' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
-
 export const withdrawalClient = {
   reserve: async (input: {
     userId: string;
@@ -288,37 +286,6 @@ export const withdrawalClient = {
    * id). Both lock the user's money until someone asks the provider what
    * really happened — the reference is the request id, so both can be asked.
    */
-  /** Money set aside, transfer not created: the float was short or payouts are manual. */
-  queue: (withdrawalRequestId: string) =>
-    prisma.withdrawalRequest.updateMany({
-      where: { id: withdrawalRequestId, status: 'FUNDS_RESERVED' },
-      data: { status: 'QUEUED', failureReason: null },
-    }),
-
-  /** Back to FUNDS_RESERVED so the ordinary payout path (attachPayout, release) applies. */
-  dequeue: (withdrawalRequestId: string) =>
-    prisma.withdrawalRequest.updateMany({
-      where: { id: withdrawalRequestId, status: 'QUEUED' },
-      data: { status: 'FUNDS_RESERVED' },
-    }),
-
-  /** Oldest first: the queue is paid in the order it was asked. */
-  listQueued: (limit = 100) =>
-    prisma.withdrawalRequest.findMany({
-      where: { status: 'QUEUED' },
-      orderBy: { createdAt: 'asc' },
-      take: limit,
-      include: { user: { select: { id: true, name: true, phone: true } } },
-    }),
-
-  listByStatus: (status: WithdrawalRequestStatusValue, limit = 100) =>
-    prisma.withdrawalRequest.findMany({
-      where: { status },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      include: { user: { select: { id: true, name: true, phone: true } } },
-    }),
-
   findStaleInFlight: (olderThan: Date, limit = 50) =>
     prisma.withdrawalRequest.findMany({
       where: {

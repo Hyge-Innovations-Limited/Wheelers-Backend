@@ -8,7 +8,7 @@ import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken, type WalletPageScope } from '../auth/local';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { getBanks } from '../payments/banks';
-import { submitWithdrawal, WithdrawalError, WITHDRAWAL_QUEUED_MESSAGE } from '../payments/withdrawal';
+import { submitWithdrawal, WithdrawalError } from '../payments/withdrawal';
 import type { RedisClient } from '../redis/client';
 import { getActiveRide, getPendingAccept } from '../whatsapp-flows/bid-state';
 import { isRecord, pickNumber, pickString } from '../utils/object';
@@ -258,12 +258,12 @@ async function handleWithdraw(req: IncomingMessage, res: ServerResponse, deps: W
     routeKey: 'wallet-page:withdraw',
     requestBody: fingerprint,
     execute: async () => {
-      const { requestId, queued } = await submitWithdrawal(
+      const { requestId } = await submitWithdrawal(
         { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
         { userId, walletId: wallet.id, amountNgn, bankCode, accountNumber, accountName, pin, pinPolicy: 'required' },
       );
       const request = await withdrawalClient.findById(requestId);
-      return { statusCode: 200, body: { withdrawalId: requestId, status: request?.status ?? (queued ? 'QUEUED' : 'PAYOUT_CREATED'), amountNgn, queued, ...(queued ? { message: WITHDRAWAL_QUEUED_MESSAGE } : {}) } };
+      return { statusCode: 200, body: { withdrawalId: requestId, status: request?.status ?? 'PAYOUT_CREATED', amountNgn } };
     },
   });
   logActivity({ userId, eventType: 'withdrawal_created', metadata: { amountNgn, via: 'wallet_page' } });

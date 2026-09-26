@@ -11,13 +11,18 @@ export const MIN_OFFER_DISCOUNT = 0.17;
  * Hard floor on what any ride can cost, regardless of distance. Nothing —
  * neither the suggested fare nor the lowest offer a rider may haggle down to —
  * goes below this. Short trips would otherwise price under the flat fees
- * (₦200 service + ₦30 levy), leaving the driver nothing for their time.
+ * (₦375 service + ₦30 levy), leaving the driver nothing for their time.
  */
 export const MIN_FARE_NGN = 2500;
 export const FARE_ROUNDING_INCREMENT = 100;
-export const VAT_RATE = 0.075; // 7.5% VAT
+/**
+ * What comes off a fare before the driver is paid, since 2026-09-26:
+ * a flat service fee, a 4% platform fee (shown to riders and drivers as
+ * "Fees"), and the Lagos state levy. There is no separate VAT line.
+ */
+export const SERVICE_FEE_NGN = 375; // ₦375 flat per ride
+export const PLATFORM_FEE_RATE = 0.04; // 4% of the fare — "Fees"
 export const LAGOS_STATE_FEE_NGN = 30; // ₦30 flat per ride
-export const SERVICE_FEE_NGN = 200; // ₦200 flat per ride — Wheelers platform fee
 
 export type SuggestedFare = {
   distanceKm: number;
@@ -142,9 +147,11 @@ export function validateDriverOffer(
 
 export type RideFeeBreakdown = {
   fareNgn: number;
-  vatNgn: number;
+  /** 4% of the fare — the line called "Fees". */
+  platformFeeNgn: number;
   stateLevyNgn: number;
   serviceFeeNgn: number;
+  /** Everything that is not the driver's: fees + levy + service fee. */
   platformTotalNgn: number;
   driverPayoutNgn: number;
   totalNgn: number;
@@ -153,19 +160,19 @@ export type RideFeeBreakdown = {
 /**
  * fareNgn = the agreed fare (rider's offer / negotiated price).
  * Rider pays exactly fareNgn (totalNgn = fareNgn).
- * All fees (VAT, state levy, service fee) are deducted from the fare.
+ * The 4% fee, the state levy and the service fee are deducted from the fare.
  * Driver receives fareNgn minus all deductions.
  * Driver sees the full breakdown so they know to bid accordingly.
- * Platform receives VAT + state levy + service fee.
+ * Platform receives fees + state levy + service fee.
  */
 export function calculateRideFees(fareNgn: number): RideFeeBreakdown {
   const stateLevyNgn = LAGOS_STATE_FEE_NGN;
-  const vatNgn = round2(fareNgn * VAT_RATE);
+  const platformFeeNgn = round2(fareNgn * PLATFORM_FEE_RATE);
   const serviceFeeNgn = SERVICE_FEE_NGN;
-  const rawPlatformTotalNgn = round2(vatNgn + stateLevyNgn + serviceFeeNgn);
+  const rawPlatformTotalNgn = round2(platformFeeNgn + stateLevyNgn + serviceFeeNgn);
   const rawDriverPayoutNgn = round2(fareNgn - rawPlatformTotalNgn);
 
-  // The flat fees (₦200 service + ₦30 levy) exceed the fare on very short
+  // The flat fees (₦375 service + ₦30 levy) exceed the fare on very short
   // rides, which used to produce a NEGATIVE driver payout — the driver's own
   // balance was debited to cover the platform's cut. Clamp the payout at zero
   // and cap the platform's take at the fare, so the rider's debit always
@@ -175,7 +182,7 @@ export function calculateRideFees(fareNgn: number): RideFeeBreakdown {
     rawDriverPayoutNgn < 0 ? round2(fareNgn) : rawPlatformTotalNgn;
 
   const totalNgn = fareNgn;
-  return { fareNgn, vatNgn, stateLevyNgn, serviceFeeNgn, platformTotalNgn, driverPayoutNgn, totalNgn };
+  return { fareNgn, platformFeeNgn, stateLevyNgn, serviceFeeNgn, platformTotalNgn, driverPayoutNgn, totalNgn };
 }
 
 function round2(value: number): number {

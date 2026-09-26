@@ -114,7 +114,6 @@ import {
 } from "./http/live-map.route";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import { lookupUserIdByPhone } from "./whatsapp-flows/bid-state";
-import { configurePayouts, startPayoutQueue } from "./payments/withdrawal";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -161,8 +160,6 @@ import {
   handleAdminWithdrawalFreezeRoute,
   handleAdminOverviewRoute,
   handleAdminServiceUsageRoute,
-  handleAdminWithdrawalsRoute,
-  handleAdminWithdrawalActionRoute,
   handleAdminTimeseriesRoute,
   handleAdminCancellationsRoute,
   handleAdminGroupRideMetricsRoute,
@@ -421,9 +418,6 @@ async function bootstrap(): Promise<void> {
     dvaBank: gatewayEnv.PAYSTACK_DVA_BANK,
     emailDomain: gatewayEnv.PAYSTACK_CUSTOMER_EMAIL_DOMAIN,
   });
-  // How withdrawals leave: auto (Paystack transfer, queued while the float is short) or manual (an admin pays each).
-  configurePayouts({ mode: gatewayEnv.PAYOUT_MODE });
-
   // "Your PIN was changed" goes to the rider's WhatsApp, whichever surface did it.
   const notifyUserOnWhatsapp =
     gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
@@ -1620,25 +1614,6 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
-      // ── Withdrawals waiting to be paid, and what to do with them ──
-      if (url.pathname === "/admin/withdrawals") {
-        if (req.method !== "GET") {
-          sendMethodNotAllowed(res);
-          return;
-        }
-        await handleAdminWithdrawalsRoute(req, res, { ...adminDeps, paymentsClient, publisher }, url);
-        return;
-      }
-      const withdrawalAction = url.pathname.match(/^\/admin\/withdrawals\/([^/]+)\/(mark-paid|send-now|cancel)$/);
-      if (withdrawalAction) {
-        if (req.method !== "POST") {
-          sendMethodNotAllowed(res);
-          return;
-        }
-        await handleAdminWithdrawalActionRoute(req, res, { ...adminDeps, paymentsClient, publisher }, decodeURIComponent(withdrawalAction[1]!), withdrawalAction[2] as 'mark-paid' | 'send-now' | 'cancel');
-        return;
-      }
-
       if (url.pathname === "/admin/usage/services") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
@@ -2228,8 +2203,6 @@ async function bootstrap(): Promise<void> {
   });
 
   const referralJobs = startReferralJobs();
-  // Queued withdrawals go out as the Paystack float allows, oldest first.
-  const stopPayoutQueue = startPayoutQueue({ paymentsClient, publisher });
 
   await startGatewayKafkaConsumer({
     consumer,

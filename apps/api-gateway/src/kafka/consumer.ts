@@ -747,7 +747,7 @@ export async function handleRideEvent(
       vehicleModel: event.vehicleModel,
       etaSeconds: event.etaSeconds,
       agreedFareNgn: event.agreedFareNgn,
-      vatNgn: matchFees.vatNgn,
+      platformFeeNgn: matchFees.platformFeeNgn,
       stateLevyNgn: matchFees.stateLevyNgn,
       serviceFeeNgn: matchFees.serviceFeeNgn,
       driverEarningsNgn: matchFees.driverPayoutNgn,
@@ -883,7 +883,7 @@ export async function handleRideEvent(
     await registry.sendToUser(event.driverUserId, 'ride:completed', {
       rideId: event.rideId,
       fareNgn: event.fareNgn,
-      vatNgn: completionFees.vatNgn,
+      platformFeeNgn: completionFees.platformFeeNgn,
       stateLevyNgn: completionFees.stateLevyNgn,
       serviceFeeNgn: completionFees.serviceFeeNgn,
       totalChargedNgn: completionFees.totalNgn,

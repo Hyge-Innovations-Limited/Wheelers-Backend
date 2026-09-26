@@ -323,9 +323,7 @@
       accountNumber: draft.accountNumber,
       accountName: draft.accountName,
       pin: pin,
-    }, { 'Idempotency-Key': submitKey }).then(function (r) {
-      // Queued: the money is set aside and goes when the float allows (or an admin sends it).
-      if (r && r.queued) return showResult(true, W.naira(draft.amountNgn) + ' set aside', 'To ' + draft.accountName + ' · ' + draft.bankName + '. ' + (r.message || 'It is sent as soon as it can be, usually within a day.'));
+    }, { 'Idempotency-Key': submitKey }).then(function () {
       showResult(true, W.naira(draft.amountNgn) + ' on its way', 'To ' + draft.accountName + ' · ' + draft.bankName + '. It usually arrives within minutes.');
     }).catch(function (e) {
       submitKey = null; // a refused attempt may be retried as a NEW request
