@@ -267,7 +267,8 @@ const flow = {
   data_api_version: '3.0',
   // Forward-only: every target sits later in this order (Meta refuses anything else).
   routing_model: {
-    MENU: ['BOOK_WHERE', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE'],
+    // Meta allows 10 routes out of a screen. MENU never reaches DONE (the server answers NOTE instead), so it is not listed here.
+    MENU: ['BOOK_WHERE', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'ADD_MONEY', 'SUPPORT', 'NOTE'],
     BOOK_WHERE: ['BOOK_PLACES', 'NOTE', 'DONE'],
     BOOK_PLACES: ['BOOK_TRIP', 'NOTE', 'DONE'],
     BOOK_TRIP: ['BOOK_STOP_PLACES', 'BOOK_REVIEW', 'SET_PRICE', 'NOTE', 'DONE'],
