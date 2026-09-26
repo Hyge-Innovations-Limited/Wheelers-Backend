@@ -229,10 +229,15 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
       return republishLastSearch(deps, userId, amount, (error) => priceBox({ offerNgn: amount, suggestedFareNgn: lastRoute.suggestedFareNgn }, error));
     }
     const choice = String(data['choice'] ?? '');
-    if (choice === CLOSE) return done('Wheelers', 'You can go back to the chat.');
+    // Close means close: the form completes with Back to chat. The search is over, so the
+    // button this message loses is not one the rider needs; Search again lives in Quick Actions.
+    if (choice === CLOSE) return done('Nothing was charged', 'Search again any time from Quick Actions in the chat.', false);
     if (choice === CHANGE_PRICE) return priceBox({ offerNgn: ended.offerNgn || lastRoute.offerNgn, suggestedFareNgn: lastRoute.suggestedFareNgn });
     if (choice === SEARCH_AGAIN) return republishLastSearch(deps, userId, ended.offerNgn || lastRoute.offerNgn, (error) => endedSearchScreen(ended, lastRoute, error));
-    return endedSearchScreen(ended, lastRoute, action === 'cancel_search' ? '' : 'Pick one to continue.');
+    // A tap on a list that has since ended (an offer, Cancel search, Check for more) lands
+    // here: the ended screen explains itself, and only an empty submit of THIS screen nags.
+    const staleTap = action !== 'offers_choice' || choice.length > 0;
+    return endedSearchScreen(ended, lastRoute, staleTap ? 'That search ended while this was open. Nothing was charged.' : 'Pick one to continue.');
   }
 
   if (body.action !== 'data_exchange' || !action) {
@@ -267,7 +272,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   }
 
   const choice = String(data['choice'] ?? '');
-  if (choice === CLOSE) return done('Wheelers', 'You can go back to the chat.');
+  if (choice === CLOSE) return done('Wheelers', 'Your search is still on. Tap See driver offers in the chat to come back to it.');
   if (choice === REFRESH) {
     // Anything new since the list they are looking at shows at once; otherwise wait a few
     // seconds for a driver to answer or re-price, then the list again either way.
