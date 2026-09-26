@@ -12,7 +12,7 @@ import type { PendingRouteData } from './bid-state';
 import { BOOK_RIDE_ACTIONS, handleBookRideAction, isBookRideAction, startBooking } from './book-ride-flow';
 import {
   confirm, doneScreen, priceScreen, reviewScreen, setPrice,
-  EDIT_TRIP_ACTIONS, EXPIRED_NOTE, SEARCHING_NOTE, type EditTripFlowDeps,
+  EDIT_TRIP_ACTIONS, SEARCHING_NOTE, type EditTripFlowDeps,
 } from './edit-trip-flow';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
@@ -86,7 +86,6 @@ export const MENU_IDS = {
 const TRIP_ROW = /^trip:([0-9a-f-]{36})$/;
 
 const BUSY_NOTE = 'You already have a ride going. Finish or cancel it first, then book again.';
-const ENDED_NOTE = 'Nothing was charged. Send your trip again in the chat.';
 const CHECK_OFFERS_MS = 3_500;
 
 /**
@@ -138,7 +137,7 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
   if (action === 'confirm_trip' || action === 'set_price') {
     const [trip, activeRideId] = await Promise.all([getPendingRoute(deps.redisClient, userId), getActiveRide(deps.redisClient, userId)]);
     if (activeRideId) return doneScreen('Already searching', SEARCHING_NOTE);
-    if (!trip) return doneScreen('This trip has expired', EXPIRED_NOTE);
+    if (!trip) return menuScreen(userId, deps, 'That trip has expired. Pick again.');
     return action === 'confirm_trip' ? confirm(userId, trip, editDeps(deps)) : setPrice(data, userId, trip, editDeps(deps));
   }
 
@@ -234,12 +233,12 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
   if (choice === MENU_IDS.withdraw) {
     if (activeRideId) return menuScreen(userId, deps, 'Withdrawals wait until your ride is over — the fare is held in your wallet.');
     void deps.onWithdraw?.(userId).catch((error) => console.error('[quick-actions] withdraw button not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-    // A NOTE, not DONE: the Withdraw message is a link button and cannot carry the Quick Actions form, so this one must stay alive.
-    return doneScreen('Withdraw to your bank', 'The Withdraw button is in your chat. Tap it, pick the amount and the account, and confirm with your wallet PIN.');
+    // Back to chat, where the Withdraw button now is. Quick Actions comes back with the next reply.
+    return doneScreen('Withdraw to your bank', 'The Withdraw button is in your chat. Tap it, pick the amount and the account, and confirm with your wallet PIN.', false);
   }
   if (choice === MENU_IDS.support) {
     const contact = deps.supportContact?.() ?? null;
-    if (!contact) return doneScreen('Wheelers support', 'Reply in the chat and a person will see it.');
+    if (!contact) return doneScreen('Wheelers support', 'Reply in the chat and a person will see it.', false);
     return { screen: 'SUPPORT', data: { headline: 'Wheelers support', contact_line: contact, note_line: 'A person will reply as soon as they can.' } };
   }
 
@@ -391,7 +390,7 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
     };
   }
 
-  if (!meta) return doneScreen('This search has ended', ENDED_NOTE);
+  if (!meta) return menuScreen(userId, deps, 'That search has ended. Nothing was charged.');
   if (seat) {
     // A seat in a shared car is booked by number in the chat: the car only moves when every
     // rider picks the same driver. The offers form's Accept is for a rider alone in the car.
@@ -439,13 +438,13 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
 
 async function statusNext(userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const activeRideId = await getActiveRide(deps.redisClient, userId);
-  if (!activeRideId) return doneScreen('This search has ended', ENDED_NOTE);
+  if (!activeRideId) return menuScreen(userId, deps, 'That search has ended. Nothing was charged.');
   const driver = await driverOnRide(deps.redisClient, activeRideId);
   if (driver) {
     const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
-    return doneScreen(`${accepted?.driverName ?? 'Your driver'} is ${driver === 'driving' ? 'driving you now' : 'on the way'}`, 'Their photo, car and plate are in your chat, with a button to track the trip live.');
+    return doneScreen(`${accepted?.driverName ?? 'Your driver'} is ${driver === 'driving' ? 'driving you now' : 'on the way'}`, 'Their photo, car and plate are in your chat, with a button to track the trip live.', false);
   }
-  if (await getGroupSeat(deps.redisClient, activeRideId).catch(() => null)) return doneScreen('Your group ride', 'Driver offers for a shared car come to the chat. Reply the number of the driver you want there.');
+  if (await getGroupSeat(deps.redisClient, activeRideId).catch(() => null)) return doneScreen('Your group ride', 'Driver offers for a shared car come to the chat. Reply the number of the driver you want there.', false);
   return statusOrOffers(activeRideId, userId, deps, true);
 }
 

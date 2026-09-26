@@ -167,8 +167,8 @@ export function doneScreen(headline: string, note: string, rearm = true): FlowSc
   return { screen: 'DONE', data: { headline, note, rearm: rearm ? 'true' : 'false' } };
 }
 
-export const EXPIRED_NOTE = 'This trip has expired. Go back to the chat and send your pickup and destination again.';
-export const SEARCHING_NOTE = 'Drivers are already looking at this trip. To change it, reply "cancel" in the chat and send the new trip.';
+export const EXPIRED_NOTE = 'This trip has expired. Open Quick Actions in the chat and tap Book a ride to start again.';
+export const SEARCHING_NOTE = 'Drivers are already looking at a trip of yours. Open Quick Actions in the chat and tap Your current trip to see offers, change your price or cancel it.';
 
 /** The one Continue button on each screen. */
 export const EDIT_TRIP_ACTIONS = { EDIT_TRIP: 'edit_trip', PICK_PLACES: 'pick_places', REVIEW_TRIP: 'confirm_trip', SET_PRICE: 'set_price' } as const;

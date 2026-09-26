@@ -1469,7 +1469,7 @@ test('THE FORM on a dead or running booking: it still OPENS on its first screen 
   await bidState.setActiveRide(redis, user.id, 'ride-out');
   const searching = await form('INIT');
   assert.equal(searching.screen, 'EDIT_TRIP');
-  assert.match(searching.data.error, /Drivers are already looking at this trip/);
+  assert.match(searching.data.error, /Drivers are already looking at a trip of yours/);
   assert.equal((await submit({ stop_1: 'sabo market' })).screen, 'DONE', 'and it edits nothing');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).stops ?? null, null);
 
@@ -1839,8 +1839,8 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
   const updated = await form('data_exchange', { new_price: '2,800' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
-  assert.equal(updated.screen, 'NOTE');
-  assert.match(updated.data.headline, /Bid updated to ₦2,800/);
+  assert.equal(updated.screen, 'OFFERS', 'back on the live list, the news on it');
+  assert.match(updated.data.error, /Bid updated to ₦2,800/);
   assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [2800]);
   assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 2800);
   assert.equal(sent.length, before, 'not one chat message');
@@ -2375,7 +2375,7 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
   assert.equal(at.sent.length, before, 'not one chat message');
 
   const withdraw = await form('data_exchange', { action: 'menu_choice', choice: 'withdraw' }, 'MENU');
-  assert.equal(withdraw.screen, 'NOTE');
+  assert.equal(withdraw.screen, 'DONE', 'Back to chat, where the Withdraw button now is');
   await settle();
   assert.equal(at.sent.length, before + 1, 'the Withdraw button: the PIN and the bank stay on the page');
   assert.match(textOf(last(at.sent)), /Withdraw to your bank/);
@@ -2507,7 +2507,7 @@ test('QUICK ACTIONS FORM · a group seat is not the solo offers list — its scr
   assert.equal(seat.screen, 'STATUS', 'never the offers list: a seat is booked by number, by everyone in the car');
   assert.match(seat.data.headline, /group ride/);
   assert.match(seat.data.note, /Reply the number/);
-  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'NOTE');
+  assert.equal((await form('data_exchange', { action: 'status_next' }, 'STATUS')).screen, 'DONE');
 
   // Redis forgets the ride state after 30 minutes; a two-hour trip is still a trip.
   await at.redis.del(`whatsapp:group_seat:${at.rideId}`);

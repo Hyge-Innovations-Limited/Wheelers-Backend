@@ -137,7 +137,7 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
 
 async function priceScreen(deps: OffersFormDeps, rideId: string, error = '', prefillNgn?: number): Promise<FlowScreen> {
   const meta = await getRideMeta(deps.redisClient, rideId);
-  if (!meta) return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
+  if (!meta) return done('This search has ended', 'Nothing was charged. Book again any time from Quick Actions in the chat.', false);
   return priceBox({ offerNgn: prefillNgn ?? meta.offerNgn, suggestedFareNgn: meta.suggestedFareNgn }, error);
 }
 
@@ -184,7 +184,7 @@ function endedSearchScreen(timedOut: SearchTimedOut, route: LastRouteData, error
  */
 export async function republishLastSearch(deps: OffersFormDeps, userId: string, priceNgn: number, refuse: (error: string) => FlowScreen | Promise<FlowScreen>): Promise<FlowScreen> {
   const route = await getLastRoute(deps.redisClient, userId);
-  if (!route) return done('That trip has expired', 'Send your pickup and destination again in the chat.');
+  if (!route) return done('That trip has expired', 'Book again any time from Quick Actions in the chat.', false);
   const phone = (await userClient.findById(userId).catch(() => null))?.phone ?? '';
   // The event schema wants the geometry as an object or absent — never null.
   const trip: PendingRouteData = { ...route, route: route.route, confirmed: true };
@@ -248,8 +248,8 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     return offersScreen(deps, rideId);
   }
 
-  if (!rideId) return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
-  if (confirmed) return done('Your driver is confirmed', 'Their details are in the chat.');
+  if (!rideId) return done('This search has ended', 'Nothing was charged. Book again any time from Quick Actions in the chat.', false);
+  if (confirmed) return done('Your driver is confirmed', 'Their details are in the chat.', false);
   const service = { redisClient: deps.redisClient, publisher: deps.publisher };
 
   if (action === 'update_price') {
@@ -258,10 +258,10 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     const result = await changeRiderOffer(service, userId, rideId, amount);
     if (!result.ok) {
       if (result.code === 'BELOW_MINIMUM') return priceScreen(deps, rideId, `${naira(amount)} is under the lowest price for this trip, ${naira(result.minOfferNgn)}. It is in the box now — tap Update price to offer it, or type more.`, result.minOfferNgn);
-      return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
+      return done('This search has ended', 'Nothing was charged. Book again any time from Quick Actions in the chat.', false);
     }
-    // No chat message: "Bid updated" is said HERE, and the next thing the chat hears is a driver answering it.
-    return done(`Bid updated to ${naira(result.offerNgn)}`, 'Every driver looking at your request can see it. Their offers will come to your chat.');
+    // No chat message: "Bid updated" is said HERE, on the live list, and the next thing the chat hears is a driver answering it.
+    return offersScreen(deps, rideId, `Bid updated to ${naira(result.offerNgn)}. Every driver looking at your request can see it.`);
   }
 
   if (action === 'cancel_search') {
@@ -321,12 +321,12 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     case 'DRIVER_TAKEN':
       return offersScreen(deps, rideId, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`);
     case 'ALREADY_CONFIRMING':
-      return done('One moment', `${bid.driverName} is being confirmed — check your chat.`);
+      return offersScreen(deps, rideId, `${bid.driverName} is being confirmed. Their details are on their way to your chat.`);
     case 'HOLD_FAILED':
       return offersScreen(deps, rideId, 'Could not hold the fare in your wallet just now — nothing was charged. Try again.');
     case 'CONFIRM_FAILED':
       return offersScreen(deps, rideId, 'Could not confirm just now — your money is locked safely. Try again.');
     default:
-      return done('This search has ended', 'Nothing was charged. Send your trip again in the chat.');
+      return done('This search has ended', 'Nothing was charged. Book again any time from Quick Actions in the chat.', false);
   }
 }
