@@ -1,16 +1,77 @@
 import { prisma }   from '../prisma';
 import { driverLocationClient } from './driver-location.client';
+import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
 import type { DriverStatus, KycStatus } from '@prisma/client';
+
+interface NearbyRow {
+  id:           string;
+  userId:       string;
+  lat:          number;
+  lng:          number;
+  rating:       number;
+  vehiclePlate: string | null;
+  vehicleModel: string | null;
+  distanceKm:   number;
+}
+
+/** Matching has always required a driver to have been heard from this recently. */
+const LIVE_WINDOW_SECONDS = 90;
+
+// Haversine inside raw SQL: ONLINE, approved drivers within radiusKm, heard
+// from inside the window, nearest first. This is how matching worked before
+// presence moved to Redis, and it is what answers when Redis cannot.
+const findNearbyInPostgres = (lat: number, lng: number, radiusKm: number, limit: number, windowSeconds: number) =>
+  prisma.$queryRaw<NearbyRow[]>`
+    SELECT
+      d.id,
+      d."userId",
+      d.lat,
+      d.lng,
+      d.rating,
+      d."vehiclePlate",
+      d."vehicleModel",
+      ROUND(CAST(
+        6371 * acos(
+          cos(radians(${lat})) * cos(radians(d.lat)) *
+          cos(radians(d.lng) - radians(${lng})) +
+          sin(radians(${lat})) * sin(radians(d.lat))
+        )
+      AS numeric), 3) AS "distanceKm"
+    FROM "Driver" d
+    JOIN "User" u ON u.id = d."userId"
+    WHERE
+      d.status    = 'ONLINE'
+      AND d."kycStatus" = 'APPROVED'
+      AND d.lat   IS NOT NULL
+      AND d.lng   IS NOT NULL
+      -- Liveness: ONLINE in the DB means nothing once the phone goes dark.
+      -- Ghost drivers absorbed candidate slots and swallowed offers into
+      -- dead sockets while live drivers saw silence.
+      AND d."lastSeenAt" > now() - (${windowSeconds} * interval '1 second')
+      AND (
+        6371 * acos(
+          cos(radians(${lat})) * cos(radians(d.lat)) *
+          cos(radians(d.lng) - radians(${lng})) +
+          sin(radians(${lat})) * sin(radians(d.lat))
+        )
+      ) <= ${radiusKm}
+    ORDER BY "distanceKm" ASC
+    LIMIT ${limit}
+  `;
 
 export const driverClient = {
 
   // ── Reads ──────────────────────────────────────────────────────────────────
 
-  findById: (driverId: string) =>
-    prisma.driver.findUniqueOrThrow({
+  // The row as the system should see it: lastSeenAt and position come from
+  // Redis when it heard from the driver more recently than the row was written.
+  findById: async (driverId: string) => {
+    const driver = await prisma.driver.findUniqueOrThrow({
       where:   { id: driverId },
       include: { user: true },
-    }),
+    });
+    return (await driverPresence.overlay(driver))!;
+  },
 
   findByUserId: (userId: string) =>
     prisma.driver.findUnique({
@@ -18,56 +79,47 @@ export const driverClient = {
       include: { user: true },
     }),
 
-  // Haversine formula inside raw SQL to find online drivers within radiusKm.
-  // Returns up to limit drivers, ordered by distance ascending.
-  // ride-service calls this during matching after a RIDE_REQUESTED event.
-  findNearby: (lat: number, lng: number, radiusKm: number, limit = 10) =>
-    prisma.$queryRaw<Array<{
-      id:           string;
-      userId:       string;
-      lat:          number;
-      lng:          number;
-      rating:       number;
-      vehiclePlate: string | null;
-      vehicleModel: string | null;
-      distanceKm:   number;
-    }>>`
-      SELECT
-        d.id,
-        d."userId",
-        d.lat,
-        d.lng,
-        d.rating,
-        d."vehiclePlate",
-        d."vehicleModel",
-        ROUND(CAST(
-          6371 * acos(
-            cos(radians(${lat})) * cos(radians(d.lat)) *
-            cos(radians(d.lng) - radians(${lng})) +
-            sin(radians(${lat})) * sin(radians(d.lat))
-          )
-        AS numeric), 3) AS "distanceKm"
-      FROM "Driver" d
-      JOIN "User" u ON u.id = d."userId"
-      WHERE
-        d.status    = 'ONLINE'
-        AND d."kycStatus" = 'APPROVED'
-        AND d.lat   IS NOT NULL
-        AND d.lng   IS NOT NULL
-        -- Liveness: ONLINE in the DB means nothing once the phone goes dark.
-        -- Ghost drivers absorbed candidate slots and swallowed offers into
-        -- dead sockets while live drivers saw silence.
-        AND d."lastSeenAt" > now() - interval '90 seconds'
-        AND (
-          6371 * acos(
-            cos(radians(${lat})) * cos(radians(d.lat)) *
-            cos(radians(d.lng) - radians(${lng})) +
-            sin(radians(${lat})) * sin(radians(d.lat))
-          )
-        ) <= ${radiusKm}
-      ORDER BY "distanceKm" ASC
-      LIMIT ${limit}
-    `,
+  // Live drivers near a pickup, nearest first. ride-service calls this during
+  // matching after a RIDE_REQUESTED event.
+  //
+  // Redis answers "who is near, and heard from in the last 90 seconds"; Postgres
+  // then says which of those are ONLINE and approved, by primary key. When Redis
+  // cannot answer, Postgres does the whole job the old way. In that case the
+  // rows may be up to one flush window old, so the window is widened by it.
+  findNearby: async (lat: number, lng: number, radiusKm: number, limit = 10): Promise<NearbyRow[]> => {
+    if (!driverPresence.configured) {
+      return findNearbyInPostgres(lat, lng, radiusKm, limit, LIVE_WINDOW_SECONDS);
+    }
+    // Ask for more than needed: some of the nearest may be on a trip or not approved.
+    const near = await driverPresence.nearby(lat, lng, radiusKm, Math.max(limit * 5, 25));
+    if (near === null) {
+      return findNearbyInPostgres(lat, lng, radiusKm, limit, LIVE_WINDOW_SECONDS + DB_FLUSH_SECONDS);
+    }
+    if (near.length === 0) return [];
+
+    const rows = await prisma.driver.findMany({
+      where: { id: { in: near.map((n) => n.driverId) }, status: 'ONLINE', kycStatus: 'APPROVED' },
+      select: { id: true, userId: true, rating: true, vehiclePlate: true, vehicleModel: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const result: NearbyRow[] = [];
+    for (const n of near) {
+      const row = byId.get(n.driverId);
+      if (!row) continue;
+      result.push({
+        id: row.id,
+        userId: row.userId,
+        lat: n.lat,
+        lng: n.lng,
+        rating: Number(row.rating),
+        vehiclePlate: row.vehiclePlate,
+        vehicleModel: row.vehicleModel,
+        distanceKm: n.distanceKm,
+      });
+      if (result.length >= limit) break;
+    }
+    return result;
+  },
 
   /**
    * Drivers who are ON A TRIP but nearly done with it, whose drop-off is near
@@ -158,17 +210,25 @@ export const driverClient = {
       data:  { status, lastSeenAt: new Date() },
     }),
 
-  markOnline: (driverId: string, lat: number, lng: number) =>
-    prisma.driver.update({
+  // Going on shift is a change of status, so the row is always written; the
+  // position also goes to Redis so matching can see the driver at once.
+  markOnline: async (driverId: string, lat: number, lng: number) => {
+    const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { status: 'ONLINE', lat, lng, lastSeenAt: new Date() },
-    }),
+    });
+    await driverPresence.noteLocation(driverId, lat, lng);
+    return driver;
+  },
 
-  markOffline: (driverId: string) =>
-    prisma.driver.update({
+  markOffline: async (driverId: string) => {
+    const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { status: 'OFFLINE', lastSeenAt: new Date() },
-    }),
+    });
+    await driverPresence.remove(driverId);
+    return driver;
+  },
 
   /**
    * "Still here": a driver ON SHIFT whose socket just answered a ping. Presence
@@ -183,17 +243,33 @@ export const driverClient = {
       data: { lastSeenAt: new Date() },
     }),
 
-  // Called every time driver goes online or sends a GPS ping during availability.
-  // Live ride GPS is handled separately — this is just "driver is at this location".
-  // Both callers (socket ping, HTTP heartbeat) come through here, so the admin
-  // map's trail is fed from this one place. recordPoint never throws.
-  updateLocation: async (driverId: string, lat: number, lng: number) => {
-    const driver = await prisma.driver.update({
-      where: { id: driverId },
-      data:  { lat, lng, lastSeenAt: new Date() },
+  /**
+   * "Still here", from the socket's pong. Redis hears every one; the row is
+   * touched at most once per flush window.
+   */
+  noteAlive: async (userId: string, driverId: string): Promise<void> => {
+    const { flushDb, lat, lng } = await driverPresence.noteAlive(driverId);
+    if (!flushDb) return;
+    await prisma.driver.updateMany({
+      where: { userId, status: { in: ['ONLINE', 'ON_RIDE'] } },
+      data: lat !== null && lng !== null ? { lat, lng, lastSeenAt: new Date() } : { lastSeenAt: new Date() },
     });
+  },
+
+  // Called every time a driver sends a position while available. Live ride GPS
+  // is handled separately — this is just "driver is at this location".
+  // Both callers (socket ping, HTTP heartbeat) come through here. Redis hears
+  // every one; the row is written at most once per flush window, and the admin
+  // map's trail is fed from here by its own rules. recordPoint never throws.
+  updateLocation: async (driverId: string, lat: number, lng: number): Promise<void> => {
+    const { flushDb } = await driverPresence.noteLocation(driverId, lat, lng);
+    if (flushDb) {
+      await prisma.driver.update({
+        where: { id: driverId },
+        data:  { lat, lng, lastSeenAt: new Date() },
+      });
+    }
     await driverLocationClient.recordPoint(driverId, lat, lng, 'online');
-    return driver;
   },
 
   updateKycStatus: (driverId: string, kycStatus: KycStatus) =>

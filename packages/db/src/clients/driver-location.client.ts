@@ -1,4 +1,5 @@
 import { prisma } from '../prisma';
+import { driverPresence } from './driver-presence';
 
 /**
  * Where drivers are and where they have been — the data behind the admin live
@@ -127,6 +128,8 @@ export const driverLocationClient = {
     if (now - (lastTripRowWrite.get(driverId) ?? 0) < TRIP_ROW_INTERVAL_MS) return;
     if (lastTripRowWrite.size >= MAX_TRACKED_DRIVERS) lastTripRowWrite.clear();
     lastTripRowWrite.set(driverId, now);
+    // Redis hears it too, so the driver is already fresh there when the trip ends.
+    void driverPresence.noteLocation(driverId, lat, lng, now);
     try {
       await prisma.driver.update({ where: { id: driverId }, data: { lat, lng, lastSeenAt: new Date(now) } });
       await driverLocationClient.recordPoint(driverId, lat, lng, 'online');
@@ -182,18 +185,22 @@ export const driverLocationClient = {
   // ── Admin map ──────────────────────────────────────────────────────────────
 
   /** Every driver that has ever reported a position, with who they are. */
-  listForMap: () =>
-    prisma.driver.findMany({
-      where: {
-        // Deleted accounts are anonymised in place; this prefix is their marker.
-        user: { NOT: { privyDid: { startsWith: 'deleted:' } } },
-        OR: [{ lat: { not: null } }, { standbyLat: { not: null } }],
-      },
-      select: driverForMap,
-    }),
+  listForMap: async () =>
+    driverPresence.overlayMany(
+      await prisma.driver.findMany({
+        where: {
+          // Deleted accounts are anonymised in place; this prefix is their marker.
+          user: { NOT: { privyDid: { startsWith: 'deleted:' } } },
+          OR: [{ lat: { not: null } }, { standbyLat: { not: null } }],
+        },
+        select: driverForMap,
+      }),
+    ),
 
-  findForMap: (driverId: string) =>
-    prisma.driver.findUnique({ where: { id: driverId }, select: driverForMap }),
+  findForMap: async (driverId: string) =>
+    driverPresence.overlay(
+      await prisma.driver.findUnique({ where: { id: driverId }, select: driverForMap }),
+    ),
 
   /** The ride each of these drivers is on right now, keyed by driver id. */
   activeRidesByDriver: async (driverIds: string[]) => {

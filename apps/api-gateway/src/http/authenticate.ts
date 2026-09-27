@@ -51,3 +51,24 @@ export async function authenticateHttpUser(
 
   return await userClient.findById(localToken.sub);
 }
+
+/**
+ * Who is asking, from the token alone: no database read. For endpoints called
+ * constantly by the same signed-in phone (the driver heartbeat), where looking
+ * the user up on every call was most of the cost of the call. The token is
+ * still verified in full; what is skipped is re-reading a user row that the
+ * endpoint does not need.
+ */
+export function authenticateHttpToken(req: IncomingMessage, jwtSecret: string): { userId: string } {
+  const authorization =
+    typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined;
+  const token = extractBearerToken(authorization);
+  if (!token) {
+    throw new HttpAuthError('Authorization bearer token is required');
+  }
+  try {
+    return { userId: verifyLocalAccessToken(token, jwtSecret).sub };
+  } catch (error) {
+    throw new HttpAuthError(error instanceof Error ? error.message : 'Invalid access token.');
+  }
+}

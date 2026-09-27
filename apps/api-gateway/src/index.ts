@@ -191,6 +191,8 @@ import {
 } from "./http/kyc.route";
 import { handleGetRideChatMessagesRoute } from "./http/chat.route";
 import { applyCorsHeaders, sendJson } from "./http/utils";
+import { driverPresence } from "@wheleers/db";
+import { createLeaderLock } from "./cluster/leader";
 import { handleAdminInsightsRoute } from "./http/admin-insights.route";
 import { startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
@@ -407,6 +409,8 @@ async function bootstrap(): Promise<void> {
   const redisSubscriberClient = new RedisClient(sharedEnv.REDIS_URL);
 
   await redisCommandClient.connect();
+  // Driver heartbeats and "who is near this pickup" live in Redis (see driver-presence).
+  driverPresence.configure((...args) => redisCommandClient.send(...args));
   // Every outbound call to Google, Gemini, Groq, Paystack, Meta… is counted for /admin/usage/services.
   meterOutboundCalls(redisCommandClient);
   await redisSubscriberClient.connect();
@@ -2204,15 +2208,25 @@ async function bootstrap(): Promise<void> {
     registry,
     publisher,
     routePlanner,
+    redis: redisCommandClient,
+    maxPayloadBytes: gatewayEnv.WS_MAX_PAYLOAD_BYTES,
+    rateLimitPerSecond: gatewayEnv.WS_RATE_LIMIT_PER_SECOND,
+    rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,
+    maxPendingUpgrades: gatewayEnv.WS_MAX_PENDING_UPGRADES,
+    verboseLog: gatewayEnv.WS_VERBOSE_LOG,
   });
+
+  // Jobs that must run once, however many gateway processes there are.
+  const leader = createLeaderLock(redisCommandClient, registry.instanceId);
 
   const outboxPublisher = startOutboxPublisher({
     producer: asRawProducer(producer),
     intervalMs: 2_000,
     batchSize: 100,
+    shouldRun: leader.isLeader,
   });
 
-  const referralJobs = startReferralJobs();
+  const referralJobs = startReferralJobs(leader.isLeader);
 
   await startGatewayKafkaConsumer({
     consumer,
@@ -2262,6 +2276,12 @@ async function bootstrap(): Promise<void> {
       console.log(`[api-gateway] listening on :${port}`);
       resolve();
     });
+  });
+
+  // First: let go of the sockets and the job lock while Redis is still connected.
+  onShutdown(async () => {
+    await leader.release();
+    await registry.shutdown();
   });
 
   onShutdown(async () => {

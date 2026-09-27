@@ -83,6 +83,17 @@ const GatewayEnvSchema = z.object({
   SCHEDULED_RIDE_DISPATCH_LEAD_TIME_S: z.coerce.number().int().positive().default(300),
   CORS_ORIGINS:       z.string().default('http://localhost:19006,http://localhost:3000,https://app.wheelersng.com'),
   WS_IDLE_TIMEOUT_MS: z.string().default('60000'),
+  // Limits on the socket server. A message larger than this closes the socket;
+  // each socket may send this many messages a second, with a burst on top;
+  // and this many sign-ins may be in flight at once before new ones are told
+  // to come back (the apps wait and retry by themselves).
+  WS_MAX_PAYLOAD_BYTES:     z.coerce.number().int().positive().default(128 * 1024),
+  WS_RATE_LIMIT_PER_SECOND: z.coerce.number().positive().default(10),
+  WS_RATE_LIMIT_BURST:      z.coerce.number().int().positive().default(40),
+  WS_MAX_PENDING_UPGRADES:  z.coerce.number().int().positive().default(400),
+  // 'true' logs every connect, close and message, as before. Off, the log gets
+  // warnings and one summary line a minute.
+  WS_VERBOSE_LOG: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Social Auth
   APPLE_BUNDLE_ID:    z.string().optional().transform(v => v?.trim() || undefined),
   GOOGLE_CLIENT_ID:   z.string().optional().transform(v => v?.trim() || undefined),

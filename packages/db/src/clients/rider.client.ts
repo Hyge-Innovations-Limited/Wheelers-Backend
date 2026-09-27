@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { driverPresence } from './driver-presence';
 import { prisma } from '../prisma';
 import type { RidePaymentMethod, RideStatus, RideStopStatus, RideStopType } from '@prisma/client';
 
@@ -77,8 +78,8 @@ export const rideClient = {
       },
     }),
 
-  findWithDriver: (rideId: string) =>
-    prisma.ride.findUniqueOrThrow({
+  findWithDriver: async (rideId: string) => {
+    const ride = await prisma.ride.findUniqueOrThrow({
       where:   { id: rideId },
       include: {
         driver: { include: { user: true } },
@@ -86,7 +87,11 @@ export const rideClient = {
           orderBy: { stopOrder: 'asc' },
         },
       },
-    }),
+    });
+    // The driver's position and last-seen time, as fresh as Redis has them.
+    await driverPresence.overlay(ride.driver);
+    return ride;
+  },
 
   // A ride still in REQUESTED/MATCHING long after the bid window is dead —
   // nobody accepted and the timeout should have cancelled it. Don't let a

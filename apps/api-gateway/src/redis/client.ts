@@ -126,22 +126,52 @@ function parseRedisUrl(redisUrl: string): RedisConnectionOptions {
   };
 }
 
+/** How long a command waits for a dropped connection to come back before it fails. */
+const WAIT_FOR_RECONNECT_MS = 3_000;
+const RECONNECT_MIN_MS = 200;
+const RECONNECT_MAX_MS = 5_000;
+
+/**
+ * A small Redis client over one socket.
+ *
+ * It reconnects by itself. It used not to: when Redis restarted, the socket
+ * closed, `connected` went false and every command after that threw, for as
+ * long as the gateway stayed up. Now a dropped connection is retried (200 ms
+ * doubling to 5 s, scattered), AUTH and SELECT are replayed, and the channels
+ * it was subscribed to are subscribed again. Commands sent while it is down
+ * wait up to three seconds for it to return, then fail, so callers are never
+ * left hanging.
+ */
 export class RedisClient {
   private socket: Socket | null = null;
   private pending: PendingRequest[] = [];
   private receiveBuffer: Buffer = Buffer.alloc(0);
   private connected = false;
+  private closedByUs = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private waiters: Array<() => void> = [];
+  private readonly channels = new Set<string>();
   private messageListener?: (channel: string, payload: string) => void;
 
   constructor(private readonly redisUrl: string) {}
 
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
   async connect(): Promise<void> {
     if (this.connected) return;
+    this.closedByUs = false;
+    await this.open();
+  }
 
+  private open(): Promise<void> {
     const options = parseRedisUrl(this.redisUrl);
 
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const socket = new Socket();
+      socket.setKeepAlive(true, 15_000);
 
       const onError = (error: Error) => {
         socket.destroy();
@@ -152,44 +182,98 @@ export class RedisClient {
       socket.connect(options.port, options.host, async () => {
         socket.off('error', onError);
         this.socket = socket;
+        this.receiveBuffer = Buffer.alloc(0);
 
         socket.on('data', (chunk) => {
           this.onData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         socket.on('error', (error) => this.failPending(error));
-        socket.on('close', () => {
-          this.connected = false;
-        });
+        socket.on('close', () => this.onClose(socket));
 
         this.connected = true;
 
         try {
           if (options.password) {
-            await this.send('AUTH', options.password);
+            await this.write('AUTH', options.password);
           }
 
           if (typeof options.db === 'number' && Number.isFinite(options.db)) {
-            await this.send('SELECT', String(options.db));
+            await this.write('SELECT', String(options.db));
           }
 
+          for (const channel of this.channels) {
+            await this.write('SUBSCRIBE', channel);
+          }
+
+          this.reconnectAttempt = 0;
+          const waiting = this.waiters;
+          this.waiters = [];
+          for (const wake of waiting) wake();
           resolve();
         } catch (error) {
+          socket.destroy();
           reject(error);
         }
       });
     });
   }
 
+  private onClose(socket: Socket): void {
+    if (this.socket !== socket) return;
+    this.connected = false;
+    this.socket = null;
+    // Whatever was waiting on this connection will never be answered by it.
+    this.failPending(new Error('Redis connection closed'));
+    if (!this.closedByUs) this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.closedByUs) return;
+    const step = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** Math.min(this.reconnectAttempt, 10));
+    const delay = Math.round(step / 2 + (step / 2) * Math.random());
+    this.reconnectAttempt += 1;
+    if (this.reconnectAttempt === 1) console.warn('[redis] connection lost; reconnecting');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.closedByUs || this.connected) return;
+      this.open()
+        .then(() => console.info('[redis] reconnected'))
+        .catch(() => this.scheduleReconnect());
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
+  private waitUntilConnected(): Promise<void> {
+    if (this.connected) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== wake);
+        reject(new Error('Redis client is not connected'));
+      }, WAIT_FOR_RECONNECT_MS);
+      timer.unref?.();
+      const wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.waiters.push(wake);
+    });
+  }
+
   async disconnect(): Promise<void> {
+    this.closedByUs = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (!this.socket) return;
 
     try {
-      await this.send('QUIT');
+      await this.write('QUIT');
     } catch {
       // ignore disconnect errors
     }
 
-    this.socket.destroy();
+    this.socket?.destroy();
     this.socket = null;
     this.connected = false;
   }
@@ -199,6 +283,7 @@ export class RedisClient {
   }
 
   async subscribe(channel: string): Promise<void> {
+    this.channels.add(channel);
     await this.send('SUBSCRIBE', channel);
   }
 
@@ -248,18 +333,30 @@ export class RedisClient {
   }
 
   async send(...args: string[]): Promise<RespValue> {
-    if (!this.socket || !this.connected) {
-      throw new Error('Redis client is not connected');
+    if (!this.connected) {
+      if (this.closedByUs) throw new Error('Redis client is not connected');
+      await this.waitUntilConnected();
+    }
+    return this.write(...args);
+  }
+
+  /** Write on the current socket, connected or not yet announced as such (AUTH, SELECT, SUBSCRIBE on open). */
+  private write(...args: string[]): Promise<RespValue> {
+    const socket = this.socket;
+    if (!socket) {
+      return Promise.reject(new Error('Redis client is not connected'));
     }
 
     const payload = encodeCommand(args);
 
     return new Promise<RespValue>((resolve, reject) => {
-      this.pending.push({ resolve, reject });
-      this.socket!.write(payload, (error) => {
+      const request: PendingRequest = { resolve, reject };
+      this.pending.push(request);
+      socket.write(payload, (error) => {
         if (error) {
-          const current = this.pending.pop();
-          current?.reject(error);
+          const index = this.pending.indexOf(request);
+          if (index !== -1) this.pending.splice(index, 1);
+          reject(error);
         }
       });
     });

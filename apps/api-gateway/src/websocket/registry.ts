@@ -29,6 +29,19 @@ function instanceChannel(instanceId: string): string {
   return `gateway:instance:${instanceId}`;
 }
 
+/**
+ * "This gateway process is running." Refreshed every few seconds and gone
+ * within half a minute of the process dying, so another process can tell a
+ * user who is connected elsewhere from one whose gateway crashed and left its
+ * name behind in their set.
+ */
+function instanceAliveKey(instanceId: string): string {
+  return `gateway:instance:${instanceId}:alive`;
+}
+
+const INSTANCE_ALIVE_TTL_SECONDS = 30;
+const INSTANCE_ALIVE_EVERY_MS = 10_000;
+
 interface SocketRegistryDeps {
   instanceId: string;
   commandRedis: RedisClient;
@@ -40,8 +53,18 @@ export class SocketRegistry {
   private connectionIdBySocket = new Map<WebSocket, string>();
   private connectionsByUser = new Map<string, Set<string>>();
   private authBySocket = new Map<WebSocket, GatewayAuthContext>();
+  private aliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: SocketRegistryDeps) {}
+
+  get instanceId(): string {
+    return this.deps.instanceId;
+  }
+
+  /** How many sockets this process holds. */
+  get connectionCount(): number {
+    return this.socketsByConnectionId.size;
+  }
 
   async start(): Promise<void> {
     this.deps.subscriberRedis.onMessage((_channel, payload) => {
@@ -49,6 +72,39 @@ export class SocketRegistry {
     });
 
     await this.deps.subscriberRedis.subscribe(instanceChannel(this.deps.instanceId));
+
+    const beat = () =>
+      this.deps.commandRedis
+        .set(instanceAliveKey(this.deps.instanceId), String(Date.now()), INSTANCE_ALIVE_TTL_SECONDS)
+        .catch(() => undefined);
+    await beat();
+    this.aliveTimer = setInterval(() => void beat(), INSTANCE_ALIVE_EVERY_MS);
+    this.aliveTimer.unref?.();
+  }
+
+  /**
+   * Is this user connected to ANY gateway process? The local answer is free;
+   * otherwise Redis says which processes claim them, and a process that has
+   * stopped answering is struck from the list.
+   */
+  async isUserConnected(userId: string): Promise<boolean> {
+    if (this.hasUser(userId)) return true;
+    try {
+      const instances = await this.deps.commandRedis.smembers(userInstancesKey(userId));
+      for (const instanceId of instances) {
+        if (instanceId === this.deps.instanceId) {
+          // Redis says here, memory says not: a leftover from a socket that closed badly.
+          void this.deps.commandRedis.srem(userInstancesKey(userId), instanceId).catch(() => undefined);
+          continue;
+        }
+        const alive = await this.deps.commandRedis.get(instanceAliveKey(instanceId));
+        if (alive) return true;
+        void this.deps.commandRedis.srem(userInstancesKey(userId), instanceId).catch(() => undefined);
+      }
+    } catch {
+      /* Redis cannot say; the local answer stands. */
+    }
+    return false;
   }
 
   async register(socket: WebSocket, auth: GatewayAuthContext): Promise<void> {
@@ -99,6 +155,30 @@ export class SocketRegistry {
     ]);
   }
 
+  /**
+   * A clean stop: every socket is told the service is restarting (1012), so
+   * the apps start their wait-and-retry at once instead of discovering a dead
+   * connection a minute later, and this process takes its name out of Redis.
+   */
+  async shutdown(): Promise<void> {
+    if (this.aliveTimer) clearInterval(this.aliveTimer);
+    this.aliveTimer = null;
+    const userIds = Array.from(this.connectionsByUser.keys());
+    for (const socket of this.socketsByConnectionId.values()) {
+      try {
+        socket.close(1012, 'Service restart');
+      } catch {
+        /* already closing */
+      }
+    }
+    await Promise.all([
+      ...userIds.map((userId) =>
+        this.deps.commandRedis.srem(userInstancesKey(userId), this.deps.instanceId).catch(() => undefined),
+      ),
+      this.deps.commandRedis.del(instanceAliveKey(this.deps.instanceId)).catch(() => undefined),
+    ]);
+  }
+
   hasUser(userId: string): boolean {
     return (this.connectionsByUser.get(userId)?.size ?? 0) > 0;
   }
@@ -139,9 +219,13 @@ export class SocketRegistry {
     const serialized = JSON.stringify(message);
 
     await Promise.all(
-      remoteInstances.map((instanceId) =>
-        this.deps.commandRedis.publish(instanceChannel(instanceId), serialized),
-      ),
+      remoteInstances.map(async (instanceId) => {
+        const receivers = await this.deps.commandRedis.publish(instanceChannel(instanceId), serialized);
+        // Nobody listening on that channel: the process is gone. Stop sending it this user's messages.
+        if (receivers === 0) {
+          void this.deps.commandRedis.srem(userInstancesKey(userId), instanceId).catch(() => undefined);
+        }
+      }),
     );
   }
 

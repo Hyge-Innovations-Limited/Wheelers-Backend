@@ -60,12 +60,16 @@ if (!defined.has("DATABASE_URL")) fallbackEnv.DATABASE_URL = "postgresql://postg
 if (!defined.has("REDIS_URL")) fallbackEnv.REDIS_URL = "redis://localhost:6379";
 if (!defined.has("KAFKA_BROKERS")) fallbackEnv.KAFKA_BROKERS = "localhost:29092";
 
-function app(name, { memory = "350M", extraEnv = {} } = {}) {
+function app(name, { memory = "350M", extraEnv = {}, instances = 1 } = {}) {
   return {
     name,
     cwd: path.join(root, "apps", name),
     script: "dist/index.js",
     interpreter: "node",
+
+    // More than one process shares the port (pm2 cluster mode). Each holds its
+    // own sockets; a message for a user on another process crosses by Redis.
+    ...(instances > 1 ? { instances, exec_mode: "cluster" } : {}),
 
     // Stay up.
     autorestart: true,
@@ -93,10 +97,33 @@ function app(name, { memory = "350M", extraEnv = {} } = {}) {
 
 const gatewayPort = valueOf(envFile, "PORT") || "3000";
 
+// How many gateway processes, and how much memory each may use before it is
+// recycled. Both are about THIS machine, not about the app, so they are read
+// from `.env` here and never handed on as environment.
+//
+//   GATEWAY_INSTANCES=2        one per CPU core the box can spare
+//   GATEWAY_MAX_MEMORY=1000M   twice what a process was seen to need
+//
+// Measured with scripts/ws-load-test.mjs (30% drivers, heartbeats every 30 s):
+//   20,000 sockets on two processes: ~410 MB each at the worst moment, answers
+//   in 2 ms, everyone back 28 s after every socket was cut at once.
+//   20,000 on one process: 490 MB, but a whole core busy, and 53 s to recover.
+// The old 600M limit was inside that range: a process doing nothing wrong
+// would have been restarted, dropping every socket it held.
+//
+// One process holding every socket is one restart away from dropping everyone
+// at once; two halve that, and let a deploy roll one at a time.
+const gatewayInstances = Math.max(1, Number.parseInt(valueOf(envFile, "GATEWAY_INSTANCES") || "1", 10) || 1);
+const gatewayMemory = valueOf(envFile, "GATEWAY_MAX_MEMORY") || "600M";
+
 module.exports = {
   apps: [
     // The gateway holds every driver socket and serves every request.
-    app("api-gateway", { memory: "600M", extraEnv: defined.has("PORT") ? {} : { PORT: "3000" } }),
+    app("api-gateway", {
+      memory: gatewayMemory,
+      instances: gatewayInstances,
+      extraEnv: defined.has("PORT") ? {} : { PORT: "3000" },
+    }),
     app("ride-service"),
     app("group-ride"),
     app("payment-service"),

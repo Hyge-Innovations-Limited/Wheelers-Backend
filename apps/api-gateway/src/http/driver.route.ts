@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
-import { authenticateHttpUser, HttpAuthError } from './authenticate';
+import { authenticateHttpUser, HttpAuthError, authenticateHttpToken } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
 import { loadDriverActiveRideSnapshot } from '../websocket/driver-ride-sync';
 
@@ -196,18 +196,38 @@ export async function handleGetDriverBidsRoute(
 // POST /drivers/me/location — background heartbeat. The WebSocket dies when
 // the app is backgrounded; this is how a pocketed phone stays a live driver
 // (matching requires lastSeenAt within 90s). Body: { lat, lng }.
+//
+// Every online driver calls this every 30 seconds, so it does no more than it
+// must: the token is verified without reading the user, which driver the user
+// is comes from memory after the first call, and the position goes to Redis
+// (the row in Postgres is brought up to date every couple of minutes).
+const DRIVER_ID_TTL_MS = 10 * 60_000;
+const DRIVER_ID_CACHE_MAX = 50_000;
+const driverIdByUser = new Map<string, { driverId: string | null; at: number }>();
+
+async function driverIdFor(userId: string): Promise<string | null> {
+  const cached = driverIdByUser.get(userId);
+  if (cached && Date.now() - cached.at < DRIVER_ID_TTL_MS) return cached.driverId;
+  const driver = await driverClient.findByUserId(userId);
+  if (driverIdByUser.size >= DRIVER_ID_CACHE_MAX) driverIdByUser.clear();
+  // "Not a driver" is remembered too, but only briefly: they may be approved any minute.
+  driverIdByUser.set(userId, { driverId: driver?.id ?? null, at: driver ? Date.now() : Date.now() - DRIVER_ID_TTL_MS + 30_000 });
+  return driver?.id ?? null;
+}
+
 export async function handlePostDriverLocationRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: DriverRouteDeps,
 ): Promise<void> {
   try {
-    const user = await authenticateHttpUser(req, deps.jwtSecret);
-    const driver = await driverClient.findByUserId(user.id);
-    if (!driver) {
+    const { userId } = authenticateHttpToken(req, deps.jwtSecret);
+    const driverId = await driverIdFor(userId);
+    if (!driverId) {
       sendJson(res, 404, { error: 'No driver profile found.' });
       return;
     }
+    const driver = { id: driverId };
     const body = await readJsonBody(req).catch(() => null);
     const record = (body ?? {}) as Record<string, unknown>;
     const lat = typeof record.lat === 'number' ? record.lat : Number(record.lat);

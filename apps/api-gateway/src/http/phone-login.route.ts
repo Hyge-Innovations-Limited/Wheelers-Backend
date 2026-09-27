@@ -209,7 +209,7 @@ export async function handlePhoneLoginVerifyOtpRoute(
       return;
     }
 
-    const codeIsGood = isProviderManagedOtp(phone)
+    const codeIsGood = (await isProviderManagedOtp(deps.redisClient, phone))
       ? await verifyProviderManagedOtp(deps, phone, code)
       : timingSafeStringEquals(hashOtp(code), stored.codeHash);
 

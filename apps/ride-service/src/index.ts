@@ -15,6 +15,8 @@ import { startStaleRideSweep } from './handlers/stale-rides.handler';
 import { startScheduledRideDispatcher } from './handlers/scheduled-rides.handler';
 import { createTripLifecycleHandler } from './handlers/trip-lifecycle.handler';
 import type { RideRequestedEvent } from '@wheleers/kafka-schemas';
+import IORedis from 'ioredis';
+import { driverPresence } from '@wheleers/db';
 
 export type OnlineDriver = {
   driverId: string;
@@ -145,6 +147,19 @@ async function bootstrap(): Promise<void> {
 
   validateSharedEnv();
   const rideEnv = validateRideEnv();
+
+  // Matching asks Redis who is near a pickup and heard from lately (see
+  // driver-presence in @wheleers/db). ioredis reconnects by itself; commands
+  // fail fast while it is away, and matching falls back to Postgres.
+  const presenceRedis = new IORedis(process.env['REDIS_URL']!, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    lazyConnect: false,
+  });
+  presenceRedis.on('error', (error) => {
+    console.warn(`[${SERVICE_ID}] presence redis: ${error.message}`);
+  });
+  driverPresence.configure((command, ...args) => presenceRedis.call(command, ...args));
 
   const producer = await createProducer({ serviceId: SERVICE_ID });
   const consumer = await createConsumer({ groupId: SERVICE_ID, concurrency: 1 });
@@ -283,6 +298,7 @@ async function bootstrap(): Promise<void> {
   });
 
   onShutdown(async () => {
+    presenceRedis.disconnect();
     staleRideSweep.stop();
     await dispatcher.shutdown();
     await consumer.disconnect();

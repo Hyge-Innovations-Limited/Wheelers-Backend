@@ -24,8 +24,10 @@ export function startOutboxPublisher(params: {
   producer: RawProducer;
   intervalMs?: number;
   batchSize?: number;
+  /** With more than one gateway process, only the one this says yes to publishes. */
+  shouldRun?: () => Promise<boolean>;
 }): { shutdown: () => void } {
-  const { producer, intervalMs = 2_000, batchSize = 100 } = params;
+  const { producer, intervalMs = 2_000, batchSize = 100, shouldRun } = params;
   let active = true;
   let polling = false;
 
@@ -42,6 +44,8 @@ export function startOutboxPublisher(params: {
   }
 
   async function doPoll(): Promise<void> {
+    // Two processes reading the same unpublished rows would each send them.
+    if (shouldRun && !(await shouldRun())) return;
 
     let events: Awaited<ReturnType<typeof outboxClient.findUnpublished>>;
     try {

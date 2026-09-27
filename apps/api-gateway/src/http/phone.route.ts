@@ -190,7 +190,7 @@ export async function sendPhoneOtpMessage(
     });
     // Twilio Verify owns the code; remember that so verification asks Twilio
     // instead of comparing against a hash we never generated.
-    lastDeliveryWasProviderManaged.set(phone, result.providerManaged);
+    await rememberProviderManaged(deps.redisClient, phone, result.providerManaged);
     return result.medium;
   } catch (error) {
     if (error instanceof OtpDeliveryFailed) {
@@ -205,13 +205,28 @@ export async function sendPhoneOtpMessage(
 }
 
 /**
- * Which phones currently hold a Twilio-Verify-issued code. In-memory is enough:
- * a gateway restart simply falls back to the hash check, which fails closed.
+ * Which phones currently hold a Twilio-Verify-issued code. Kept in Redis, not
+ * in this process's memory: with more than one gateway process, the request
+ * that sends the code and the one that checks it can land on different
+ * processes, and the second would compare against a hash that was never made.
+ * If Redis cannot be reached the hash check is used, which fails closed.
  */
-const lastDeliveryWasProviderManaged = new Map<string, boolean>();
+const PROVIDER_MANAGED_TTL_SECONDS = 15 * 60;
+const providerManagedKey = (phone: string) => `otp:provider-managed:${phone}`;
 
-export function isProviderManagedOtp(phone: string): boolean {
-  return lastDeliveryWasProviderManaged.get(phone) === true;
+async function rememberProviderManaged(redisClient: RedisClient, phone: string, providerManaged: boolean): Promise<void> {
+  try {
+    if (providerManaged) await redisClient.set(providerManagedKey(phone), '1', PROVIDER_MANAGED_TTL_SECONDS);
+    else await redisClient.del(providerManagedKey(phone));
+  } catch (error) {
+    console.warn('[otp] could not record which channel owns the code', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function isProviderManagedOtp(redisClient: RedisClient, phone: string): Promise<boolean> {
+  return (await redisClient.get(providerManagedKey(phone)).catch(() => null)) === '1';
 }
 
 export async function verifyProviderManagedOtp(
@@ -220,7 +235,7 @@ export async function verifyProviderManagedOtp(
   code: string,
 ): Promise<boolean> {
   const ok = await checkTwilioVerify(otpConfigFrom(deps), phone, code);
-  if (ok) lastDeliveryWasProviderManaged.delete(phone);
+  if (ok) await deps.redisClient.del(providerManagedKey(phone)).catch(() => undefined);
   return ok;
 }
 
@@ -335,7 +350,7 @@ export async function handleVerifyPhoneOtpRoute(
 
     // Twilio Verify generates the code, so only Twilio can confirm it. Every
     // other channel used a code we hashed ourselves.
-    if (isProviderManagedOtp(stored.phone)) {
+    if (await isProviderManagedOtp(deps.redisClient, stored.phone)) {
       const approved = await verifyProviderManagedOtp(deps, stored.phone, code);
       if (!approved) {
         sendJson(res, 400, { error: 'Invalid verification code' });
