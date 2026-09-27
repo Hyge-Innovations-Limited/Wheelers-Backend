@@ -194,6 +194,7 @@ import { applyCorsHeaders, sendJson } from "./http/utils";
 import { driverPresence } from "@wheleers/db";
 import { createLeaderLock } from "./cluster/leader";
 import { handleAdminInsightsRoute } from "./http/admin-insights.route";
+import { handleAdminSecurityRoute } from "./http/admin-security.route";
 import { startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
@@ -1625,6 +1626,11 @@ async function bootstrap(): Promise<void> {
 
       // Home analytics and the Fees page: /admin/insights/* and /admin/fees/*.
       if (await handleAdminInsightsRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // The admin panel reports a screenshot attempt it noticed.
+      if (await handleAdminSecurityRoute(req, res, adminDeps, url)) {
         return;
       }
 
