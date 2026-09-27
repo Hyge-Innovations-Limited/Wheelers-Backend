@@ -197,6 +197,7 @@ async function handleFlowAction(
 
       const event = RideRequestedEvent.parse({
         eventType: 'RIDE_REQUESTED',
+        channel: 'WHATSAPP',
         rideId,
         riderId: userId,
         pickup: { lat: pickupGeo.lat, lng: pickupGeo.lng, address: pickupGeo.formattedAddress },

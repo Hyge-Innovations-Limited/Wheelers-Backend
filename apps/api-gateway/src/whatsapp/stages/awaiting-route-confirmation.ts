@@ -148,6 +148,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
     const rideId = randomUUID();
     const event = RideRequestedEvent.parse({
       eventType: 'RIDE_REQUESTED',
+      channel: 'WHATSAPP',
       rideId,
       riderId: user.id,
       pickup,

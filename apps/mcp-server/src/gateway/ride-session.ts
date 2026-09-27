@@ -248,6 +248,8 @@ export class RideSessionManager {
     session.closedByUs = false;
     const url = new URL(this.deps.wsUrl);
     url.searchParams.set('accessToken', session.token);
+    // Rides booked through this socket are labelled Claude (MCP) in the admin analytics.
+    url.searchParams.set('client', 'mcp');
 
     session.connecting = new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(url.toString(), { handshakeTimeout: 15_000 });

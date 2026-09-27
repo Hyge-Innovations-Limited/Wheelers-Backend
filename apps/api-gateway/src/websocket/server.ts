@@ -196,6 +196,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
           user,
           driverId: driver?.id,
         });
+        // The MCP server says so when it connects; used only to label bookings for analytics.
+        auth.client = url.searchParams.get('client') === 'mcp' ? 'mcp' : 'app';
 
         wsServer.handleUpgrade(request, socket as never, head, (ws: WebSocket) => {
           void deps.registry.register(ws, auth).then(() => {

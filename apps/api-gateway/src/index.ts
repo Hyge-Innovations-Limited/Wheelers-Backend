@@ -191,6 +191,7 @@ import {
 } from "./http/kyc.route";
 import { handleGetRideChatMessagesRoute } from "./http/chat.route";
 import { applyCorsHeaders, sendJson } from "./http/utils";
+import { handleAdminInsightsRoute } from "./http/admin-insights.route";
 import { startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
@@ -1615,6 +1616,11 @@ async function bootstrap(): Promise<void> {
           return;
         }
         await handleAdminListRidesRoute(req, res, adminDeps, url);
+        return;
+      }
+
+      // Home analytics and the Fees page: /admin/insights/* and /admin/fees/*.
+      if (await handleAdminInsightsRoute(req, res, adminDeps, url)) {
         return;
       }
 

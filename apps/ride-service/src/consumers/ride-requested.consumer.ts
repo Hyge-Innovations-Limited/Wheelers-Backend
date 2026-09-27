@@ -1,5 +1,5 @@
 import { driverClient, rideClient } from '@wheleers/db';
-import { RIDE, calculateSuggestedFare } from '@wheleers/config';
+import { RIDE, calculateSuggestedFare, zoneFor } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
 import {
@@ -204,6 +204,10 @@ export function createRideRequestedConsumer(params: {
         paymentMethod: event.paymentMethod,
         riderOfferNgn: event.riderOfferNgn,
         status: 'MATCHING',
+        // Analytics facts, fixed at booking: how it was booked and which launch zones it touches.
+        channel: event.channel ?? 'UNKNOWN',
+        pickupZone: zoneFor(event.pickup.lat, event.pickup.lng),
+        destZone: zoneFor(event.destination.lat, event.destination.lng),
       });
     } catch (err) {
       console.warn(`[ride-service] ride create skipped:`, (err as any)?.message ?? err);

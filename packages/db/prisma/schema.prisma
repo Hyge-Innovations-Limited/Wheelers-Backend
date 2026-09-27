@@ -363,6 +363,17 @@ model Ride {
   agreedFareNgn          Decimal?          @db.Decimal(18, 2)
   fareFinalNgn           Decimal?          @db.Decimal(18, 2)
   platformFeeNgn         Decimal?          @db.Decimal(18, 2)
+  /// platformFeeNgn, split: the % commission, the flat service fee, the state levy (owed to Lagos).
+  commissionNgn          Decimal?          @db.Decimal(18, 2)
+  serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
+  stateLevyNgn           Decimal?          @db.Decimal(18, 2)
+  /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
+  feeSplitEstimated      Boolean           @default(false)
+  /// How the ride was booked.
+  channel                RideChannel       @default(UNKNOWN)
+  /// Launch zone of the pickup and destination (packages/config zones), null = outside every zone.
+  pickupZone             String?
+  destZone               String?
   distanceKm             Float?
   durationSeconds        Int?
   cancelStage            CancelStage?
@@ -388,6 +399,10 @@ model Ride {
   @@index([riderId, createdAt])
   @@index([driverId, status])
   @@index([status])
+  @@index([createdAt])
+  @@index([completedAt])
+  @@index([channel])
+  @@index([pickupZone])
 }
 
 model ChatMessage {
@@ -877,6 +892,14 @@ enum ChatSenderRole {
 enum RidePaymentMethod {
   CASH
   WALLET
+}
+
+/// Where a ride was booked: the Wheelers app, the WhatsApp bot (chat, forms or the ride page), or Claude via the MCP server.
+enum RideChannel {
+  APP
+  WHATSAPP
+  MCP
+  UNKNOWN
 }
 
 enum RiderKycStatus {

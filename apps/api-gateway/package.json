@@ -19,6 +19,7 @@
     "@wheleers/kafka-schemas": "0.0.1",
     "@wheleers/payments": "*",
     "@wheleers/ride-service": "0.0.1",
+    "exceljs": "^4.4.0",
     "jimp": "^0.22.12",
     "ws": "^8.18.3"
   },

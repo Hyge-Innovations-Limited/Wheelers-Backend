@@ -55,6 +55,8 @@ export const RideRequestedEvent = BaseRideEvent.extend({
   fareBeforeCashbackNgn: z.number().optional(),
   referralCashbackAppliedNgn: z.number().optional(),
   route:            RouteGeometry.optional(),
+  // Where the ride was booked; stored on the ride for analytics. Absent on older publishers.
+  channel:          z.enum(['APP', 'WHATSAPP', 'MCP']).optional(),
 });
 
 export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({

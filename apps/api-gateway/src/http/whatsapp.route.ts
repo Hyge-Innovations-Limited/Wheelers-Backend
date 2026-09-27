@@ -672,6 +672,7 @@ async function handleIncomingMetaMessage(
       const rideId = randomUUID();
       const searchEvent = RideRequestedEvent.parse({
         eventType: 'RIDE_REQUESTED',
+        channel: 'WHATSAPP',
         rideId,
         riderId: user.id,
         pickup: { lat: lastRoute.pickupLat, lng: lastRoute.pickupLng, address: lastRoute.pickupAddress },

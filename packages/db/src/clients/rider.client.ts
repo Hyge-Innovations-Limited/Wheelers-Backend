@@ -250,6 +250,9 @@ export const rideClient = {
     status?:          RideStatus;
     paymentMethod?:   RidePaymentMethod;
     riderOfferNgn?:   number;
+    channel?:         'APP' | 'WHATSAPP' | 'MCP' | 'UNKNOWN';
+    pickupZone?:      string | null;
+    destZone?:        string | null;
   }) =>
     prisma.$transaction(async (tx) => {
       const { stops, ...rideData } = data;

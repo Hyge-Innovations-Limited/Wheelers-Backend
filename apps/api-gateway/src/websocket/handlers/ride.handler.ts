@@ -339,6 +339,7 @@ export async function handleRideMessage(
       referralCashbackAppliedNgn:
         referralCashbackAppliedNgn > 0 ? referralCashbackAppliedNgn : undefined,
       route: plannedRoute.geometry,
+      channel: auth.client === 'mcp' ? 'MCP' : 'APP',
       timestamp,
     });
 

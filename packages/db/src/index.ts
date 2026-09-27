@@ -26,6 +26,8 @@ export { activityClient }       from './clients/activity.client';
 export { memoryClient }         from './clients/memory.client';
 export type { MemoryFactInput, MemoryRole } from './clients/memory.client';
 export { adminMetricsClient }   from './clients/admin-metrics.client';
+export { adminAnalyticsClient, isDay, lagosToday, periodDays, previousPeriod, RIDE_CHANNELS, CHANNEL_LABELS, FEE_KIND_LABELS } from './clients/admin-analytics.client';
+export type { AnalyticsFilters, Bucket, BreakdownBy, Kpis, Snapshot, SummaryResponse, SeriesPoint, BreakdownRow, Page, TableQuery, TripStatusFilter, TripRow, DriverRow, RiderRow, FeeTotals, FeePoint, FeesSummary, FeeKind, FeeLedgerRow, ReconcileCheck, RideChannelName } from './clients/admin-analytics.client';
 export { interstateClient, InterstateError, refundFractionFor } from './clients/interstate.client';
 export type { BookingMode, QuoteResult } from './clients/interstate.client';
 export {

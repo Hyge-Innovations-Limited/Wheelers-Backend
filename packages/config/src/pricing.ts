@@ -185,6 +185,24 @@ export function calculateRideFees(fareNgn: number): RideFeeBreakdown {
   return { fareNgn, platformFeeNgn, stateLevyNgn, serviceFeeNgn, platformTotalNgn, driverPayoutNgn, totalNgn };
 }
 
+/**
+ * The platform's total on a ride, split into the three lines it is made of.
+ * The state levy comes first (it is owed to Lagos), then the flat service fee,
+ * and the commission is what remains. On a normal fare that remainder is exactly
+ * the 4%; on a fare too small to carry the flat fees, where the total is capped
+ * at the fare, the commission shrinks first and the three always add up to it.
+ */
+export function splitPlatformTotal(
+  platformTotalNgn: number,
+  rates: { serviceFeeNgn: number; stateLevyNgn: number } = { serviceFeeNgn: SERVICE_FEE_NGN, stateLevyNgn: LAGOS_STATE_FEE_NGN },
+): { commissionNgn: number; serviceFeeNgn: number; stateLevyNgn: number } {
+  const total = Math.max(0, round2(platformTotalNgn));
+  const stateLevyNgn = Math.min(rates.stateLevyNgn, total);
+  const serviceFeeNgn = Math.min(rates.serviceFeeNgn, round2(total - stateLevyNgn));
+  const commissionNgn = round2(total - stateLevyNgn - serviceFeeNgn);
+  return { commissionNgn, serviceFeeNgn, stateLevyNgn };
+}
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }

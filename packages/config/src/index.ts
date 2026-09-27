@@ -19,6 +19,10 @@ export type { GroupRideEnv }    from './env/group-ride.env';
 export type { WhatsappEnv }     from './env/whatsapp.env';
 export type { McpEnv }          from './env/mcp.env';
 
+// Launch zones (analytics)
+export { LAUNCH_ZONES, OUTSIDE_ZONES_LABEL, zoneFor } from './zones';
+export type { LaunchZone } from './zones';
+
 // Constants
 export { FEES }                        from './constants/fees';
 export { MIN_WITHDRAWAL_NGN } from './constants/withdrawal';
@@ -47,7 +51,7 @@ export {
   resolveMaxOfferNgn,
   validateRiderOffer,
   validateDriverOffer,
-  calculateRideFees,
+  calculateRideFees, splitPlatformTotal,
 } from './pricing';
 export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown } from './pricing';
 export {

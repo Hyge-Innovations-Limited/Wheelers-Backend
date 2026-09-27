@@ -1,7 +1,7 @@
 import { prisma }   from '../prisma';
 import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
-import { calculateRideFees, splitDeposit } from '@wheleers/config';
+import { calculateRideFees, splitDeposit, splitPlatformTotal } from '@wheleers/config';
 import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
 
 // The type of the transactional client Prisma passes into $transaction callbacks
@@ -502,6 +502,8 @@ export const walletClient = {
             amountNgn: platformFeeNgn,
             balanceAfterNgn: platformWallet.balanceNgn,
             referenceId: rideId,
+            // Tells ride fees apart from deposit fees (kind 'deposit_fee') in the same ledger type.
+            metadata: { kind: 'ride_fee', ...splitPlatformTotal(platformFeeNgn, { serviceFeeNgn: fees.serviceFeeNgn, stateLevyNgn: fees.stateLevyNgn }) },
           },
         });
 
@@ -520,10 +522,17 @@ export const walletClient = {
           );
         }
 
-        // 7. Store platform fee on the ride record
+        // 7. Store platform fee on the ride record, and its split for the Fees dashboard.
+        const split = splitPlatformTotal(platformFeeNgn, { serviceFeeNgn: fees.serviceFeeNgn, stateLevyNgn: fees.stateLevyNgn });
         await tx.ride.update({
           where: { id: rideId },
-          data: { platformFeeNgn: platformFeeNgn },
+          data: {
+            platformFeeNgn: platformFeeNgn,
+            commissionNgn: split.commissionNgn,
+            serviceFeeNgn: split.serviceFeeNgn,
+            stateLevyNgn: split.stateLevyNgn,
+            feeSplitEstimated: false,
+          },
         });
 
         return {

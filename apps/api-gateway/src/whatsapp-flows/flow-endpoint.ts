@@ -969,6 +969,7 @@ async function handleFindDrivers(
 
   const event = RideRequestedEvent.parse({
     eventType: 'RIDE_REQUESTED',
+    channel: 'WHATSAPP',
     rideId,
     riderId: userId,
     pickup: { lat: route.pickupLat, lng: route.pickupLng, address: route.pickupAddress },

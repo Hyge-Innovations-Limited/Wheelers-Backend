@@ -70,6 +70,7 @@ export async function publishWhatsappRide(
   const rideId = randomUUID();
   const event = RideRequestedEvent.parse({
     eventType: 'RIDE_REQUESTED',
+    channel: 'WHATSAPP',
     rideId,
     riderId: rider.id,
     pickup: { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress },
