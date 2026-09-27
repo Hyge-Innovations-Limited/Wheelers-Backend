@@ -67,6 +67,16 @@ function rideConditions(q: Sql, f: AnalyticsFilters, alias = 'f'): string[] {
   return c;
 }
 
+/**
+ * True when the view is narrowed to some rides (a zone, channel, ride type,
+ * driver or rider). Deposits and Paystack transfer fees belong to no ride, so
+ * under such a filter they are left out of revenue, income and net instead of
+ * being counted platform-wide: "Claude, today" must not show the day's deposit fees.
+ */
+export function hasRideFilters(f: AnalyticsFilters): boolean {
+  return Boolean(f.zone || f.channel || f.rideType || f.driverId || f.riderId);
+}
+
 const where = (conditions: string[]) => (conditions.length ? `WHERE ${conditions.join(' AND ')}` : '');
 
 async function rows<T>(q: Sql, sql: string): Promise<T[]> {
@@ -124,7 +134,8 @@ export interface Kpis {
   serviceFeeNgn: number;
   stateLevyNgn: number;
   depositFeesNgn: number;
-  /** Commission + service fee + deposit fees. The state levy is owed to Lagos, so it is not revenue. */
+  /** Commission + service fee + deposit fees. The state levy is owed to Lagos, so it is not revenue.
+   *  Under a ride filter, deposit fees are left out: they belong to no ride. */
   platformRevenueNgn: number;
   driverPayoutsNgn: number;
   activeDrivers: number;
@@ -239,7 +250,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     serviceFeeNgn,
     stateLevyNgn: num(ride?.state_levy),
     depositFeesNgn,
-    platformRevenueNgn: num(commissionNgn + serviceFeeNgn + depositFeesNgn),
+    platformRevenueNgn: num(commissionNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn)),
     driverPayoutsNgn: num(ride?.payouts),
     activeDrivers: num(ride?.active_drivers),
     activeRiders: num(ride?.active_riders),
@@ -756,6 +767,8 @@ export interface FeePoint extends Omit<FeeTotals, 'feeRides' | 'deposits' | 'tra
 
 export interface FeesSummary {
   filters: AnalyticsFilters;
+  /** A ride filter is on, so deposit fees and Paystack costs (tied to no ride) are left out of every figure. */
+  rideFiltersApplied: boolean;
   bucket: Bucket;
   totals: FeeTotals;
   previousTotals: FeeTotals;
@@ -768,6 +781,8 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
   const q = new Sql();
   const b = q.p(bucket);
   const kind = `coalesce(t.metadata->>'kind', CASE WHEN t.type = 'PLATFORM_FEE' THEN 'ride_fee' ELSE 'provider_fee' END)`;
+  // Deposits and transfers belong to no ride: under a ride filter there are none to count.
+  const ledgerScope = hasRideFilters(f) ? 'AND false' : '';
   const result = await rows<Record<string, unknown>>(q, `
     WITH days AS (
       SELECT d::date AS day FROM generate_series(${q.p(f.from)}::date, ${q.p(f.to)}::date, interval '1 day') d
@@ -789,7 +804,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
              sum(t."amountNgn") FILTER (WHERE t.type = 'PROVIDER_FEE' AND ${kind} NOT IN ('deposit_provider_fee', 'transfer_fee')) AS other_cost
       FROM "Transaction" t
       JOIN "Wallet" w ON w.id = t."walletId" AND w."userId" = ${q.p(PLATFORM_USER_ID)}
-      WHERE t.type IN ('PLATFORM_FEE', 'PROVIDER_FEE') AND ${between(q, lagosDay('t."createdAt"'), f)}
+      WHERE t.type IN ('PLATFORM_FEE', 'PROVIDER_FEE') AND ${between(q, lagosDay('t."createdAt"'), f)} ${ledgerScope}
       GROUP BY 1
     )
     SELECT to_char(date_trunc(${b}::text, days.day::timestamp), 'YYYY-MM-DD') AS bucket,
@@ -855,6 +870,7 @@ async function fees(f: AnalyticsFilters, bucket: Bucket): Promise<FeesSummary> {
   const [points, prevPoints, snap] = await Promise.all([feePoints(f, bucket), feePoints(prev, 'month'), snapshot()]);
   return {
     filters: f,
+    rideFiltersApplied: hasRideFilters(f),
     bucket,
     totals: totalOf(points),
     previousTotals: totalOf(prevPoints),
@@ -891,6 +907,11 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
   const kindExpr = `coalesce(t.metadata->>'kind', CASE WHEN t.type = 'PLATFORM_FEE' THEN 'ride_fee' ELSE 'provider_fee' END)`;
   const cond = [`t.type IN ('PLATFORM_FEE', 'PROVIDER_FEE')`, between(q, lagosDay('t."createdAt"'), f)];
   if (kind) cond.push(`${kindExpr} = ${q.p(kind)}`);
+  // Under a ride filter only ride fees can match, and only for the rides the filter keeps.
+  if (hasRideFilters(f)) {
+    cond.push(`${kindExpr} = 'ride_fee'`);
+    cond.push(`EXISTS (SELECT 1 FROM ride_facts f WHERE f.id = t."referenceId" AND ${rideConditions(q, f).join(' AND ')})`);
+  }
   if (t.q?.trim()) cond.push(`t."referenceId" ILIKE ${q.p(`%${t.q.trim()}%`)}`);
   const limit = clampLimit(t.limit, maxLimit);
   const offset = Math.max(0, Math.floor(t.offset ?? 0));

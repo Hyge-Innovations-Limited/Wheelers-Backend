@@ -284,6 +284,21 @@ test('RECONCILE · every headline total agrees with the ledger when the money is
   await prisma.transaction.update({ where: { id: fee.id }, data: { amountNgn: fee.amountNgn } });
 });
 
+test('RIDE FILTERS · deposits and Paystack costs belong to no ride, so a channel view shows only its own rides\' fees', async () => {
+  // Claude had one trip in the week: ₦300, too small for the flat fees, so ₦270 service fee and ₦30 levy.
+  const k = (await get(`/admin/insights/summary?${q({ channel: 'MCP' })}`)).body.current;
+  assert.equal(k.platformRevenueNgn, 270, 'no deposit fees in a channel\'s revenue');
+  const fees = (await get(`/admin/fees/summary?${q({ channel: 'MCP', bucket: 'day' })}`)).body;
+  assert.equal(fees.rideFiltersApplied, true);
+  const t = fees.totals;
+  assert.deepEqual([t.depositFeesNgn, t.depositProviderCostNgn, t.transferCostNgn, t.costsNgn], [0, 0, 0, 0]);
+  assert.deepEqual([t.incomeNgn, t.netNgn, t.stateLevyNgn], [270, 270, 30]);
+  const ledgerRows = (await get(`/admin/fees/ledger?${q({ channel: 'MCP' })}`)).body.items;
+  assert.deepEqual(ledgerRows.map((r) => [r.kind, r.amountNgn]), [['ride_fee', 300]]);
+  // With no ride filter, the deposit fees are back.
+  assert.equal((await get(`/admin/fees/summary?${q({ bucket: 'day' })}`)).body.rideFiltersApplied, false);
+});
+
 test('EXCEL · the overview workbook has every sheet, formatted, with the filtered rows; phones only when asked; the fees workbook too', async () => {
   const res = await get(`/admin/insights/export?${q({ scope: 'overview' })}`, { raw: true });
   assert.equal(res.status, 200);
