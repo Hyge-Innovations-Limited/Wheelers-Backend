@@ -884,9 +884,9 @@ export type FeeKind = 'ride_fee' | 'deposit_fee' | 'deposit_provider_fee' | 'tra
 export const FEE_KIND_LABELS: Record<FeeKind, string> = {
   ride_fee: 'Ride fee',
   deposit_fee: 'Deposit fee',
-  deposit_provider_fee: 'Paystack deposit fee',
-  transfer_fee: 'Paystack transfer fee',
-  provider_fee: 'Other provider fee',
+  deposit_provider_fee: 'Platform deposit cost',
+  transfer_fee: 'Platform withdrawal cost',
+  provider_fee: 'Other platform cost',
 };
 
 export interface FeeLedgerRow {
@@ -943,6 +943,137 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
         stateLevyNgn: optNum(r.levy),
       };
     }),
+    total,
+    limit,
+    offset,
+    hasMore: offset + result.length < total,
+  };
+}
+
+/* ── deposits and withdrawals made ────────────────────────────────────── */
+
+export interface DepositRow {
+  id: string;
+  createdAt: string;
+  userId: string;
+  name: string | null;
+  phone: string | null;
+  /** What the rider sent from their bank. */
+  grossNgn: number | null;
+  /** The ₦30 deposit fee. */
+  feeNgn: number | null;
+  /** The provider's charge, where the rider paid it. */
+  providerFeeNgn: number | null;
+  /** What landed in their wallet. */
+  creditedNgn: number;
+  senderName: string | null;
+  senderBank: string | null;
+  reference: string | null;
+}
+
+const DEPOSIT_SORT: Record<string, string> = { createdAt: 't."createdAt"', amount: 't."amountNgn"', name: 'u.name' };
+
+/**
+ * Every deposit into a rider's or driver's wallet in the period. Deposits belong
+ * to no ride, so the zone, channel and ride-type filters do not apply here.
+ */
+async function deposits(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promise<Page<DepositRow>> {
+  const q = new Sql();
+  const cond = [`t.type = 'DEPOSIT'`, `t.direction = 'CREDIT'`, between(q, lagosDay('t."createdAt"'), f)];
+  if (t.q?.trim()) {
+    const like = q.p(`%${t.q.trim()}%`);
+    cond.push(`(u.name ILIKE ${like} OR u.phone ILIKE ${like} OR t."referenceId" ILIKE ${like} OR t.metadata->>'senderAccountName' ILIKE ${like})`);
+  }
+  const limit = clampLimit(t.limit, maxLimit);
+  const offset = Math.max(0, Math.floor(t.offset ?? 0));
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT t.id, t."createdAt" AS created_at, u.id AS user_id, u.name, u.phone, t."amountNgn" AS credited,
+           t.metadata->>'grossAmountNgn' AS gross, t.metadata->>'wheelersFeeNgn' AS fee, t.metadata->>'providerFeeNgn' AS provider_fee,
+           t.metadata->>'senderAccountName' AS sender_name, t.metadata->>'bankName' AS sender_bank, t."referenceId" AS reference,
+           count(*) OVER () AS total
+    FROM "Transaction" t
+    JOIN "Wallet" w ON w.id = t."walletId" AND w."userId" <> ${q.p(PLATFORM_USER_ID)}
+    JOIN "User" u ON u.id = w."userId"
+    ${where(cond)}
+    ORDER BY ${orderBy(DEPOSIT_SORT, t, 't."createdAt"')}, t.id
+    LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
+  const total = num(result[0]?.total);
+  return {
+    items: result.map((r) => ({
+      id: String(r.id),
+      createdAt: iso(r.created_at)!,
+      userId: String(r.user_id),
+      name: (r.name as string | null) ?? null,
+      phone: (r.phone as string | null) ?? null,
+      grossNgn: optNum(r.gross),
+      feeNgn: optNum(r.fee),
+      providerFeeNgn: optNum(r.provider_fee),
+      creditedNgn: num(r.credited),
+      senderName: (r.sender_name as string | null) ?? null,
+      senderBank: (r.sender_bank as string | null) ?? null,
+      reference: (r.reference as string | null) ?? null,
+    })),
+    total,
+    limit,
+    offset,
+    hasMore: offset + result.length < total,
+  };
+}
+
+export interface WithdrawalRow {
+  id: string;
+  createdAt: string;
+  settledAt: string | null;
+  userId: string;
+  name: string | null;
+  phone: string | null;
+  status: string;
+  amountNgn: number;
+  /** What the platform paid to send it. */
+  transferFeeNgn: number | null;
+  accountName: string;
+  /** The last four digits only. */
+  accountEnding: string;
+  failureReason: string | null;
+}
+
+const WITHDRAWAL_SORT: Record<string, string> = { createdAt: 'w."createdAt"', amount: 'w."requestedAmountNgn"', status: 'w.status', name: 'u.name' };
+
+/** Every withdrawal requested in the period, whatever became of it. Not tied to a ride either. */
+async function withdrawals(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promise<Page<WithdrawalRow>> {
+  const q = new Sql();
+  const cond = [between(q, lagosDay('w."createdAt"'), f)];
+  if (t.q?.trim()) {
+    const like = q.p(`%${t.q.trim()}%`);
+    cond.push(`(u.name ILIKE ${like} OR u.phone ILIKE ${like} OR w."bankAccountName" ILIKE ${like} OR w.id ILIKE ${like})`);
+  }
+  const limit = clampLimit(t.limit, maxLimit);
+  const offset = Math.max(0, Math.floor(t.offset ?? 0));
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT w.id, w."createdAt" AS created_at, w."settledAt" AS settled_at, u.id AS user_id, u.name, u.phone, w.status::text AS status,
+           w."requestedAmountNgn" AS amount, w."providerFeeNgn" AS fee, w."bankAccountName" AS account_name,
+           right(w."bankAccountNumber", 4) AS account_ending, w."failureReason" AS failure, count(*) OVER () AS total
+    FROM "WithdrawalRequest" w
+    JOIN "User" u ON u.id = w."userId"
+    ${where(cond)}
+    ORDER BY ${orderBy(WITHDRAWAL_SORT, t, 'w."createdAt"')}, w.id
+    LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
+  const total = num(result[0]?.total);
+  return {
+    items: result.map((r) => ({
+      id: String(r.id),
+      createdAt: iso(r.created_at)!,
+      settledAt: iso(r.settled_at),
+      userId: String(r.user_id),
+      name: (r.name as string | null) ?? null,
+      phone: (r.phone as string | null) ?? null,
+      status: String(r.status),
+      amountNgn: num(r.amount),
+      transferFeeNgn: optNum(r.fee),
+      accountName: String(r.account_name ?? ''),
+      accountEnding: String(r.account_ending ?? ''),
+      failureReason: (r.failure as string | null) ?? null,
+    })),
     total,
     limit,
     offset,
@@ -1045,6 +1176,8 @@ export const adminAnalyticsClient = {
   fees,
   feePoints,
   feeLedger,
+  deposits,
+  withdrawals,
   reconcile,
   options,
 };

@@ -183,7 +183,7 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
   })), cut(items.length, total));
 }
 
-async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket): Promise<void> {
+async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<void> {
   const points = await adminAnalyticsClient.feePoints(f, bucket);
   addSheet(book, 'Fees', [
     { header: `${bucket[0]!.toUpperCase()}${bucket.slice(1)} starting`, key: 'bucket', width: 14 },
@@ -192,9 +192,9 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Deposit fees', key: 'depositFeesNgn', format: NAIRA },
     { header: 'Income', key: 'incomeNgn', format: NAIRA },
     { header: 'State levy (owed)', key: 'stateLevyNgn', format: NAIRA, width: 18 },
-    { header: 'Paystack deposit fees', key: 'depositProviderCostNgn', format: NAIRA, width: 20 },
-    { header: 'Paystack transfer fees', key: 'transferCostNgn', format: NAIRA, width: 21 },
-    { header: 'Other provider fees', key: 'otherProviderCostNgn', format: NAIRA, width: 19 },
+    { header: 'Platform deposit costs', key: 'depositProviderCostNgn', format: NAIRA, width: 20 },
+    { header: 'Platform withdrawal costs', key: 'transferCostNgn', format: NAIRA, width: 21 },
+    { header: 'Other platform costs', key: 'otherProviderCostNgn', format: NAIRA, width: 19 },
     { header: 'Costs', key: 'costsNgn', format: NAIRA },
     { header: 'Net', key: 'netNgn', format: NAIRA },
     { header: 'Rides with fees', key: 'feeRides', format: WHOLE },
@@ -215,6 +215,34 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Service fee', key: 'serviceFeeNgn', format: NAIRA },
     { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
   ], items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt) })), cut(items.length, total));
+
+  const dep = await all((offset) => adminAnalyticsClient.deposits(f, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  addSheet(book, 'Deposits', [
+    { header: 'Time (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Wallet owner', key: 'name', width: 22 },
+    ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+    { header: 'Sent', key: 'grossNgn', format: NAIRA },
+    { header: 'Deposit fee', key: 'feeNgn', format: NAIRA },
+    { header: 'Provider charge', key: 'providerFeeNgn', format: NAIRA, width: 16 },
+    { header: 'Credited to wallet', key: 'creditedNgn', format: NAIRA, width: 18 },
+    { header: 'Sender', key: 'senderName', width: 22 },
+    { header: 'Sender bank', key: 'senderBank', width: 16 },
+    { header: 'Reference', key: 'reference', width: 34 },
+  ], dep.items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt) })), cut(dep.items.length, dep.total));
+
+  const wd = await all((offset) => adminAnalyticsClient.withdrawals(f, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  addSheet(book, 'Withdrawals', [
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Paid (Lagos)', key: 'settledAt', width: 18 },
+    { header: 'Wallet owner', key: 'name', width: 22 },
+    ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+    { header: 'Status', key: 'status', width: 16 },
+    { header: 'Amount', key: 'amountNgn', format: NAIRA },
+    { header: 'Platform cost', key: 'transferFeeNgn', format: NAIRA, width: 15 },
+    { header: 'To account', key: 'accountName', width: 24 },
+    { header: 'Account ending', key: 'accountEnding', width: 15 },
+    { header: 'Why it failed', key: 'failureReason', width: 30 },
+  ], wd.items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
 }
 
 export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<Buffer> {
@@ -235,9 +263,9 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       line('Deposit fees', 'depositFeesNgn'),
       line('Income', 'incomeNgn'),
       line('State levy (owed to Lagos)', 'stateLevyNgn'),
-      line('Paystack deposit fees', 'depositProviderCostNgn'),
-      line('Paystack transfer fees', 'transferCostNgn'),
-      line('Other provider fees', 'otherProviderCostNgn'),
+      line('Platform deposit costs', 'depositProviderCostNgn'),
+      line('Platform withdrawal costs', 'transferCostNgn'),
+      line('Other platform costs', 'otherProviderCostNgn'),
       line('Costs', 'costsNgn'),
       line('Net', 'netNgn'),
       line('Rides with fees', 'feeRides', 'count'),
@@ -245,7 +273,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       line('Withdrawal transfers', 'transfers', 'count'),
       line('Commission from estimated splits', 'estimatedCommissionNgn'),
     ]);
-    await feesSheets(book, f, bucket);
+    await feesSheets(book, f, bucket, contacts);
     await tripsSheet(book, f, 'completed', contacts, 'Trips with fees');
   } else {
     const [summary, series, byChannel, byZone, byType, byCancel] = await Promise.all([
@@ -307,7 +335,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Wallet balance', key: 'walletBalanceNgn', format: NAIRA },
     ], riders.items.map((r) => ({ ...r, joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
 
-    await feesSheets(book, f, bucket);
+    await feesSheets(book, f, bucket, contacts);
 
     const breakdownRows = [
       ...byChannel.map((r) => ({ ...r, by: 'Channel' })),

@@ -269,7 +269,16 @@ test('FEES · income, the levy as a pass-through, Paystack costs, net; the ledge
   const ledgerRows = (await get(`/admin/fees/ledger?${q({})}`)).body;
   assert.equal(ledgerRows.total, 3 + 2 + 2, 'three ride fees, two deposit fees, two Paystack costs');
   const transfer = (await get(`/admin/fees/ledger?${q({ kind: 'transfer_fee' })}`)).body.items;
-  assert.deepEqual(transfer.map((r) => [r.label, r.amountNgn, r.direction]), [['Paystack transfer fee', 10, 'DEBIT']]);
+  assert.deepEqual(transfer.map((r) => [r.label, r.amountNgn, r.direction]), [['Platform withdrawal cost', 10, 'DEBIT']]);
+});
+
+test('DEPOSITS AND WITHDRAWALS · the money people moved, with the fee and the platform\'s cost on each', async () => {
+  const dep = (await get(`/admin/fees/deposits?${q({ sort: 'amount', dir: 'desc' })}`)).body;
+  const mine = dep.items.filter((d) => [rider.id, rider2.id].includes(d.userId));
+  assert.deepEqual(mine.map((d) => [d.name, d.grossNgn, d.creditedNgn]), [['Insights Rider', 5000, 4970], ['Second Rider', 2000, 1970]]);
+  assert.equal((await get(`/admin/fees/deposits?${q({ q: 'Second Rider' })}`)).body.total, 1);
+  const wd = (await get(`/admin/fees/withdrawals?${q({})}`)).body.items.filter((w) => w.userId === driverUser.id);
+  assert.deepEqual(wd.map((w) => [w.status, w.amountNgn, w.transferFeeNgn, w.accountEnding]), [['SETTLED', 3000, 10, '0000']]);
 });
 
 test('RECONCILE · every headline total agrees with the ledger when the money is right, and flags it when it is not', async () => {
@@ -306,7 +315,7 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   assert.match(res.headers['content-disposition'], /wheelers-overview-2024-03-04-to-2024-03-10\.xlsx/);
   const book = new ExcelJS.Workbook();
   await book.xlsx.load(res.body);
-  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Trips', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Breakdown']);
+  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Trips', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
   const trips = book.getWorksheet('Trips');
   assert.equal(trips.rowCount - 1, 6, 'one row per ride in the week');
   assert.equal(trips.getRow(1).font.bold, true);
@@ -324,6 +333,6 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   const fees = await get(`/admin/insights/export?${q({ scope: 'fees' })}`, { raw: true });
   const book3 = new ExcelJS.Workbook();
   await book3.xlsx.load(fees.body);
-  assert.deepEqual(book3.worksheets.map((s) => s.name), ['Summary', 'Fees', 'Fee ledger', 'Trips with fees']);
+  assert.deepEqual(book3.worksheets.map((s) => s.name), ['Summary', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Trips with fees']);
   assert.equal(book3.getWorksheet('Trips with fees').rowCount - 1, 3);
 });

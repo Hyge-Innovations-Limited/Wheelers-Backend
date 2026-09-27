@@ -28,6 +28,8 @@ import { sendJson } from './utils';
  *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1   the Excel workbook
  *   GET /admin/fees/summary?bucket=
  *   GET /admin/fees/ledger?kind=&q=&sort=&dir=&limit=&offset=
+ *   GET /admin/fees/deposits?q=&sort=&dir=&limit=&offset=      every deposit made (not tied to a ride)
+ *   GET /admin/fees/withdrawals?q=&sort=&dir=&limit=&offset=   every withdrawal requested
  */
 
 interface Deps {
@@ -162,6 +164,12 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         sendJson(res, 200, { ...(await adminAnalyticsClient.fees(f, bucket)) });
         return true;
       }
+      case '/admin/fees/deposits':
+        sendJson(res, 200, { ...(await adminAnalyticsClient.deposits(f, tableQuery(url))) });
+        return true;
+      case '/admin/fees/withdrawals':
+        sendJson(res, 200, { ...(await adminAnalyticsClient.withdrawals(f, tableQuery(url))) });
+        return true;
       case '/admin/fees/ledger': {
         const raw = url.searchParams.get('kind');
         const kind = raw ? pick(url, 'kind', FEE_KINDS, 'ride_fee') : null;
