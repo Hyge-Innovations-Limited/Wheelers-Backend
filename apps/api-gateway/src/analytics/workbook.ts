@@ -109,6 +109,10 @@ function kpiRows(current: Kpis, previous: Kpis): Array<Record<string, unknown>> 
     line('Driver payouts', 'driverPayoutsNgn', 'naira'),
     line('Active drivers', 'activeDrivers'),
     line('Active riders', 'activeRiders'),
+    line('Drivers on shift', 'driversOnShift'),
+    line('Driver hours online', 'driverOnlineHours', 'number'),
+    line('Average hours online per driver', 'avgOnlineHoursPerDriver', 'number'),
+    line('Trips per driver hour online', 'tripsPerOnlineHour', 'number'),
     line('Rides that got bids', 'ridesWithBids'),
     line('Bid acceptance rate', 'bidAcceptanceRate', 'percent'),
     line('Average bids per ride', 'avgBidsPerRide', 'number'),
@@ -276,9 +280,10 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
     await feesSheets(book, f, bucket, contacts);
     await tripsSheet(book, f, 'completed', contacts, 'Trips with fees');
   } else {
-    const [summary, series, byChannel, byZone, byType, byCancel] = await Promise.all([
+    const [summary, series, byHour, byChannel, byZone, byType, byCancel] = await Promise.all([
       adminAnalyticsClient.summary(f),
       adminAnalyticsClient.timeseries(f, bucket),
+      adminAnalyticsClient.hours(f),
       adminAnalyticsClient.breakdown(f, 'channel'),
       adminAnalyticsClient.breakdown(f, 'zone'),
       adminAnalyticsClient.breakdown(f, 'rideType'),
@@ -300,6 +305,30 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'New users', key: 'newUsers', format: WHOLE },
     ], series);
 
+    const clock = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+    const supplyNote = !byHour.supply.shown
+      ? 'Drivers on shift are not shown under a zone, channel, ride type or rider filter: a shift belongs to no ride.'
+      : byHour.supply.recordedFrom
+        ? `Drivers on shift are recorded from ${lagosTime(byHour.supply.recordedFrom)} Lagos time. Hours before that have requests but no drivers to show.`
+        : 'No driver shift has been recorded yet.';
+    const hourColumns: Column[] = [
+      { header: 'Requests', key: 'requests', format: WHOLE },
+      { header: 'Completed', key: 'completed', format: WHOLE },
+      { header: 'No driver found', key: 'noDriver', format: WHOLE, width: 16 },
+      { header: 'Match rate', key: 'matchRate', format: PERCENT },
+      { header: 'GMV', key: 'gmvNgn', format: NAIRA },
+      { header: 'Drivers on shift (average)', key: 'avgDriversOnline', format: '#,##0.0', width: 26 },
+      { header: 'Driver hours online', key: 'driverHours', format: '#,##0.0', width: 20 },
+      { header: 'Requests per driver', key: 'requestsPerDriver', format: '#,##0.00', width: 20 },
+    ];
+    addSheet(book, 'Hours', [{ header: 'Hour (Lagos)', key: 'label', width: 14 }, ...hourColumns],
+      byHour.hours.map((h) => ({ ...h, label: `${clock(h.hour)} to ${clock(h.hour).slice(0, 2)}:59` })), supplyNote);
+    addSheet(book, 'Weekdays', [{ header: 'Day', key: 'label', width: 14 }, ...hourColumns], byHour.weekdays, supplyNote);
+    addSheet(book, 'Hours by weekday', [
+      { header: 'Requests', key: 'day', width: 14 },
+      ...Array.from({ length: 24 }, (_, hour) => ({ header: clock(hour), key: `h${hour}`, width: 7, format: WHOLE })),
+    ], byHour.grid.map((row, i) => ({ day: byHour.weekdays[i]?.label ?? '', ...Object.fromEntries(row.map((n, hour) => [`h${hour}`, n])) })));
+
     await tripsSheet(book, f, 'all', contacts, 'Trips');
 
     const drivers = await all((offset) => adminAnalyticsClient.drivers(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
@@ -317,7 +346,11 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Bids won', key: 'bidsWon', format: WHOLE },
       { header: 'Win rate', key: 'bidWinRate', format: PERCENT },
       { header: 'Last trip (Lagos)', key: 'lastTripAt', width: 18 },
-    ], drivers.items.map((d) => ({ ...d, lastTripAt: lagosTime(d.lastTripAt) })), cut(drivers.items.length, drivers.total));
+      { header: 'Hours online', key: 'onlineHours', format: '#,##0.0', width: 14 },
+      { header: 'Shifts', key: 'shifts', format: WHOLE },
+      { header: 'Trips per hour online', key: 'tripsPerOnlineHour', format: '#,##0.00', width: 21 },
+      { header: 'Last online (Lagos)', key: 'lastOnlineAt', width: 19 },
+    ], drivers.items.map((d) => ({ ...d, lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) })), cut(drivers.items.length, drivers.total));
 
     const riders = await all((offset) => adminAnalyticsClient.riders(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
     addSheet(book, 'Riders', [

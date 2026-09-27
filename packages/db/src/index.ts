@@ -8,6 +8,8 @@ export { driverPresence, PRESENCE_FRESH_MS, DB_FLUSH_SECONDS } from './clients/d
 export type { RedisSend, PresenceRecord, NearbyDriver } from './clients/driver-presence';
 export { rideClient, SEARCH_TIMED_OUT_REASON } from './clients/rider.client';
 export { driverLocationClient, shouldRecordPoint } from './clients/driver-location.client';
+export { driverShiftClient, SHIFT_STALE_AFTER_MS } from './clients/driver-shift.client';
+export type { ShiftEndReason } from './clients/driver-shift.client';
 export type { LocationSource, MapDriverRow, ActiveRide } from './clients/driver-location.client';
 export { driverBidClient }      from './clients/driver-bid.client';
 export { scheduledRideClient }  from './clients/scheduled-ride.client';
@@ -28,8 +30,8 @@ export { activityClient }       from './clients/activity.client';
 export { memoryClient }         from './clients/memory.client';
 export type { MemoryFactInput, MemoryRole } from './clients/memory.client';
 export { adminMetricsClient }   from './clients/admin-metrics.client';
-export { adminAnalyticsClient, hasRideFilters, isDay, lagosToday, periodDays, previousPeriod, RIDE_CHANNELS, CHANNEL_LABELS, FEE_KIND_LABELS } from './clients/admin-analytics.client';
-export type { AnalyticsFilters, Bucket, BreakdownBy, Kpis, Snapshot, SummaryResponse, SeriesPoint, BreakdownRow, Page, TableQuery, TripStatusFilter, TripRow, DriverRow, RiderRow, FeeTotals, FeePoint, FeesSummary, FeeKind, FeeLedgerRow, DepositRow, WithdrawalRow, ReconcileCheck, RideChannelName } from './clients/admin-analytics.client';
+export { adminAnalyticsClient, hasRideFilters, shiftsComparable, isDay, lagosToday, periodDays, previousPeriod, RIDE_CHANNELS, CHANNEL_LABELS, FEE_KIND_LABELS } from './clients/admin-analytics.client';
+export type { AnalyticsFilters, Bucket, BreakdownBy, Kpis, Snapshot, SummaryResponse, SeriesPoint, BreakdownRow, Page, TableQuery, TripStatusFilter, TripRow, DriverRow, RiderRow, FeeTotals, FeePoint, FeesSummary, FeeKind, FeeLedgerRow, DepositRow, WithdrawalRow, ReconcileCheck, RideChannelName, HourPoint, WeekdayPoint, HoursResponse } from './clients/admin-analytics.client';
 export { interstateClient, InterstateError, refundFractionFor } from './clients/interstate.client';
 export type { BookingMode, QuoteResult } from './clients/interstate.client';
 export {

@@ -26,7 +26,7 @@ const ISLAND = { lat: 6.4520, lng: 3.4380 };      // Ikoyi
 const IKORODU = { lat: 6.5443, lng: 3.4896 };     // outside every zone
 
 const seeded = { users: [], rides: [], wallets: [], transactions: [], withdrawals: [], reservations: [] };
-let rider, rider2, driverUser, driver, platformWalletId;
+let rider, rider2, driverUser, driver, otherDriver, idleDriver, platformWalletId;
 
 async function user(name, role) {
   const u = await prisma.user.create({ data: { privyDid: `test:insights:${randomUUID()}`, name, role, phone: `+23480${Math.floor(Math.random() * 1e8)}` } });
@@ -129,7 +129,23 @@ test.before(async () => {
 
   // Bids on ride A: two drivers bid, one won.
   const otherDriverUser = await user('Other Driver', 'DRIVER');
-  const otherDriver = await prisma.driver.create({ data: { userId: otherDriverUser.id } });
+  otherDriver = await prisma.driver.create({ data: { userId: otherDriverUser.id } });
+
+  // Shifts, in Lagos time. The main driver: 9.5 hours inside the week.
+  const shift = (driverId, startedAt, endedAt, endReason = 'manual') =>
+    prisma.driverShift.create({ data: { driverId, startedAt, endedAt, endReason: endedAt ? endReason : null } });
+  await shift(driver.id, lagos('2024-03-03', 22), lagos('2024-03-04', 1));        // began before the week: only 00:00 to 01:00 counts
+  await shift(driver.id, lagos('2024-03-04', 7), lagos('2024-03-04', 11));        // 4 h
+  await shift(driver.id, lagos('2024-03-05', 17, 30), lagos('2024-03-05', 20));   // 2.5 h
+  await shift(driver.id, lagos('2024-03-06', 23), lagos('2024-03-07', 1));        // 2 h, across midnight
+  // The other driver's shift was never closed (a dead phone). They were last heard from
+  // at 11:57, so it runs to 12:00 and no further: 2 h, not until today.
+  await prisma.driver.update({ where: { id: otherDriver.id }, data: { status: 'ONLINE', lastSeenAt: lagos('2024-03-09', 11, 57) } });
+  await shift(otherDriver.id, lagos('2024-03-09', 10), null);
+  // A driver who was on for an hour and got nothing: no trip, no bid.
+  const idleUser = await user('Idle Driver', 'DRIVER');
+  idleDriver = await prisma.driver.create({ data: { userId: idleUser.id, kycStatus: 'APPROVED' } });
+  await shift(idleDriver.id, lagos('2024-03-04', 8), lagos('2024-03-04', 9));     // 1 h
   await prisma.driverBid.create({ data: { rideId: a.id, driverId: driver.id, driverUserId: driverUser.id, riderId: rider.id, amountNgn: 2500, etaSeconds: 300, distanceKm: 1, status: 'ACCEPTED', createdAt: lagos('2024-03-04', 8, 1) } });
   await prisma.driverBid.create({ data: { rideId: a.id, driverId: otherDriver.id, driverUserId: otherDriverUser.id, riderId: rider.id, amountNgn: 2700, etaSeconds: 400, distanceKm: 2, status: 'LOST', createdAt: lagos('2024-03-04', 8, 3) } });
 
@@ -160,6 +176,7 @@ test.after(async () => {
   await prisma.withdrawalRequest.deleteMany({ where: { id: { in: seeded.withdrawals } } }).catch(() => undefined);
   await prisma.walletReservation.deleteMany({ where: { id: { in: seeded.reservations } } }).catch(() => undefined);
   await prisma.driverBid.deleteMany({ where: { rideId: { in: seeded.rides } } });
+  await prisma.driverShift.deleteMany({ where: { driver: { userId: { in: seeded.users } } } });
   await prisma.rideStop.deleteMany({ where: { rideId: { in: seeded.rides } } }).catch(() => undefined);
   await prisma.ride.deleteMany({ where: { id: { in: seeded.rides } } });
   await prisma.driver.deleteMany({ where: { userId: { in: seeded.users } } });
@@ -251,6 +268,8 @@ test('TABLES · trips sort, search and page; drivers and riders roll up the week
   const mine = drivers.find((d) => d.driverId === driver.id);
   assert.deepEqual([mine.trips, mine.gmvNgn, mine.bids, mine.bidsWon, mine.bidWinRate], [3, 7800, 1, 1, 1]);
   assert.ok(drivers.some((d) => d.name === 'Other Driver' && d.trips === 0 && d.bids === 1), 'a driver who only bid still shows');
+  assert.deepEqual([mine.onlineHours, mine.shifts, mine.tripsPerOnlineHour], [9.5, 4, 0.32], '3 trips in 9.5 hours on shift');
+  assert.equal(mine.lastOnlineAt, lagos('2024-03-07', 1).toISOString());
 
   const riders = (await get(`/admin/insights/riders?${q({ sort: 'spend' })}`)).body.items;
   const first = riders.find((r) => r.riderId === rider.id);
@@ -315,7 +334,7 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   assert.match(res.headers['content-disposition'], /wheelers-overview-2024-03-04-to-2024-03-10\.xlsx/);
   const book = new ExcelJS.Workbook();
   await book.xlsx.load(res.body);
-  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Trips', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
+  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Hours', 'Weekdays', 'Hours by weekday', 'Trips', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
   const trips = book.getWorksheet('Trips');
   assert.equal(trips.rowCount - 1, 6, 'one row per ride in the week');
   assert.equal(trips.getRow(1).font.bold, true);
@@ -324,6 +343,14 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   const summary = book.getWorksheet('Summary');
   const gmvRow = summary.getSheetValues().find((row) => row && row[1] === 'GMV (fares of completed trips)');
   assert.equal(gmvRow[2], 7800);
+  const hoursRow = summary.getSheetValues().find((row) => row && row[1] === 'Driver hours online');
+  assert.equal(hoursRow[2], 12.5);
+  const hoursSheet = book.getWorksheet('Hours');
+  assert.equal(hoursSheet.getRow(1).values.filter(Boolean)[0], 'Hour (Lagos)');
+  const eight = hoursSheet.getSheetValues().find((row) => row && row[1] === '08:00 to 08:59');
+  assert.deepEqual([eight[2], eight[3], eight[8]], [1, 1, 2], 'one request at 8, completed, and two driver hours');
+  assert.ok(book.getWorksheet('Drivers').getRow(1).values.includes('Hours online'));
+  assert.equal(book.getWorksheet('Hours by weekday').rowCount - 1, 7);
 
   const withPhones = await get(`/admin/insights/export?${q({ scope: 'overview', contacts: '1' })}`, { raw: true });
   const book2 = new ExcelJS.Workbook();
@@ -335,4 +362,69 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   await book3.xlsx.load(fees.body);
   assert.deepEqual(book3.worksheets.map((s) => s.name), ['Summary', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Trips with fees']);
   assert.equal(book3.getWorksheet('Trips with fees').rowCount - 1, 3);
+});
+
+test('HOURS ONLINE · shifts clipped to the week, an open shift ending when its driver was last heard from', async () => {
+  const k = (await get(`/admin/insights/summary?${q({})}`)).body;
+  // 1 + 4 + 2.5 + 2 for the main driver, 2 for the open shift, 1 for the idle driver.
+  assert.deepEqual([k.current.driverOnlineHours, k.current.driversOnShift, k.current.avgOnlineHoursPerDriver], [12.5, 3, 4.17]);
+  assert.equal(k.current.tripsPerOnlineHour, 0.24, '3 trips in 12.5 hours');
+  assert.equal(k.previousKpis.driverOnlineHours, 2, 'the week before holds the two hours before midnight of the first shift');
+  assert.equal(k.snapshot.shiftsRecordedFrom, lagos('2024-03-03', 22).toISOString());
+
+  const one = (await get(`/admin/insights/summary?${q({ driverId: driver.id })}`)).body.current;
+  assert.deepEqual([one.driverOnlineHours, one.driversOnShift], [9.5, 1], 'a driver filter narrows the hours');
+
+  // A shift belongs to no ride: a channel cannot narrow it, so it is not set beside that channel's trips.
+  const whatsapp = (await get(`/admin/insights/summary?${q({ channel: 'WHATSAPP' })}`)).body.current;
+  assert.equal(whatsapp.driverOnlineHours, 12.5);
+  assert.equal(whatsapp.tripsPerOnlineHour, null);
+
+  const drivers = (await get(`/admin/insights/drivers?${q({ sort: 'onlineHours', dir: 'desc' })}`)).body.items;
+  assert.deepEqual(drivers.slice(0, 3).map((d) => [d.name, d.onlineHours]), [['Insights Driver', 9.5], ['Other Driver', 2], ['Idle Driver', 1]]);
+  const idle = drivers.find((d) => d.driverId === idleDriver.id);
+  assert.deepEqual([idle.trips, idle.bids, idle.tripsPerOnlineHour], [0, 0, 0], 'on shift and got nothing: the driver to look at');
+  const inZone = (await get(`/admin/insights/drivers?${q({ zone: 'Yaba' })}`)).body.items;
+  assert.ok(!inZone.some((d) => d.driverId === idleDriver.id), 'under a zone filter only drivers with rides or bids there are listed');
+});
+
+test('BUSIEST HOURS · requests by Lagos hour and weekday, beside the drivers who were on', async () => {
+  const { status, body } = await get(`/admin/insights/hours?${q({})}`);
+  assert.equal(status, 200);
+  assert.equal(body.hours.length, 24);
+  assert.equal(body.weekdays.length, 7);
+  const at = (hour) => body.hours[hour];
+  assert.equal(body.hours.reduce((n, h) => n + h.requests, 0), 6, 'every request once; the superseded search never');
+  assert.deepEqual([at(8).requests, at(8).completed, at(8).matchRate, at(8).gmvNgn], [1, 1, 1, 2500]);
+  assert.deepEqual([at(10).requests, at(10).noDriver], [1, 1]);
+  assert.deepEqual([at(23).requests, at(23).completed], [1, 1], '23:50 Lagos is hour 23, though it is 22:50 UTC');
+  assert.equal(at(3).requests, 0);
+
+  // Driver hours inside each hour of the day, over the week.
+  assert.equal(at(8).driverHours, 2, 'the main driver and the idle one, Monday 8 to 9');
+  assert.equal(at(0).driverHours, 2, 'Monday and Thursday, midnight to 1');
+  assert.equal(at(17).driverHours, 0.5, 'a shift that began at 17:30');
+  assert.equal(at(11).driverHours, 1, 'the open shift, which ends at 12:00');
+  assert.equal(at(12).driverHours, 0);
+  assert.equal(Math.round(body.hours.reduce((n, h) => n + h.driverHours, 0) * 100) / 100, 12.5, 'the hours add up to the total');
+  // Seven days in the week, so seven "8 o'clock"s: 2 driver hours over 7.
+  assert.equal(at(8).avgDriversOnline, 0.29);
+  assert.equal(at(8).requestsPerDriver, 0.5, 'one request for two drivers');
+  assert.equal(at(20).requestsPerDriver, null, 'a request at 20:00 with nobody on shift has no ratio');
+
+  const monday = body.weekdays[0];
+  assert.deepEqual([monday.label, monday.requests, monday.driverHours, monday.avgDriversOnline], ['Monday', 1, 6, 0.25]);
+  assert.equal(body.grid[0][8], 1, 'Monday, 8');
+  assert.equal(body.grid[5][7], 1, 'Saturday, 7');
+  assert.equal(body.grid[5][8], 0, 'the superseded Saturday search is not there');
+  assert.equal(body.peakWeekday, 1);
+  assert.deepEqual(body.supply, { shown: true, recordedFrom: lagos('2024-03-03', 22).toISOString() });
+
+  const app = (await get(`/admin/insights/hours?${q({ channel: 'APP' })}`)).body;
+  assert.equal(app.hours.reduce((n, h) => n + h.requests, 0), 2);
+  assert.equal(app.supply.shown, false);
+  assert.ok(app.hours.every((h) => h.avgDriversOnline === null && h.requestsPerDriver === null));
+
+  const mine = (await get(`/admin/insights/hours?${q({ driverId: driver.id })}`)).body;
+  assert.equal(mine.hours[8].driverHours, 1, 'a driver filter narrows the shifts too');
 });

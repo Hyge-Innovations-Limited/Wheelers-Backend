@@ -1,6 +1,7 @@
 import { prisma }   from '../prisma';
 import { driverLocationClient } from './driver-location.client';
 import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
+import { driverShiftClient, type ShiftEndReason } from './driver-shift.client';
 import type { DriverStatus, KycStatus } from '@prisma/client';
 
 interface NearbyRow {
@@ -58,6 +59,23 @@ const findNearbyInPostgres = (lat: number, lng: number, radiusKm: number, limit:
     ORDER BY "distanceKm" ASC
     LIMIT ${limit}
   `;
+
+/**
+ * The driver as they were just before a change of status: what they were, and
+ * when they were last heard from (Redis or the row, whichever is later). The
+ * shift record needs it to tell "still on the same shift" from "back after
+ * being gone".
+ */
+async function stateBefore(driverId: string): Promise<{ status: string | null; seenAt: Date | null }> {
+  const [row, presence] = await Promise.all([
+    prisma.driver.findUnique({ where: { id: driverId }, select: { status: true, lastSeenAt: true } }).catch(() => null),
+    driverPresence.get(driverId),
+  ]);
+  const fromRow = row?.lastSeenAt?.getTime() ?? 0;
+  const fromRedis = presence?.seenAt ?? 0;
+  const latest = Math.max(fromRow, fromRedis);
+  return { status: row?.status ?? null, seenAt: latest > 0 ? new Date(latest) : null };
+}
 
 export const driverClient = {
 
@@ -204,29 +222,44 @@ export const driverClient = {
       update: {},
     }),
 
-  updateStatus: (driverId: string, status: DriverStatus) =>
-    prisma.driver.update({
+  // A change of status is also where a shift begins or ends: ONLINE and
+  // ON_RIDE are on shift, OFFLINE is off.
+  updateStatus: async (driverId: string, status: DriverStatus) => {
+    const before = await stateBefore(driverId);
+    const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { status, lastSeenAt: new Date() },
-    }),
+    });
+    if (status === 'ONLINE' || status === 'ON_RIDE') await driverShiftClient.open(driverId, before);
+    else if (status === 'OFFLINE') await driverShiftClient.close(driverId, 'manual');
+    return driver;
+  },
 
   // Going on shift is a change of status, so the row is always written; the
   // position also goes to Redis so matching can see the driver at once.
   markOnline: async (driverId: string, lat: number, lng: number) => {
+    const before = await stateBefore(driverId);
     const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { status: 'ONLINE', lat, lng, lastSeenAt: new Date() },
     });
     await driverPresence.noteLocation(driverId, lat, lng);
+    // The app says "online" again on every reconnect; a driver already on shift keeps their shift.
+    await driverShiftClient.open(driverId, before);
     return driver;
   },
 
-  markOffline: async (driverId: string) => {
+  // `reason` is why the shift ended. A driver taken offline for silence was
+  // last really there when they were last heard from, not now: the 45 seconds
+  // of grace and more are not time on shift.
+  markOffline: async (driverId: string, reason: ShiftEndReason = 'manual') => {
+    const before = await stateBefore(driverId);
     const driver = await prisma.driver.update({
       where: { id: driverId },
       data:  { status: 'OFFLINE', lastSeenAt: new Date() },
     });
     await driverPresence.remove(driverId);
+    await driverShiftClient.close(driverId, reason, reason === 'inactivity' && before.seenAt ? before.seenAt : new Date());
     return driver;
   },
 

@@ -79,6 +79,45 @@ export function hasRideFilters(f: AnalyticsFilters): boolean {
 
 const where = (conditions: string[]) => (conditions.length ? `WHERE ${conditions.join(' AND ')}` : '');
 
+/* Driver shifts. Timestamps are stored in UTC; Lagos is one hour ahead all year. */
+
+/** Lagos midnight at the start of the period, and at the end of its last day, as stored timestamps. */
+const periodStart = (q: Sql, f: AnalyticsFilters) => `(${q.p(f.from)}::date::timestamp - interval '1 hour')`;
+const periodEnd = (q: Sql, f: AnalyticsFilters) => `((${q.p(f.to)}::date + 1)::timestamp - interval '1 hour')`;
+
+/**
+ * When a shift ended. One still open runs to the last time its driver was
+ * heard from (the row is brought up to date every two minutes), never to
+ * "now": a shift left open by a crash or a dead phone must not keep counting.
+ */
+const SHIFT_END = `COALESCE(s."endedAt", GREATEST(s."startedAt", LEAST((now() AT TIME ZONE 'UTC'), COALESCE(d."lastSeenAt", s."startedAt") + interval '3 minutes')))`;
+
+/** Seconds of each shift that fall inside the period, as a FROM-able subquery with driver_id, from_at, to_at. */
+function shiftsInPeriod(q: Sql, f: AnalyticsFilters): string {
+  const start = periodStart(q, f);
+  const end = periodEnd(q, f);
+  const only = f.driverId ? `AND s."driverId" = ${q.p(f.driverId)}` : '';
+  return `
+    SELECT s."driverId" AS driver_id,
+           GREATEST(s."startedAt", ${start}) AS from_at,
+           LEAST(${SHIFT_END}, ${end}) AS to_at
+    FROM "DriverShift" s
+    JOIN "Driver" d ON d.id = s."driverId"
+    WHERE s."startedAt" < ${end} AND ${SHIFT_END} > ${start} ${only}`;
+}
+
+/**
+ * Shifts belong to no ride, so a zone, channel, ride type or rider filter
+ * cannot narrow them. Under one of those the supply of drivers is not shown
+ * beside the narrowed demand, which would compare two different things. A
+ * driver filter does narrow them.
+ */
+export function shiftsComparable(f: AnalyticsFilters): boolean {
+  return !(f.zone || f.channel || f.rideType || f.riderId);
+}
+
+const hoursOf = (seconds: unknown): number => Math.round((Number(seconds ?? 0) / 3600) * 100) / 100;
+
 async function rows<T>(q: Sql, sql: string): Promise<T[]> {
   return prisma.$queryRawUnsafe<T[]>(sql, ...q.params);
 }
@@ -140,6 +179,13 @@ export interface Kpis {
   driverPayoutsNgn: number;
   activeDrivers: number;
   activeRiders: number;
+  /** Hours drivers spent on shift in the period. Only the driver filter narrows it. */
+  driverOnlineHours: number;
+  /** Drivers who were on shift at any time in the period. */
+  driversOnShift: number;
+  avgOnlineHoursPerDriver: number | null;
+  /** Completed trips for every hour a driver was on shift. Null under a filter that shifts cannot follow. */
+  tripsPerOnlineHour: number | null;
   ridesWithBids: number;
   ridesWithAcceptedBid: number;
   bidAcceptanceRate: number | null;
@@ -226,6 +272,14 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     FROM "User" u
     WHERE u.id <> ${uq.p(PLATFORM_USER_ID)} AND ${between(uq, lagosDay('u."createdAt"'), f)}`);
 
+  const sq = new Sql();
+  const [shift] = await rows<Record<string, unknown>>(sq, `
+    SELECT sum(extract(epoch FROM x.to_at - x.from_at)) AS secs, count(DISTINCT x.driver_id) AS drivers
+    FROM (${shiftsInPeriod(sq, f)}) x
+    WHERE x.to_at > x.from_at`);
+  const driverOnlineHours = hoursOf(shift?.secs);
+  const driversOnShift = num(shift?.drivers);
+
   const requests = num(ride?.requests);
   const completed = num(ride?.completed);
   const commissionNgn = num(ride?.commission);
@@ -254,6 +308,10 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     driverPayoutsNgn: num(ride?.payouts),
     activeDrivers: num(ride?.active_drivers),
     activeRiders: num(ride?.active_riders),
+    driverOnlineHours,
+    driversOnShift,
+    avgOnlineHoursPerDriver: driversOnShift > 0 ? num(driverOnlineHours / driversOnShift) : null,
+    tripsPerOnlineHour: shiftsComparable(f) && driverOnlineHours > 0 ? num(completed / driverOnlineHours) : null,
     ridesWithBids,
     ridesWithAcceptedBid,
     bidAcceptanceRate: ratio(ridesWithAcceptedBid, ridesWithBids),
@@ -271,6 +329,10 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
 }
 
 export interface Snapshot {
+  /** Drivers on shift and heard from in the last five minutes. */
+  driversOnShiftNow: number;
+  /** When shifts began to be recorded; hours online are counted from here. Null before the first shift. */
+  shiftsRecordedFrom: string | null;
   inFlight: number;
   walletFloatNgn: number;
   walletLockedNgn: number;
@@ -281,11 +343,16 @@ async function snapshot(): Promise<Snapshot> {
   const q = new Sql();
   const [s] = await rows<Record<string, unknown>>(q, `
     SELECT
+      (SELECT count(*) FROM "Driver" WHERE status IN ('ONLINE', 'ON_RIDE')
+         AND "lastSeenAt" > (now() AT TIME ZONE 'UTC') - interval '5 minutes') AS on_shift,
+      (SELECT min("startedAt") FROM "DriverShift") AS shifts_from,
       (SELECT count(*) FROM "Ride" WHERE status IN ('DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS')) AS in_flight,
       (SELECT sum("balanceNgn") FROM "Wallet" WHERE "userId" <> ${q.p(PLATFORM_USER_ID)}) AS float,
       (SELECT sum("lockedNgn") FROM "Wallet" WHERE "userId" <> ${q.p(PLATFORM_USER_ID)}) AS locked,
       (SELECT "balanceNgn" FROM "Wallet" WHERE "userId" = ${q.p(PLATFORM_USER_ID)}) AS platform`);
   return {
+    driversOnShiftNow: num(s?.on_shift),
+    shiftsRecordedFrom: iso(s?.shifts_from),
     inFlight: num(s?.in_flight),
     walletFloatNgn: num(s?.float),
     walletLockedNgn: num(s?.locked),
@@ -587,22 +654,35 @@ export interface DriverRow {
   bidsWon: number;
   bidWinRate: number | null;
   lastTripAt: string | null;
+  /** Hours on shift in the period, whatever the zone or channel filter. */
+  onlineHours: number;
+  shifts: number;
+  /** Trips in this view for every hour on shift. */
+  tripsPerOnlineHour: number | null;
+  lastOnlineAt: string | null;
 }
 
 const DRIVER_SORT: Record<string, string> = {
   trips: 'trips', gmv: 'gmv', earnings: 'earnings', commission: 'commission', bids: 'bids', bidsWon: 'won',
   winRate: 'win_rate', lastTrip: 'last_trip', name: 'u.name',
+  onlineHours: 'online_secs', shifts: 'shifts', tripsPerHour: 'trips_per_hour', lastOnline: 'last_online',
 };
 
 async function drivers(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promise<Page<DriverRow>> {
   const q = new Sql();
   const doneCond = [...rideConditions(q, f), `f.driver_id IS NOT NULL`, `f.status = 'COMPLETED'`, between(q, 'f.completed_day', f)];
   const bidCond = [...rideConditions(q, f), between(q, 'f.created_day', f)];
-  const outer: string[] = [`(r.driver_id IS NOT NULL OR b.driver_id IS NOT NULL)`];
+  // A driver who was on shift and got no trip belongs in the list: that is the
+  // driver to look at. Not under a zone or channel filter, where every driver
+  // who was online anywhere would appear with nothing beside their name.
+  const shiftOnly = shiftsComparable(f) ? ' OR sh.driver_id IS NOT NULL' : '';
+  const outer: string[] = [`(r.driver_id IS NOT NULL OR b.driver_id IS NOT NULL${shiftOnly})`];
   if (t.q?.trim()) {
     const like = q.p(`%${t.q.trim()}%`);
     outer.push(`(u.name ILIKE ${like} OR u.phone ILIKE ${like} OR d.id ILIKE ${like})`);
   }
+  if (f.driverId) outer.push(`d.id = ${q.p(f.driverId)}`);
+  const shiftRows = shiftsInPeriod(q, f);
   const limit = clampLimit(t.limit, maxLimit);
   const offset = Math.max(0, Math.floor(t.offset ?? 0));
   const result = await rows<Record<string, unknown>>(q, `
@@ -615,17 +695,24 @@ async function drivers(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Prom
     b AS (
       SELECT bid."driverId" AS driver_id, count(*) AS bids, count(*) FILTER (WHERE bid.status = 'ACCEPTED') AS won
       FROM "DriverBid" bid JOIN ride_facts f ON f.id = bid."rideId" ${where(bidCond)} GROUP BY 1
+    ),
+    sh AS (
+      SELECT x.driver_id, sum(extract(epoch FROM x.to_at - x.from_at)) AS secs, count(*) AS shifts, max(x.to_at) AS last_online
+      FROM (${shiftRows}) x WHERE x.to_at > x.from_at GROUP BY 1
     )
     SELECT d.id AS driver_id, d."userId" AS user_id, u.name, u.phone, d.status::text AS status, d."kycStatus"::text AS kyc,
            coalesce(r.trips, 0) AS trips, coalesce(r.gmv, 0) AS gmv, coalesce(r.earnings, 0) AS earnings,
            coalesce(r.commission, 0) AS commission, r.last_trip,
            coalesce(b.bids, 0) AS bids, coalesce(b.won, 0) AS won,
            CASE WHEN coalesce(b.bids, 0) > 0 THEN b.won::float8 / b.bids ELSE NULL END AS win_rate,
+           coalesce(sh.secs, 0) AS online_secs, coalesce(sh.shifts, 0) AS shifts, sh.last_online,
+           CASE WHEN coalesce(sh.secs, 0) > 0 THEN coalesce(r.trips, 0) * 3600.0 / sh.secs ELSE NULL END AS trips_per_hour,
            count(*) OVER () AS total
     FROM "Driver" d
     JOIN "User" u ON u.id = d."userId"
     LEFT JOIN r ON r.driver_id = d.id
     LEFT JOIN b ON b.driver_id = d.id
+    LEFT JOIN sh ON sh.driver_id = d.id
     ${where(outer)}
     ORDER BY ${orderBy(DRIVER_SORT, t, 'trips')}, d.id
     LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
@@ -650,6 +737,10 @@ async function drivers(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Prom
         bidsWon: num(r.won),
         bidWinRate: r.win_rate == null ? null : Math.round(Number(r.win_rate) * 10000) / 10000,
         lastTripAt: iso(r.last_trip),
+        onlineHours: hoursOf(r.online_secs),
+        shifts: num(r.shifts),
+        tripsPerOnlineHour: r.trips_per_hour == null ? null : num(r.trips_per_hour),
+        lastOnlineAt: iso(r.last_online),
       };
     }),
     total,
@@ -1081,6 +1172,163 @@ async function withdrawals(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): 
   };
 }
 
+/* ── busiest hours ────────────────────────────────────────────────────── */
+
+export interface HourPoint {
+  /** Hour of the day in Lagos, 0 to 23: 8 means 08:00 to 08:59. */
+  hour: number;
+  requests: number;
+  completed: number;
+  noDriver: number;
+  matchRate: number | null;
+  gmvNgn: number;
+  /** Hours drivers spent on shift inside this hour of the day, over the whole period. */
+  driverHours: number;
+  /** Drivers on shift during this hour, on an average day. Null when supply is not shown. */
+  avgDriversOnline: number | null;
+  /** Requests for every driver on shift. Above 1, riders outnumber drivers. */
+  requestsPerDriver: number | null;
+}
+
+export interface WeekdayPoint extends Omit<HourPoint, 'hour'> {
+  /** 1 Monday to 7 Sunday. */
+  weekday: number;
+  label: string;
+}
+
+export interface HoursResponse {
+  filters: AnalyticsFilters;
+  hours: HourPoint[];
+  weekdays: WeekdayPoint[];
+  /** Requests by weekday (row, Monday first) and hour (column). */
+  grid: number[][];
+  /** The hour, and the weekday, with the most requests. Null when there were none. */
+  peakHour: number | null;
+  peakWeekday: number | null;
+  /** The hour with the most requests for each driver on shift: where more drivers are needed. */
+  tightestHour: number | null;
+  supply: {
+    /** False under a zone, channel, ride type or rider filter: shifts cannot be narrowed that way. */
+    shown: boolean;
+    /** Shifts are recorded from here; hours before it have no supply to show. */
+    recordedFrom: string | null;
+  };
+}
+
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+async function hours(f: AnalyticsFilters): Promise<HoursResponse> {
+  const rq = new Sql();
+  const local = `(f.created_at + interval '1 hour')`;
+  const demand = await rows<Record<string, unknown>>(rq, `
+    SELECT extract(hour FROM ${local})::int AS hour, extract(isodow FROM ${local})::int AS dow,
+           count(*) AS requests,
+           count(*) FILTER (WHERE f.status = 'COMPLETED') AS completed,
+           count(*) FILTER (WHERE f.no_driver) AS no_driver,
+           sum(f.fare_ngn) FILTER (WHERE f.status = 'COMPLETED') AS gmv
+    FROM ride_facts f
+    ${where([...rideConditions(rq, f), between(rq, 'f.created_day', f)])}
+    GROUP BY 1, 2`);
+
+  const showSupply = shiftsComparable(f);
+  const sq = new Sql();
+  // Every hour of every day in the period, in Lagos time, that has already
+  // happened and that falls after shifts began to be recorded. Averages are
+  // over these, so an hour that has not come yet does not count as an empty one.
+  const supply = showSupply
+    ? await rows<Record<string, unknown>>(sq, `
+        WITH first AS (SELECT min("startedAt") + interval '1 hour' AS at FROM "DriverShift"),
+        slots AS (
+          SELECT h AS at FROM generate_series(${sq.p(f.from)}::date::timestamp,
+                                              (${sq.p(f.to)}::date + 1)::timestamp - interval '1 hour',
+                                              interval '1 hour') h, first
+          WHERE first.at IS NOT NULL
+            AND h >= date_trunc('hour', first.at)
+            AND h < (now() AT TIME ZONE 'UTC') + interval '1 hour'
+        ),
+        sh AS (
+          SELECT x.from_at + interval '1 hour' AS from_at, x.to_at + interval '1 hour' AS to_at
+          FROM (${shiftsInPeriod(sq, f)}) x WHERE x.to_at > x.from_at
+        )
+        SELECT extract(hour FROM slots.at)::int AS hour, extract(isodow FROM slots.at)::int AS dow,
+               count(DISTINCT slots.at) AS slots,
+               -- LEAST and GREATEST skip NULLs, so an hour with no shift would come out as a full hour: say so.
+               coalesce(sum(CASE WHEN sh.from_at IS NULL THEN 0 ELSE
+                 extract(epoch FROM LEAST(sh.to_at, slots.at + interval '1 hour') - GREATEST(sh.from_at, slots.at)) END), 0) AS secs
+        FROM slots
+        LEFT JOIN sh ON sh.from_at < slots.at + interval '1 hour' AND sh.to_at > slots.at
+        GROUP BY 1, 2`)
+    : [];
+
+  interface Cell { requests: number; completed: number; noDriver: number; gmv: number; secs: number; slots: number }
+  const blank = (): Cell => ({ requests: 0, completed: 0, noDriver: 0, gmv: 0, secs: 0, slots: 0 });
+  const byHour = Array.from({ length: 24 }, blank);
+  const byDay = Array.from({ length: 7 }, blank);
+  const grid = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
+
+  for (const r of demand) {
+    const hour = Number(r.hour);
+    const day = Number(r.dow) - 1;
+    if (!(hour >= 0 && hour < 24 && day >= 0 && day < 7)) continue;
+    for (const cell of [byHour[hour]!, byDay[day]!]) {
+      cell.requests += num(r.requests);
+      cell.completed += num(r.completed);
+      cell.noDriver += num(r.no_driver);
+      cell.gmv += num(r.gmv);
+    }
+    grid[day]![hour] = num(r.requests);
+  }
+  for (const r of supply) {
+    const hour = Number(r.hour);
+    const day = Number(r.dow) - 1;
+    if (!(hour >= 0 && hour < 24 && day >= 0 && day < 7)) continue;
+    for (const cell of [byHour[hour]!, byDay[day]!]) {
+      cell.secs += Number(r.secs ?? 0);
+      cell.slots += num(r.slots);
+    }
+  }
+
+  const point = (cell: Cell) => {
+    const driverHours = hoursOf(cell.secs);
+    // Drivers on shift during an hour of this kind, on average: the hours they put in, over how many such hours there were.
+    const avgDriversOnline = showSupply && cell.slots > 0 ? num(cell.secs / 3600 / cell.slots) : null;
+    return {
+      requests: cell.requests,
+      completed: cell.completed,
+      noDriver: cell.noDriver,
+      matchRate: ratio(cell.completed, cell.requests),
+      gmvNgn: num(cell.gmv),
+      driverHours,
+      avgDriversOnline,
+      // Requests an hour over drivers on shift in it; the number of such hours cancels out.
+      requestsPerDriver: showSupply && cell.secs > 0 ? num(cell.requests / (cell.secs / 3600)) : null,
+    };
+  };
+
+  const hourPoints: HourPoint[] = byHour.map((cell, hour) => ({ hour, ...point(cell) }));
+  const weekdayPoints: WeekdayPoint[] = byDay.map((cell, i) => ({ weekday: i + 1, label: WEEKDAYS[i]!, ...point(cell) }));
+  const most = <T extends { requests: number }>(list: T[]): T | null =>
+    list.reduce<T | null>((best, item) => (item.requests > (best?.requests ?? 0) ? item : best), null);
+  const tightest = hourPoints.reduce<HourPoint | null>(
+    (best, item) => (item.requestsPerDriver != null && item.requestsPerDriver > (best?.requestsPerDriver ?? 0) ? item : best),
+    null,
+  );
+
+  const fq = new Sql();
+  const [first] = await rows<Record<string, unknown>>(fq, `SELECT min("startedAt") AS at FROM "DriverShift"`);
+
+  return {
+    filters: f,
+    hours: hourPoints,
+    weekdays: weekdayPoints,
+    grid,
+    peakHour: most(hourPoints)?.hour ?? null,
+    peakWeekday: most(weekdayPoints)?.weekday ?? null,
+    tightestHour: tightest?.hour ?? null,
+    supply: { shown: showSupply, recordedFrom: iso(first?.at) },
+  };
+}
+
 /* ── reconciliation (task A-08) ───────────────────────────────────────── */
 
 export interface ReconcileCheck {
@@ -1169,6 +1417,7 @@ function options() {
 export const adminAnalyticsClient = {
   summary,
   timeseries,
+  hours,
   breakdown,
   trips,
   drivers,

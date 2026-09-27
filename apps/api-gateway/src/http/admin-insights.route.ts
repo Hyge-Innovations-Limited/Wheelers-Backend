@@ -21,6 +21,7 @@ import { sendJson } from './utils';
  *   GET /admin/insights/summary                  KPIs, the previous period's, and a live snapshot
  *   GET /admin/insights/timeseries?bucket=       day | week | month
  *   GET /admin/insights/breakdown?by=            channel | zone | rideType | cancelReason
+ *   GET /admin/insights/hours                    requests and drivers on shift, by hour of day and weekday
  *   GET /admin/insights/trips?status=&q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/drivers?q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/riders?q=&sort=&dir=&limit=&offset=
@@ -130,6 +131,9 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         sendJson(res, 200, { filters: f, by, rows: await adminAnalyticsClient.breakdown(f, by) });
         return true;
       }
+      case '/admin/insights/hours':
+        sendJson(res, 200, { ...(await adminAnalyticsClient.hours(f)) });
+        return true;
       case '/admin/insights/trips': {
         const status = pick(url, 'status', TRIP_STATUSES, 'all');
         sendJson(res, 200, { ...(await adminAnalyticsClient.trips(f, status, tableQuery(url))) });

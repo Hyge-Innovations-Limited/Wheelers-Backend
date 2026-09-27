@@ -86,7 +86,7 @@ export function createDriverEventsConsumer(params: {
           }
         }
         try {
-          await driverClient.markOffline(event.driverId);
+          await driverClient.markOffline(event.driverId, event.reason);
         } catch (err) {
           console.error('[ride-service] driver offline persistence FAILED', {
             driverId: event.driverId,

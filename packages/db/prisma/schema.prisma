@@ -120,6 +120,7 @@ model Driver {
   bids                 DriverBid[]           @relation("DriverBids")
   interstateDepartures InterstateDeparture[] @relation("DriverInterstateDepartures")
   locationPoints       DriverLocationPoint[]
+  shifts               DriverShift[]
   dispatchContacts     DispatchContact[]
 
   @@index([status])
@@ -1186,6 +1187,23 @@ model DriverLocationPoint {
 
   @@index([driverId, recordedAt])
   @@index([recordedAt])
+}
+
+/// One row per shift: from going online to going offline. An open shift has no
+/// endedAt. A partial unique index (in the migration; Prisma cannot express it)
+/// allows one open shift per driver.
+model DriverShift {
+  id        String    @id @default(uuid())
+  driverId  String
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  /// manual | app_closed | inactivity | admin | stale
+  endReason String?
+  driver    Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, startedAt])
+  @@index([startedAt])
+  @@index([endedAt])
 }
 
 /// An operator reaching out to a driver from the dispatch panel — a phone call
