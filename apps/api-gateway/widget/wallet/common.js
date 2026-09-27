@@ -65,11 +65,46 @@
   function $(id) { return document.getElementById(id); }
   function show(el, visible) { if (el) el.hidden = !visible; }
 
+  /**
+   * Steps, and the way back through them. A page declares Wheelers.backFrom,
+   * e.g. { pay: 'amount' }: from the pay step, back means the amount step.
+   * Going FORWARD to a step goes through go(), which also puts an entry in the
+   * browser history, so the phone's own back (Android's button, the swipe on
+   * iOS) steps back inside the page instead of closing it on WhatsApp. The
+   * arrow in the header shows whenever the current step has somewhere to go.
+   */
+  var currentView = null;
+
   function showOnly(viewId) {
     var views = document.querySelectorAll('[data-view]');
     for (var i = 0; i < views.length; i++) views[i].hidden = views[i].getAttribute('data-view') !== viewId;
+    currentView = viewId;
+    var arrow = $('back');
+    if (arrow) arrow.hidden = !(window.Wheelers.backFrom && window.Wheelers.backFrom[viewId]);
     window.scrollTo(0, 0);
   }
+
+  function go(viewId) {
+    try { history.pushState({ view: viewId }, ''); } catch (e) { /* ignore */ }
+    showOnly(viewId);
+  }
+
+  function back() {
+    var prev = window.Wheelers.backFrom && window.Wheelers.backFrom[currentView];
+    if (!prev) return;
+    if (history.state && history.state.view === currentView) history.back();
+    else showOnly(prev);
+  }
+
+  window.addEventListener('popstate', function (event) {
+    var view = (event.state && event.state.view) || window.Wheelers.firstView;
+    if (view && view !== currentView) showOnly(view);
+  });
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var arrow = $('back');
+    if (arrow) arrow.addEventListener('click', back);
+  });
 
   var toastTimer;
   function toast(message) {
@@ -124,6 +159,7 @@
 
   window.Wheelers = {
     takeToken: takeToken, api: api, naira: naira, parseAmount: parseAmount, formatAmountInput: formatAmountInput,
-    $: $, show: show, showOnly: showOnly, toast: toast, copy: copy, uuid: uuid, until: until, fatal: fatal,
+    $: $, show: show, showOnly: showOnly, go: go, back: back, backFrom: null, firstView: null,
+    toast: toast, copy: copy, uuid: uuid, until: until, fatal: fatal,
   };
 })();

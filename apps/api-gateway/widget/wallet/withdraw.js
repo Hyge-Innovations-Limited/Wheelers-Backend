@@ -1,6 +1,9 @@
 (function () {
   'use strict';
   var W = window.Wheelers;
+  W.firstView = 'amount';
+  W.backFrom = { bank: 'amount', confirm: 'bank' };
+  function currentStep() { var v = document.querySelector('[data-view]:not([hidden])'); return v ? v.getAttribute('data-view') : null; }
   var PIN_LENGTH = 4;
 
   var session = null;
@@ -87,7 +90,7 @@
 
   document.addEventListener('click', function (event) {
     var back = event.target && event.target.getAttribute && event.target.getAttribute('data-back');
-    if (back) { pinEntry.clear(); W.showOnly(back); }
+    if (back) { pinEntry.clear(); if (W.backFrom[currentStep()] === back) W.back(); else W.showOnly(back); }
   });
 
   /* ── 1 · amount ───────────────────────────────────────────────────── */
@@ -109,7 +112,7 @@
   });
   W.$('to-bank').addEventListener('click', function () {
     W.$('bank-lede').textContent = 'You’re sending ' + W.naira(draft.amountNgn) + '. Pick the bank, then the account.';
-    W.showOnly('bank');
+    W.go('bank');
   });
 
   /* ── 2 · destination ──────────────────────────────────────────────── */
@@ -193,7 +196,7 @@
     W.$('c-name').textContent = draft.accountName;
     W.$('c-bank').textContent = draft.bankName;
     W.$('c-acct').textContent = draft.accountNumber;
-    if (session.hasPin) { pinEntry.clear(); W.showOnly('confirm'); }
+    if (session.hasPin) { pinEntry.clear(); W.go('confirm'); }
     else startPinChoice('create');
   });
 

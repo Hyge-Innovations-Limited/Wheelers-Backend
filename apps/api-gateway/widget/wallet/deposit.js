@@ -1,6 +1,8 @@
 (function () {
   'use strict';
   var W = window.Wheelers;
+  W.firstView = 'amount';
+  W.backFrom = { pay: 'amount' };
   var startingBalance = 0;
   var watching = false;
   var ride = null;           // { driverName, fareNgn, landsNgn, sendNgn } when this deposit is to take a driver
@@ -33,7 +35,7 @@
       W.$('pay-lede').textContent = 'To ride with ' + driver + ' at ' + W.naira(ride.fareNgn) + '. From any bank app, to your own Wheelers account below.';
       W.$('row-gets').textContent = W.naira(ride.landsNgn);
       W.$('waiting-text').textContent = 'Waiting for your transfer — ' + driver + ' is confirmed the moment it lands';
-      W.showOnly('pay');
+      W.go('pay');
       watchForTransfer();
       return;
     }
@@ -77,7 +79,7 @@
 
   /* ── 2 · send it ──────────────────────────────────────────────────── */
 
-  W.$('change').addEventListener('click', function () { W.showOnly('amount'); W.$('amount').focus(); });
+  W.$('change').addEventListener('click', function () { W.back(); W.$('amount').focus(); });
 
   W.$('copy').addEventListener('click', function () {
     var button = this;

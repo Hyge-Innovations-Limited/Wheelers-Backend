@@ -44,6 +44,9 @@ button, input { font: inherit; color: inherit; }
 .top svg { width: 30px; height: 30px; flex: none; border-radius: 7px; background: var(--orange); }
 .top .brand { font-weight: 600; font-size: 17px; letter-spacing: -.01em; }
 .top .where { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); }
+.top .back { flex: none; width: 34px; height: 34px; margin-left: -10px; padding: 0 0 4px; border: 0; border-radius: 17px; background: transparent; color: var(--ink); font-size: 32px; line-height: 1; cursor: pointer; }
+.top .back:active { background: var(--line); }
+.top .back[hidden] { display: none; }
 .top { padding-bottom: 14px; }
 
 /* ── type ─────────────────────────────────────────────────────────── */
