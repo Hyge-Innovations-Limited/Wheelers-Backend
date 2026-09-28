@@ -20,6 +20,8 @@ export interface MetaWhatsappRouteDeps {
   groqModel: string;
   groqTimeoutMs: number;
   appBaseUrl?: string;
+  /** Live call is on: the ride card's third button says "Chat or call driver", else "Chat with driver". */
+  liveCallEnabled?: boolean;
   driverKycStorage?: DriverKycStorage;
   groupRideFaceStorage?: GroupRideFaceStorage;
   /** Platform treasury VA — payouts draw from this float when configured. */

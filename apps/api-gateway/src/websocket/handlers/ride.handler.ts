@@ -6,9 +6,8 @@ import {
   validateDriverOffer,
   validateRiderOffer,
 } from '@wheleers/config';
-import { chatClient, driverClient, groupRideClient, referralClient, rideClient, driverBidClient, walletClient } from '@wheleers/db';
+import { driverClient, groupRideClient, referralClient, rideClient, driverBidClient, walletClient } from '@wheleers/db';
 import {
-  ChatMessageSentEvent,
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
   RideCancelledEvent,
@@ -931,39 +930,7 @@ export async function handleRideMessage(
     };
   }
 
-  if (type === 'chat:send') {
-    const rideId = requireString(payload, 'rideId');
-    const content = requireString(payload, 'content');
-    if (content.length > 1000) throw new Error('Message too long (max 1000 chars).');
-
-    const senderRole = auth.driverId ? 'DRIVER' : 'RIDER';
-    const message = await chatClient.create({
-      rideId,
-      senderId: auth.userId,
-      senderRole: senderRole as 'RIDER' | 'DRIVER',
-      content,
-    });
-
-    const event = ChatMessageSentEvent.parse({
-      eventType: 'CHAT_MESSAGE_SENT',
-      rideId,
-      messageId: message.id,
-      senderId: auth.userId,
-      senderRole,
-      content,
-      timestamp,
-    });
-
-    await publisher.publishRideEvent(event);
-
-    return {
-      type: 'chat:send:accepted',
-      payload: {
-        messageId: message.id,
-        rideId,
-      },
-    };
-  }
+  // chat:send is answered by the trip chat (src/trip-chat), before this handler is asked.
 
   if (type === 'dispute:open') {
     const event = DisputeOpenedEvent.parse({

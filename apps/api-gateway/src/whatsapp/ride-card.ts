@@ -1,5 +1,5 @@
 import { formatTripId } from '@wheleers/config';
-import { driverClient, rideClient, userClient, virtualAccountClient } from '@wheleers/db';
+import { chatClient, driverClient, rideClient, userClient, virtualAccountClient } from '@wheleers/db';
 import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
@@ -13,6 +13,8 @@ import { formatBidList, sendOffersInChat, sortOffers } from '../whatsapp-flows/w
 import { MetaWhatsappRouteDeps } from './deps';
 import { sendInteractive, sendMetaLinkButton, sendMetaReply } from './send';
 import { ridePageUrl, sendSearchStarted } from './trip';
+import { loadTripChat } from '../trip-chat/access';
+import { tripPageUrl } from '../trip-chat/whatsapp';
 
 export interface ConfirmedRideForChat {
   driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
@@ -27,6 +29,13 @@ export const SOS_REPLY_ID = 'ride_sos';
 export const SOS_CANCEL_REPLY_ID = 'ride_sos_cancel';
 
 export const TRACK_REPLY_ID = 'ride_track';
+
+export const CHAT_REPLY_ID = 'ride_chat';
+
+/** The third button. WhatsApp allows 20 characters. */
+export function chatButtonTitle(deps: Pick<MetaWhatsappRouteDeps, 'liveCallEnabled'>): string {
+  return deps.liveCallEnabled ? 'Chat or call driver' : 'Chat with driver';
+}
 
 /** A signed URL for one of a driver's KYC photos. Null when there is none, storage is off, or it fails. */
 export async function driverPhotoUrl(deps: MetaWhatsappRouteDeps, driverId: string, which: 'selfie' | 'car'): Promise<string | null> {
@@ -43,7 +52,7 @@ export async function driverPhotoUrl(deps: MetaWhatsappRouteDeps, driverId: stri
 /* ── quick actions: the menu, history, repeat / reverse ─────────────────── */
 
 /** Everything about the ride, as one tidy list — the text under the driver's photo. */
-export function rideDetailsText(ride: ConfirmedRideForChat): string {
+export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'chat' | 'chat_and_call' } = {}): string {
   return [
     `*Ride confirmed & paid*`,
     ``,
@@ -65,6 +74,9 @@ export function rideDetailsText(ride: ConfirmedRideForChat): string {
     `Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
     ``,
     `*Track live trip* — watch your driver on the map.`,
+    ...(options.chat === 'chat_and_call'
+      ? [`*Chat or call driver* — message or call ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`]
+      : options.chat === 'chat' ? [`*Chat with driver* — message ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`] : []),
     `*SOS* — feel unsafe at any point? One tap and Wheelers' safety team has your trip and location.`,
   ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
@@ -99,7 +111,7 @@ export async function sendRideConfirmation(
   const tripId = ride.tripId ?? await rideClient.findActiveByRider(userId)
     .then((active) => formatTripId(active?.tripNumber))
     .catch(() => null);
-  const details = rideDetailsText({ ...ride, tripId });
+  const details = rideDetailsText({ ...ride, tripId }, deps.appBaseUrl ? { chat: deps.liveCallEnabled ? 'chat_and_call' : 'chat' } : {});
 
   const card = (photo: string | null) => ({
     type: 'button',
@@ -108,6 +120,7 @@ export async function sendRideConfirmation(
     action: {
       buttons: [
         ...(deps.appBaseUrl ? [{ type: 'reply', reply: { id: TRACK_REPLY_ID, title: 'Track live trip' } }] : []),
+        ...(deps.appBaseUrl ? [{ type: 'reply', reply: { id: CHAT_REPLY_ID, title: chatButtonTitle(deps) } }] : []),
         { type: 'reply', reply: { id: SOS_REPLY_ID, title: 'SOS' } },
       ],
     },
@@ -130,6 +143,10 @@ export async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: str
     if (url) await sendMetaLinkButton(deps, phone, 'Your driver, live on the map.', 'Open live map', url);
     return;
   }
+  if (replyId === CHAT_REPLY_ID) {
+    await sendTripChatLink(deps, userId, phone);
+    return;
+  }
   if (replyId === SOS_CANCEL_REPLY_ID) {
     const withdrawn = await cancelRiderSos(userId);
     await sendMetaReply(deps, phone, withdrawn ? 'Glad you are safe — the alert has been withdrawn.' : 'You have no open alert. Tap *SOS* on your ride card if you ever need us.');
@@ -144,6 +161,29 @@ export async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: str
     action: { buttons: [{ type: 'reply', reply: { id: SOS_CANCEL_REPLY_ID, title: "I'm safe" } }] },
   });
   if (!sent) await sendMetaReply(deps, phone, text);
+}
+
+/**
+ * "Chat or call driver": the link to the Trip chat page for the rider's latest
+ * trip, while its chat is open. After that, the rider is told it has closed
+ * and where to go instead.
+ */
+export async function sendTripChatLink(deps: MetaWhatsappRouteDeps, userId: string, phone: string): Promise<void> {
+  const latest = await chatClient.latestTripOfRider(userId).catch(() => null);
+  const info = latest ? await loadTripChat(latest.id).catch(() => null) : null;
+  if (!info || !info.driver || !deps.appBaseUrl) {
+    await sendMetaReply(deps, phone, 'You have no trip with a driver right now. Once a driver accepts your ride, you can chat or call them here.');
+    return;
+  }
+  if (!info.open) {
+    await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} has ended. It closes 30 minutes after a trip.
+
+Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
+    return;
+  }
+  const url = tripPageUrl(deps.appBaseUrl, deps.jwtSecret, userId, info.rideId);
+  const what = deps.liveCallEnabled ? 'Message or call' : 'Message';
+  await sendMetaLinkButton(deps, phone, `${what} *${info.driver.firstName}*, your driver, through Wheelers.`, deps.liveCallEnabled ? 'Chat or call' : 'Open chat', url);
 }
 
 /**

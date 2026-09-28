@@ -402,6 +402,7 @@ model Ride {
   referralQualifications Referral[]        @relation("ReferralFirstRide")
 
   chatMessages ChatMessage[]
+  tripCalls    TripCall[]
 
   @@index([riderId, createdAt])
   @@index([driverId, status])
@@ -418,10 +419,38 @@ model ChatMessage {
   senderId   String
   senderRole ChatSenderRole
   content    String
+  /// "text": typed by the rider or driver. "call": written by the call
+  /// service when a call ends ("Missed call", "Call · 3:12"), from the caller.
+  kind       String         @default("text")
   createdAt  DateTime       @default(now())
   ride       Ride           @relation(fields: [rideId], references: [id])
 
   @@index([rideId, createdAt])
+}
+
+/// One Live call between a trip's rider and driver: who rang whom, where the
+/// callee was reached, and how it ended. Written when the call starts and
+/// again when it ends; the ringing itself lives in Redis.
+model TripCall {
+  id              String         @id @default(uuid())
+  rideId          String
+  callerId        String
+  callerRole      ChatSenderRole
+  calleeId        String
+  /// "app" (the phone rang) or "whatsapp" (a WhatsApp message with an Answer link).
+  calleeChannel   String
+  /// RINGING, ACTIVE, COMPLETED, MISSED, DECLINED, CANCELLED, FAILED
+  status          String         @default("RINGING")
+  /// Why it ended, in more detail than the status: "timeout", "hung_up", "too_long", "trip_closed"…
+  endReason       String?
+  createdAt       DateTime       @default(now())
+  answeredAt      DateTime?
+  endedAt         DateTime?
+  durationSeconds Int?
+  ride            Ride           @relation(fields: [rideId], references: [id])
+
+  @@index([rideId, createdAt])
+  @@index([createdAt])
 }
 
 model RideStop {

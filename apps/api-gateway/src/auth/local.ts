@@ -135,7 +135,15 @@ const PAGE_TOKEN_TYPE = 'wheelers.wallet.page';
  * from the rider's own wallet — never out — so it carries no PIN and may live
  * as long as a booking does.
  */
-export type WalletPageScope = 'deposit' | 'withdraw' | 'ride';
+export type WalletPageScope = 'deposit' | 'withdraw' | 'ride' | 'trip';
+
+/**
+ * 'trip' opens the Trip chat page for ONE ride: the chat with the driver, and
+ * Live call. The ride is named in the link (`rid`), and the page is refused
+ * the moment that trip's chat closes, whatever the link's own lifetime says.
+ * It moves no money.
+ */
+export const TRIP_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
 
 /** A search for drivers can outlast 15 minutes; the link has to as well. */
 export const RIDE_PAGE_TOKEN_TTL_SECONDS = 2 * 60 * 60;
@@ -144,6 +152,8 @@ interface WalletPageTokenPayload {
   sub: string;
   typ: typeof PAGE_TOKEN_TYPE;
   scope: WalletPageScope;
+  /** The ride a 'trip' link is for. */
+  rid?: string;
   iat: number;
   exp: number;
 }
@@ -162,14 +172,17 @@ export function createWalletPageToken(
   scope: WalletPageScope,
   jwtSecret: string | undefined,
   ttlSeconds: number = WALLET_PAGE_TOKEN_TTL_SECONDS,
+  rideId?: string,
 ): string {
   const secret = requireSecret(jwtSecret);
+  if (scope === 'trip' && !rideId) throw new Error('A trip page link must name its ride.');
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = base64UrlEncode(JSON.stringify({
     sub: userId,
     typ: PAGE_TOKEN_TYPE,
     scope,
+    ...(rideId ? { rid: rideId } : {}),
     iat: now,
     exp: now + ttlSeconds,
   } satisfies WalletPageTokenPayload));
@@ -180,7 +193,7 @@ export function createWalletPageToken(
 export function verifyWalletPageToken(
   token: string,
   jwtSecret: string | undefined,
-): { userId: string; scope: WalletPageScope } {
+): { userId: string; scope: WalletPageScope; rideId?: string } {
   const secret = requireSecret(jwtSecret);
   const [header, payload, signature] = token.split('.');
   if (!header || !payload || !signature) {
@@ -197,15 +210,18 @@ export function verifyWalletPageToken(
   if (!isRecord(parsed) || parsed.typ !== PAGE_TOKEN_TYPE) {
     throw new Error('Page token type is invalid.');
   }
-  const { sub, scope, exp } = parsed;
+  const { sub, scope, exp, rid } = parsed;
   if (typeof sub !== 'string' || sub.length === 0) {
     throw new Error('Page token is missing subject.');
   }
-  if (scope !== 'deposit' && scope !== 'withdraw' && scope !== 'ride') {
+  if (scope !== 'deposit' && scope !== 'withdraw' && scope !== 'ride' && scope !== 'trip') {
     throw new Error('Page token scope is invalid.');
+  }
+  if (scope === 'trip' && (typeof rid !== 'string' || rid.length === 0)) {
+    throw new Error('Page token is missing its ride.');
   }
   if (typeof exp !== 'number' || exp <= Math.floor(Date.now() / 1000)) {
     throw new Error('This link has expired.');
   }
-  return { userId: sub, scope };
+  return { userId: sub, scope, ...(scope === 'trip' ? { rideId: rid as string } : {}) };
 }

@@ -94,6 +94,15 @@ const GatewayEnvSchema = z.object({
   // 'true' logs every connect, close and message, as before. Off, the log gets
   // warnings and one summary line a minute.
   WS_VERBOSE_LOG: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Live call: the rider and driver of a trip call each other through Wheelers.
+  // Off until the TURN server below is set; chat works either way.
+  LIVE_CALL_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Our own STUN/TURN server (coturn, infra/turn). The secret is the
+  // static-auth-secret in /etc/turnserver.conf on that machine.
+  TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),
+  TURN_SHARED_SECRET: z.string().optional().transform(v => v?.trim() || undefined),
+  // How long one call's TURN login lasts. Longer than the longest call.
+  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().positive().default(2 * 60 * 60),
   // Social Auth
   APPLE_BUNDLE_ID:    z.string().optional().transform(v => v?.trim() || undefined),
   GOOGLE_CLIENT_ID:   z.string().optional().transform(v => v?.trim() || undefined),

@@ -974,7 +974,7 @@ function confirmationDeps(redis) {
   return deps;
 }
 
-test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it, and two buttons — Track live trip, SOS', async () => {
+test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it, and three buttons — Track live trip, Chat with driver, SOS', async () => {
   const deps = confirmationDeps(memoryRedis());
   const order = recordMeta();
   const driver = await driverWithPhotos();
@@ -985,7 +985,7 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   const card = order[0].body.interactive;
   assert.equal(card.type, 'button');
   assert.match(card.header.image.link, /selfie\.jpg$/, 'a FACE — the car belongs on "has arrived"');
-  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_track', 'Track live trip'], ['ride_sos', 'SOS']]);
+  assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_track', 'Track live trip'], ['ride_chat', 'Chat with driver'], ['ride_sos', 'SOS']]);
 
   const text = card.body.text;
   assert.ok(text.length <= 1024);
@@ -994,8 +994,8 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   const sequence = ['Ride confirmed & paid', '*YOUR DRIVER*', 'Chinedu Okafor', '4.9 · 412 rides', '+2348031234567',
     '*THE CAR*', 'Toyota Corolla', 'Plate: *LND-174XA*',
     '*YOUR TRIP*', 'Pickup: *Ikorodu Garage', 'Destination: *Caleb University College of Law', 'Fare: ₦6,200 — held in your wallet', 'Arrives in about 4 min',
-    '*Track live trip*', '*SOS*'].map(at);
-  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, then SOS');
+    '*Track live trip*', '*Chat with driver*', '*SOS*'].map(at);
+  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, chat, then SOS');
   // Every section stands apart — no wall of text.
   for (const heading of ['*YOUR DRIVER*', '*THE CAR*', '*YOUR TRIP*']) assert.ok(text.includes(`\n\n${heading}`), `${heading} has air above it`);
 });
@@ -1007,14 +1007,14 @@ test('no driver photo on file, or WhatsApp refuses the picture: the SAME card go
   const noSelfie = await driverWithPhotos({ selfie: false });          // a car photo on file changes nothing here
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive']);
-  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS']);
+  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS']);
   assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
 
   order = recordMeta({ refuseCards: true });
   const both = await driverWithPhotos();
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive'], 'one message still');
-  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_sos']);
+  assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_chat', 'ride_sos']);
   assert.match(order[0].body.interactive.body.text, /Ride confirmed & paid/);
 });
 
@@ -1064,6 +1064,38 @@ test('Track live trip is a reply button, and a reply button cannot open a link �
   assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/);
   const local = require('../apps/api-gateway/dist/auth/local.js');
   assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), deps.jwtSecret), { userId: user.id, scope: 'ride' });
+});
+
+test('Chat with driver: the tap answers with the Trip chat link for the rider\'s trip; with no driver yet, it says so', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  deps.appBaseUrl = 'https://app.wheelersng.com';
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+
+  await tapButton(deps, who, 'ride_chat', 'Chat with driver');
+  assert.match(textOf(last(sent)), /no trip with a driver right now/);
+
+  const driver = await onlineDriver();
+  const ride = await prisma.ride.create({ data: { riderId: user.id, driverId: driver.driverId, status: 'DRIVER_EN_ROUTE', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
+  await tapButton(deps, who, 'ride_chat', 'Chat with driver');
+  const link = last(sent).interactive;
+  assert.equal(link.type, 'cta_url');
+  assert.equal(link.action.parameters.display_text, 'Open chat', 'calls are off: chat only');
+  const url = link.action.parameters.url;
+  assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/trip\/chat\.html#t=/);
+  const local = require('../apps/api-gateway/dist/auth/local.js');
+  assert.deepEqual(local.verifyWalletPageToken(decodeURIComponent(url.split('#t=')[1]), deps.jwtSecret), { userId: user.id, scope: 'trip', rideId: ride.id });
+
+  deps.liveCallEnabled = true;
+  await tapButton(deps, who, 'ride_chat', 'Chat or call driver');
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'Chat or call');
+
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED', completedAt: new Date(Date.now() - 40 * 60_000) } });
+  await tapButton(deps, who, 'ride_chat', 'Chat or call driver');
+  assert.match(textOf(last(sent)), /has ended\. It closes 30 minutes after a trip/);
 });
 
 /* ── SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
@@ -1583,7 +1615,7 @@ test('TAP an offer with money in the wallet: fare held, ride confirmed — no "r
 
   assert.deepEqual(accepted().map((e) => [e.rideId, e.bidId, e.agreedFareNgn, e.paymentMethod]), [[rideId, bid.bidId, 2400, 'WALLET']]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2400, 'the fare is held');
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS'], 'the ride card');
   assert.match(textOf(last(sent)), /Ride confirmed & paid[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
   assert.equal(sent.some((m) => /reply \*pay\*/i.test(textOf(m))), false);
 
@@ -1666,7 +1698,7 @@ test('SHORT WALLET: the tap remembers the driver and sends ONE "Add money" butto
   await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
   assert.equal(await finish({ userId: user.id, amountNgn: 1000, newBalanceNgn: 2400 }), true, 'the plain "deposit received" is not sent on top');
   assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS'], 'the ride card');
   assert.equal(await bidState.getPendingAccept(redis, user.id), null);
 });
 
@@ -1908,7 +1940,7 @@ test('OFFERS FORM · picking a driver: fare held, ride confirmed, and the chat g
   assert.deepEqual(events('RIDE_OFFER_ACCEPTED').map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2900]]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2900);
   await settle();
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'SOS'], 'the ride card');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS'], 'the ride card');
 
   const after = await form('INIT');
   assert.match(after.data.error, /driver is already confirmed/);

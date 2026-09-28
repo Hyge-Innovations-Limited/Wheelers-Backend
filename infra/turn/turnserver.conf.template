@@ -1,0 +1,52 @@
+# coturn settings for Wheelers Live call. setup.sh fills in the three
+# placeholders and writes this to /etc/turnserver.conf on the TURN machine.
+#
+#   __PRIVATE_IP__  the machine's own address inside Google Cloud (10.x)
+#   __PUBLIC_IP__   its static public address (the A record of turn.wheelersng.com)
+#   __SECRET__      the shared secret; the gateway's TURN_SHARED_SECRET is the same value
+
+listening-port=3478
+tls-listening-port=443
+min-port=49152
+max-port=65535
+listening-ip=__PRIVATE_IP__
+relay-ip=__PRIVATE_IP__
+external-ip=__PUBLIC_IP__/__PRIVATE_IP__
+
+# Logins are made by the gateway per call and expire by themselves (TURN REST API).
+use-auth-secret
+static-auth-secret=__SECRET__
+realm=wheelersng.com
+server-name=turn.wheelersng.com
+fingerprint
+stale-nonce=600
+
+# TLS on 443, for networks that only let web traffic out.
+cert=/etc/coturn/certs/fullchain.pem
+pkey=/etc/coturn/certs/privkey.pem
+no-tlsv1
+no-tlsv1_1
+
+# At most 12 relays per login, 1200 in all.
+user-quota=12
+total-quota=1200
+
+# Never relay into private networks, this machine, or Google's metadata server.
+no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=224.0.0.0-255.255.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+no-cli
+no-software-attribute
+syslog

@@ -293,6 +293,8 @@ export const ChatMessageSentEvent = BaseRideEvent.extend({
   senderId:   z.string().uuid(),
   senderRole: z.enum(['RIDER', 'DRIVER']),
   content:    z.string().min(1).max(1000),
+  // 'call': a line the call service wrote ("Missed call"). Absent = typed text.
+  kind:       z.enum(['text', 'call']).optional(),
 });
 
 export const RideEvent = z.discriminatedUnion('eventType', [

@@ -4,8 +4,8 @@ import WebSocket, { Server as WebSocketServer } from 'ws';
 import { driverClient, driverPresence, userClient } from '@wheleers/db';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildGatewayAuthContext } from '../auth/context';
-import { verifyLocalAccessToken } from '../auth/local';
-import type { InboundWsMessage } from '../types';
+import { verifyLocalAccessToken, verifyWalletPageToken } from '../auth/local';
+import type { GatewayAuthContext, InboundWsMessage } from '../types';
 import { isRecord } from '../utils/object';
 import { handleDriverMessage } from './handlers/driver.handler';
 import { handleRideMessage } from './handlers/ride.handler';
@@ -35,6 +35,29 @@ interface WebSocketServerDeps {
   maxPendingUpgrades?: number;
   /** Log every connect, close and message. Off, there is one summary line a minute. */
   verboseLog?: boolean;
+  /** Trip chat and Live call. Asked first about every message; answers only its own. */
+  tripChat?: {
+    handleWsMessage(
+      type: string,
+      payload: Record<string, unknown>,
+      auth: GatewayAuthContext,
+    ): Promise<{ type: string; payload: Record<string, unknown> } | null>;
+  };
+  /**
+   * Where our own pages are served (APP_BASE_URL). A Trip chat page's socket
+   * comes from there, and is let in on its link even if CORS_ORIGINS forgot it.
+   */
+  pageOrigins?: Set<string>;
+}
+
+/** The type of the message that failed, when it can be read: errors name the request they answer. */
+function requestTypeOf(raw: WebSocket.RawData): string | null {
+  try {
+    const parsed = JSON.parse(raw.toString()) as { type?: unknown };
+    return typeof parsed?.type === 'string' ? parsed.type : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A socket that keeps sending past its limit this many times is closed. */
@@ -115,15 +138,6 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         return;
       }
 
-      if (deps.allowedOrigins.size > 0 && requestOrigin && !deps.allowedOrigins.has(requestOrigin)) {
-        console.warn('[ws] reject: origin not allowed', {
-          allowedOrigins: Array.from(deps.allowedOrigins),
-          ...getRequestLogContext(request, requestOrigin),
-        });
-        rejectUpgrade(socket, 403, 'Forbidden');
-        return;
-      }
-
       const token = getConnectionToken(request, url.searchParams);
       if (!token) {
         console.warn('[ws] reject: missing access token', getRequestLogContext(request, requestOrigin));
@@ -136,13 +150,41 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       // and the apps do, a little later each time. The token is checked first:
       // that costs nothing, and a bad one should hear 401, not "busy".
       let tokenSubject: string;
+      // A Trip chat page signs in with its link, not a login: that socket may
+      // only chat and call, and only on the ride its link names.
+      let pageRideId: string | null = null;
       try {
         tokenSubject = verifyLocalAccessToken(token, deps.jwtSecret).sub;
       } catch (error) {
-        counts.refusedAuth += 1;
-        const message = error instanceof Error ? error.message : 'Invalid auth token';
-        if (verbose) console.warn('[ws] reject: invalid access token', { message, ...getRequestLogContext(request, requestOrigin) });
-        rejectUpgrade(socket, 401, message);
+        const page = (() => {
+          try {
+            return verifyWalletPageToken(token, deps.jwtSecret);
+          } catch {
+            return null;
+          }
+        })();
+        if (!page || page.scope !== 'trip' || !page.rideId) {
+          counts.refusedAuth += 1;
+          const message = error instanceof Error ? error.message : 'Invalid auth token';
+          if (verbose) console.warn('[ws] reject: invalid access token', { message, ...getRequestLogContext(request, requestOrigin) });
+          rejectUpgrade(socket, 401, message);
+          return;
+        }
+        tokenSubject = page.userId;
+        pageRideId = page.rideId;
+      }
+
+      const originAllowed =
+        deps.allowedOrigins.size === 0 ||
+        !requestOrigin ||
+        deps.allowedOrigins.has(requestOrigin) ||
+        (pageRideId !== null && (deps.pageOrigins?.has(requestOrigin) ?? false));
+      if (!originAllowed) {
+        console.warn('[ws] reject: origin not allowed', {
+          allowedOrigins: Array.from(deps.allowedOrigins),
+          ...getRequestLogContext(request, requestOrigin),
+        });
+        rejectUpgrade(socket, 403, 'Forbidden');
         return;
       }
       if (pendingUpgrades >= maxPendingUpgrades) {
@@ -155,7 +197,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       try {
         const user = await userClient.findById(tokenSubject);
 
-        const driver = await driverClient.findByUserId(user.id);
+        // A page socket is never a driver on shift: no driver record, no presence, no grace.
+        const driver = pageRideId ? null : await driverClient.findByUserId(user.id);
 
         const auth = buildGatewayAuthContext({
           user,
@@ -163,6 +206,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         });
         // The MCP server says so when it connects; used only to label bookings for analytics.
         auth.client = url.searchParams.get('client') === 'mcp' ? 'mcp' : 'app';
+        if (pageRideId) auth.page = { scope: 'trip', rideId: pageRideId };
 
         wsServer.handleUpgrade(request, socket as never, head, (ws: WebSocket) => {
           // Listen FIRST. The app speaks the moment its socket opens ("I am
@@ -310,16 +354,21 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           });
         }
 
+        const tripChatResponse = deps.tripChat ? await deps.tripChat.handleWsMessage(parsed.type, payload, auth) : null;
         const response =
-          (await handleRideMessage(
-            parsed.type,
-            payload,
-            auth,
-            deps.publisher,
-            deps.routePlanner,
-          )) ??
-          (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
-          (await handleWalletMessage(parsed.type, payload));
+          tripChatResponse ??
+          // A Trip chat page's socket does nothing else.
+          (auth.page
+            ? null
+            : (await handleRideMessage(
+                parsed.type,
+                payload,
+                auth,
+                deps.publisher,
+                deps.routePlanner,
+              )) ??
+              (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
+              (await handleWalletMessage(parsed.type, payload)));
 
         if (!response) {
           deps.registry.sendToSocket(socket, 'error', {
@@ -340,11 +389,17 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         }
 
       } catch (error) {
+        const rawCode = error instanceof Error ? (error as unknown as { code?: unknown }).code : undefined;
+        const code = typeof rawCode === 'string' ? rawCode : undefined;
         console.warn('[ws] message error', {
           message: error instanceof Error ? error.message : 'Unknown message handling error',
+          ...(code ? { code } : {}),
         });
         deps.registry.sendToSocket(socket, 'error', {
           message: error instanceof Error ? error.message : 'Unknown message handling error',
+          // Which refusal it was, and to which request, so the app can act on it (e.g. "chat closed").
+          ...(code ? { code } : {}),
+          requestType: requestTypeOf(raw),
         });
       }
     });

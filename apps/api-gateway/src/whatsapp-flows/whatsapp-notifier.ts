@@ -340,6 +340,43 @@ export async function sendMetaWhatsappMessage(
   }
 }
 
+/**
+ * Words with one button that opens a link (Meta's "cta_url"). If WhatsApp
+ * refuses the button, the words go as text with the link at the end, so the
+ * way in is never lost. No Quick Actions: the button IS the action.
+ */
+export async function sendMetaLinkMessage(
+  deps: WhatsappNotifierDeps,
+  to: string,
+  body: string,
+  buttonText: string,
+  url: string,
+): Promise<void> {
+  const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
+  const post = (message: Record<string, unknown>) => fetch(endpoint, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: to.replace(/^\+/, ''), ...message }),
+  });
+  const asButton = await post({
+    type: 'interactive',
+    interactive: {
+      type: 'cta_url',
+      body: { text: body.slice(0, 1024) },
+      action: { name: 'cta_url', parameters: { display_text: buttonText.slice(0, 20), url } },
+    },
+  }).catch(() => null);
+  if (asButton?.ok) return;
+  console.error('[whatsapp-notifier] link button failed — sending the link as text', {
+    status: asButton?.status ?? null,
+    payload: asButton ? await asButton.text().catch(() => '') : 'network error',
+  });
+  const asText = await post({ type: 'text', text: { body: `${body}\n\n${buttonText}: ${url}`.slice(0, 4096), preview_url: false } }).catch(() => null);
+  if (!asText?.ok) {
+    console.error('[whatsapp-notifier] Meta send failed', { status: asText?.status ?? null });
+  }
+}
+
 // ── Build a single message listing all driver bids ────────────────────────
 
 /** +234-format so WhatsApp renders the number as a tappable link. */

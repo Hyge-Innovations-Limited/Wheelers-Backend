@@ -59,7 +59,8 @@ function authenticate(req: IncomingMessage, deps: WalletPageRouteDeps, needs?: W
   } catch {
     throw new PageError('This link has expired. Ask the Wheelers bot for a new one.', 401, 'LINK_EXPIRED');
   }
-  if (needs && session.scope !== needs) {
+  // A Trip chat link is shared around a trip (and lives for hours): it never opens the wallet.
+  if ((needs && session.scope !== needs) || session.scope === 'trip') {
     throw new PageError('This link cannot be used for that.', 403, 'LINK_WRONG_SCOPE');
   }
   return session;

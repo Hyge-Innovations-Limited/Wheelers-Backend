@@ -1025,24 +1025,9 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'CHAT_MESSAGE_SENT') {
-    const chatPayload = {
-      messageId: event.messageId,
-      rideId: event.rideId,
-      senderId: event.senderId,
-      senderRole: event.senderRole,
-      content: event.content,
-      createdAt: event.timestamp,
-    };
-
-    // Send to both participants. The map is in-memory; after a restart it is
-    // empty for every in-flight trip, so fall back to the database.
-    const participants = await participantsFor(event.rideId, rideParticipants);
-    if (participants?.riderId) {
-      await registry.sendToUser(participants.riderId, 'chat:message', chatPayload);
-    }
-    if (participants?.driverUserId) {
-      await registry.sendToUser(participants.driverUserId, 'chat:message', chatPayload);
-    }
+    // Delivered by the trip chat the moment it is sent (src/trip-chat/messages.ts);
+    // this event is the record of it. Delivering it here too would show it twice.
+    return;
   }
 }
 

@@ -9,6 +9,11 @@ export interface GatewayAuthContext {
   name?: string;
   /** Which client opened this socket: the Wheelers app, or the MCP server acting for the user. */
   client?: 'app' | 'mcp';
+  /**
+   * A socket opened by the WhatsApp rider's Trip chat page, with its link
+   * instead of a login. It may only chat and call, and only on this ride.
+   */
+  page?: { scope: 'trip'; rideId: string };
 }
 
 export interface InboundWsMessage {

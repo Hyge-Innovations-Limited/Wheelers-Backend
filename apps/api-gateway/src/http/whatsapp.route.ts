@@ -34,7 +34,7 @@ import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage,
 import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
 import { ROUTE_PLAN_FAILED_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
-import { SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
+import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
 import { handleQuickAction, sendQuickActions } from '../whatsapp/menu';
 import { sendWalletPageButton } from '../whatsapp/wallet';
 import { requirePrivacyConsent } from '../whatsapp/consent';
@@ -86,7 +86,7 @@ const MENU_TITLE_TO_ID: Record<string, string> = {
   'Add money': QUICK_ACTION_IDS.addMoney, 'Withdraw': QUICK_ACTION_IDS.withdraw, 'Contact support': QUICK_ACTION_IDS.support,
 };
 
-const RIDE_CARD_REPLIES: ReadonlySet<string> = new Set([TRACK_REPLY_ID, SOS_REPLY_ID, SOS_CANCEL_REPLY_ID]);
+const RIDE_CARD_REPLIES: ReadonlySet<string> = new Set([TRACK_REPLY_ID, CHAT_REPLY_ID, SOS_REPLY_ID, SOS_CANCEL_REPLY_ID]);
 
 export async function handleMetaWhatsappWebhookRoute(
   req: IncomingMessage,

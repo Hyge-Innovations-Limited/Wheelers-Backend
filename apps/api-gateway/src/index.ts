@@ -102,6 +102,9 @@ import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
 import { handleRidePageRoute } from "./http/ride-page.route";
+import { createTripChatService } from "./trip-chat/service";
+import { handleTripChatPageRoute } from "./trip-chat/page.route";
+import { createTripWhatsapp } from "./trip-chat/whatsapp";
 import { describeLlm } from "./LLM/llm";
 import {
   handleLiveDriversRoute,
@@ -261,10 +264,20 @@ const MAP_TILE_ORIGIN = (() => {
     return "https://*.tile.openstreetmap.org";
   }
 })();
+// The Trip chat page keeps a socket to us. 'self' covers wss:// to our own
+// host in current browsers; older WebViews want it spelled out.
+const WIDGET_SOCKET_ORIGIN = (() => {
+  try {
+    const base = new URL((process.env.APP_BASE_URL ?? "https://app.wheelersng.com").trim());
+    return `${base.protocol === "http:" ? "ws:" : "wss:"}//${base.host}`;
+  } catch {
+    return "wss://app.wheelersng.com";
+  }
+})();
 const WIDGET_CSP =
   // Nothing is loaded from anywhere but us and the map tiles: the pages use the
   // system font stack, so Google Fonts is no longer allowed either.
-  `default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${MAP_TILE_ORIGIN}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+  `default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${MAP_TILE_ORIGIN}; connect-src 'self' ${WIDGET_SOCKET_ORIGIN}; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
@@ -496,6 +509,48 @@ async function bootstrap(): Promise<void> {
 
   const allowedOrigins = parseAllowedOrigins(gatewayEnv.CORS_ORIGINS);
 
+  // Trip chat and Live call: between a trip's rider and driver, on the app and
+  // on the WhatsApp rider's Trip chat page. Calls stay off until the TURN
+  // server is configured and LIVE_CALL_ENABLED says so.
+  if (gatewayEnv.LIVE_CALL_ENABLED && !(gatewayEnv.TURN_HOST && gatewayEnv.TURN_SHARED_SECRET)) {
+    console.warn("[live-call] LIVE_CALL_ENABLED is on but TURN_HOST or TURN_SHARED_SECRET is missing: calls on mobile data will often fail to connect.");
+  }
+  const tripChat = createTripChatService({
+    redis: redisCommandClient,
+    sockets: registry,
+    publisher,
+    whatsapp:
+      gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+        ? createTripWhatsapp(
+            {
+              metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+              metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+              flowTokenSecret: gatewayEnv.JWT_SECRET,
+              quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+              riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+            },
+            gatewayEnv.APP_BASE_URL,
+            gatewayEnv.JWT_SECRET,
+          )
+        : undefined,
+    calls: {
+      enabled: gatewayEnv.LIVE_CALL_ENABLED,
+      turn: {
+        host: gatewayEnv.TURN_HOST,
+        secret: gatewayEnv.TURN_SHARED_SECRET,
+        ttlSeconds: gatewayEnv.TURN_CREDENTIAL_TTL_SECONDS,
+      },
+    },
+  });
+  tripChat.start();
+  // Our own pages' address: the Trip chat page's socket comes from there.
+  const pageOrigins = new Set<string>();
+  try {
+    pageOrigins.add(new URL(gatewayEnv.APP_BASE_URL).origin);
+  } catch {
+    /* no public address configured: page sockets need CORS_ORIGINS */
+  }
+
   const scheduledRideDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
     routePlanner,
@@ -547,6 +602,7 @@ async function bootstrap(): Promise<void> {
     groqModel: gatewayEnv.GROQ_MODEL,
     groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
     appBaseUrl: gatewayEnv.APP_BASE_URL,
+    liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
     driverKycStorage: driverKycStorage ?? undefined,
     groupRideFaceStorage: groupRideFaceStorage ?? undefined,
     whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
@@ -890,6 +946,11 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname.startsWith("/trip-chat/")) {
+      const handled = await handleTripChatPageRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, tripChat }, url);
+      if (handled) return;
+    }
+
     if (url.pathname.startsWith("/ride-page/")) {
       const handled = await handleRidePageRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
@@ -917,6 +978,7 @@ async function bootstrap(): Promise<void> {
         groqModel: gatewayEnv.GROQ_MODEL,
         groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
         appBaseUrl: gatewayEnv.APP_BASE_URL,
+        liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
         driverKycStorage: driverKycStorage ?? undefined,
         groupRideFaceStorage: groupRideFaceStorage ?? undefined,
         whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
@@ -2220,6 +2282,8 @@ async function bootstrap(): Promise<void> {
     rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,
     maxPendingUpgrades: gatewayEnv.WS_MAX_PENDING_UPGRADES,
     verboseLog: gatewayEnv.WS_VERBOSE_LOG,
+    tripChat,
+    pageOrigins,
   });
 
   // Jobs that must run once, however many gateway processes there are.
@@ -2286,6 +2350,7 @@ async function bootstrap(): Promise<void> {
 
   // First: let go of the sockets and the job lock while Redis is still connected.
   onShutdown(async () => {
+    tripChat.stop();
     await leader.release();
     await registry.shutdown();
   });

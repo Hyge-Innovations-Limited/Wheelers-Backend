@@ -93,6 +93,10 @@ for (const key of ['META_ACCESS_TOKEN', 'META_PHONE_NUMBER_ID', 'GROQ_API_KEY', 
   if (!file[key]) warnings.push(`${key} is empty — ${key === 'RESEND_API_KEY' ? 'PIN recovery emails cannot be sent' : 'a feature that depends on it will be off'}.`);
 }
 
+if (file.LIVE_CALL_ENABLED === 'true' && !(file.TURN_HOST && file.TURN_SHARED_SECRET)) {
+  warnings.push('LIVE_CALL_ENABLED=true without TURN_HOST and TURN_SHARED_SECRET: calls on mobile data will often fail to connect. See infra/turn/README.md.');
+}
+
 /* ── 3. what production will run with ───────────────────────────────────── */
 const mask = (v) => (v ? `${v.slice(0, 7)}…(${v.length} chars)` : '— not set');
 const host = (v) => { try { return new URL(v).host; } catch { return v ? 'unparseable' : '— not set'; } };
@@ -102,6 +106,7 @@ for (const [label, value] of [
   ['gateway port', file.PORT || '3000 (default)'],
   ['database', `${host(file.DATABASE_URL)} · pool ${Number.isFinite(poolSize) ? poolSize : 'default'} × ${services} services`],
   ['redis', host(file.REDIS_URL)],
+  ['live call', file.LIVE_CALL_ENABLED === 'true' ? `ON via ${file.TURN_HOST || '— no TURN_HOST'}${file.TURN_SHARED_SECRET ? '' : ' (no TURN_SHARED_SECRET)'}` : 'off (chat only)'],
   ['kafka', file.KAFKA_BROKERS || '— not set'],
   ['paystack', `${paystackMode}  ${mask(file.PAYSTACK_SECRET_KEY)}`],
   ['paystack account bank', file.PAYSTACK_DVA_BANK || 'wema-bank (default)'],
