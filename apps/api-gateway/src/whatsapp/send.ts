@@ -268,6 +268,26 @@ export async function replyAndLog(
   await sendMetaReply(deps, phone, reply);
 }
 
+/**
+ * A reply that ends in choices: the choices are buttons to tap, not words to
+ * type. A tap arrives as its title, which the chat already understands. At
+ * most three (WhatsApp's limit), each up to 20 characters. If buttons cannot
+ * be sent, the same words go as text with the choices listed.
+ */
+export async function replyWithButtons(
+  deps: MetaWhatsappRouteDeps,
+  phone: string,
+  userMessage: string,
+  reply: string,
+  buttons: string[],
+): Promise<void> {
+  await appendWhatsappConversation(deps.redisClient, phone, [
+    { role: 'user', content: userMessage },
+    { role: 'assistant', content: `${reply}\n[buttons: ${buttons.join(' | ')}]` },
+  ]);
+  await sendMetaButtons(deps, phone, reply, buttons);
+}
+
 // ── Privacy consent: asked once, before anything else ────────────────────
 
 export function clip(text: string, max: number): string {

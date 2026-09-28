@@ -1,7 +1,7 @@
 import { clearBookingStage, clearPendingRoute, getPendingRoute, setActiveRide, setBookingStage, storeLastRoute, storePendingRoute, storeWhatsappRide } from '../../whatsapp-flows/bid-state';
 import { isCancelCommand, isEditDestinationCommand, isEditPickupCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { appendWhatsappConversation } from '../../LLM/conversation-store';
-import { sendMetaReply } from '../../whatsapp/send';
+import { sendMetaReply, replyWithButtons } from '../../whatsapp/send';
 import { geocodeAddress } from '../../LLM/geocoding';
 import { planRouteSafe } from '../../whatsapp/trip';
 import { randomUUID } from 'crypto';
@@ -61,13 +61,9 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
           `Pickup: *${pendingRoute.pickupAddress}*`,
           `Destination: *${pendingRoute.destAddress}*`,
           ``,
-          `Reply *yes* to find drivers, or *edit pickup <address>* / *edit destination <address>* to fix the route.`,
+          `Tap *Yes* to find drivers. To fix the route, type *edit pickup <address>* or *edit destination <address>*.`,
         ].join('\n');
-        await appendWhatsappConversation(deps.redisClient, phone, [
-          { role: 'user', content: incomingMessage },
-          { role: 'assistant', content: reply },
-        ]);
-        await sendMetaReply(deps, phone, reply);
+        await replyWithButtons(deps, phone, incomingMessage, reply, ['Yes']);
         return true;
       }
 

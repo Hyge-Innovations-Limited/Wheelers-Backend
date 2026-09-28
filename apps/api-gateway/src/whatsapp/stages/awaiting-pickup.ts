@@ -1,11 +1,11 @@
 import { isCancelCommand, looksLikeConversation } from '../../whatsapp/parse';
 import { clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingGeoChoices, getPendingAreaHint, getPendingGeoChoices, setBookingStage, setPendingLocation } from '../../whatsapp-flows/bid-state';
 import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/conversation-store';
-import { replyAndLog, sendMetaReply } from '../../whatsapp/send';
+import { replyAndLog, replyWithButtons, sendMetaReply } from '../../whatsapp/send';
 import { classifyBookingIntent, mightNotBeAnAddress } from '../../LLM/booking-intent';
 import { bookingIntentGroq, replyWithWayOut, sendPlaceChoices } from '../../whatsapp/places';
 import { startBookingOver } from '../../whatsapp/trip';
-import { findPlaceOptions, geocodeAddress, geocodeMissLine, outsideServiceAreaMatch } from '../../LLM/geocoding';
+import { findPlaceOptions, geocodeAddress, geocodeMissLine, HOME_AREA, outsideServiceAreaMatch } from '../../LLM/geocoding';
 import type { StageContext } from '../stage-context';
 
 /** The awaitingPickup stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
@@ -94,7 +94,12 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
     // in Surulere AND Akoka): ask, never assume. Only for a plain answer — when
     // they are answering "whereabouts in Lekki?", the area already narrows it.
     if (!pickedPickup && !hint?.area && !looksLikeConversation(answer)) {
-      const matches = await findPlaceOptions(deps.googleMapsApiKey, answer, { spokenText: incomingMessage });
+      // Nothing to measure the pickup against yet, so it is searched around
+      // the city Wheelers runs in: a street name with namesakes across Nigeria
+      // means the one in Lagos. The distance is from the city centre, which
+      // means nothing to the rider, so it is not shown.
+      const matches = (await findPlaceOptions(deps.googleMapsApiKey, answer, { spokenText: incomingMessage, near: HOME_AREA }))
+        .map(({ distanceKm: _fromCentre, ...match }) => match);
       if (matches.length > 1) {
         await sendPlaceChoices(deps, user, phone, incomingMessage, { context: 'pickup', field: 'pickup', typed: answer, candidates: matches });
         return true;
@@ -104,7 +109,7 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
 
     let pickupGeo = pickedPickup;
     for (const candidate of pickedPickup ? [] : candidates) {
-      pickupGeo = await geocodeAddress(deps.googleMapsApiKey, candidate);
+      pickupGeo = await geocodeAddress(deps.googleMapsApiKey, candidate, { near: HOME_AREA });
       if (pickupGeo) break;
     }
 
@@ -144,10 +149,14 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
       return true;
     }
 
-    // If they already told us where they were going, don't ask again.
-    const reply = hint?.counterpartAddress
-      ? `Pickup: *${pickupGeo.formattedAddress}*\n\nAnd your destination is *${hint.counterpartAddress}* — type "yes" to confirm, or send a different destination.`
-      : `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going? Type the destination or share a pin`;
+    // If they already told us where they were going, don't ask again: one tap confirms it.
+    if (hint?.counterpartAddress) {
+      await replyWithButtons(deps, phone, incomingMessage,
+        `Pickup: *${pickupGeo.formattedAddress}*\n\nAnd your destination is *${hint.counterpartAddress}*?`,
+        ['Yes', 'Change destination']);
+      return true;
+    }
+    const reply = `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going? Type the destination or share a pin`;
     await appendWhatsappConversation(deps.redisClient, phone, [
       { role: 'user', content: incomingMessage },
       { role: 'assistant', content: reply },

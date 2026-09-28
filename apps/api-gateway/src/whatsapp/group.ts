@@ -9,7 +9,7 @@ import { setBookingStage, clearBookingStage, storePendingRoute, storePendingGrou
 import { MetaWhatsappRouteDeps, WhatsappUser } from './deps';
 import { isCancelCommand, isGroupCancelCommand, parseCounterOffer, stripDirectionPrefix } from './parse';
 import { sendPlaceChoices } from './places';
-import { replyAndLog } from './send';
+import { replyAndLog, replyWithButtons } from './send';
 import { ROUTE_PLAN_FAILED_REPLY, planRouteSafe, quoteAndLog } from './trip';
 
 export const GROUP_SELFIE_PROMPT = [
@@ -109,7 +109,7 @@ export async function presentGroupQuote(
   await setBookingStage(deps.redisClient, user.id, 'group_awaiting_confirm');
 
   const durationMin = Math.ceil(plannedRoute.durationSeconds / 60);
-  await replyAndLog(deps, phone, incomingMessage, [
+  await replyWithButtons(deps, phone, incomingMessage, [
     `*Group ride*`,
     ``,
     `Pickup: *${pickup.address}*`,
@@ -119,8 +119,8 @@ export async function presentGroupQuote(
     `Solo fare: ₦${plannedRoute.suggestedFareNgn.toLocaleString()}`,
     `*Your seat, your price.* Suggested: *₦${suggestedSeatNgn.toLocaleString()}* (25% off solo).`,
     ``,
-    `Reply *yes* to offer ₦${suggestedSeatNgn.toLocaleString()}, send *your own price*, or *cancel*.`,
-  ].join('\n'));
+    `Tap to offer ₦${suggestedSeatNgn.toLocaleString()}, or send *your own price* (e.g. *4200*).`,
+  ].join('\n'), [`Yes, ₦${suggestedSeatNgn.toLocaleString()}`, 'Cancel']);
 }
 
 /** Text messages while in one of the group stages. */
@@ -234,8 +234,8 @@ export async function handleGroupStageText(
       return;
     }
 
-    await replyAndLog(deps, phone, incomingMessage,
-      'Reply *yes* to use the suggested seat price, send *your own price* (e.g. *4200*), or *cancel*.');
+    await replyWithButtons(deps, phone, incomingMessage,
+      'Tap *Yes* to use the suggested seat price, or send *your own price* (e.g. *4200*).', ['Yes', 'Cancel']);
     return;
   }
 
@@ -352,13 +352,11 @@ export async function createGroupMatchRequest(
         await clearPendingGroupRide(deps.redisClient, user.id);
         await clearBookingStage(deps.redisClient, user.id);
 
-        await replyAndLog(deps, phone, incomingMessage, [
+        await replyWithButtons(deps, phone, incomingMessage, [
           `You're already verified — no selfie needed this time.`,
           ``,
           `*Matching in progress!* We're finding riders heading your way — you'll get a message here the moment your group is formed.`,
-          ``,
-          `Reply *group status* to check, or *cancel group* to leave.`,
-        ].join('\n'));
+        ].join('\n'), ['Group status', 'Cancel group']);
         return;
       } catch (error) {
         console.warn('[whatsapp][group-ride] selfie reuse failed — asking for a fresh one', {
@@ -461,15 +459,13 @@ export async function handleGroupSelfie(
     await clearPendingGroupRide(deps.redisClient, user.id);
     await clearBookingStage(deps.redisClient, user.id);
 
-    await replyAndLog(deps, phone, '[Selfie]', [
+    await replyWithButtons(deps, phone, '[Selfie]', [
       `*Selfie verified — you're all set!*`,
       ``,
       `*Matching in progress!* We're finding riders heading your way — you'll get a message here the moment your group is formed.`,
       ``,
       `You won't need a selfie again for future group rides.`,
-      ``,
-      `Reply *group status* to check, or *cancel group* to leave.`,
-    ].join('\n'));
+    ].join('\n'), ['Group status', 'Cancel group']);
   } catch (error) {
     console.error('[whatsapp][group-ride] face upload failed', {
       userId: user.id,

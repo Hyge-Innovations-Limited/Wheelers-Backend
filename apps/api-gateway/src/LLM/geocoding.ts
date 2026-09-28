@@ -242,6 +242,25 @@ export const SAME_PLACE_KM = 0.4;
 
 /** Beyond this, two points are in different cities, not different streets. */
 export const SAME_CITY_KM = 100;
+/**
+ * Where Wheelers runs, as the point a first place is searched around when
+ * nothing else is known yet. A pickup typed with no city ("92 Murtala Way,
+ * Adekunle") has a namesake in half the country's cities; the rider means the
+ * one where the service is. Lagos by default; GEOCODE_HOME="lat,lng" moves
+ * it, and GEOCODE_HOME="" switches it off.
+ */
+export const HOME_AREA: GeoPoint | undefined = (() => {
+  const raw = process.env['GEOCODE_HOME'];
+  if (raw === '') return undefined;
+  const [lat, lng] = (raw ?? '6.5244,3.3792').split(',').map((part) => Number(part.trim()));
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat: lat!, lng: lng! } : { lat: 6.5244, lng: 3.3792 };
+})();
+
+/** Is this point in the city Wheelers runs in? True when no home area is set. */
+export function isInHomeArea(point: GeoPoint): boolean {
+  return !HOME_AREA || kmBetween(HOME_AREA, point) <= SAME_CITY_KM;
+}
+
 /** Half-width of the box we ask Google to favour around `near` (~55 km). */
 const NEAR_BOX_DEGREES = 0.5;
 const NEAR_PLACES_RADIUS_M = 50_000;

@@ -1,12 +1,12 @@
 import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { createLlm } from '../LLM/llm';
 import type { LlmClient } from '../LLM/llm';
-import { kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
+import { isInHomeArea, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { storePendingGeoChoices, getPendingGeoChoices, clearPendingGeoChoices, storePendingFarPlace, noteBookingMiss } from '../whatsapp-flows/bid-state';
 import type { PendingGeoChoices } from '../whatsapp-flows/bid-state';
 import { MetaWhatsappRouteDeps } from './deps';
 import { NONE_OF_THESE } from './parse';
-import { clip, replyAndLog, sendMetaButtons, sendMetaReply } from './send';
+import { clip, replyAndLog, replyWithButtons, sendMetaButtons, sendMetaReply } from './send';
 
 export interface PlaceChoice { address: string; name?: string; distanceKm?: number }
 
@@ -194,8 +194,9 @@ export async function replyWithWayOut(
   options: { prompt: string; hint: string; buttons: string[]; wantsHelp?: boolean },
 ): Promise<void> {
   const misses = await noteBookingMiss(deps.redisClient, user.id).catch(() => 1);
+  // The first miss: the question again, with the ways out as buttons to tap.
   if (misses < 2 && !options.wantsHelp) {
-    await replyAndLog(deps, phone, incomingMessage, `${options.prompt}\n\n${options.hint}`);
+    await replyWithButtons(deps, phone, incomingMessage, options.prompt, options.buttons);
     return;
   }
 
@@ -235,13 +236,26 @@ export async function askIfFarPlaceIsMeant(
 
   await storePendingFarPlace(deps.redisClient, user.id, { field, ...place, distanceKm });
   const other = field === 'destination' ? 'pickup' : 'destination';
-  await replyAndLog(deps, phone, incomingMessage, [
+
+  // Which end is wrong? When the place just found is in Lagos and the other
+  // end is not, it is the OTHER end that was matched to a namesake elsewhere:
+  // "92 Murtala Way, Adekunle" once became a Murtala Way 716 km away, and the
+  // rider was asked about the destination they had typed correctly.
+  const otherLooksWrong = isInHomeArea(place) && !isInHomeArea(otherEnd);
+  if (otherLooksWrong) {
+    await replyWithButtons(deps, phone, incomingMessage, [
+      `Your ${other} was matched to a place about *${distanceKm.toLocaleString()} km* from *${place.address}*, in another city.`,
+      '',
+      `That is probably the wrong ${other}. Tap *Change ${other}* and send it again with the area — e.g. *"92 Murtala Muhammed Way, Yaba"*.`,
+    ].join('\n'), [`Change ${other}`, 'Yes, that far', 'Cancel ride']);
+    return true;
+  }
+
+  await replyWithButtons(deps, phone, incomingMessage, [
     `I found *${place.address}* — but that is about *${distanceKm.toLocaleString()} km* from your ${other}, in another city.`,
     '',
-    `If you meant somewhere closer, send the ${field} again with the area or city — e.g. *"7 Osaro Isokpan, Yaba"*.`,
-    '',
-    `Reply *yes* if you really are going that far.`,
-  ].join('\n'));
+    `If you meant somewhere closer, tap *Change ${field}* and send it with the area or city — e.g. *"7 Osaro Isokpan, Yaba"*.`,
+  ].join('\n'), [`Change ${field}`, 'Yes, that far', `Change ${other}`]);
   return true;
 }
 

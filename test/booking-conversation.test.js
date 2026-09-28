@@ -783,7 +783,9 @@ test('when the only match IS in another city, the bot asks before quoting — an
   const question = textOf(last(sent));
   assert.match(question, /Isokpan St, Use, Benin City/);
   assert.match(question, /about \*2\d\d km\* from your pickup, in another city/);
-  assert.match(question, /Reply \*yes\* if you really are going that far/);
+  // The ways forward are buttons to tap, not words to type.
+  assert.equal(last(sent).type, 'interactive');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change destination', 'Yes, that far', 'Change pickup']);
   assert.doesNotMatch(question, /Suggested fare/, 'no ₦97,100 quote for a place they never meant');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination', 'still waiting for a destination');
 
@@ -796,7 +798,7 @@ test('when the only match IS in another city, the bot asks before quoting — an
   const traveller = rider();
   const travellerUser = await riderWithPickup(deps, redis, traveller);
   await say(deps, traveller, 'Isokpan street');
-  await say(deps, traveller, 'yes');
+  await say(deps, traveller, 'Yes, that far'); // the button, as it arrives
   assert.match(textOf(last(sent)), /Destination: \*Isokpan St, Use, Benin City/);
   assert.equal(await bidState.getBookingStage(redis, travellerUser.id), 'awaiting_trip_confirm');
 });
@@ -2088,7 +2090,7 @@ test('the menu\'s numbered-text fallback answers a typed number the same as a ta
 
 /* ── always a way out ──────────────────────────────────────────────────── */
 
-test('the second reply the bot cannot use brings buttons, not the same prompt again', async () => {
+test('a reply the bot cannot use brings the ways out as buttons, and the second one says it is stuck', async () => {
   const redis = memoryRedis();
   const { deps } = makeDeps(redis);
   const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
@@ -2098,11 +2100,13 @@ test('the second reply the bot cannot use brings buttons, not the same prompt ag
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
 
   await say(deps, who, 'hmm wetin be this');
-  assert.equal(last(sent).type, 'text');
-  assert.match(textOf(last(sent)), /Or reply \*change pickup\*, \*change destination\* or \*cancel\*/, 'the exits are named from the first miss');
+  assert.equal(last(sent).type, 'interactive', 'the exits are buttons from the first miss');
+  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Change destination', 'Cancel ride']);
+  assert.doesNotMatch(textOf(last(sent)), /not getting anywhere/, 'the first miss just asks again');
 
   await say(deps, who, 'i no understand');
   assert.equal(last(sent).type, 'interactive');
+  assert.match(textOf(last(sent)), /not getting anywhere/, 'the second owns up to being stuck');
   assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Change destination', 'Cancel ride']);
 
   // Tapping a button arrives as its title.
@@ -2742,4 +2746,59 @@ test('ONE open search per rider: a new request ends the older one — silently, 
   const before = at.sent.length;
   await handleRideEvent(cancelled[0], { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' }, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
   assert.equal(at.sent.length, before, 'not a word — they asked for the new search');
+});
+
+test('a pickup matched to a namesake in another city is the one questioned, and the destination survives the fix', async () => {
+  // "From 92 murtala way adekunle to Yaba technology": the pickup was matched
+  // to a Murtala Way 716 km away, and the rider was asked about the destination.
+  const KANO = { lat: 12.0022, lng: 8.5920, address: 'Murtala Mohammed Way, Kano, Nigeria' };
+  const YABATECH = { lat: 6.5190, lng: 3.3752, address: 'Yaba College of Technology, Hussey Rd, Yaba, Lagos, Nigeria' };
+  const EBUTE = { lat: 6.4980, lng: 3.3800, address: '92 Murtala Muhammed Way, Ebute Metta, Lagos, Nigeria' };
+  let murtala = KANO;
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({
+    geocode: (query) => (/murtala/i.test(query) ? murtala : YABATECH),
+    places: () => null,
+    intent: () => ({ intent: 'other' }),
+  });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  await bidState.setBookingStage(redis, user.id, 'awaiting_pickup');
+
+  await say(deps, who, '92 murtala way adekunle');
+  await say(deps, who, 'Yaba technology Hussey');
+
+  const question = last(sent);
+  assert.equal(question.type, 'interactive');
+  assert.match(textOf(question), /Your pickup was matched to a place about \*\d{3} km\* from \*Yaba College of Technology/);
+  assert.match(textOf(question), /probably the wrong pickup/);
+  assert.deepEqual(question.interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Yes, that far', 'Cancel ride']);
+
+  // "No it's in Lagos" is an answer, not a place to look up.
+  await say(deps, who, "No it's in Lagos");
+  assert.doesNotMatch(textOf(last(sent)), /Could not find/);
+  assert.match(textOf(last(sent)), /where should we pick you up/i);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
+
+  // The new pickup, and the destination they already gave is kept: straight to the trip check.
+  murtala = EBUTE;
+  await say(deps, who, '92 Murtala Muhammed Way, Yaba');
+  assert.match(textOf(last(sent)), /Check your trip/);
+  assert.match(textOf(last(sent)), /Pickup: \*92 Murtala Muhammed Way, Ebute Metta/);
+  assert.match(textOf(last(sent)), /Destination: \*Yaba College of Technology/, 'nothing to type twice');
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+});
+
+test('a pickup with no area is searched around Lagos first, and the choice list does not show distance from the city centre', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { calls } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  await bidState.setBookingStage(redis, user.id, 'awaiting_pickup');
+  await say(deps, who, '7 osaro isokpan');
+  assert.ok(calls.geocode.some((c) => c.bounds && c.bounds.includes('6.02') && c.bounds.includes('3.87')), JSON.stringify(calls.geocode));
 });

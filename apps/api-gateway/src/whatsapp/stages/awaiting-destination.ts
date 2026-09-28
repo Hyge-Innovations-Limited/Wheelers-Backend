@@ -1,11 +1,11 @@
 import { CANCELLATION_REASON_PROMPT, isAffirmativeReply, isCancelCommand, looksLikeConversation, stripDirectionPrefix } from '../../whatsapp/parse';
-import { clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, getPendingAreaHint, getPendingFarPlace, getPendingGeoChoices, getPendingLocation, setBookingStage, storePendingRoute } from '../../whatsapp-flows/bid-state';
+import { clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, getPendingAreaHint, getPendingFarPlace, getPendingGeoChoices, getPendingLocation, setBookingStage, setPendingAreaHint, storePendingRoute } from '../../whatsapp-flows/bid-state';
 import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/conversation-store';
 import { replyAndLog, sendMetaReply } from '../../whatsapp/send';
 import { BookingIntentResult, classifyBookingIntent, mightNotBeAnAddress } from '../../LLM/booking-intent';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, replyWithWayOut, sendPlaceChoices } from '../../whatsapp/places';
 import { ROUTE_PLAN_FAILED_REPLY, buildGroupSuggestionLine, planRouteSafe, sendQuoteWithPriceButton, startBookingOver } from '../../whatsapp/trip';
-import { findPlaceOptions, geocodeMissLine } from '../../LLM/geocoding';
+import { findPlaceOptions, geocodeMissLine, isInHomeArea } from '../../LLM/geocoding';
 import type { StageContext } from '../stage-context';
 
 /** The awaitingDestination stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
@@ -23,10 +23,21 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
       return true;
     }
 
+    // A far-away match is being questioned and the rider answers "no, it's in
+    // Lagos": that is not a place to look up (it was once geocoded, and "Could
+    // not find 'No it's in Lagos'" came back). It says which end is wrong.
+    const questioned = await getPendingFarPlace(deps.redisClient, user.id);
+    const saysItIsHere = questioned && /\blagos\b/i.test(incomingMessage) && !/\d/.test(incomingMessage)
+      && incomingMessage.trim().split(/\s+/).length <= 8;
+
     // Not every reply here is a destination. Anything that might be more
     // than a place is read for meaning first; a plain place skips the model.
     let destinationStepIntent: BookingIntentResult = { intent: 'answer' };
-    if (mightNotBeAnAddress(incomingMessage) && !isAffirmativeReply(incomingMessage)) {
+    if (saysItIsHere) {
+      const pickupNow = await getPendingLocation(deps.redisClient, user.id);
+      const pickupIsTheStranger = Boolean(pickupNow && questioned.field === 'destination' && isInHomeArea(questioned) && !isInHomeArea(pickupNow));
+      destinationStepIntent = { intent: pickupIsTheStranger ? 'change_pickup' : 'change_destination' };
+    } else if (mightNotBeAnAddress(incomingMessage) && !isAffirmativeReply(incomingMessage)) {
       const soFar = await getPendingLocation(deps.redisClient, user.id);
       destinationStepIntent = await classifyBookingIntent(bookingIntentGroq(deps), {
         step: 'destination',
@@ -45,16 +56,31 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
       return true;
     }
     if (destinationStepIntent.intent === 'change_pickup') {
+      // Whatever destination they already gave travels on: after the new
+      // pickup they confirm it with one tap instead of typing it again.
+      const [heldDestination, pickupBefore] = await Promise.all([
+        getPendingFarPlace(deps.redisClient, user.id).catch(() => null),
+        getPendingLocation(deps.redisClient, user.id).catch(() => null),
+      ]);
+      const keepDestination = (heldDestination?.field === 'destination' ? heldDestination.address : undefined) ?? pickupBefore?.suggestedDestination;
       await clearPendingLocation(deps.redisClient, user.id);
       await clearPendingFarPlace(deps.redisClient, user.id).catch(() => undefined);
       await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
+      if (keepDestination) {
+        await setPendingAreaHint(deps.redisClient, user.id, { kind: 'pickup', area: '', counterpartAddress: keepDestination }).catch(() => undefined);
+      }
       if (!destinationStepIntent.address) {
-        await replyAndLog(deps, phone, incomingMessage, 'Sure — where should we pick you up instead? Type the address or share a location pin');
+        await replyAndLog(deps, phone, incomingMessage, 'Sure — where should we pick you up? Type the address with the area (e.g. *"92 Murtala Muhammed Way, Yaba"*) or share a location pin');
         return true;
       }
       // They named the new pickup in the same breath: answer the pickup step with it.
       // No message id: this is the same WhatsApp message, already de-duplicated once.
       await ctx.replay({ ...msgInfo, messageId: '', messageBody: destinationStepIntent.address });
+      return true;
+    }
+    if (destinationStepIntent.intent === 'change_destination') {
+      await clearPendingFarPlace(deps.redisClient, user.id).catch(() => undefined);
+      await replyAndLog(deps, phone, incomingMessage, 'Sure — where are you going? Type the destination with the area (e.g. *"Yaba College of Technology, Yaba"*) or share a location pin');
       return true;
     }
     // 'other' (a question, chatter) carries on below, where small talk is
