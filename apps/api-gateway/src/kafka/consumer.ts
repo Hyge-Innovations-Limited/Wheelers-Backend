@@ -735,6 +735,7 @@ export async function handleRideEvent(
 
     await registry.sendToUser(event.driverUserId, 'ride:matched', {
       rideId: event.rideId,
+      tripId: rideSnapshot?.tripId ?? null,
       riderId: event.riderId,
       rideStatus: 'DRIVER_ASSIGNED',
       pickup: rideSnapshot?.pickup,
