@@ -1,4 +1,5 @@
-import { driverClient, userClient, virtualAccountClient } from '@wheleers/db';
+import { formatTripId } from '@wheleers/config';
+import { driverClient, rideClient, userClient, virtualAccountClient } from '@wheleers/db';
 import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
@@ -17,6 +18,8 @@ export interface ConfirmedRideForChat {
   driverId: string; driverName: string; driverPhone: string; driverRating: number; totalRides: number;
   vehicleModel: string; vehiclePlate: string; etaSeconds: number; fareNgn: number;
   pickupAddress?: string; destAddress?: string; stopAddresses?: string[];
+  /** The short trip ID, e.g. WH-01234. Filled in by sendRideConfirmation when absent. */
+  tripId?: string | null;
 }
 
 export const SOS_REPLY_ID = 'ride_sos';
@@ -53,7 +56,7 @@ export function rideDetailsText(ride: ConfirmedRideForChat): string {
     `Car: ${ride.vehicleModel}`,
     `Plate: *${ride.vehiclePlate}* — check it before you get in`,
     ``,
-    `*YOUR TRIP*`,
+    `*YOUR TRIP*${ride.tripId ? ` · ${ride.tripId}` : ''}`,
     ...(ride.pickupAddress && ride.destAddress
       ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
       : []),
@@ -92,7 +95,11 @@ export async function sendRideConfirmation(
   ride: ConfirmedRideForChat,
 ): Promise<string> {
   const selfieUrl = await driverPhotoUrl(deps, ride.driverId, 'selfie');
-  const details = rideDetailsText(ride);
+  // The ride was assigned a moment ago, so it is the rider's active ride: its trip ID goes on the card.
+  const tripId = ride.tripId ?? await rideClient.findActiveByRider(userId)
+    .then((active) => formatTripId(active?.tripNumber))
+    .catch(() => null);
+  const details = rideDetailsText({ ...ride, tripId });
 
   const card = (photo: string | null) => ({
     type: 'button',

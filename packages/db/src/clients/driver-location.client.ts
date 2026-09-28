@@ -77,6 +77,7 @@ const driverForMap = {
 
 const activeRideSelect = {
   id: true,
+  tripNumber: true,
   driverId: true,
   status: true,
   pickupAddress: true,
@@ -233,6 +234,7 @@ export const driverLocationClient = {
       take: 50,
       select: {
         id: true,
+        tripNumber: true,
         status: true,
         pickupLat: true,
         pickupLng: true,
@@ -300,6 +302,7 @@ export const driverLocationClient = {
 
 export interface ActiveRide {
   id: string;
+  tripNumber: number;
   driverId: string | null;
   status: string;
   pickupAddress: string;

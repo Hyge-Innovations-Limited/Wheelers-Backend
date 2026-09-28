@@ -65,6 +65,12 @@ function buildRouteStops(params: {
 export const SEARCH_TIMED_OUT_REASON = 'No driver accepted in time';
 
 export const rideClient = {
+  /** The ride's short trip number (shown as WH-01234), or null if there is no such ride. */
+  tripNumberOf: (rideId: string): Promise<number | null> =>
+    prisma.ride
+      .findUnique({ where: { id: rideId }, select: { tripNumber: true } })
+      .then((ride) => ride?.tripNumber ?? null),
+
 
   // ── Reads ──────────────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@ import {
   scheduledRideClient,
   rideClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, formatTripId } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -241,6 +241,7 @@ export async function handleRiderRideHistoryRoute(
     sendJson(res, 200, {
       items: rides.map((ride) => ({
         id: ride.id,
+        tripId: formatTripId(ride.tripNumber),
         status: ride.status,
         pickupAddress: ride.pickupAddress,
         destAddress: ride.destAddress,
@@ -498,6 +499,7 @@ type RideWithDriver = Awaited<ReturnType<typeof rideClient.findWithDriver>>;
 function serializeRideDetail(ride: RideWithDriver) {
   return {
     id: ride.id,
+    tripId: formatTripId(ride.tripNumber),
     status: ride.status,
     riderId: ride.riderId,
     driverId: ride.driverId ?? null,

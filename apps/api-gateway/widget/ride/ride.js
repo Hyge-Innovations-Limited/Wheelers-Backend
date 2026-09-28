@@ -282,7 +282,8 @@
 
   function drawTrip(trip) {
     var copy = TRIP_COPY[trip.status] || TRIP_COPY.DRIVER_ASSIGNED;
-    W.$('trip-eyebrow').textContent = copy[0];
+    // The trip ID beside the status: what a rider quotes to support.
+    W.$('trip-eyebrow').textContent = copy[0] + (trip.tripId ? ' · ' + trip.tripId : '');
     var title = W.$('trip-title');
     title.innerHTML = '';
     title.appendChild(document.createTextNode(copy[1]));

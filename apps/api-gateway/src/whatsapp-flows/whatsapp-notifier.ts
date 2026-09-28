@@ -554,9 +554,11 @@ async function postImage(deps: WhatsappNotifierDeps, phone: string, link: string
 export async function sendRideStartedNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
+  /** The short trip ID, e.g. WH-01234: what the rider quotes if they need help. */
+  tripId?: string | null,
 ): Promise<void> {
   await sendMetaWhatsappMessage(deps, phone, [
-    `*Trip started*`,
+    `*Trip started*${tripId ? ` · ${tripId}` : ''}`,
     ``,
     `Sit back and stay safe. We'll send your receipt when you arrive.`,
   ].join('\n'));
@@ -572,11 +574,13 @@ async function sendRideCompletedNotification(
   balanceNgn?: number,
   /** The trip just finished. With it, the receipt carries Repeat / Reverse buttons — "now take me home" is one tap. */
   rideId?: string,
+  tripId?: string | null,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
     `*Trip complete!*`,
     ``,
+    ...(tripId ? [`Trip ID: ${tripId}`] : []),
     `Distance: ${distanceKm.toFixed(1)} km`,
     `Fare: ₦${fees.totalNgn.toLocaleString()} — paid from your wallet`,
     ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),

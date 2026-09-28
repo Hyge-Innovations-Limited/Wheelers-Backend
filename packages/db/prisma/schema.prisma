@@ -353,6 +353,8 @@ model GroupRideFaceVerification {
 
 model Ride {
   id                     String            @id @default(uuid())
+  /// The short trip ID people use, shown as WH-01234. Numbered in booking order.
+  tripNumber             Int               @unique @default(autoincrement())
   riderId                String
   driverId               String?
   status                 RideStatus        @default(REQUESTED)

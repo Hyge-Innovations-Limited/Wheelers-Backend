@@ -1,3 +1,4 @@
+import { formatTripId } from '@wheleers/config';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { driverLocationClient, userClient } from '@wheleers/db';
@@ -120,6 +121,7 @@ function toMapDriver(row: MapDriverRow, ride: ActiveRide | undefined, now: numbe
     ride: ride
       ? {
           id: ride.id,
+          tripId: formatTripId(ride.tripNumber),
           status: ride.status,
           pickupAddress: ride.pickupAddress,
           destAddress: ride.destAddress,
@@ -292,6 +294,7 @@ export async function handleLiveDispatchRoute(
           }));
         return {
           id: ride.id,
+          tripId: formatTripId(ride.tripNumber),
           status: ride.status,
           pickupAddress: ride.pickupAddress,
           destAddress: ride.destAddress,

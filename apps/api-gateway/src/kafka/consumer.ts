@@ -10,7 +10,7 @@ import {
   WalletEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { calculateRideFees } from '@wheleers/config';
+import { calculateRideFees, formatTripId } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
 import { loadDriverRideSnapshot } from '../websocket/driver-ride-sync';
@@ -822,7 +822,8 @@ export async function handleRideEvent(
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
       if (phone) {
-        await sendRideStartedNotification(deps.whatsappNotifier, phone).catch(() => {});
+        const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
+        await sendRideStartedNotification(deps.whatsappNotifier, phone, tripId).catch(() => {});
       }
     } else {
       await registry.sendToUser(event.riderId, 'ride:started', {
@@ -855,6 +856,7 @@ export async function handleRideEvent(
           deps.whatsappNotifier, phone, event.fareNgn, event.distanceKm,
           riderWallet ? Number(riderWallet.balanceNgn) : undefined,
           event.rideId,
+          formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null)),
         ).catch(() => {});
         // Arm the rating reply: a bare 1–5 in the next day rates this driver.
         const completedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);

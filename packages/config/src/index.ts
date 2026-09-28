@@ -66,3 +66,4 @@ export type {
   RouteBounds,
   RouteWaypoint,
 } from './routing';
+export { formatTripId, parseTripId, TRIP_ID_PREFIX } from './trip-id';

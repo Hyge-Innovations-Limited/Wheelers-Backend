@@ -1,3 +1,4 @@
+import { formatTripId, parseTripId } from '@wheleers/config';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 
@@ -830,6 +831,8 @@ export const adminMetricsClient = {
     const limit = Math.min(Math.max(options.limit ?? 25, 1), 100);
     const offset = Math.max(options.offset ?? 0, 0);
     const q = options.q?.trim();
+    // "WH-01234", "wh1234" or "#1234": the trip ID a rider or driver quotes.
+    const tripNumber = q ? parseTripId(q) : null;
 
     // `live` is every status where somebody is mid-journey right now: a rider
     // waiting on bids, a driver on the way, a trip under way. An operator
@@ -851,6 +854,7 @@ export const adminMetricsClient = {
               { destAddress: { contains: q, mode: 'insensitive' } },
               { id: q },
               { riderId: q },
+              ...(tripNumber ? [{ tripNumber }] : []),
             ],
           }
         : {}),
@@ -863,7 +867,7 @@ export const adminMetricsClient = {
         skip: offset,
         take: limit,
         select: {
-          id: true, riderId: true, driverId: true, status: true,
+          id: true, tripNumber: true, riderId: true, driverId: true, status: true,
           pickupAddress: true, destAddress: true,
           fareEstimateNgn: true, fareFinalNgn: true, platformFeeNgn: true,
           distanceKm: true, durationSeconds: true, cancelReason: true,
@@ -887,6 +891,7 @@ export const adminMetricsClient = {
     return {
       items: rows.map((r) => ({
         id: r.id,
+        tripId: formatTripId(r.tripNumber),
         status: r.status,
         riderId: r.riderId,
         riderName: riderById.get(r.riderId)?.name ?? null,

@@ -1,3 +1,4 @@
+import { formatTripId } from '@wheleers/config';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
 import { authenticateHttpUser, HttpAuthError, authenticateHttpToken } from './authenticate';
@@ -402,6 +403,7 @@ export async function handleGetDriverRideHistoryRoute(
     sendJson(res, 200, {
       items: rides.map((ride) => ({
         id: ride.id,
+        tripId: formatTripId(ride.tripNumber),
         status: ride.status,
         pickupAddress: ride.pickupAddress,
         destAddress: ride.destAddress,

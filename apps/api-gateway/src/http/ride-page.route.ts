@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
+import { depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
 import { extractBearerToken } from './authenticate';
@@ -132,6 +132,7 @@ async function liveTripFor(userId: string) {
 
   return {
     rideId: ride.id,
+    tripId: formatTripId(ride.tripNumber),
     status: ride.status,
     fareNgn: Number(ride.agreedFareNgn ?? ride.riderOfferNgn ?? ride.fareEstimateNgn ?? 0),
     route: {
@@ -178,6 +179,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
       },
       trip: {
+        tripId: trip.tripId,
         status: trip.status,
         pickup: trip.pickup,
         destination: trip.destination,

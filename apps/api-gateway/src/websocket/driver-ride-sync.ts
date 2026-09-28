@@ -1,3 +1,4 @@
+import { formatTripId } from '@wheleers/config';
 import type WebSocket from 'ws';
 import { rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
@@ -14,6 +15,8 @@ import type { SocketRegistry } from './registry';
  */
 export type DriverRideSnapshot = {
   rideId: string;
+  /** The short trip ID people use, e.g. WH-01234. */
+  tripId: string | null;
   riderId: string;
   driverId: string | null;
   rideStatus: string;
@@ -53,6 +56,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
 
   return {
     rideId: ride.id,
+    tripId: formatTripId(ride.tripNumber),
     riderId: ride.riderId,
     driverId: ride.driverId ?? null,
     rideStatus: ride.status,
