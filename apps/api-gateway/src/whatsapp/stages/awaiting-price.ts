@@ -156,8 +156,6 @@ export async function awaitingPrice(ctx: StageContext): Promise<boolean> {
         await replyWithWayOut(deps, user, phone, incomingMessage, {
           wantsHelp: wanted.intent === 'help',
           prompt: `Please send a price for your ride.\n\n${pricePrompt}\n\nExample: *${pendingRoute.suggestedFareNgn.toLocaleString()}*`,
-          hint: 'Or reply *change pickup*, *change destination* or *cancel*.',
-          buttons: ['Change pickup', 'Change destination', 'Cancel ride'],
         });
         return true;
       }

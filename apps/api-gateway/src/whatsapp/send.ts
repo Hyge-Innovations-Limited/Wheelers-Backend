@@ -77,13 +77,6 @@ export function sendTypingIndicator(
     .catch(() => {});
 }
 
-export async function inBookingStep(deps: MetaWhatsappRouteDeps, phone: string): Promise<boolean> {
-  const userId = await lookupUserIdByPhone(deps.redisClient, phone).catch(() => null);
-  if (!userId) return false;
-  const stage = await getBookingStage(deps.redisClient, userId).catch(() => null);
-  return Boolean(stage && BOOKING_STEPS.has(stage));
-}
-
 export async function sendMetaReply(
   deps: MetaWhatsappRouteDeps,
   to: string,
@@ -102,21 +95,22 @@ export async function sendMetaReply(
     body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: recipient, ...payload }),
   });
 
-  // Every plain reply carries the Quick Actions button — except inside a
-  // booking step, where "Where are you going?" with Add money / Withdraw under
-  // it invites a rider mid-address to wander off. A refused list falls back to
-  // the words alone.
-  if (!(await inBookingStep(deps, recipient))) {
-    if (deps.whatsappQuickActionsFlowId) {
-      const riderId = await lookupUserIdByPhone(deps.redisClient, recipient).catch(() => null);
-      if (riderId) {
-        const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(message, deps.whatsappQuickActionsFlowId, riderId, deps.jwtSecret) }).catch(() => null);
-        if (asForm?.ok) return;
-      }
+  // Every plain reply carries the Quick Actions button, in the same message.
+  // Inside a booking too: there the menu opens on the booking's own choices
+  // (Change pickup, Change destination, Start again, Cancel booking), which is
+  // where the ways out live instead of words to type. A message with a button
+  // of its own (a picker, the trip check, the ride card) is not sent through
+  // here, so no message carries two. A refused form or list falls back to the
+  // words alone.
+  if (deps.whatsappQuickActionsFlowId) {
+    const riderId = await lookupUserIdByPhone(deps.redisClient, recipient).catch(() => null);
+    if (riderId) {
+      const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(message, deps.whatsappQuickActionsFlowId, riderId, deps.jwtSecret) }).catch(() => null);
+      if (asForm?.ok) return;
     }
-    const asList = await post({ type: 'interactive', interactive: withQuickActions(message) }).catch(() => null);
-    if (asList?.ok) return;
   }
+  const asList = await post({ type: 'interactive', interactive: withQuickActions(message) }).catch(() => null);
+  if (asList?.ok) return;
   const response = await post({ type: 'text', text: { body: message } });
   if (!response.ok) {
     const payload = await response.text();
@@ -266,26 +260,6 @@ export async function replyAndLog(
     { role: 'assistant', content: reply },
   ]);
   await sendMetaReply(deps, phone, reply);
-}
-
-/**
- * A reply that ends in choices: the choices are buttons to tap, not words to
- * type. A tap arrives as its title, which the chat already understands. At
- * most three (WhatsApp's limit), each up to 20 characters. If buttons cannot
- * be sent, the same words go as text with the choices listed.
- */
-export async function replyWithButtons(
-  deps: MetaWhatsappRouteDeps,
-  phone: string,
-  userMessage: string,
-  reply: string,
-  buttons: string[],
-): Promise<void> {
-  await appendWhatsappConversation(deps.redisClient, phone, [
-    { role: 'user', content: userMessage },
-    { role: 'assistant', content: `${reply}\n[buttons: ${buttons.join(' | ')}]` },
-  ]);
-  await sendMetaButtons(deps, phone, reply, buttons);
 }
 
 // ── Privacy consent: asked once, before anything else ────────────────────

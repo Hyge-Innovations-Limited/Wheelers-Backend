@@ -89,8 +89,6 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
       await replyWithWayOut(deps, user, phone, incomingMessage, {
         wantsHelp: destinationStepIntent.intent === 'help',
         prompt: 'Where are you going? Type the destination or share a location pin',
-        hint: 'Or reply *change pickup*, *start again* or *cancel*.',
-        buttons: ['Change pickup', 'Start again', 'Cancel ride'],
       });
       return true;
     }
@@ -192,8 +190,6 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
     if (!destGeo) {
       await replyWithWayOut(deps, user, phone, incomingMessage, {
         prompt: `${geocodeMissLine(typedDestination)}\n\nPlease type a more specific destination — add the area or a landmark — or share a location pin`,
-        hint: 'Or reply *change pickup*, *start again* or *cancel*.',
-        buttons: ['Change pickup', 'Start again', 'Cancel ride'],
       });
       return true;
     }

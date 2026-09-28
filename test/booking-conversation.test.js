@@ -597,7 +597,7 @@ test('no spots found for an area → the plain question, exactly as before', asy
   await say(deps, who, 'hi');
   await agree(redis, await findRider(who));
   await say(deps, who, 'I want to go from ikorodu');
-  assert.equal(last(sent).type, 'text');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'one message, with Quick Actions under it');
   assert.match(textOf(last(sent)), /Tell me a landmark, street or bus stop/);
 });
 
@@ -783,9 +783,9 @@ test('when the only match IS in another city, the bot asks before quoting — an
   const question = textOf(last(sent));
   assert.match(question, /Isokpan St, Use, Benin City/);
   assert.match(question, /about \*2\d\d km\* from your pickup, in another city/);
-  // The ways forward are buttons to tap, not words to type.
-  assert.equal(last(sent).type, 'interactive');
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change destination', 'Yes, that far', 'Change pickup']);
+  // One message, with Quick Actions under it; "yes" is still the answer for going that far.
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
+  assert.match(question, /Reply \*yes\* if you really are going that far/);
   assert.doesNotMatch(question, /Suggested fare/, 'no ₦97,100 quote for a place they never meant');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination', 'still waiting for a destination');
 
@@ -1329,7 +1329,7 @@ test('with the form published the trip card is ONE message with ONE button that 
 
   // …and that promise is kept: "yes" confirms without the form — and the price is TYPED, never a web page.
   await say(deps, who, 'yes');
-  assert.equal(last(sent).type, 'text');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'words with Quick Actions under them, never a web page');
   assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Send your offer \(e\.g\./);
 });
 
@@ -1927,11 +1927,11 @@ test('QUICK ACTIONS is under every plain reply — but not inside a booking step
   assert.deepEqual(idle.interactive.action.sections.map((s) => s.title), ['Ride', 'Wallet', 'Help']);
   assert.ok(idle.interactive.action.sections.flatMap((s) => s.rows).every((r) => r.title.length <= 24 && r.description.length <= 72));
 
-  // Mid-booking: "where are you going?" is plain text — no wallet rows under an address prompt.
+  // Mid-booking too: the prompt is one message with Quick Actions under it.
   await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
   await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
   await say(deps, who, 'hmm');
-  assert.equal(last(sent).type, 'text', 'a booking prompt stays plain');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'a booking prompt carries Quick Actions');
   await bidState.clearBookingStage(redis, user.id);
   await bidState.clearPendingLocation(redis, user.id);
 
@@ -2090,7 +2090,7 @@ test('the menu\'s numbered-text fallback answers a typed number the same as a ta
 
 /* ── always a way out ──────────────────────────────────────────────────── */
 
-test('a reply the bot cannot use brings the ways out as buttons, and the second one says it is stuck', async () => {
+test('a reply the bot cannot use is ONE message with Quick Actions, and the second one says it is stuck', async () => {
   const redis = memoryRedis();
   const { deps } = makeDeps(redis);
   const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
@@ -2099,17 +2099,19 @@ test('a reply the bot cannot use brings the ways out as buttons, and the second 
   await say(deps, who, 'Osaro Isokpan street');
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
 
+  const before = sent.length;
   await say(deps, who, 'hmm wetin be this');
-  assert.equal(last(sent).type, 'interactive', 'the exits are buttons from the first miss');
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Change destination', 'Cancel ride']);
+  assert.equal(sent.length, before + 1, 'one message');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'the ways out are in Quick Actions');
+  assert.match(textOf(last(sent)), /tap \*Quick Actions\*/);
+  assert.doesNotMatch(textOf(last(sent)), /Or reply \*change pickup\*/, 'no words to type');
   assert.doesNotMatch(textOf(last(sent)), /not getting anywhere/, 'the first miss just asks again');
 
   await say(deps, who, 'i no understand');
-  assert.equal(last(sent).type, 'interactive');
+  assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
   assert.match(textOf(last(sent)), /not getting anywhere/, 'the second owns up to being stuck');
-  assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Change destination', 'Cancel ride']);
 
-  // Tapping a button arrives as its title.
+  // Typing it still works, for riders who do.
   await say(deps, who, 'Change destination');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'editing_destination');
 });
@@ -2771,10 +2773,9 @@ test('a pickup matched to a namesake in another city is the one questioned, and 
   await say(deps, who, 'Yaba technology Hussey');
 
   const question = last(sent);
-  assert.equal(question.type, 'interactive');
+  assert.equal(question.interactive?.action?.button, 'Quick Actions', 'one message, Quick Actions under it');
   assert.match(textOf(question), /Your pickup was matched to a place about \*\d{3} km\* from \*Yaba College of Technology/);
-  assert.match(textOf(question), /probably the wrong pickup/);
-  assert.deepEqual(question.interactive.action.buttons.map((b) => b.reply.title), ['Change pickup', 'Yes, that far', 'Cancel ride']);
+  assert.match(textOf(question), /probably the wrong pickup[\s\S]*Tap \*Quick Actions\*, then \*Change pickup\*/);
 
   // "No it's in Lagos" is an answer, not a place to look up.
   await say(deps, who, "No it's in Lagos");
@@ -2801,4 +2802,49 @@ test('a pickup with no area is searched around Lagos first, and the choice list 
   await bidState.setBookingStage(redis, user.id, 'awaiting_pickup');
   await say(deps, who, '7 osaro isokpan');
   assert.ok(calls.geocode.some((c) => c.bounds && c.bounds.includes('6.02') && c.bounds.includes('3.87')), JSON.stringify(calls.geocode));
+});
+
+test('QUICK ACTIONS FORM mid-booking: the booking\'s own choices, each doing what its name says', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  const user = await riderWithPickup(deps, redis, who);
+  const form = menuForm({ deps, user, redis });
+
+  // Pickup set, destination not yet: the rows from the drawing.
+  let menu = await form('INIT');
+  assert.deepEqual(menu.data.choices.map((c) => c.title), ['Change pickup', 'Change destination', 'Start again', 'Cancel booking', 'Add money']);
+  assert.match(menu.data.choices[0].description, /Now: 31 Emily Akinola St/);
+
+  // Change pickup: the chat now waits for a pickup, and says so on the form.
+  let note = await form('data_exchange', { action: 'menu_choice', choice: 'change_pickup' }, 'MENU');
+  assert.equal(note.screen, 'NOTE');
+  assert.match(note.data.note, /Send your new pickup in the chat/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
+
+  // Change destination keeps the pickup.
+  await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
+  await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
+  note = await form('data_exchange', { action: 'menu_choice', choice: 'change_destination' }, 'MENU');
+  assert.match(note.data.note, /Send your new destination in the chat[\s\S]*Your pickup stays: 31 Emily Akinola St/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination');
+  assert.equal((await bidState.getPendingLocation(redis, user.id)).address, AKOKA.address);
+
+  // Cancel booking forgets it all.
+  note = await form('data_exchange', { action: 'menu_choice', choice: 'cancel_booking' }, 'MENU');
+  assert.match(note.data.headline, /Booking cancelled/);
+  assert.equal(await bidState.getBookingStage(redis, user.id), null);
+  assert.equal(await bidState.getPendingLocation(redis, user.id), null);
+
+  // Out of a booking, the home menu is as it always was.
+  menu = await form('INIT');
+  assert.ok(menu.data.choices.some((c) => c.id === 'book'), 'Book a ride is back');
+  assert.ok(!menu.data.choices.some((c) => c.id === 'change_pickup'));
+
+  // Start again opens the booking form from the beginning.
+  await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
+  await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
+  assert.equal((await form('data_exchange', { action: 'menu_choice', choice: 'start_again' }, 'MENU')).screen, 'BOOK_WHERE');
+  assert.equal(await bidState.getPendingLocation(redis, user.id), null);
 });

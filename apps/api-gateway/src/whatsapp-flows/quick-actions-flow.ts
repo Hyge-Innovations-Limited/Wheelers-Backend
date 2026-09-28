@@ -5,8 +5,8 @@ import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
   clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingFarPlace, clearPendingGeoChoices, clearPendingLocation, clearPendingRoute,
-  getAcceptedBid, getActiveRide, getBids, getGroupSeat, getLastRoute, getPendingRoute, getRideMeta, getRideState, getSearchTimedOut,
-  markOffersMessageOpened, setBookingStage, storePendingRoute,
+  getAcceptedBid, getActiveRide, getBids, getBookingStage, getGroupSeat, getLastRoute, getPendingFarPlace, getPendingLocation, getPendingRoute,
+  getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, setBookingStage, setPendingAreaHint, setPendingLocation, storePendingRoute,
 } from './bid-state';
 import type { PendingRouteData } from './bid-state';
 import { BOOK_RIDE_ACTIONS, handleBookRideAction, isBookRideAction, startBooking } from './book-ride-flow';
@@ -82,7 +82,27 @@ type FlowScreen = { screen: string; data: Record<string, unknown> };
 export const MENU_IDS = {
   resume: 'resume', searchAgain: 'search_again', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
   current: 'current', deposit: 'deposit', withdraw: 'withdraw', support: 'support',
+  changePickup: 'change_pickup', changeDestination: 'change_destination', startAgain: 'start_again', cancelBooking: 'cancel_booking',
 } as const;
+
+/**
+ * The chat steps of booking a ride. While a rider is in one, the menu is that
+ * booking's ways out: what the chat used to ask them to type ("reply change
+ * pickup, start again or cancel") is here to tap instead.
+ */
+const RIDE_BOOKING_STEPS: ReadonlySet<string> = new Set([
+  'awaiting_pickup', 'awaiting_destination', 'awaiting_trip_confirm', 'adding_stop', 'awaiting_price',
+  'awaiting_route_confirmation', 'editing_pickup', 'editing_destination',
+]);
+
+/** Forget the booking in progress, all of it. */
+async function clearBooking(redisClient: RedisClient, userId: string): Promise<void> {
+  await Promise.all([
+    clearPendingRoute(redisClient, userId), clearBookingStage(redisClient, userId), clearPendingLocation(redisClient, userId),
+    clearPendingAreaHint(redisClient, userId), clearPendingGeoChoices(redisClient, userId), clearPendingFarPlace(redisClient, userId),
+    clearBookingMisses(redisClient, userId),
+  ].map((step) => step.catch(() => undefined)));
+}
 const TRIP_ROW = /^trip:([0-9a-f-]{36})$/;
 
 const BUSY_NOTE = 'You already have a ride going. Finish or cancel it first, then book again.';
@@ -184,6 +204,33 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
         : bids.length === 1 ? '1 driver offer waiting for you' : `${bids.length} driver offers waiting for you`)).catch(() => 'Where things are with your ride');
     choices.push({ id: MENU_IDS.current, title: 'Your current trip', description });
   } else {
+    // In the middle of booking: the booking's own choices, and money for it.
+    const stage = await getBookingStage(deps.redisClient, userId).catch(() => null);
+    if (stage && RIDE_BOOKING_STEPS.has(stage)) {
+      const pickup = trip?.pickupAddress ?? (await getPendingLocation(deps.redisClient, userId).catch(() => null))?.address;
+      // A trip already planned (a Repeat, a form they closed) is picked up where it was left.
+      if (trip) choices.push({ id: MENU_IDS.resume, title: 'Continue your booking', description: clip(`${shortPlace(trip.pickupAddress)} → ${shortPlace(trip.destAddress)}${trip.confirmed ? ' — name your price' : ''}`, 300) });
+      if (pickup) {
+        choices.push(
+          { id: MENU_IDS.changePickup, title: 'Change pickup', description: clip(`Now: ${shortPlace(pickup)}`, 300) },
+          { id: MENU_IDS.changeDestination, title: 'Change destination', description: clip(trip ? `Now: ${shortPlace(trip.destAddress)}` : 'Send a different destination', 300) },
+        );
+      }
+      choices.push(
+        { id: MENU_IDS.startAgain, title: 'Start again', description: 'Clear this booking and book from the beginning' },
+        { id: MENU_IDS.cancelBooking, title: 'Cancel booking', description: 'Stop here. Nothing is charged' },
+        { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number to transfer to' },
+      );
+      return {
+        screen: 'MENU',
+        data: {
+          greeting_line: firstName ? `${firstName}, you are booking a ride. What would you like to do?` : 'You are booking a ride. What would you like to do?',
+          choices,
+          error,
+          has_error: error.length > 0,
+        },
+      };
+    }
     if (trip) choices.push({ id: MENU_IDS.resume, title: 'Continue your booking', description: clip(`${shortPlace(trip.pickupAddress)} → ${shortPlace(trip.destAddress)}${trip.confirmed ? ' — name your price' : ''}`, 300) });
     else {
       // The last search ran out with no driver: the way back in is one row, not a message.
@@ -237,8 +284,41 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     return { screen: 'SUPPORT', data: { headline: 'Wheelers support', contact_line: contact, note_line: 'A person will reply as soon as they can.' } };
   }
 
-  // Everything below starts a booking: not while one is live.
+  // Everything below starts or changes a booking: not while one is live.
   if (activeRideId) return menuScreen(userId, deps, BUSY_NOTE);
+  if (choice === MENU_IDS.cancelBooking) {
+    await clearBooking(deps.redisClient, userId);
+    return doneScreen('Booking cancelled', 'Nothing was charged. Tap Quick Actions whenever you want a ride.', false);
+  }
+  if (choice === MENU_IDS.startAgain) {
+    await clearBooking(deps.redisClient, userId);
+    return startBooking(deps, userId);
+  }
+  if (choice === MENU_IDS.changePickup) {
+    // Whatever destination they gave travels on: once the new pickup is found,
+    // the chat goes straight to the trip check with it.
+    const [trip, location, heldFar] = await Promise.all([
+      getPendingRoute(deps.redisClient, userId), getPendingLocation(deps.redisClient, userId), getPendingFarPlace(deps.redisClient, userId).catch(() => null),
+    ]);
+    const keepDestination = trip?.destAddress ?? (heldFar?.field === 'destination' ? heldFar.address : undefined) ?? location?.suggestedDestination;
+    await clearBooking(deps.redisClient, userId);
+    await setBookingStage(deps.redisClient, userId, 'awaiting_pickup');
+    if (keepDestination) await setPendingAreaHint(deps.redisClient, userId, { kind: 'pickup', area: '', counterpartAddress: keepDestination });
+    return doneScreen('Change pickup',
+      `Send your new pickup in the chat: the address with the area (e.g. "92 Murtala Muhammed Way, Yaba"), or share a location pin.${keepDestination ? ` Your destination stays: ${shortPlace(keepDestination)}.` : ''}`, false);
+  }
+  if (choice === MENU_IDS.changeDestination) {
+    const [trip, location] = await Promise.all([getPendingRoute(deps.redisClient, userId), getPendingLocation(deps.redisClient, userId)]);
+    const pickup = trip
+      ? { lat: trip.pickupLat, lng: trip.pickupLng, address: trip.pickupAddress }
+      : location ? { lat: location.lat, lng: location.lng, address: location.address } : null;
+    if (!pickup) return menuScreen(userId, deps, 'Send your pickup in the chat first.');
+    await clearBooking(deps.redisClient, userId);
+    await setPendingLocation(deps.redisClient, userId, { ...pickup, savedAt: new Date().toISOString() });
+    await setBookingStage(deps.redisClient, userId, 'awaiting_destination');
+    return doneScreen('Change destination',
+      `Send your new destination in the chat: the address with the area (e.g. "Yaba College of Technology, Yaba"), or share a location pin. Your pickup stays: ${shortPlace(pickup.address)}.`, false);
+  }
   if (choice === MENU_IDS.searchAgain) {
     const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);
     if (!ended || !last) return menuScreen(userId, deps, 'That search is not there any more. Book a ride to start again.');
@@ -253,11 +333,7 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     // A clean slate. A half-finished trip left in memory (a Repeat they walked away from, an old
     // pin, a picker waiting for a number) would make "from Ilemere" an EDIT of that trip's pickup,
     // keeping its destination — the rider asked to book, not to change something.
-    await Promise.all([
-      clearPendingRoute(deps.redisClient, userId), clearBookingStage(deps.redisClient, userId), clearPendingLocation(deps.redisClient, userId),
-      clearPendingAreaHint(deps.redisClient, userId), clearPendingGeoChoices(deps.redisClient, userId), clearPendingFarPlace(deps.redisClient, userId),
-      clearBookingMisses(deps.redisClient, userId),
-    ].map((step) => step.catch(() => undefined)));
+    await clearBooking(deps.redisClient, userId);
     return startBooking(deps, userId);
   }
   if (choice === MENU_IDS.repeat || choice === MENU_IDS.reverse) {

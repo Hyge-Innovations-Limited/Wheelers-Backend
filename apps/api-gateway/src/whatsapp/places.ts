@@ -6,7 +6,7 @@ import { storePendingGeoChoices, getPendingGeoChoices, clearPendingGeoChoices, s
 import type { PendingGeoChoices } from '../whatsapp-flows/bid-state';
 import { MetaWhatsappRouteDeps } from './deps';
 import { NONE_OF_THESE } from './parse';
-import { clip, replyAndLog, replyWithButtons, sendMetaButtons, sendMetaReply } from './send';
+import { clip, replyAndLog, sendMetaReply } from './send';
 
 export interface PlaceChoice { address: string; name?: string; distanceKm?: number }
 
@@ -191,29 +191,23 @@ export async function replyWithWayOut(
   user: { id: string },
   phone: string,
   incomingMessage: string,
-  options: { prompt: string; hint: string; buttons: string[]; wantsHelp?: boolean },
+  options: { prompt: string; wantsHelp?: boolean },
 ): Promise<void> {
   const misses = await noteBookingMiss(deps.redisClient, user.id).catch(() => 1);
-  // The first miss: the question again, with the ways out as buttons to tap.
-  if (misses < 2 && !options.wantsHelp) {
-    await replyWithButtons(deps, phone, incomingMessage, options.prompt, options.buttons);
-    return;
-  }
-
   const support = process.env['SUPPORT_CONTACT']?.trim();
+  // One message. The ways out (change the pickup or destination, start again,
+  // cancel) are in Quick Actions, whose button rides under every plain reply.
   const body = [
-    options.wantsHelp ? 'No wahala — here is what you can do from here:' : 'Looks like we are not getting anywhere — my bad. What would you like to do?',
-    '',
+    ...(misses >= 2 || options.wantsHelp
+      ? [options.wantsHelp ? 'No wahala — here is what you can do from here:' : 'Looks like we are not getting anywhere — my bad.', '']
+      : []),
     options.prompt,
-    ...(support ? ['', `Need a person? Reach Wheelers support: ${support}`] : []),
+    '',
+    'To change the pickup or destination, start again or cancel, tap *Quick Actions*.',
+    ...(support && (misses >= 2 || options.wantsHelp) ? ['', `Need a person? Reach Wheelers support: ${support}`] : []),
   ].join('\n');
   if (options.wantsHelp) console.info('[whatsapp] rider asked for help mid-booking', { userId: user.id });
-
-  await appendWhatsappConversation(deps.redisClient, phone, [
-    { role: 'user', content: incomingMessage },
-    { role: 'assistant', content: body },
-  ]);
-  await sendMetaButtons(deps, phone, body, options.buttons);
+  await replyAndLog(deps, phone, incomingMessage, body);
 }
 
 /**
@@ -243,19 +237,23 @@ export async function askIfFarPlaceIsMeant(
   // rider was asked about the destination they had typed correctly.
   const otherLooksWrong = isInHomeArea(place) && !isInHomeArea(otherEnd);
   if (otherLooksWrong) {
-    await replyWithButtons(deps, phone, incomingMessage, [
+    await replyAndLog(deps, phone, incomingMessage, [
       `Your ${other} was matched to a place about *${distanceKm.toLocaleString()} km* from *${place.address}*, in another city.`,
       '',
-      `That is probably the wrong ${other}. Tap *Change ${other}* and send it again with the area — e.g. *"92 Murtala Muhammed Way, Yaba"*.`,
-    ].join('\n'), [`Change ${other}`, 'Yes, that far', 'Cancel ride']);
+      `That is probably the wrong ${other}. Tap *Quick Actions*, then *Change ${other}*, and send it again with the area — e.g. *"92 Murtala Muhammed Way, Yaba"*.`,
+      '',
+      `Reply *yes* if you really are going that far.`,
+    ].join('\n'));
     return true;
   }
 
-  await replyWithButtons(deps, phone, incomingMessage, [
+  await replyAndLog(deps, phone, incomingMessage, [
     `I found *${place.address}* — but that is about *${distanceKm.toLocaleString()} km* from your ${other}, in another city.`,
     '',
-    `If you meant somewhere closer, tap *Change ${field}* and send it with the area or city — e.g. *"7 Osaro Isokpan, Yaba"*.`,
-  ].join('\n'), [`Change ${field}`, 'Yes, that far', `Change ${other}`]);
+    `If you meant somewhere closer, send the ${field} again with the area or city — e.g. *"7 Osaro Isokpan, Yaba"*.`,
+    '',
+    `Reply *yes* if you really are going that far.`,
+  ].join('\n'));
   return true;
 }
 

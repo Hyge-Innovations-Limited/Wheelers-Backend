@@ -7,7 +7,7 @@ import type { PendingRouteData } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { MetaWhatsappRouteDeps } from './deps';
 import { createOffersFormChatHooks, sendCurrentOffers } from './ride-card';
-import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText, replyWithButtons } from './send';
+import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText } from './send';
 import { BOOKING_START_PROMPT, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
 import { sendWalletPageButton } from './wallet';
 
@@ -115,7 +115,7 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
 
   // Everything below starts a booking: not while one is live.
   if (activeRideId) {
-    return replyWithButtons(deps, phone, log, 'You already have a ride going. End it first, then book again.', ['Cancel ride']);
+    return replyAndLog(deps, phone, log, 'You already have a ride going. Reply *cancel* to end it first, then book again.');
   }
   if (replyId === QUICK_ACTION_IDS.book) return replyAndLog(deps, phone, log, BOOKING_START_PROMPT);
   if (replyId === QUICK_ACTION_IDS.history) {

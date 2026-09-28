@@ -1,7 +1,7 @@
 import { isCancelCommand, looksLikeConversation } from '../../whatsapp/parse';
 import { clearBookingMisses, clearBookingStage, clearPendingAreaHint, clearPendingGeoChoices, getPendingAreaHint, getPendingGeoChoices, setBookingStage, setPendingLocation } from '../../whatsapp-flows/bid-state';
 import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/conversation-store';
-import { replyAndLog, replyWithButtons, sendMetaReply } from '../../whatsapp/send';
+import { replyAndLog, sendMetaReply } from '../../whatsapp/send';
 import { classifyBookingIntent, mightNotBeAnAddress } from '../../LLM/booking-intent';
 import { bookingIntentGroq, replyWithWayOut, sendPlaceChoices } from '../../whatsapp/places';
 import { startBookingOver } from '../../whatsapp/trip';
@@ -46,8 +46,6 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
         await replyWithWayOut(deps, user, phone, incomingMessage, {
           wantsHelp: true,
           prompt: 'Where should we pick you up? Type the address or a nearby landmark, or share a location pin',
-          hint: 'Or reply *start again* or *cancel*.',
-          buttons: ['Start again', 'Cancel ride'],
         });
         return true;
       }
@@ -119,8 +117,6 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
         : `Could not find "${answer}"${hint?.area ? ` in ${hint.area}` : ''} on the map.`;
       await replyWithWayOut(deps, user, phone, incomingMessage, {
         prompt: `${missLine}\n\nTry a nearby landmark or street name, or share a location pin`,
-        hint: 'Or reply *start again* or *cancel*.',
-        buttons: ['Start again', 'Cancel ride'],
       });
       return true;
     }
@@ -149,14 +145,10 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
       return true;
     }
 
-    // If they already told us where they were going, don't ask again: one tap confirms it.
-    if (hint?.counterpartAddress) {
-      await replyWithButtons(deps, phone, incomingMessage,
-        `Pickup: *${pickupGeo.formattedAddress}*\n\nAnd your destination is *${hint.counterpartAddress}*?`,
-        ['Yes', 'Change destination']);
-      return true;
-    }
-    const reply = `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going? Type the destination or share a pin`;
+    // If they already told us where they were going, don't ask again.
+    const reply = hint?.counterpartAddress
+      ? `Pickup: *${pickupGeo.formattedAddress}*\n\nAnd your destination is *${hint.counterpartAddress}* — type "yes" to confirm, or send a different destination.`
+      : `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going? Type the destination or share a pin`;
     await appendWhatsappConversation(deps.redisClient, phone, [
       { role: 'user', content: incomingMessage },
       { role: 'assistant', content: reply },
