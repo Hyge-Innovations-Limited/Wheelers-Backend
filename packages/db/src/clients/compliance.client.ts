@@ -102,7 +102,11 @@ export const complianceClient = {
     const count = aggregate._count.rating;
 
     const driver = await prisma.driver.findUnique({ where: { userId: data.revieweeId } });
-    if (driver && data.reviewerRole === 'RIDER') {
+    // The event says 'rider' (its schema allows only 'rider' | 'driver'). This
+    // compared with 'RIDER', never matched, and a rider's rating of their
+    // driver went to the driver's rider rating instead: no driver's rating
+    // ever moved. scripts/recompute-ratings.mjs repairs what was stored.
+    if (driver && String(data.reviewerRole).toLowerCase() === 'rider') {
       await prisma.driver.update({
         where: { id: driver.id },
         data: { rating: average, ratingCount: count },

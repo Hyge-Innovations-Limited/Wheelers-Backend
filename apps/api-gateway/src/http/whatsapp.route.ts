@@ -1138,7 +1138,9 @@ async function handleIncomingMetaMessage(
           feedbackId: randomUUID(),
           rideId: lastCompleted.rideId,
           reviewerId: user.id,
-          reviewerRole: 'RIDER',
+          // The schema's word is 'rider'. This said 'RIDER', failed validation, and
+          // every WhatsApp rating was dropped with no reply to the rider.
+          reviewerRole: 'rider',
           revieweeId: lastCompleted.driverUserId,
           rating,
           timestamp: new Date().toISOString(),
