@@ -428,3 +428,103 @@ test('BUSIEST HOURS · requests by Lagos hour and weekday, beside the drivers wh
   const mine = (await get(`/admin/insights/hours?${q({ driverId: driver.id })}`)).body;
   assert.equal(mine.hours[8].driverHours, 1, 'a driver filter narrows the shifts too');
 });
+
+test('EXCEL TRIPS · the team\'s layout: trip ID, clean names, plain status, times, amounts, negotiation, messages to book', async () => {
+  // A week of its own, so the counts above are untouched: 6 to 12 May 2024.
+  const WEEK = { from: '2024-05-06', to: '2024-05-12' };
+  const at = (day, hh, mm = 0) => lagos(day, hh, mm);
+  const king = await prisma.user.create({ data: { privyDid: 'whatsapp:+2348031235678', name: '𝐾𝐼𝑁𝐺🌸', role: 'RIDER', phone: '+2348031235678' } });
+  seeded.users.push(king.id);
+  const kingWallet = await prisma.wallet.create({ data: { userId: king.id } });
+  seeded.wallets.push(kingWallet.id);
+  const events = [];
+  const say = async (when) => {
+    const e = await prisma.userActivityEvent.create({ data: { userId: king.id, eventType: 'whatsapp_message_in', source: 'whatsapp', dedupKey: `t:${randomUUID()}`, occurredAt: when, createdAt: when } });
+    events.push(e.id);
+  };
+
+  // Messages are logged from before any of these trips: the counts are real, not "not logged yet".
+  await say(at('2024-05-06', 5, 50));
+  // An earlier trip that ended at 07:00; the messages before it ended do not count toward the next.
+  const earlier = await ride({ status: 'COMPLETED', channel: 'WHATSAPP', riderId: king.id, pickup: YABA, dest: ISLAND, fare: 3000, createdAt: at('2024-05-06', 6), completedAt: at('2024-05-06', 7) });
+  await say(at('2024-05-06', 6, 10));
+  await say(at('2024-05-06', 6, 20));
+  // The trip: three messages to book it, one more after the driver was booked (not counted).
+  await say(at('2024-05-06', 7, 55));
+  await say(at('2024-05-06', 7, 58));
+  await say(at('2024-05-06', 8, 2));
+  const trip = await ride({ status: 'COMPLETED', channel: 'WHATSAPP', riderId: king.id, pickup: YABA, dest: ISLAND, fare: 4000, createdAt: at('2024-05-06', 8), completedAt: at('2024-05-06', 8, 40) });
+  await prisma.ride.update({ where: { id: trip.id }, data: { matchedAt: at('2024-05-06', 8, 5), startedAt: at('2024-05-06', 8, 10), fareEstimateNgn: 4500, riderOfferNgn: 3800, agreedFareNgn: 4000 } });
+  await say(at('2024-05-06', 8, 20));
+  // One that found nobody, after midnight Lagos time.
+  await say(at('2024-05-07', 23, 50));
+  const lonely = await ride({ status: 'CANCELLED', channel: 'WHATSAPP', riderId: king.id, pickup: YABA, dest: IKORODU, cancelStage: 'BEFORE_MATCH', cancelReason: 'No driver accepted in time', createdAt: at('2024-05-07', 23, 55), cancelledAt: at('2024-05-08', 0, 5) });
+  // An App booking has no message count.
+  const app = await ride({ status: 'CANCELLED', channel: 'APP', riderId: king.id, pickup: ISLAND, dest: ISLAND, cancelStage: 'BEFORE_MATCH', cancelReason: 'Changed my mind  🙃', createdAt: at('2024-05-09', 12), cancelledAt: at('2024-05-09', 12, 3) });
+  seeded.events = events;
+
+  try {
+    const res = await get(`/admin/insights/export?${new URLSearchParams({ ...WEEK, scope: 'overview' })}`, { raw: true });
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(res.body);
+    const sheet = book.getWorksheet('Trips');
+    const headers = sheet.getRow(1).values.filter(Boolean);
+    assert.deepEqual(headers.slice(0, 19), [
+      'Trip ID', 'Rider', 'Date', 'Status', 'Rider ID', 'Platform ID', 'From', 'Platform', 'To', 'Book time', 'Start trip time',
+      'End trip time', 'Suggested amount', 'Rider offered', 'Amount agreed', 'Time to negotiate', 'Messages to book', 'Driver', 'Driver ID',
+    ]);
+    const col = (name) => headers.indexOf(name) + 1;
+    const rowFor = (rideId) => {
+      for (let i = 2; i <= sheet.rowCount; i += 1) if (sheet.getRow(i).getCell(col('Ride ID')).value === rideId) return sheet.getRow(i);
+      return null;
+    };
+    const cell = (row, name) => row.getCell(col(name)).value;
+
+    const r = rowFor(trip.id);
+    const tripNumber = (await prisma.ride.findUnique({ where: { id: trip.id } })).tripNumber;
+    assert.equal(cell(r, 'Trip ID'), `WH-${String(tripNumber).padStart(5, '0')}`);
+    assert.equal(cell(r, 'Rider'), 'King', 'styled letters and the flower are cleaned');
+    assert.deepEqual([cell(r, 'Date'), cell(r, 'Status'), cell(r, 'Rider ID'), cell(r, 'Platform ID'), cell(r, 'Platform')],
+      ['2024-05-06', 'Completed', king.id, '••••5678', 'WhatsApp'], 'the number is masked without "include phone numbers"');
+    assert.deepEqual([cell(r, 'Book time'), cell(r, 'Start trip time'), cell(r, 'End trip time')], ['08:00', '08:10', '08:40']);
+    assert.deepEqual([cell(r, 'Suggested amount'), cell(r, 'Rider offered'), cell(r, 'Amount agreed')], [4500, 3800, 4000]);
+    // A duration is a fraction of a day; read back, Excel's epoch (30 Dec 1899) turns it into a date.
+    const asSeconds = (v) => (v instanceof Date ? (v.getTime() - Date.UTC(1899, 11, 30)) / 1000 : v * 86_400);
+    assert.equal(Math.round(asSeconds(cell(r, 'Time to negotiate'))), 300, 'five minutes, request to driver');
+    assert.match(sheet.getRow(1).getCell(col('Messages to book')).note?.texts?.[0]?.text ?? String(sheet.getRow(1).getCell(col('Messages to book')).note), /previous trip ended/, 'the header explains it');
+    assert.equal(r.getCell(col('Time to negotiate')).numFmt, '[m]:ss');
+    assert.equal(cell(r, 'Messages to book'), 3, 'after the previous trip ended, before this one got a driver');
+
+    const e = rowFor(earlier.id);
+    assert.equal(cell(e, 'Messages to book'), 3, 'the first trip counts from the rider\'s first message');
+
+    const l = rowFor(lonely.id);
+    assert.deepEqual([cell(l, 'Status'), cell(l, 'Date'), cell(l, 'End trip time')], ['No driver found', '2024-05-07', '2024-05-08 00:05'], 'an end on another day carries its date');
+    assert.equal(cell(l, 'Messages to book'), 1, 'up to the moment it ended without a driver');
+    assert.equal(cell(l, 'Time to negotiate'), null);
+
+    const a = rowFor(app.id);
+    assert.deepEqual([cell(a, 'Platform'), cell(a, 'Platform ID'), cell(a, 'Messages to book'), cell(a, 'Cancel reason')], ['App', '', null, 'Changed my mind'], 'no message count for an App booking');
+
+    const withPhones = await get(`/admin/insights/export?${new URLSearchParams({ ...WEEK, scope: 'overview', contacts: '1' })}`, { raw: true });
+    const book2 = new ExcelJS.Workbook();
+    await book2.xlsx.load(withPhones.body);
+    const s2 = book2.getWorksheet('Trips');
+    const h2 = s2.getRow(1).values.filter(Boolean);
+    const rows2 = s2.getSheetValues().filter(Boolean).slice(1);
+    const found = rows2.find((row) => row[h2.indexOf('Ride ID') + 1] === trip.id);
+    assert.equal(found[h2.indexOf('Platform ID') + 1], '+2348031235678', 'the whole number when phones are asked for');
+
+    const riders = book.getWorksheet('Riders');
+    const rh = riders.getRow(1).values.filter(Boolean);
+    const kingRow = riders.getSheetValues().filter(Boolean).find((row) => row[rh.indexOf('Rider ID') + 1] === king.id);
+    assert.equal(kingRow[rh.indexOf('Name') + 1], 'King');
+    assert.equal(kingRow[rh.indexOf('WhatsApp messages') + 1], 8);
+    assert.equal(kingRow[rh.indexOf('Messages per trip') + 1], 4, 'eight messages, two trips');
+
+    const search = (await get(`/admin/insights/trips?${new URLSearchParams({ ...WEEK, q: `wh-${tripNumber}` })}`)).body;
+    assert.deepEqual(search.items.map((t) => t.id), [trip.id], 'the trips table finds a trip by its ID');
+  } finally {
+    await prisma.userActivityEvent.deleteMany({ where: { id: { in: events } } });
+  }
+});

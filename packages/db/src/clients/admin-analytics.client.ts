@@ -1,4 +1,4 @@
-import { LAUNCH_ZONES, OUTSIDE_ZONES_LABEL } from '@wheleers/config';
+import { formatTripId, LAUNCH_ZONES, OUTSIDE_ZONES_LABEL, parseTripId } from '@wheleers/config';
 import { prisma } from '../prisma';
 import { PLATFORM_USER_ID } from './platform-wallet';
 
@@ -530,10 +530,18 @@ export type TripStatusFilter = 'all' | 'completed' | 'cancelled' | 'no_driver' |
 
 export interface TripRow {
   id: string;
+  /** The short trip ID people use, e.g. WH-01234. */
+  tripId: string | null;
   createdAt: string;
+  /** When a driver was booked. */
+  matchedAt: string | null;
+  /** When the driver started the trip. */
+  startedAt: string | null;
   completedAt: string | null;
   cancelledAt: string | null;
   status: string;
+  /** Cancelled because no driver took it in time. */
+  noDriver: boolean;
   channel: RideChannelName;
   rideType: 'single' | 'group';
   pickupZone: string | null;
@@ -543,9 +551,23 @@ export interface TripRow {
   riderId: string;
   riderName: string | null;
   riderPhone: string | null;
+  /** The rider's WhatsApp number, for a rider who books on WhatsApp. */
+  riderWhatsapp: string | null;
   driverId: string | null;
   driverName: string | null;
   driverPhone: string | null;
+  /** Wheelers' suggested fare, what the rider offered, and what the rider and driver agreed. */
+  suggestedFareNgn: number | null;
+  riderOfferNgn: number | null;
+  agreedFareNgn: number | null;
+  /** From the request to a driver being booked. Null if none was. */
+  negotiateSeconds: number | null;
+  /**
+   * WhatsApp messages the rider sent from after their previous trip ended to
+   * the moment this one got a driver (or ended without one). Null for App and
+   * Claude bookings, and for trips booked before messages were logged.
+   */
+  messagesToBook: number | null;
   fareNgn: number | null;
   commissionNgn: number | null;
   serviceFeeNgn: number | null;
@@ -586,14 +608,33 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
   else cond.push(between(q, 'f.created_day', f));
   if (t.q?.trim()) {
     const like = q.p(`%${t.q.trim()}%`);
+    const tripNumber = parseTripId(t.q);
     cond.push(`(f.pickup_address ILIKE ${like} OR f.dest_address ILIKE ${like} OR ru.name ILIKE ${like} OR ru.phone ILIKE ${like}
-                OR du.name ILIKE ${like} OR du.phone ILIKE ${like} OR f.id ILIKE ${like})`);
+                OR du.name ILIKE ${like} OR du.phone ILIKE ${like} OR f.id ILIKE ${like}
+                ${tripNumber ? `OR f.trip_number = ${q.p(tripNumber)}` : ''})`);
   }
   const limit = clampLimit(t.limit, maxLimit);
   const offset = Math.max(0, Math.floor(t.offset ?? 0));
   const result = await rows<Record<string, unknown>>(q, `
-    SELECT f.*, ru.name AS rider_name, ru.phone AS rider_phone, du.name AS driver_name, du.phone AS driver_phone,
+    WITH msg_start AS (
+      SELECT min(e."createdAt") AS at FROM "UserActivityEvent" e WHERE e."eventType" = 'whatsapp_message_in'
+    )
+    SELECT f.*, ru.name AS rider_name, ru.phone AS rider_phone, ru."privyDid" AS rider_did,
+           du.name AS driver_name, du.phone AS driver_phone,
            (SELECT count(*) FROM "DriverBid" b WHERE b."rideId" = f.id)::int AS bids,
+           extract(epoch FROM f.matched_at - f.created_at) AS negotiate_secs,
+           CASE WHEN f.channel = 'WHATSAPP' AND f.created_at >= (SELECT at FROM msg_start) THEN (
+             -- The rider's messages since their previous trip ended, until this one got a driver.
+             SELECT count(*)::int FROM "UserActivityEvent" e
+             WHERE e."userId" = f.rider_id AND e."eventType" = 'whatsapp_message_in'
+               AND e."createdAt" > coalesce((
+                 SELECT max(coalesce(p."completedAt", p."cancelledAt")) FROM "Ride" p
+                 WHERE p."riderId" = f.rider_id AND p.id <> f.id
+                   AND p."cancelReason" IS DISTINCT FROM 'Replaced by a newer request'
+                   AND coalesce(p."completedAt", p."cancelledAt") <= f.created_at
+               ), '-infinity'::timestamp)
+               AND e."createdAt" <= coalesce(f.matched_at, f.cancelled_at, f.completed_at, (now() AT TIME ZONE 'UTC'))
+           ) END AS messages_to_book,
            count(*) OVER () AS total
     FROM ride_facts f
     LEFT JOIN "User" ru ON ru.id = f.rider_id
@@ -609,10 +650,14 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
       const platformTotal = optNum(r.platform_total_ngn);
       return {
         id: String(r.id),
+        tripId: formatTripId(r.trip_number == null ? null : Number(r.trip_number)),
         createdAt: iso(r.created_at)!,
+        matchedAt: iso(r.matched_at),
+        startedAt: iso(r.started_at),
         completedAt: iso(r.completed_at),
         cancelledAt: iso(r.cancelled_at),
         status: String(r.status),
+        noDriver: Boolean(r.no_driver),
         channel: String(r.channel) as RideChannelName,
         rideType: r.is_group ? 'group' : 'single',
         pickupZone: (r.pickup_zone as string | null) ?? null,
@@ -622,9 +667,15 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
         riderId: String(r.rider_id),
         riderName: (r.rider_name as string | null) ?? null,
         riderPhone: (r.rider_phone as string | null) ?? null,
+        riderWhatsapp: typeof r.rider_did === 'string' && r.rider_did.startsWith('whatsapp:') ? r.rider_did.slice('whatsapp:'.length) : null,
         driverId: (r.driver_id as string | null) ?? null,
         driverName: (r.driver_name as string | null) ?? null,
         driverPhone: (r.driver_phone as string | null) ?? null,
+        suggestedFareNgn: optNum(r.fare_estimate_ngn),
+        riderOfferNgn: optNum(r.rider_offer_ngn),
+        agreedFareNgn: optNum(r.agreed_fare_ngn),
+        negotiateSeconds: r.negotiate_secs == null ? null : Math.max(0, Math.round(Number(r.negotiate_secs))),
+        messagesToBook: r.messages_to_book == null ? null : Number(r.messages_to_book),
         fareNgn: fare,
         commissionNgn: optNum(r.commission_ngn),
         serviceFeeNgn: optNum(r.service_fee_ngn),
@@ -759,6 +810,10 @@ async function drivers(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Prom
 
 export interface RiderRow {
   riderId: string;
+  /** WhatsApp messages the rider sent in the period. */
+  messages: number;
+  /** Messages for each completed trip. Null with no trip. */
+  messagesPerTrip: number | null;
   name: string | null;
   phone: string | null;
   joinedAt: string;
@@ -802,6 +857,9 @@ async function riders(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promi
       FROM ride_facts f ${where(inner)} GROUP BY 1
     )
     SELECT u.id, u.name, u.phone, u."createdAt" AS joined, x.*, coalesce(w."balanceNgn", 0) AS balance,
+           (SELECT count(*)::int FROM "UserActivityEvent" e
+             WHERE e."userId" = u.id AND e."eventType" = 'whatsapp_message_in'
+               AND ${between(q, lagosDay('e."createdAt"'), f)}) AS messages,
            count(*) OVER () AS total
     FROM x JOIN "User" u ON u.id = x.rider_id
     LEFT JOIN "Wallet" w ON w."userId" = u.id
@@ -813,8 +871,11 @@ async function riders(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promi
     items: result.map((r) => {
       const trips = num(r.trips);
       const spend = num(r.spend);
+      const messages = num(r.messages);
       return {
         riderId: String(r.id),
+        messages,
+        messagesPerTrip: trips > 0 ? num(messages / trips) : null,
         name: (r.name as string | null) ?? null,
         phone: (r.phone as string | null) ?? null,
         joinedAt: iso(r.joined)!,

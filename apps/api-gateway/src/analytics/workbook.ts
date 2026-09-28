@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { adminAnalyticsClient, CHANNEL_LABELS } from '@wheleers/db';
-import type { AnalyticsFilters, Bucket, Kpis, RideChannelName } from '@wheleers/db';
+import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
+import { cleanName, cleanText } from './clean-text';
 
 /**
  * The Excel download for the admin Home page and the Fees page: one workbook,
@@ -27,6 +28,8 @@ interface Column {
   key: string;
   width?: number;
   format?: string;
+  /** What the column means, shown when the header cell is hovered. */
+  note?: string;
 }
 
 function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows: readonly object[], note?: string): void {
@@ -40,6 +43,7 @@ function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows:
   for (const row of rows) sheet.addRow(row);
   columns.forEach((c, i) => {
     if (c.format) sheet.getColumn(i + 1).numFmt = c.format;
+    if (c.note) header.getCell(i + 1).note = c.note;
   });
   if (columns.length) sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
   if (note) {
@@ -147,23 +151,67 @@ function summarySheet(book: ExcelJS.Workbook, title: string, f: AnalyticsFilters
   }
 }
 
+/** A trip's status in five plain words, the same on every sheet. */
+function tripStatus(t: TripRow): string {
+  if (t.status === 'COMPLETED') return 'Completed';
+  if (t.status === 'CANCELLED') return t.noDriver ? 'No driver found' : 'Cancelled';
+  if (t.status === 'REQUESTED' || t.status === 'MATCHING') return 'Searching';
+  if (t.status === 'DISPUTED') return 'Disputed';
+  return 'In progress';
+}
+
+/** Lagos date (YYYY-MM-DD) and time (HH:MM) of an instant. */
+function lagosParts(isoTime: string | null): { day: string; time: string } | null {
+  if (!isoTime) return null;
+  const at = new Date(Date.parse(isoTime) + 3_600_000).toISOString();
+  return { day: at.slice(0, 10), time: at.slice(11, 16) };
+}
+
+/** A time on the booking's day is just the time; on another day it carries its date. */
+function timeOn(bookedDay: string, isoTime: string | null): string {
+  const parts = lagosParts(isoTime);
+  if (!parts) return '';
+  return parts.day === bookedDay ? parts.time : `${parts.day} ${parts.time}`;
+}
+
+/** The rider's WhatsApp number: whole with contacts, else only its last four digits. */
+function platformId(t: TripRow, contacts: boolean): string {
+  if (t.channel !== 'WHATSAPP' || !t.riderWhatsapp) return '';
+  if (contacts) return t.riderWhatsapp;
+  return `••••${t.riderWhatsapp.replace(/\D/g, '').slice(-4)}`;
+}
+
+/** Seconds as an Excel duration (a fraction of a day), shown as minutes:seconds and summable. */
+const asDuration = (seconds: number | null) => (seconds == null ? null : seconds / 86_400);
+const DURATION = '[m]:ss';
+
 async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: 'all' | 'completed', contacts: boolean, name: string): Promise<void> {
   const { items, total } = await all((offset) => adminAnalyticsClient.trips(f, status, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  // In the order the team keeps its own sheet: who, when, how it ended, where, how long, for how much.
   const columns: Column[] = [
-    { header: 'Ride ID', key: 'id', width: 38 },
-    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
-    { header: 'Completed (Lagos)', key: 'completedAt', width: 18 },
-    { header: 'Status', key: 'status', width: 14 },
-    { header: 'Channel', key: 'channel', width: 11 },
-    { header: 'Ride type', key: 'rideType', width: 10 },
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    { header: 'Date', key: 'date', width: 11 },
+    { header: 'Status', key: 'statusLabel', width: 16 },
+    { header: 'Rider ID', key: 'riderId', width: 38 },
+    { header: 'Platform ID', key: 'platformId', width: 16 },
+    { header: 'From', key: 'pickupAddress', width: 40 },
+    { header: 'Platform', key: 'channel', width: 10 },
+    { header: 'To', key: 'destAddress', width: 40 },
+    { header: 'Book time', key: 'bookTime', width: 10 },
+    { header: 'Start trip time', key: 'startTime', width: 15 },
+    { header: 'End trip time', key: 'endTime', width: 15 },
+    { header: 'Suggested amount', key: 'suggestedFareNgn', format: NAIRA, width: 17 },
+    { header: 'Rider offered', key: 'riderOfferNgn', format: NAIRA, width: 14 },
+    { header: 'Amount agreed', key: 'agreedFareNgn', format: NAIRA, width: 15 },
+    { header: 'Time to negotiate', key: 'negotiate', format: DURATION, width: 17, note: 'From the request to a driver being booked, in minutes and seconds. Empty when no driver was booked.' },
+    { header: 'Messages to book', key: 'messagesToBook', format: WHOLE, width: 17, note: "The rider's WhatsApp messages from after their previous trip ended until this one got a driver (or ended without one). Empty for App and Claude bookings." },
+    { header: 'Driver', key: 'driverName', width: 20 },
+    { header: 'Driver ID', key: 'driverId', width: 38 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }, { header: 'Driver phone', key: 'driverPhone', width: 16 }] : []),
     { header: 'Pickup zone', key: 'pickupZone', width: 14 },
     { header: 'Destination zone', key: 'destZone', width: 16 },
-    { header: 'Pickup', key: 'pickupAddress', width: 40 },
-    { header: 'Destination', key: 'destAddress', width: 40 },
-    { header: 'Rider', key: 'riderName', width: 20 },
-    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }] : []),
-    { header: 'Driver', key: 'driverName', width: 20 },
-    ...(contacts ? [{ header: 'Driver phone', key: 'driverPhone', width: 16 }] : []),
+    { header: 'Ride type', key: 'rideType', width: 10 },
     { header: 'Fare', key: 'fareNgn', format: NAIRA },
     { header: 'Commission', key: 'commissionNgn', format: NAIRA },
     { header: 'Service fee', key: 'serviceFeeNgn', format: NAIRA },
@@ -172,20 +220,37 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
     { header: 'Driver payout', key: 'driverPayoutNgn', format: NAIRA },
     { header: 'Split estimated', key: 'feeSplitEstimated', width: 15 },
     { header: 'Distance km', key: 'distanceKm', format: '#,##0.0' },
-    { header: 'Minutes', key: 'minutes', format: WHOLE },
+    { header: 'Trip minutes', key: 'minutes', format: WHOLE },
     { header: 'Bids', key: 'bids', format: WHOLE },
     { header: 'Cancel reason', key: 'cancelReason', width: 30 },
+    { header: 'Ride ID', key: 'id', width: 38 },
   ];
-  addSheet(book, name, columns, items.map((t) => ({
-    ...t,
-    createdAt: lagosTime(t.createdAt),
-    completedAt: lagosTime(t.completedAt),
-    channel: channel(t.channel),
-    pickupZone: t.pickupZone ?? 'Outside',
-    destZone: t.destZone ?? 'Outside',
-    feeSplitEstimated: t.platformTotalNgn == null ? '' : t.feeSplitEstimated ? 'yes' : 'no',
-    minutes: t.durationSeconds == null ? null : Math.round(t.durationSeconds / 60),
-  })), cut(items.length, total));
+  addSheet(book, name, columns, items.map((t) => {
+    const booked = lagosParts(t.createdAt)!;
+    const ended = t.completedAt ?? t.cancelledAt;
+    return {
+      ...t,
+      tripId: t.tripId ?? '',
+      riderName: cleanName(t.riderName),
+      driverName: t.driverId ? cleanName(t.driverName, 'Unnamed driver') : '',
+      date: booked.day,
+      statusLabel: tripStatus(t),
+      platformId: platformId(t, contacts),
+      pickupAddress: cleanText(t.pickupAddress),
+      destAddress: cleanText(t.destAddress),
+      channel: channel(t.channel),
+      bookTime: booked.time,
+      startTime: timeOn(booked.day, t.startedAt),
+      endTime: timeOn(booked.day, ended),
+      negotiate: asDuration(t.negotiateSeconds),
+      pickupZone: t.pickupZone ?? 'Outside',
+      destZone: t.destZone ?? 'Outside',
+      rideType: t.rideType === 'group' ? 'Group' : 'Single',
+      feeSplitEstimated: t.platformTotalNgn == null ? '' : t.feeSplitEstimated ? 'yes' : 'no',
+      minutes: t.durationSeconds == null ? null : Math.round(t.durationSeconds / 60),
+      cancelReason: cleanText(t.cancelReason),
+    };
+  }), cut(items.length, total));
 }
 
 async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<void> {
@@ -235,7 +300,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Sender', key: 'senderName', width: 22 },
     { header: 'Sender bank', key: 'senderBank', width: 16 },
     { header: 'Reference', key: 'reference', width: 34 },
-  ], dep.items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt) })), cut(dep.items.length, dep.total));
+  ], dep.items.map((r) => ({ ...r, name: cleanName(r.name), senderName: r.senderName ? cleanName(r.senderName) : '', createdAt: lagosTime(r.createdAt) })), cut(dep.items.length, dep.total));
 
   const wd = await all((offset) => adminAnalyticsClient.withdrawals(f, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
   addSheet(book, 'Withdrawals', [
@@ -251,7 +316,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'To account', key: 'accountName', width: 24 },
     { header: 'Account ending', key: 'accountEnding', width: 15 },
     { header: 'Why it failed', key: 'failureReason', width: 30 },
-  ], wd.items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
+  ], wd.items.map((r) => ({ ...r, name: cleanName(r.name), accountName: cleanName(r.accountName), createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
 }
 
 export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<Buffer> {
@@ -357,7 +422,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Shifts', key: 'shifts', format: WHOLE },
       { header: 'Trips per hour online', key: 'tripsPerOnlineHour', format: '#,##0.00', width: 21 },
       { header: 'Last online (Lagos)', key: 'lastOnlineAt', width: 19 },
-    ], drivers.items.map((d) => ({ ...d, lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) })), cut(drivers.items.length, drivers.total));
+    ], drivers.items.map((d) => ({ ...d, name: cleanName(d.name, 'Unnamed driver'), lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) })), cut(drivers.items.length, drivers.total));
 
     const riders = await all((offset) => adminAnalyticsClient.riders(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
     addSheet(book, 'Riders', [
@@ -372,8 +437,10 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Average fare', key: 'avgFareNgn', format: NAIRA },
       { header: 'Usual channel', key: 'topChannel', width: 14 },
       { header: 'Last request (Lagos)', key: 'lastRequestAt', width: 20 },
+      { header: 'WhatsApp messages', key: 'messages', format: WHOLE, width: 18 },
+      { header: 'Messages per trip', key: 'messagesPerTrip', format: '#,##0.0', width: 17 },
       { header: 'Wallet balance', key: 'walletBalanceNgn', format: NAIRA },
-    ], riders.items.map((r) => ({ ...r, joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
+    ], riders.items.map((r) => ({ ...r, name: cleanName(r.name), joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
 
     await feesSheets(book, f, bucket, contacts);
 
