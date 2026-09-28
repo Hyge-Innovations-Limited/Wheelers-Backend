@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { chatClient, rideClient } from '@wheleers/db';
 import { authenticateHttpUser } from './authenticate';
+import { chatWindow } from '../trip-chat/access';
 import { sendJson } from './utils';
 
 interface ChatRouteDeps {
@@ -36,7 +37,12 @@ export function handleGetRideChatMessagesRoute(deps: ChatRouteDeps) {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
     const cursor = url.searchParams.get('cursor') ?? undefined;
 
-    const result = await chatClient.findByRideId({ rideId, limit, cursor });
+    // No cursor: the LATEST messages, which is what a chat screen opens on. It
+    // used to return the first 50, so a long chat opened on its oldest lines.
+    const result = cursor
+      ? await chatClient.findByRideId({ rideId, limit, cursor })
+      : { items: await chatClient.latestForRide(rideId, limit), nextCursor: null };
+    const window = chatWindow(ride);
 
     return sendJson(res, 200, {
       items: result.items.map((msg) => ({
@@ -45,9 +51,13 @@ export function handleGetRideChatMessagesRoute(deps: ChatRouteDeps) {
         senderId: msg.senderId,
         senderRole: msg.senderRole,
         content: msg.content,
+        kind: msg.kind === 'call' ? 'call' : 'text',
         createdAt: msg.createdAt.toISOString(),
       })),
       nextCursor: result.nextCursor,
+      // Whether the chat still takes messages, and until when (30 minutes after the trip).
+      open: window.open,
+      closesAt: window.closesAt ? window.closesAt.toISOString() : null,
     });
   };
 }

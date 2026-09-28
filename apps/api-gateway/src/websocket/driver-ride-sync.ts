@@ -29,6 +29,8 @@ export type DriverRideSnapshot = {
   /** Wallet rides are held before a driver is assigned — the fare is secured. */
   riderPaid: boolean;
   riderPhone: string | null;
+  /** The rider's first name: what the driver's chat says ("Chat with Ada"). */
+  riderName: string | null;
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
@@ -76,6 +78,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     riderOfferNgn: decimalToNumber(ride.riderOfferNgn),
     riderPaid: ride.paymentMethod === 'WALLET',
     riderPhone: rider?.phone ?? null,
+    riderName: rider?.name?.trim().split(/\s+/)[0] || null,
     matchedAt: ride.matchedAt?.toISOString() ?? null,
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,

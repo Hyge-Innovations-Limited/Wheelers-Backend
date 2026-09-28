@@ -722,9 +722,11 @@ export async function handleRideEvent(
 
     // Look up rider phone so driver can call them
     let riderPhone: string | undefined;
+    let riderName: string | undefined;
     try {
       const riderUser = await userClient.findById(event.riderId);
       riderPhone = riderUser?.phone ?? undefined;
+      riderName = riderUser?.name?.trim().split(/\s+/)[0] || undefined;
     } catch { /* non-critical */ }
 
     // Ship the route with the match. The driver app's offer card expires
@@ -756,6 +758,7 @@ export async function handleRideEvent(
       paymentMethod: event.paymentMethod,
       riderPaid: event.paymentMethod !== 'CASH',
       riderPhone,
+      riderName,
     });
 
     return;
