@@ -352,6 +352,27 @@ async function syncPayoutStatus(
 
 // ─── Route handlers ────────────────────────────────────────────────
 
+/**
+ * The account a withdrawal goes to by default: the last one that paid out.
+ * With it, withdrawing is one step, "Send to GTBank ending 4821", with no
+ * bank to pick and no lookup to wait for. Null when there is none, or when the
+ * bank can no longer be named from the bank list.
+ */
+async function payoutAccountFor(deps: WalletRouteDeps, userId: string) {
+  const last = await withdrawalClient.lastPayoutAccount(userId).catch(() => null);
+  if (!last) return null;
+  const banks = await getBanksFromCacheOrProvider(deps, "NG", "NGN").catch(() => [] as PaymentBank[]);
+  const bank = banks.find((candidate) => candidate.uuid === last.bankNetworkId);
+  if (!bank || typeof bank.name !== "string") return null;
+  return {
+    networkId: last.bankNetworkId,
+    bankName: bank.name,
+    accountNumber: last.bankAccountNumber,
+    accountName: last.bankAccountName,
+    lastUsedAt: last.createdAt.toISOString(),
+  };
+}
+
 export async function handleWalletOverviewRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -384,6 +405,7 @@ export async function handleWalletOverviewRoute(
       // The app shows "Withdrawal fee" and "You receive" from these, never from a number of its own.
       withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
       minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
+      payoutAccount: await payoutAccountFor(deps, user.id),
     });
   } catch (error) {
     sendJson(res, 401, {

@@ -387,4 +387,19 @@ export const withdrawalClient = {
     prisma.withdrawalRequest.findFirst({
       where: byReference(providerReference),
     }),
+
+  /**
+   * The account this person last withdrew to: the one that paid out, or,
+   * failing that, one still on its way (its account was checked with the bank
+   * when it was entered). A failed withdrawal's account is not offered again:
+   * it may be the reason it failed.
+   */
+  lastPayoutAccount: async (userId: string) => {
+    const pick = (statuses: Array<'SETTLED' | 'PROCESSING' | 'PAYOUT_CREATED' | 'FUNDS_RESERVED'>) => prisma.withdrawalRequest.findFirst({
+      where: { userId, status: { in: statuses } },
+      orderBy: { createdAt: 'desc' },
+      select: { bankNetworkId: true, bankAccountNumber: true, bankAccountName: true, createdAt: true },
+    });
+    return (await pick(['SETTLED'])) ?? (await pick(['PROCESSING', 'PAYOUT_CREATED', 'FUNDS_RESERVED']));
+  },
 };

@@ -14,6 +14,7 @@ const { withdrawalBreakdown, WITHDRAWAL_FEE_NGN, MIN_WITHDRAWAL_REQUEST_NGN } = 
 const { withdrawalClient, adminAnalyticsClient, lagosToday } = require('../packages/db/dist/index.js');
 const { submitWithdrawal } = require('../apps/api-gateway/dist/payments/withdrawal.js');
 const { handleWalletPageRoute } = require('../apps/api-gateway/dist/http/wallet-page.route.js');
+const { handleWalletOverviewRoute } = require('../apps/api-gateway/dist/http/wallet.route.js');
 const local = require('../apps/api-gateway/dist/auth/local.js');
 
 const prisma = new PrismaClient();
@@ -172,6 +173,34 @@ test('the WhatsApp page is told the fee before the PIN, and the answer says what
   assert.equal(paid.statusCode, 200, JSON.stringify(paid.body));
   assert.deepEqual([paid.body.amountNgn, paid.body.feeNgn, paid.body.payoutNgn], [2_000, 45, 1_955]);
   assert.equal(paystack.sent[0].amountNgn, 1_955);
+});
+
+test('the wallet overview offers the account that last paid out, so the app can withdraw in one step', async () => {
+  const user = await makeUser(20_000);
+  const paystack = fakePaystack();
+  const store = new Map();
+  const redis = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); } };
+  const deps = { jwtSecret: JWT_SECRET, redisClient: redis, paymentsClient: paystack.client, publisher };
+  const overview = async () => {
+    const req = { method: 'GET', headers: { authorization: `Bearer ${local.createLocalAccessToken(user.id, JWT_SECRET)}` } };
+    const res = { statusCode: 0, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; }, end(t) { this.body = JSON.parse(t); } };
+    await handleWalletOverviewRoute(req, res, deps);
+    return res.body;
+  };
+
+  const first = await overview();
+  assert.equal(first.payoutAccount, null, `no withdrawal yet: nothing to offer (${JSON.stringify(first)})`);
+
+  const { requestId } = await withdraw(paystack, user, 2_000);
+  const pending = await overview();
+  assert.equal(pending.payoutAccount.accountNumber, '0000000000', 'on its way counts, while nothing has paid out');
+
+  await withdrawalClient.settle(requestId, { providerFeeNgn: 10 });
+  const after = await overview();
+  assert.deepEqual(
+    { ...after.payoutAccount, lastUsedAt: typeof after.payoutAccount.lastUsedAt },
+    { networkId: '057', bankName: 'Zenith Bank', accountNumber: '0000000000', accountName: 'FEE TEST', lastUsedAt: 'string' },
+  );
 });
 
 test('the admin counts withdrawal fees as income, lists them, and the numbers check agrees with the ledger', async () => {
