@@ -1885,6 +1885,7 @@ async function bootstrap(): Promise<void> {
 
         const handler = handleGetRideChatMessagesRoute({
           jwtSecret: gatewayEnv.JWT_SECRET,
+          liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
         });
         await handler(req, res, { rideId: chatMatch[1] });
         return;

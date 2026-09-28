@@ -6,6 +6,8 @@ import { sendJson } from './utils';
 
 interface ChatRouteDeps {
   jwtSecret: string;
+  /** Live call is on: the apps show their Call button. */
+  liveCallEnabled?: boolean;
 }
 
 export function handleGetRideChatMessagesRoute(deps: ChatRouteDeps) {
@@ -58,6 +60,7 @@ export function handleGetRideChatMessagesRoute(deps: ChatRouteDeps) {
       // Whether the chat still takes messages, and until when (30 minutes after the trip).
       open: window.open,
       closesAt: window.closesAt ? window.closesAt.toISOString() : null,
+      callsEnabled: deps.liveCallEnabled === true,
     });
   };
 }
