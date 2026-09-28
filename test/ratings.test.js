@@ -69,3 +69,22 @@ test('the repair script rebuilds a rating stored in the wrong place, and only wi
   assert.deepEqual([driver.rating, driver.ratingCount, user.riderRating, user.riderRatingCount], [2, 1, 5, 0]);
   assert.match(run(), /driver ratings to correct: 0/, 'running it again finds nothing');
 });
+
+test('a driver\'s review of their rider, labelled as a rider\'s by the old bug, is read from the ride and counted as the driver\'s', async () => {
+  const rider = await person('RIDER');
+  const driverUser = await person('DRIVER');
+  const driver = await prisma.driver.findUnique({ where: { userId: driverUser.id } });
+  const r = await prisma.ride.create({ data: { riderId: rider.id, driverId: driver.id, status: 'COMPLETED', pickupLat: 6.5, pickupLng: 3.37, pickupAddress: 'A', destLat: 6.45, destLng: 3.43, destAddress: 'B' } });
+  made.rides.push(r.id);
+  // The driver rated the rider 3; the old server labelled it 'rider'. The rider's rating took it, by luck.
+  await prisma.feedback.create({ data: { id: randomUUID(), rideId: r.id, reviewerId: driverUser.id, reviewerRole: 'rider', revieweeId: rider.id, rating: 3 } });
+  await prisma.user.update({ where: { id: rider.id }, data: { riderRating: 3, riderRatingCount: 1 } });
+
+  const run = (...args) => execFileSync('node', ['scripts/run-with-env.cjs', 'node', 'scripts/recompute-ratings.mjs', ...args], { encoding: 'utf8' });
+  assert.match(run(), /reviews with the wrong label: [1-9]/);
+  run('--confirm');
+  const riderAfter = await prisma.user.findUnique({ where: { id: rider.id } });
+  assert.deepEqual([riderAfter.riderRating, riderAfter.riderRatingCount], [3, 1], 'the rider keeps the rating their driver gave');
+  const review = await prisma.feedback.findFirst({ where: { rideId: r.id } });
+  assert.equal(review.reviewerRole, 'driver', 'and the label now says who wrote it');
+});

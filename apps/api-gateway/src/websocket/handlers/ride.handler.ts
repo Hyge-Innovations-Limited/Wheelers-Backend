@@ -243,7 +243,9 @@ function normalizeEndedBy(value: unknown): 'both_confirmed' | 'auto_gps' | 'admi
 }
 
 function normalizeReviewerRole(value: unknown): 'rider' | 'driver' {
-  if (value === 'driver') return 'driver';
+  // The driver app sends 'DRIVER'. Compared case-sensitively, that became
+  // 'rider', and every driver's rating of a rider was recorded as a rider's.
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'driver') return 'driver';
   return 'rider';
 }
 
