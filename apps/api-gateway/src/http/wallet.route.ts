@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import {
+  payoutAmountOf,
   walletClient,
   withdrawalClient,
   virtualAccountClient,
@@ -24,7 +25,7 @@ import { getBanks } from "../payments/banks";
 import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
-import { MIN_WITHDRAWAL_NGN } from "@wheleers/config";
+import { MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
 
 // ─── Deps ──────────────────────────────────────────────────────────
 
@@ -287,6 +288,8 @@ function mapWithdrawalRequest(
     status: string;
     requestedAmountNgn: unknown;
     reservedAmountNgn?: unknown;
+    feeNgn?: unknown;
+    payoutAmountNgn?: unknown;
     bankAccountNumber: string;
     bankAccountName: string;
     bankNetworkId: string;
@@ -302,6 +305,9 @@ function mapWithdrawalRequest(
     id: request.id,
     status: request.status,
     amountNgn: decimalToNumber(request.requestedAmountNgn) ?? 0,
+    // Wheelers' fee, and what reached the bank. Before the fee these were 0 and the whole amount.
+    feeNgn: decimalToNumber(request.feeNgn) ?? 0,
+    payoutNgn: payoutAmountOf(request),
     bankAccount: {
       accountNumber: request.bankAccountNumber,
       accountName: request.bankAccountName,
@@ -361,6 +367,8 @@ export async function handleWalletOverviewRoute(
         balanceNgn: 0,
         lockedNgn: 0,
         updatedAt: new Date().toISOString(),
+        withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
+        minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
       });
       return;
     }
@@ -373,6 +381,9 @@ export async function handleWalletOverviewRoute(
       balanceNgn,
       lockedNgn,
       updatedAt: wallet.updatedAt.toISOString(),
+      // The app shows "Withdrawal fee" and "You receive" from these, never from a number of its own.
+      withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
+      minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
     });
   } catch (error) {
     sendJson(res, 401, {
@@ -469,18 +480,18 @@ export async function handleCreateWalletWithdrawalRoute(
 
     // Reject before reserving funds, so money is never locked for a payout
     // that was always going to be refused.
-    if (requestedAmountNgn < MIN_WITHDRAWAL_NGN) {
+    if (requestedAmountNgn < MIN_WITHDRAWAL_REQUEST_NGN) {
       console.warn("[api-gateway][wallet-withdrawal] rejected: below minimum", {
         userId: user.id,
         walletId: wallet.id,
         requestedAmountNgn,
-        minimumNgn: MIN_WITHDRAWAL_NGN,
-        shortfallNgn: roundNgn(MIN_WITHDRAWAL_NGN - requestedAmountNgn),
+        minimumNgn: MIN_WITHDRAWAL_REQUEST_NGN,
+        shortfallNgn: roundNgn(MIN_WITHDRAWAL_REQUEST_NGN - requestedAmountNgn),
         availableBalanceNgn: roundNgn(decimalToNumber(wallet.balanceNgn) ?? 0),
       });
       sendJson(res, 400, {
-        error: `Banks can't receive less than NGN ${MIN_WITHDRAWAL_NGN.toLocaleString("en-NG")}. Enter a higher amount.`,
-        minimumNgn: MIN_WITHDRAWAL_NGN,
+        error: `The smallest withdrawal is NGN ${MIN_WITHDRAWAL_REQUEST_NGN.toLocaleString("en-NG")}, including the NGN ${WITHDRAWAL_FEE_NGN.toLocaleString("en-NG")} withdrawal fee. Enter a higher amount.`,
+        minimumNgn: MIN_WITHDRAWAL_REQUEST_NGN,
         requestedAmountNgn,
       });
       return;
@@ -564,7 +575,7 @@ export async function handleCreateWalletWithdrawalRoute(
     logActivity({
       userId: user.id,
       eventType: "withdrawal_created",
-      metadata: { amountNgn: requestedAmountNgn },
+      metadata: { amountNgn: requestedAmountNgn, feeNgn: WITHDRAWAL_FEE_NGN },
     });
   } catch (error) {
     // Previously silent: a failed payout returned a 400 to the client and left
@@ -644,7 +655,7 @@ export async function handleGetWalletWithdrawalRoute(
     // reference is the request id, so this works even if the payout was
     // never recorded on our side.
     if (["PAYOUT_CREATED", "PROCESSING"].includes(request.status)) {
-      await syncPayoutStatus(deps, request.id, Number(request.requestedAmountNgn)).catch((syncError) => {
+      await syncPayoutStatus(deps, request.id, payoutAmountOf(request)).catch((syncError) => {
         console.warn("[api-gateway][wallet-withdrawal] status sync failed", {
           withdrawalRequestId: request.id,
           error: syncError instanceof Error ? syncError.message : String(syncError),

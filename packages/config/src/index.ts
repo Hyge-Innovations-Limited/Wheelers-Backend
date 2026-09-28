@@ -25,7 +25,8 @@ export type { LaunchZone } from './zones';
 
 // Constants
 export { FEES }                        from './constants/fees';
-export { MIN_WITHDRAWAL_NGN } from './constants/withdrawal';
+export { MIN_WITHDRAWAL_NGN, MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN, withdrawalBreakdown } from './constants/withdrawal';
+export type { WithdrawalBreakdown } from './constants/withdrawal';
 export {
   DEPOSIT_FEE_NGN,
   DEPOSIT_FEE_NOTICE,

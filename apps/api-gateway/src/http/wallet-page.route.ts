@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
-  MIN_WITHDRAWAL_NGN,
+  MIN_WITHDRAWAL_REQUEST_NGN,
+  WITHDRAWAL_FEE_NGN,
   depositNeededFor,
 } from '@wheleers/config';
 import { virtualAccountClient, walletClient, walletSecurityClient, withdrawalClient } from '@wheleers/db';
@@ -120,7 +121,9 @@ async function handleSession(req: IncomingMessage, res: ServerResponse, deps: Wa
     account: account ? { bankName: account.bankName, accountNumber: account.accountNumber, accountName: account.accountName } : null,
     needsPhone,
     ...summary,
-    minWithdrawalNgn: MIN_WITHDRAWAL_NGN,
+    // The page shows "Withdrawal fee" and "You receive" from these.
+    minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
+    withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
   });
 }
 
@@ -258,15 +261,18 @@ async function handleWithdraw(req: IncomingMessage, res: ServerResponse, deps: W
     routeKey: 'wallet-page:withdraw',
     requestBody: fingerprint,
     execute: async () => {
-      const { requestId } = await submitWithdrawal(
+      const { requestId, breakdown } = await submitWithdrawal(
         { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
         { userId, walletId: wallet.id, amountNgn, bankCode, accountNumber, accountName, pin, pinPolicy: 'required' },
       );
       const request = await withdrawalClient.findById(requestId);
-      return { statusCode: 200, body: { withdrawalId: requestId, status: request?.status ?? 'PAYOUT_CREATED', amountNgn } };
+      return {
+        statusCode: 200,
+        body: { withdrawalId: requestId, status: request?.status ?? 'PAYOUT_CREATED', amountNgn, feeNgn: breakdown.feeNgn, payoutNgn: breakdown.payoutNgn },
+      };
     },
   });
-  logActivity({ userId, eventType: 'withdrawal_created', metadata: { amountNgn, via: 'wallet_page' } });
+  logActivity({ userId, eventType: 'withdrawal_created', metadata: { amountNgn, feeNgn: WITHDRAWAL_FEE_NGN, via: 'wallet_page' } });
   sendJson(res, result.statusCode, result.body);
 }
 

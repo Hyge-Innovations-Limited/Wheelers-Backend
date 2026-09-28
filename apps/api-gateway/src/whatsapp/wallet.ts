@@ -1,3 +1,4 @@
+import { WITHDRAWAL_FEE_NGN } from '@wheleers/config';
 import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS, WALLET_PAGE_TOKEN_TTL_SECONDS, type WalletPageScope } from '../auth/local';
 import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { MetaWhatsappRouteDeps } from './deps';
@@ -33,6 +34,7 @@ export async function sendWalletPageButton(
         '*Withdraw to your bank*',
         '',
         'Tap below, pick the amount and the account.',
+        `A ₦${WITHDRAWAL_FEE_NGN.toLocaleString('en-NG')} withdrawal fee comes out of the amount; the page shows what reaches your bank before you confirm.`,
         'Confirm with your wallet PIN and it is on its way.',
       ].join('\n');
   const minutes = (scope === 'deposit' ? DEPOSIT_PAGE_TOKEN_TTL_SECONDS : WALLET_PAGE_TOKEN_TTL_SECONDS) / 60;

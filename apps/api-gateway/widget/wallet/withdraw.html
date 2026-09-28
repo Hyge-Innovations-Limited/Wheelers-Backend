@@ -28,11 +28,15 @@
   <section data-view="amount" class="step-in" hidden>
     <p class="eyebrow">Withdraw</p>
     <h1>How much are you <em>taking out?</em></h1>
-    <p class="lede">Straight to any Nigerian bank account. No Wheelers fee.</p>
+    <p class="lede" id="amount-lede">Straight to any Nigerian bank account.</p>
     <div class="notice warn" id="frozen-notice" hidden></div>
 
     <label class="amount" for="amount"><span class="naira">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount in naira"></label>
     <div class="under"><span id="amount-hint">Available</span><b id="balance">₦0</b></div>
+    <div class="breakdown" id="breakdown" hidden>
+      <div><span>Withdrawal fee</span><b id="b-fee">₦0</b></div>
+      <div class="gets"><span>You receive</span><b id="b-receive">₦0</b></div>
+    </div>
     <div class="chips one"><button type="button" id="max">Withdraw everything</button></div>
 
     <button class="btn" type="button" id="to-bank" disabled>Continue <span class="arrow" aria-hidden="true">→</span></button>
@@ -92,7 +96,7 @@
         <li><span class="k">Bank</span><span class="v" id="c-bank"></span></li>
         <li><span class="k">Account</span><span class="v mono-v" id="c-acct"></span></li>
         <li><span class="k">Amount</span><span class="v" id="c-amount"></span></li>
-        
+        <li><span class="k">Withdrawal fee</span><span class="v" id="c-fee"></span></li>
       </ul>
       <div class="total"><span class="k">They receive</span><span class="v" id="c-total"></span></div>
     </div>

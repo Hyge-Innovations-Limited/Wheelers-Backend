@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { userClient, virtualAccountClient, walletClient, withdrawalClient } from '@wheleers/db';
+import { payoutAmountOf, userClient, virtualAccountClient, walletClient, withdrawalClient } from '@wheleers/db';
 import { transferFeeNgn, type PaymentsClient } from '@wheleers/payments';
 import type {
   PayoutCompletedEvent,
@@ -214,7 +214,8 @@ async function handleTransferSuccess(data: Record<string, unknown>, deps: Paysta
     console.warn(`${TAG} transfer.success but provider says otherwise`, { reference, status: payout?.status ?? null });
     return;
   }
-  const amountNgn = Number(withdrawal.requestedAmountNgn);
+  // What reached the bank: the amount less Wheelers' fee. Paystack's charge depends on it.
+  const amountNgn = payoutAmountOf(withdrawal);
   const providerFeeNgn = payout.feeNgn ?? transferFeeNgn(amountNgn);
 
   await withdrawalClient.settle(reference, { providerFeeNgn });
@@ -252,21 +253,13 @@ async function handleTransferFailed(
 
   if (withdrawal.status === 'SETTLED') {
     // The bank took the money, then sent it back. The cash is in our balance
-    // again, so the user's wallet must get it back too — once.
-    const wallet = await walletClient.findByUserId(withdrawal.userId);
-    if (wallet) {
-      const refund = await walletClient.credit({
-        walletId: wallet.id,
-        amountNgn: Number(withdrawal.requestedAmountNgn),
-        type: 'REFUND',
-        referenceId: `withdrawal-reversed-${withdrawal.id}`,
-        metadata: { withdrawalId: withdrawal.id, reason: failureReason },
-      });
-      console.error(`${TAG} settled withdrawal was REVERSED — wallet refunded`, {
-        withdrawalId: withdrawal.id,
-        applied: refund.applied,
-      });
-    }
+    // again, so the user's wallet gets all of it back, withdrawal fee included,
+    // and Wheelers gives the fee up — once.
+    const refund = await withdrawalClient.refundReversed(withdrawal.id, failureReason);
+    console.error(`${TAG} settled withdrawal was REVERSED — wallet refunded, fee returned`, {
+      withdrawalId: withdrawal.id,
+      applied: refund.applied,
+    });
   } else {
     await withdrawalClient.releaseFailedRequest({
       providerReference: reference,

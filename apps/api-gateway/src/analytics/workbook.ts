@@ -104,6 +104,7 @@ function kpiRows(current: Kpis, previous: Kpis): Array<Record<string, unknown>> 
     line('Commission (4%)', 'commissionNgn', 'naira'),
     line('Service fee', 'serviceFeeNgn', 'naira'),
     line('Deposit fees', 'depositFeesNgn', 'naira'),
+    line('Withdrawal fees', 'withdrawalFeesNgn', 'naira'),
     line('Platform revenue', 'platformRevenueNgn', 'naira'),
     line('State levy (owed to Lagos)', 'stateLevyNgn', 'naira'),
     line('Driver payouts', 'driverPayoutsNgn', 'naira'),
@@ -194,6 +195,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Commission', key: 'commissionNgn', format: NAIRA },
     { header: 'Service fee', key: 'serviceFeeNgn', format: NAIRA },
     { header: 'Deposit fees', key: 'depositFeesNgn', format: NAIRA },
+    { header: 'Withdrawal fees', key: 'withdrawalFeesNgn', format: NAIRA, width: 16 },
     { header: 'Income', key: 'incomeNgn', format: NAIRA },
     { header: 'State levy (owed)', key: 'stateLevyNgn', format: NAIRA, width: 18 },
     { header: 'Platform deposit costs', key: 'depositProviderCostNgn', format: NAIRA, width: 20 },
@@ -204,8 +206,9 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Rides with fees', key: 'feeRides', format: WHOLE },
     { header: 'Deposits', key: 'deposits', format: WHOLE },
     { header: 'Withdrawal transfers', key: 'transfers', format: WHOLE, width: 20 },
+    { header: 'Withdrawals that paid the fee', key: 'feeWithdrawals', format: WHOLE, width: 26 },
     { header: 'Commission, estimated split', key: 'estimatedCommissionNgn', format: NAIRA, width: 26 },
-  ], points, 'Income is commission, the ₦375 service fee and the ₦30 deposit fee. The state levy is collected for Lagos State and is not income.');
+  ], points, 'Income is commission, the ₦375 service fee, the ₦30 deposit fee and the withdrawal fee. The state levy is collected for Lagos State and is not income.');
 
   const { items, total } = await all((offset) => adminAnalyticsClient.feeLedger(f, null, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
   addSheet(book, 'Fee ledger', [
@@ -242,6 +245,8 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
     { header: 'Status', key: 'status', width: 16 },
     { header: 'Amount', key: 'amountNgn', format: NAIRA },
+    { header: 'Withdrawal fee', key: 'feeNgn', format: NAIRA, width: 15 },
+    { header: 'Sent to bank', key: 'payoutNgn', format: NAIRA, width: 14 },
     { header: 'Platform cost', key: 'transferFeeNgn', format: NAIRA, width: 15 },
     { header: 'To account', key: 'accountName', width: 24 },
     { header: 'Account ending', key: 'accountEnding', width: 15 },
@@ -265,6 +270,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       line('Commission (4%)', 'commissionNgn'),
       line('Service fee', 'serviceFeeNgn'),
       line('Deposit fees', 'depositFeesNgn'),
+      line('Withdrawal fees', 'withdrawalFeesNgn'),
       line('Income', 'incomeNgn'),
       line('State levy (owed to Lagos)', 'stateLevyNgn'),
       line('Platform deposit costs', 'depositProviderCostNgn'),
@@ -275,6 +281,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       line('Rides with fees', 'feeRides', 'count'),
       line('Deposits', 'deposits', 'count'),
       line('Withdrawal transfers', 'transfers', 'count'),
+      line('Withdrawals that paid the fee', 'feeWithdrawals', 'count'),
       line('Commission from estimated splits', 'estimatedCommissionNgn'),
     ]);
     await feesSheets(book, f, bucket, contacts);

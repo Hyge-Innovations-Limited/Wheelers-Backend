@@ -44,7 +44,7 @@ const MAX_PERIOD_DAYS = 800;
 const BUCKETS: Bucket[] = ['day', 'week', 'month'];
 const BREAKDOWNS: BreakdownBy[] = ['channel', 'zone', 'rideType', 'cancelReason'];
 const TRIP_STATUSES: TripStatusFilter[] = ['all', 'completed', 'cancelled', 'no_driver', 'disputed', 'active', 'open'];
-const FEE_KINDS: FeeKind[] = ['ride_fee', 'deposit_fee', 'deposit_provider_fee', 'transfer_fee', 'provider_fee'];
+const FEE_KINDS: FeeKind[] = ['ride_fee', 'deposit_fee', 'withdrawal_fee', 'deposit_provider_fee', 'transfer_fee', 'provider_fee'];
 const ID = /^[0-9a-zA-Z-]{8,64}$/;
 
 function pick<T extends string>(url: URL, key: string, allowed: readonly T[], fallback: T): T {

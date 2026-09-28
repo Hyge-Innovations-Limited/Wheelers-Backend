@@ -1,5 +1,5 @@
 import { withdrawalClient } from '@wheleers/db';
-import { MIN_WITHDRAWAL_NGN } from '@wheleers/config';
+import { MIN_WITHDRAWAL_REQUEST_NGN, withdrawalBreakdown, type WithdrawalBreakdown } from '@wheleers/config';
 import {
   OTP_REQUIRED_MESSAGE,
   classifyPayoutStatus,
@@ -63,13 +63,16 @@ export interface SubmitWithdrawalInput {
 export async function submitWithdrawal(
   deps: { paymentsClient: PaymentsClient; publisher: GatewayPublisher },
   input: SubmitWithdrawalInput,
-): Promise<{ requestId: string }> {
+): Promise<{ requestId: string; breakdown: WithdrawalBreakdown }> {
   const { paymentsClient, publisher } = deps;
   const { userId, walletId, amountNgn, bankCode, accountNumber, accountName } = input;
 
-  if (!(amountNgn > 0) || amountNgn < MIN_WITHDRAWAL_NGN) {
+  // The fee comes out of the amount: the wallet gives up amountNgn, the bank gets payoutNgn.
+  const breakdown = withdrawalBreakdown(amountNgn);
+  if (!(amountNgn > 0) || amountNgn < MIN_WITHDRAWAL_REQUEST_NGN) {
     throw new WithdrawalError(
-      `The smallest amount you can withdraw is ₦${MIN_WITHDRAWAL_NGN.toLocaleString('en-NG')}.`,
+      `The smallest amount you can withdraw is ₦${MIN_WITHDRAWAL_REQUEST_NGN.toLocaleString('en-NG')}: ` +
+        `₦${breakdown.feeNgn.toLocaleString('en-NG')} withdrawal fee, and the bank needs the rest to be at least ₦${(MIN_WITHDRAWAL_REQUEST_NGN - breakdown.feeNgn).toLocaleString('en-NG')}.`,
       'BELOW_MINIMUM',
     );
   }
@@ -96,6 +99,7 @@ export async function submitWithdrawal(
     bankAccountNumber: accountNumber,
     bankAccountName: accountName,
     bankNetworkId: bankCode,
+    feeNgn: breakdown.feeNgn,
   });
   const requestId = reserved.request.id;
 
@@ -114,7 +118,7 @@ export async function submitWithdrawal(
   try {
     payout = await paymentsClient.createPayout({
       reference: requestId,
-      amountNgn,
+      amountNgn: breakdown.payoutNgn,
       accountNumber,
       bankCode,
       accountName,
@@ -170,7 +174,7 @@ export async function submitWithdrawal(
       userId,
       providerPayoutId: payout.id,
       withdrawalId: requestId,
-      amountNgn,
+      amountNgn: breakdown.payoutNgn,
       bankAccountNumber: accountNumber,
       bankAccountName: accountName,
       bankNetworkId: bankCode,
@@ -187,6 +191,6 @@ export async function submitWithdrawal(
     });
   }
 
-  console.log(`${TAG} transfer created`, { requestId, transferId: payout.id, amountNgn, status: payout.status });
-  return { requestId };
+  console.log(`${TAG} transfer created`, { requestId, transferId: payout.id, ...breakdown, status: payout.status });
+  return { requestId, breakdown };
 }

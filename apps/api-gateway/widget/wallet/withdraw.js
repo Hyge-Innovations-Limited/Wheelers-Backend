@@ -73,6 +73,9 @@
     if (s.scope !== 'withdraw') return W.fatal('This link is for something else.');
     session = s;
     W.$('balance').textContent = W.naira(s.balanceNgn);
+    if (feeNgn() > 0) {
+      W.$('amount-lede').textContent = 'Straight to any Nigerian bank account. A ' + W.naira(feeNgn()) + ' withdrawal fee comes out of the amount.';
+    }
     if (s.frozenUntil) {
       W.$('frozen-notice').textContent = s.frozenReason === 'pin_reset'
         ? 'Withdrawals are paused for ' + W.until(s.frozenUntil) + ' after your PIN reset. Deposits and rides work as normal.'
@@ -95,13 +98,20 @@
 
   /* ── 1 · amount ───────────────────────────────────────────────────── */
 
+  /* The fee comes out of the amount: the wallet gives up what was typed, the bank gets the rest. */
+  function feeNgn() { return Number(session.withdrawalFeeNgn) || 0; }
+  function receiveNgn(amount) { return Math.max(0, Math.round((amount - feeNgn()) * 100) / 100); }
+
   function checkAmount() {
     var amount = W.parseAmount(W.$('amount').value);
     var hint = 'Available';
     var ok = amount > 0;
     if (amount > session.balanceNgn) { ok = false; hint = 'More than you have — available'; }
-    else if (amount > 0 && amount < session.minWithdrawalNgn) { ok = false; hint = 'Banks need at least ' + W.naira(session.minWithdrawalNgn) + ' — available'; }
+    else if (amount > 0 && amount < session.minWithdrawalNgn) { ok = false; hint = 'The least you can withdraw is ' + W.naira(session.minWithdrawalNgn) + ' — available'; }
     W.$('amount-hint').textContent = hint;
+    W.$('breakdown').hidden = !(amount > 0 && feeNgn() > 0);
+    W.$('b-fee').textContent = '− ' + W.naira(feeNgn());
+    W.$('b-receive').textContent = W.naira(receiveNgn(amount));
     W.$('to-bank').disabled = !ok || Boolean(session.frozenUntil);
     draft.amountNgn = amount;
   }
@@ -111,7 +121,7 @@
     checkAmount();
   });
   W.$('to-bank').addEventListener('click', function () {
-    W.$('bank-lede').textContent = 'You’re sending ' + W.naira(draft.amountNgn) + '. Pick the bank, then the account.';
+    W.$('bank-lede').textContent = 'The bank receives ' + W.naira(receiveNgn(draft.amountNgn)) + '. Pick the bank, then the account.';
     W.go('bank');
   });
 
@@ -192,7 +202,8 @@
 
   W.$('to-confirm').addEventListener('click', function () {
     W.$('c-amount').textContent = W.naira(draft.amountNgn);
-    W.$('c-total').textContent = W.naira(draft.amountNgn);
+    W.$('c-fee').textContent = '− ' + W.naira(feeNgn());
+    W.$('c-total').textContent = W.naira(receiveNgn(draft.amountNgn));
     W.$('c-name').textContent = draft.accountName;
     W.$('c-bank').textContent = draft.bankName;
     W.$('c-acct').textContent = draft.accountNumber;
@@ -327,7 +338,7 @@
       accountName: draft.accountName,
       pin: pin,
     }, { 'Idempotency-Key': submitKey }).then(function () {
-      showResult(true, W.naira(draft.amountNgn) + ' on its way', 'To ' + draft.accountName + ' · ' + draft.bankName + '. It usually arrives within minutes.');
+      showResult(true, W.naira(receiveNgn(draft.amountNgn)) + ' on its way', 'To ' + draft.accountName + ' · ' + draft.bankName + '. It usually arrives within minutes.');
     }).catch(function (e) {
       submitKey = null; // a refused attempt may be retried as a NEW request
       if (e.code === 'PIN_WRONG' || e.code === 'PIN_REQUIRED') {

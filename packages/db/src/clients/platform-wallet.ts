@@ -28,6 +28,30 @@ export async function ensurePlatformWalletId(db: Db = prisma): Promise<string> {
   return wallet.id;
 }
 
+/** Book a fee Wheelers earned (a credit to the platform wallet). */
+export async function bookPlatformFee(
+  tx: Prisma.TransactionClient,
+  params: { amountNgn: number; referenceId: string; metadata?: Record<string, unknown> },
+): Promise<void> {
+  if (!(params.amountNgn > 0)) return;
+  const platformWalletId = await ensurePlatformWalletId(tx);
+  const wallet = await tx.wallet.update({
+    where: { id: platformWalletId },
+    data: { balanceNgn: { increment: params.amountNgn } },
+  });
+  await tx.transaction.create({
+    data: {
+      walletId: platformWalletId,
+      type: 'PLATFORM_FEE',
+      direction: 'CREDIT',
+      amountNgn: params.amountNgn,
+      balanceAfterNgn: wallet.balanceNgn,
+      referenceId: params.referenceId,
+      metadata: (params.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+    },
+  });
+}
+
 /**
  * Book a payment-provider charge Wheelers absorbed. The platform wallet is
  * allowed to go negative: if fees earned do not cover fees paid, the ledger

@@ -15,7 +15,7 @@ export { driverBidClient }      from './clients/driver-bid.client';
 export { scheduledRideClient }  from './clients/scheduled-ride.client';
 export { outboxClient }         from './clients/outbox.client';
 export { walletClient }         from './clients/wallet.client';
-export { withdrawalClient }     from './clients/withdrawal.client';
+export { withdrawalClient, payoutAmountOf } from './clients/withdrawal.client';
 export { virtualAccountClient, ACTIVE_PAYMENT_PROVIDER } from './clients/virtual-account.client';
 export { PLATFORM_USER_ID, ensurePlatformWalletId } from './clients/platform-wallet';
 export { walletSecurityClient } from './clients/wallet-security.client';

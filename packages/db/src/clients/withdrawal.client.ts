@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
-import { bookProviderFee } from './platform-wallet';
+import { bookPlatformFee, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
 
 /**
  * Our payout reference IS the withdrawal request id, so a webhook or a
@@ -17,6 +17,11 @@ function asJson(value: Record<string, unknown> | undefined) {
   return (value ?? undefined) as Prisma.InputJsonValue | undefined;
 }
 
+/** What went (or goes) to the bank. Before the fee existed, that was the whole amount. */
+export function payoutAmountOf(request: { payoutAmountNgn?: unknown; requestedAmountNgn: unknown }): number {
+  return Number(request.payoutAmountNgn ?? request.requestedAmountNgn);
+}
+
 export const withdrawalClient = {
   reserve: async (input: {
     userId: string;
@@ -25,6 +30,8 @@ export const withdrawalClient = {
     bankAccountNumber: string;
     bankAccountName: string;
     bankNetworkId: string;
+    /** Wheelers' fee, taken from amountNgn. The bank is sent amountNgn less this. */
+    feeNgn?: number;
   }) =>
     prisma.$transaction(async (tx: TxClient) => {
       const wallet = await tx.wallet.findUniqueOrThrow({
@@ -68,6 +75,8 @@ export const withdrawalClient = {
           status: 'FUNDS_RESERVED',
           requestedAmountNgn: input.amountNgn,
           reservedAmountNgn: input.amountNgn,
+          feeNgn: input.feeNgn ?? 0,
+          payoutAmountNgn: Math.round((input.amountNgn - (input.feeNgn ?? 0)) * 100) / 100,
           bankAccountNumber: input.bankAccountNumber,
           bankAccountName: input.bankAccountName,
           bankNetworkId: input.bankNetworkId,
@@ -245,6 +254,14 @@ export const withdrawalClient = {
           },
         });
 
+        // The fee is earned only when the money has left: a failed withdrawal
+        // is released whole, fee included, and never reaches this line.
+        await bookPlatformFee(tx, {
+          amountNgn: Number(request.feeNgn ?? 0),
+          referenceId: request.id,
+          metadata: { kind: 'withdrawal_fee', withdrawalId: request.id },
+        });
+
         const providerFeeNgn = Math.max(0, Number(opts.providerFeeNgn ?? 0));
         await bookProviderFee(tx, {
           amountNgn: providerFeeNgn,
@@ -286,6 +303,63 @@ export const withdrawalClient = {
    * id). Both lock the user's money until someone asks the provider what
    * really happened — the reference is the request id, so both can be asked.
    */
+  /**
+   * A withdrawal that was paid, then sent back by the bank. The money is in
+   * Wheelers' Paystack balance again, so the user gets back all of it, fee
+   * included (the withdrawal never happened), and the fee Wheelers booked at
+   * settlement is taken back out of the platform wallet. Both in one step,
+   * once: a second webhook for the same reversal changes nothing.
+   */
+  refundReversed: async (withdrawalId: string, reason: string): Promise<{ applied: boolean }> => {
+    const referenceId = `withdrawal-reversed-${withdrawalId}`;
+    try {
+      await prisma.$transaction(async (tx: TxClient) => {
+        const request = await tx.withdrawalRequest.findUniqueOrThrow({ where: { id: withdrawalId } });
+        const amountNgn = Number(request.requestedAmountNgn);
+        const wallet = await tx.wallet.update({
+          where: { id: request.walletId },
+          data: { balanceNgn: { increment: amountNgn } },
+        });
+        await tx.transaction.create({
+          data: {
+            walletId: request.walletId,
+            type: 'REFUND',
+            direction: 'CREDIT',
+            amountNgn,
+            balanceAfterNgn: wallet.balanceNgn,
+            referenceId,
+            metadata: asJson({ withdrawalId, reason }),
+          },
+        });
+
+        const feeNgn = Number(request.feeNgn ?? 0);
+        if (feeNgn > 0) {
+          const platformWalletId = await ensurePlatformWalletId(tx);
+          const platform = await tx.wallet.update({
+            where: { id: platformWalletId },
+            data: { balanceNgn: { decrement: feeNgn } },
+          });
+          await tx.transaction.create({
+            data: {
+              walletId: platformWalletId,
+              type: 'PLATFORM_FEE',
+              direction: 'DEBIT',
+              amountNgn: feeNgn,
+              balanceAfterNgn: platform.balanceNgn,
+              referenceId,
+              metadata: asJson({ kind: 'withdrawal_fee', withdrawalId, reversed: true }),
+            },
+          });
+        }
+      });
+      return { applied: true };
+    } catch (error) {
+      // Already refunded: the ledger's (wallet, type, direction, reference) rule refused the copy.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return { applied: false };
+      throw error;
+    }
+  },
+
   findStaleInFlight: (olderThan: Date, limit = 50) =>
     prisma.withdrawalRequest.findMany({
       where: {

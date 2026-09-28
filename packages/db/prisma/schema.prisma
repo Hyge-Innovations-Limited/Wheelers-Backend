@@ -272,6 +272,10 @@ model WithdrawalRequest {
   /// What the provider charged Wheelers for this transfer, booked against the
   /// platform wallet at settlement.
   providerFeeNgn     Decimal?                @db.Decimal(18, 2)
+  /// Wheelers' withdrawal fee, taken from the amount. Null on withdrawals made before the fee.
+  feeNgn             Decimal?                @db.Decimal(18, 2)
+  /// What was sent to the bank: the amount less the fee. Null before the fee: then it was the amount.
+  payoutAmountNgn    Decimal?                @db.Decimal(18, 2)
   failureReason      String?
   providerPayload    Json?
   expiresAt          DateTime?

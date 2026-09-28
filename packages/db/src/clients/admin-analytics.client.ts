@@ -173,8 +173,10 @@ export interface Kpis {
   serviceFeeNgn: number;
   stateLevyNgn: number;
   depositFeesNgn: number;
-  /** Commission + service fee + deposit fees. The state levy is owed to Lagos, so it is not revenue.
-   *  Under a ride filter, deposit fees are left out: they belong to no ride. */
+  /** Wheelers' fee on withdrawals that reached the bank. */
+  withdrawalFeesNgn: number;
+  /** Commission + service fee + deposit fees + withdrawal fees. The state levy is owed to Lagos, so it is not revenue.
+   *  Under a ride filter, deposit and withdrawal fees are left out: they belong to no ride. */
   platformRevenueNgn: number;
   driverPayoutsNgn: number;
   activeDrivers: number;
@@ -255,6 +257,9 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
       sum(t."amountNgn") FILTER (WHERE t.type = 'DEPOSIT' AND t.direction = 'CREDIT')  AS deposits,
       count(*) FILTER (WHERE t.type = 'DEPOSIT' AND t.direction = 'CREDIT')            AS deposit_count,
       sum(t."amountNgn") FILTER (WHERE t.type = 'PLATFORM_FEE' AND t.metadata->>'kind' = 'deposit_fee') AS deposit_fees,
+      -- Net of fees given back when a bank reversed a paid withdrawal.
+      sum(CASE WHEN t.direction = 'DEBIT' THEN -t."amountNgn" ELSE t."amountNgn" END)
+        FILTER (WHERE t.type = 'PLATFORM_FEE' AND t.metadata->>'kind' = 'withdrawal_fee') AS withdrawal_fees,
       sum(t."amountNgn") FILTER (WHERE t.type = 'REFUND' AND t.direction = 'CREDIT')   AS refunds
     FROM "Transaction" t WHERE ${inLedger}`);
 
@@ -285,6 +290,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
   const commissionNgn = num(ride?.commission);
   const serviceFeeNgn = num(ride?.service_fee);
   const depositFeesNgn = num(money?.deposit_fees);
+  const withdrawalFeesNgn = num(money?.withdrawal_fees);
   const ridesWithBids = num(bids?.rides);
   const ridesWithAcceptedBid = num(bids?.accepted);
   return {
@@ -304,7 +310,8 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     serviceFeeNgn,
     stateLevyNgn: num(ride?.state_levy),
     depositFeesNgn,
-    platformRevenueNgn: num(commissionNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn)),
+    withdrawalFeesNgn,
+    platformRevenueNgn: num(commissionNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn + withdrawalFeesNgn)),
     driverPayoutsNgn: num(ride?.payouts),
     activeDrivers: num(ride?.active_drivers),
     activeRiders: num(ride?.active_riders),
@@ -834,7 +841,9 @@ export interface FeeTotals {
   commissionNgn: number;
   serviceFeeNgn: number;
   depositFeesNgn: number;
-  /** Commission + service fee + deposit fees. */
+  /** Wheelers' ₦45 (or whatever it is set to) on each withdrawal that reached the bank. */
+  withdrawalFeesNgn: number;
+  /** Commission + service fee + deposit fees + withdrawal fees. */
   incomeNgn: number;
   /** Collected on rides and owed to Lagos State: a pass-through, not income. */
   stateLevyNgn: number;
@@ -848,11 +857,13 @@ export interface FeeTotals {
   feeRides: number;
   deposits: number;
   transfers: number;
+  /** Withdrawals that paid the Wheelers fee. */
+  feeWithdrawals: number;
   /** Commission on rides whose split was reconstructed by the backfill. */
   estimatedCommissionNgn: number;
 }
 
-export interface FeePoint extends Omit<FeeTotals, 'feeRides' | 'deposits' | 'transfers' | 'estimatedCommissionNgn'> {
+export interface FeePoint extends Omit<FeeTotals, 'feeRides' | 'deposits' | 'transfers' | 'feeWithdrawals' | 'estimatedCommissionNgn'> {
   bucket: string;
 }
 
@@ -868,7 +879,9 @@ export interface FeesSummary {
   platformWalletNgn: number;
 }
 
-async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<FeePoint & { feeRides: number; deposits: number; transfers: number; estimatedCommissionNgn: number }>> {
+type FeePointFull = FeePoint & { feeRides: number; deposits: number; transfers: number; feeWithdrawals: number; estimatedCommissionNgn: number };
+
+async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointFull[]> {
   const q = new Sql();
   const b = q.p(bucket);
   const kind = `coalesce(t.metadata->>'kind', CASE WHEN t.type = 'PLATFORM_FEE' THEN 'ride_fee' ELSE 'provider_fee' END)`;
@@ -889,6 +902,10 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
       SELECT ${lagosDay('t."createdAt"')} AS d,
              sum(t."amountNgn") FILTER (WHERE t.type = 'PLATFORM_FEE' AND ${kind} = 'deposit_fee') AS deposit_fees,
              count(*) FILTER (WHERE t.type = 'PLATFORM_FEE' AND ${kind} = 'deposit_fee') AS deposits,
+             sum(CASE WHEN t.direction = 'DEBIT' THEN -t."amountNgn" ELSE t."amountNgn" END)
+               FILTER (WHERE t.type = 'PLATFORM_FEE' AND ${kind} = 'withdrawal_fee') AS withdrawal_fees,
+             count(*) FILTER (WHERE t.type = 'PLATFORM_FEE' AND ${kind} = 'withdrawal_fee' AND t.direction = 'CREDIT')
+               - count(*) FILTER (WHERE t.type = 'PLATFORM_FEE' AND ${kind} = 'withdrawal_fee' AND t.direction = 'DEBIT') AS fee_withdrawals,
              sum(t."amountNgn") FILTER (WHERE t.type = 'PROVIDER_FEE' AND ${kind} = 'deposit_provider_fee') AS deposit_cost,
              sum(t."amountNgn") FILTER (WHERE t.type = 'PROVIDER_FEE' AND ${kind} = 'transfer_fee') AS transfer_cost,
              count(*) FILTER (WHERE t.type = 'PROVIDER_FEE' AND ${kind} = 'transfer_fee') AS transfers,
@@ -903,6 +920,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
            sum(coalesce(rides.service_fee, 0)) AS service_fee, sum(coalesce(rides.levy, 0)) AS levy,
            sum(coalesce(rides.estimated, 0)) AS estimated,
            sum(coalesce(ledger.deposit_fees, 0)) AS deposit_fees, sum(coalesce(ledger.deposits, 0)) AS deposits,
+           sum(coalesce(ledger.withdrawal_fees, 0)) AS withdrawal_fees, sum(coalesce(ledger.fee_withdrawals, 0)) AS fee_withdrawals,
            sum(coalesce(ledger.deposit_cost, 0)) AS deposit_cost, sum(coalesce(ledger.transfer_cost, 0)) AS transfer_cost,
            sum(coalesce(ledger.transfers, 0)) AS transfers, sum(coalesce(ledger.other_cost, 0)) AS other_cost
     FROM days LEFT JOIN rides ON rides.d = days.day LEFT JOIN ledger ON ledger.d = days.day
@@ -911,7 +929,8 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
     const commissionNgn = num(r.commission);
     const serviceFeeNgn = num(r.service_fee);
     const depositFeesNgn = num(r.deposit_fees);
-    const incomeNgn = num(commissionNgn + serviceFeeNgn + depositFeesNgn);
+    const withdrawalFeesNgn = num(r.withdrawal_fees);
+    const incomeNgn = num(commissionNgn + serviceFeeNgn + depositFeesNgn + withdrawalFeesNgn);
     const depositProviderCostNgn = num(r.deposit_cost);
     const transferCostNgn = num(r.transfer_cost);
     const otherProviderCostNgn = num(r.other_cost);
@@ -921,6 +940,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
       commissionNgn,
       serviceFeeNgn,
       depositFeesNgn,
+      withdrawalFeesNgn,
       incomeNgn,
       stateLevyNgn: num(r.levy),
       depositProviderCostNgn,
@@ -931,17 +951,19 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<Array<Fee
       feeRides: num(r.fee_rides),
       deposits: num(r.deposits),
       transfers: num(r.transfers),
+      feeWithdrawals: num(r.fee_withdrawals),
       estimatedCommissionNgn: num(r.estimated),
     };
   });
 }
 
-function totalOf(points: Array<FeePoint & { feeRides: number; deposits: number; transfers: number; estimatedCommissionNgn: number }>): FeeTotals {
+function totalOf(points: FeePointFull[]): FeeTotals {
   const sum = (key: keyof FeeTotals) => num(points.reduce((acc, p) => acc + Number(p[key as keyof typeof p] ?? 0), 0));
   return {
     commissionNgn: sum('commissionNgn'),
     serviceFeeNgn: sum('serviceFeeNgn'),
     depositFeesNgn: sum('depositFeesNgn'),
+    withdrawalFeesNgn: sum('withdrawalFeesNgn'),
     incomeNgn: sum('incomeNgn'),
     stateLevyNgn: sum('stateLevyNgn'),
     depositProviderCostNgn: sum('depositProviderCostNgn'),
@@ -952,6 +974,7 @@ function totalOf(points: Array<FeePoint & { feeRides: number; deposits: number; 
     feeRides: sum('feeRides'),
     deposits: sum('deposits'),
     transfers: sum('transfers'),
+    feeWithdrawals: sum('feeWithdrawals'),
     estimatedCommissionNgn: sum('estimatedCommissionNgn'),
   };
 }
@@ -966,15 +989,16 @@ async function fees(f: AnalyticsFilters, bucket: Bucket): Promise<FeesSummary> {
     totals: totalOf(points),
     previousTotals: totalOf(prevPoints),
     previous: { from: prev.from, to: prev.to },
-    points: points.map(({ feeRides: _a, deposits: _b, transfers: _c, estimatedCommissionNgn: _d, ...p }) => p),
+    points: points.map(({ feeRides: _a, deposits: _b, transfers: _c, feeWithdrawals: _e, estimatedCommissionNgn: _d, ...p }) => p),
     platformWalletNgn: snap.platformWalletNgn,
   };
 }
 
-export type FeeKind = 'ride_fee' | 'deposit_fee' | 'deposit_provider_fee' | 'transfer_fee' | 'provider_fee';
+export type FeeKind = 'ride_fee' | 'deposit_fee' | 'withdrawal_fee' | 'deposit_provider_fee' | 'transfer_fee' | 'provider_fee';
 export const FEE_KIND_LABELS: Record<FeeKind, string> = {
   ride_fee: 'Ride fee',
   deposit_fee: 'Deposit fee',
+  withdrawal_fee: 'Withdrawal fee',
   deposit_provider_fee: 'Platform deposit cost',
   transfer_fee: 'Platform withdrawal cost',
   provider_fee: 'Other platform cost',
@@ -1119,7 +1143,12 @@ export interface WithdrawalRow {
   name: string | null;
   phone: string | null;
   status: string;
+  /** What left the wallet. */
   amountNgn: number;
+  /** Wheelers' withdrawal fee, taken from the amount. 0 before the fee existed. */
+  feeNgn: number;
+  /** What was sent to the bank. */
+  payoutNgn: number;
   /** What the platform paid to send it. */
   transferFeeNgn: number | null;
   accountName: string;
@@ -1142,7 +1171,9 @@ async function withdrawals(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): 
   const offset = Math.max(0, Math.floor(t.offset ?? 0));
   const result = await rows<Record<string, unknown>>(q, `
     SELECT w.id, w."createdAt" AS created_at, w."settledAt" AS settled_at, u.id AS user_id, u.name, u.phone, w.status::text AS status,
-           w."requestedAmountNgn" AS amount, w."providerFeeNgn" AS fee, w."bankAccountName" AS account_name,
+           w."requestedAmountNgn" AS amount, coalesce(w."feeNgn", 0) AS user_fee,
+           coalesce(w."payoutAmountNgn", w."requestedAmountNgn") AS payout,
+           w."providerFeeNgn" AS fee, w."bankAccountName" AS account_name,
            right(w."bankAccountNumber", 4) AS account_ending, w."failureReason" AS failure, count(*) OVER () AS total
     FROM "WithdrawalRequest" w
     JOIN "User" u ON u.id = w."userId"
@@ -1160,6 +1191,8 @@ async function withdrawals(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): 
       phone: (r.phone as string | null) ?? null,
       status: String(r.status),
       amountNgn: num(r.amount),
+      feeNgn: num(r.user_fee),
+      payoutNgn: num(r.payout),
       transferFeeNgn: optNum(r.fee),
       accountName: String(r.account_name ?? ''),
       accountEnding: String(r.account_ending ?? ''),
@@ -1386,7 +1419,13 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       (SELECT coalesce(sum(t."amountNgn"), 0) FROM "Transaction" t
         JOIN "WithdrawalRequest" w ON w.id = t."referenceId"
         WHERE t.type = 'WITHDRAWAL' AND t.direction = 'DEBIT' AND w.status = 'SETTLED'
-          AND ${between(wq, lagosDay('w."settledAt"'), f)}) AS ledger`);
+          AND ${between(wq, lagosDay('w."settledAt"'), f)}) AS ledger,
+      (SELECT coalesce(sum(w."feeNgn"), 0) FROM "WithdrawalRequest" w
+        WHERE w.status = 'SETTLED' AND ${between(wq, lagosDay('w."settledAt"'), f)}) AS fee_requested,
+      (SELECT coalesce(sum(t."amountNgn"), 0) FROM "Transaction" t
+        JOIN "WithdrawalRequest" w ON w.id = t."referenceId"
+        WHERE t.type = 'PLATFORM_FEE' AND t.direction = 'CREDIT' AND t.metadata->>'kind' = 'withdrawal_fee'
+          AND w.status = 'SETTLED' AND ${between(wq, lagosDay('w."settledAt"'), f)}) AS fee_ledger`);
 
   const check = (key: string, label: string, left: [string, unknown], right: [string, unknown], tolerance = 0.01): ReconcileCheck => {
     const a = num(left[1]);
@@ -1401,6 +1440,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
     check('fares', 'Fares: ride rows vs what riders paid', ['Fares of settled trips', x?.fare_total], ['RIDE_PAYMENT ledger rows', x?.paid_total]),
     check('payouts', 'Driver payouts: fare minus fees vs ledger', ['Fare minus platform fee', x?.payout_expected], ['DRIVER_PAYOUT ledger rows', x?.payout_total]),
     check('withdrawals', 'Withdrawals: requests vs ledger', ['Settled withdrawal requests', w?.requested], ['WITHDRAWAL ledger rows', w?.ledger]),
+    check('withdrawalFees', 'Withdrawal fees: requests vs ledger', ['Fees on settled withdrawals', w?.fee_requested], ['Withdrawal fee ledger rows', w?.fee_ledger]),
   ];
 }
 

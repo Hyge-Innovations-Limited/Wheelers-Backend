@@ -185,6 +185,7 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
     userId, walletId, amountNgn: 1_500, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set',
   });
   assert.equal(createdWith.reference, requestId, 'the transfer reference must be the withdrawal id');
+  assert.equal(createdWith.amountNgn, 1_455, 'the bank is sent the amount less the ₦45 withdrawal fee');
   let wallet = await userWallet();
   assert.equal(Number(wallet.balanceNgn), 8_370);
   assert.equal(Number(wallet.lockedNgn), 1_500);
@@ -192,12 +193,13 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
 
   const res = await postWebhook({ publisher, paymentsClient: payments }, { event: 'transfer.success', data: { reference: requestId } });
   assert.equal(res.statusCode, 200);
-  cash -= 1_500 + 10;
+  // What left the Paystack balance: the ₦1,455 sent and Paystack's ₦10.
+  cash -= 1_455 + 10;
 
   wallet = await userWallet();
   assert.equal(Number(wallet.balanceNgn), 8_370);
   assert.equal(Number(wallet.lockedNgn), 0);
-  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, -10);
+  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, 45 - 10, 'the ₦45 fee earned, Paystack\'s ₦10 paid');
   const request = await prisma.withdrawalRequest.findUniqueOrThrow({ where: { id: requestId } });
   assert.equal(request.status, 'SETTLED');
   assert.equal(Number(request.providerFeeNgn), 10);
@@ -205,17 +207,20 @@ test('a withdrawal reserves, settles on transfer.success, and books the transfer
 
   // A retried transfer.success must not debit twice.
   await postWebhook({ publisher, paymentsClient: payments }, { event: 'transfer.success', data: { reference: requestId } });
-  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, -10);
+  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, 45 - 10, 'the ₦45 fee earned, Paystack\'s ₦10 paid');
   await assertBooksMatchCash('after settle replay');
 });
 
 test('a settled withdrawal the bank later reverses is refunded exactly once', async () => {
   const settled = await prisma.withdrawalRequest.findFirstOrThrow({ where: { userId, status: 'SETTLED' } });
   const deps = { publisher: makePublisher(), paymentsClient: makePayments() };
+  const platformBefore = Number((await platformWallet()).balanceNgn);
   await postWebhook(deps, { event: 'transfer.reversed', data: { reference: settled.id } });
   await postWebhook(deps, { event: 'transfer.reversed', data: { reference: settled.id } });
-  cash += 1_500;
+  // The bank sends back what it received; the rider gets all ₦1,500 back and Wheelers gives up its ₦45.
+  cash += 1_455;
   assert.equal(Number((await userWallet()).balanceNgn), 9_870);
+  assert.equal(Number((await platformWallet()).balanceNgn) - platformBefore, -45, 'the fee is returned once');
   await assertBooksMatchCash('after reversal');
 });
 

@@ -1,4 +1,4 @@
-import { withdrawalClient } from '@wheleers/db';
+import { payoutAmountOf, withdrawalClient } from '@wheleers/db';
 import { classifyPayoutStatus, transferFeeNgn, type PaymentsClient } from '@wheleers/payments';
 
 const TAG = '[payout-reconciliation]';
@@ -83,7 +83,7 @@ export function startPayoutReconciliation(paymentsClient: PaymentsClient): () =>
             paymentsClient,
             {
               id: request.id,
-              amountNgn: Number(request.requestedAmountNgn),
+              amountNgn: payoutAmountOf(request),
               neverRecorded: request.status === 'FUNDS_RESERVED',
             },
             'reconciliation',
