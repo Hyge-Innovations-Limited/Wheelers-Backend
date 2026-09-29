@@ -96,6 +96,21 @@ for (const key of ['META_ACCESS_TOKEN', 'META_PHONE_NUMBER_ID', 'GROQ_API_KEY', 
 if (file.STELLAR_ENABLED === 'true' && !/^[0-9a-fA-F]{64,128}$/.test(file.STELLAR_MASTER_SEED ?? '')) {
   problems.push('STELLAR_ENABLED=true but STELLAR_MASTER_SEED is missing or not 64 hex characters (openssl rand -hex 32). The gateway would stop at boot.');
 }
+// The gateway checks these at boot and refuses to start on anything but testnet.
+// Run the very same check here, so a wrong value is caught BEFORE the restart.
+if (file.STELLAR_ENABLED === 'true') {
+  const stellarConfigPath = new URL('../apps/api-gateway/dist/stellar/config.js', import.meta.url).pathname;
+  if (existsSync(stellarConfigPath)) {
+    try {
+      require(stellarConfigPath).stellarConfigFromEnv({ ...file, STELLAR_ENABLED: 'true' });
+    } catch (error) {
+      problems.push(`${error instanceof Error ? error.message : String(error)} Fix STELLAR_NETWORK / STELLAR_HORIZON_URL, or set STELLAR_ENABLED=false.`);
+    }
+  } else {
+    const network = (file.STELLAR_NETWORK ?? 'testnet').trim().toLowerCase();
+    if (network !== 'testnet') problems.push(`STELLAR_NETWORK=${file.STELLAR_NETWORK}: only testnet is supported; the gateway would refuse to start.`);
+  }
+}
 if (file.LIVE_CALL_ENABLED === 'true' && !(file.TURN_HOST && file.TURN_SHARED_SECRET)) {
   warnings.push('LIVE_CALL_ENABLED=true without TURN_HOST and TURN_SHARED_SECRET: calls on mobile data will often fail to connect. See infra/turn/README.md.');
 }
