@@ -104,6 +104,7 @@ import { attachRequestLog } from "./http/request-log";
 import { handleRidePageRoute } from "./http/ride-page.route";
 import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
+import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { createTripWhatsapp } from "./trip-chat/whatsapp";
 import { describeLlm } from "./LLM/llm";
 import {
@@ -1675,6 +1676,11 @@ async function bootstrap(): Promise<void> {
           adminDeps,
           decodeURIComponent(adminUserMatch[1]),
         );
+        return;
+      }
+
+      // A trip's chat, calls and trip code, and support's unlock: /admin/rides/:id/trip…
+      if (await handleAdminTripRoute(req, res, { ...adminDeps, redis: redisCommandClient, sockets: registry }, url)) {
         return;
       }
 

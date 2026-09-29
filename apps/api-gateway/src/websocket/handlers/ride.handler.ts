@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { checkTripCodeAtStart } from '../../rides/trip-code';
+import type { RedisClient } from '../../redis/client';
 import {
   GoogleMapsRoutePlanner,
   RIDE,
@@ -259,6 +261,8 @@ export async function handleRideMessage(
   auth: GatewayAuthContext,
   publisher: GatewayPublisher,
   routePlanner: GoogleMapsRoutePlanner,
+  /** For the trip code's wrong-try limit, shared by every gateway process. */
+  redis?: RedisClient,
 ): Promise<HandlerResponse | null> {
   const timestamp = new Date().toISOString();
 
@@ -703,6 +707,8 @@ export async function handleRideMessage(
     await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
     const driverId = auth.driverId;
     if (!driverId) throw new Error('Missing required field: driverId');
+    // The rider's 4-digit trip code, checked here so no app can skip it.
+    await checkTripCodeAtStart(requireString(payload, 'rideId'), payload['tripCode'], redis);
 
     const event = RideStartedEvent.parse({
       eventType: 'RIDE_STARTED',

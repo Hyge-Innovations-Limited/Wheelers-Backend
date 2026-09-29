@@ -1,4 +1,5 @@
 import { formatTripId } from '@wheleers/config';
+import { tripCodeStillNeeded } from '../rides/trip-code';
 import type WebSocket from 'ws';
 import { rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
@@ -31,6 +32,8 @@ export type DriverRideSnapshot = {
   riderPhone: string | null;
   /** The rider's first name: what the driver's chat says ("Chat with Ada"). */
   riderName: string | null;
+  /** Start trip asks for the rider's 4-digit code. The code itself never goes to the driver. */
+  tripCodeRequired: boolean;
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
@@ -79,6 +82,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     riderPaid: ride.paymentMethod === 'WALLET',
     riderPhone: rider?.phone ?? null,
     riderName: rider?.name?.trim().split(/\s+/)[0] || null,
+    tripCodeRequired: await tripCodeStillNeeded(ride.id).catch(() => false),
     matchedAt: ride.matchedAt?.toISOString() ?? null,
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,

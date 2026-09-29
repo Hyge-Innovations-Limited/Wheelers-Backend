@@ -97,6 +97,8 @@
     if (other.vehicle) meta.push(other.vehicle);
     if (other.plate) meta.push(other.plate);
     if (state.tripId) meta.push(state.tripId);
+    // The code the rider gives the driver to start the trip, until it has been used.
+    if (state.tripCode) meta.push('Trip code ' + state.tripCode);
     $('who-meta').textContent = meta.join(' · ');
     var callBtn = $('call-btn');
     callBtn.hidden = !state.callsEnabled;

@@ -1,3 +1,4 @@
+import { tripCodeClient } from '@wheleers/db';
 import type { GatewayAuthContext } from '../types';
 import { isRecord } from '../utils/object';
 import { requireTripParticipant } from './access';
@@ -42,7 +43,10 @@ export function createTripChatService(deps: TripChatDeps) {
 
   async function history(rideId: string, userId: string) {
     const { info, role, other } = await requireTripParticipant(rideId, userId);
+    // The rider's trip code, for the page; never shown to the driver.
+    const code = role === 'RIDER' ? await tripCodeClient.state(info.rideId).catch(() => null) : null;
     return {
+      tripCode: code?.tripCode && !code.tripCodeVerifiedAt && !code.tripCodeUnlockedAt && info.status !== 'IN_PROGRESS' ? code.tripCode : null,
       rideId: info.rideId,
       tripId: info.tripId,
       status: info.status,

@@ -355,6 +355,17 @@ model Ride {
   id                     String            @id @default(uuid())
   /// The short trip ID people use, shown as WH-01234. Numbered in booking order.
   tripNumber             Int               @unique @default(autoincrement())
+  /// The 4-digit code the rider gives the driver to start the trip. Issued
+  /// when a driver is assigned and shown only to the rider. Null: none was
+  /// issued (group rides), and none is asked for.
+  tripCode               String?
+  /// When the driver entered the right code.
+  tripCodeVerifiedAt     DateTime?
+  /// Wrong codes entered for this trip.
+  tripCodeWrongTries     Int               @default(0)
+  /// Support started the trip without the code (the rider could not give it): who, and when.
+  tripCodeUnlockedBy     String?
+  tripCodeUnlockedAt     DateTime?
   riderId                String
   driverId               String?
   status                 RideStatus        @default(REQUESTED)

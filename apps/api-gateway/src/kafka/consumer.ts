@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient } from '@wheleers/db';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient } from '@wheleers/db';
 import {
   ComplianceEvent,
   GroupRideEvent,
@@ -71,6 +71,7 @@ import {
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
 import { loadTripChat } from '../trip-chat/access';
 import { setCardStatus } from '../trip-chat/card-status';
+import { tripCodeStillNeeded } from '../rides/trip-code';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
@@ -649,6 +650,12 @@ export async function handleRideEvent(
       await dropBidFromWhatsappRide(deps, gone.rideId, gone.riderId, gone.driverId);
     }
 
+    // The trip code: issued now, before anyone is told, so the rider's screen
+    // and the driver's Start button agree. Not for a group seat.
+    const isGroupSeat = Boolean(await getGroupSeat(deps.redisClient, event.rideId).catch(() => null));
+    const tripCode = isGroupSeat ? null : await tripCodeClient.ensure(event.rideId).catch(() => null);
+    const tripCodeNeeded = tripCode ? await tripCodeStillNeeded(event.rideId).catch(() => false) : false;
+
     // Notify rider
     const waRider = (await whatsappRiderPhone(deps, event.riderId, event.rideId)) !== null;
     if (waRider && deps.whatsappNotifier) {
@@ -702,6 +709,8 @@ export async function handleRideEvent(
         lockedFareNgn: event.lockedFareNgn,
         paymentMethod: event.paymentMethod,
         driverPhone,
+        // Only ever to the rider: they give it to the driver at pickup.
+        tripCode,
       });
 
       // Push too — the socket only reaches a foregrounded app, and "driver
@@ -761,6 +770,8 @@ export async function handleRideEvent(
       riderPaid: event.paymentMethod !== 'CASH',
       riderPhone,
       riderName,
+      // The Start button asks for the rider's code. Never the code itself.
+      tripCodeRequired: tripCodeNeeded,
     });
 
     return;

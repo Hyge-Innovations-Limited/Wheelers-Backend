@@ -366,6 +366,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
                 auth,
                 deps.publisher,
                 deps.routePlanner,
+                deps.redis,
               )) ??
               (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
               (await handleWalletMessage(parsed.type, payload)));

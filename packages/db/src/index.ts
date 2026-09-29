@@ -25,6 +25,7 @@ export { referralClient }       from './clients/referral.client';
 export { chatClient }           from './clients/chat.client';
 export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';
+export { tripCodeClient }       from './clients/trip-code.client';
 export type { TripCallStatus } from './clients/trip-call.client';
 export { riderKycClient }       from './clients/rider-kyc.client';
 export { adminClient }          from './clients/admin.client';

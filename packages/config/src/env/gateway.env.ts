@@ -94,6 +94,9 @@ const GatewayEnvSchema = z.object({
   // 'true' logs every connect, close and message, as before. Off, the log gets
   // warnings and one summary line a minute.
   WS_VERBOSE_LOG: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // The rider's 4-digit trip code must be entered to start a trip. Switch on
+  // only once drivers have the app with the keypad.
+  TRIP_CODE_REQUIRED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Minutes the trip chat stays open after a trip ends or is cancelled. 0 (the
   // default): it closes with the trip, on both sides at once.
   TRIP_CHAT_AFTER_TRIP_MINUTES: z.coerce.number().int().min(0).max(24 * 60).default(0),

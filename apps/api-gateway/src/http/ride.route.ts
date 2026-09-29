@@ -4,6 +4,7 @@ import {
   referralClient,
   scheduledRideClient,
   rideClient,
+  tripCodeClient,
 } from "@wheleers/db";
 import { GoogleMapsRoutePlanner, formatTripId } from "@wheleers/config";
 import { Queue } from "bullmq";
@@ -595,7 +596,11 @@ export async function handleActiveRideRoute(
       return;
     }
     const ride = await rideClient.findWithDriver(active.id);
-    sendJson(res, 200, { ride: serializeRideDetail(ride) });
+    // The rider's own trip code, until the driver has used it. Only here: this
+    // route answers the rider about their own ride, never a driver.
+    const code = await tripCodeClient.state(active.id).catch(() => null);
+    const tripCode = code?.tripCode && !code.tripCodeVerifiedAt && !code.tripCodeUnlockedAt && ride.status !== "IN_PROGRESS" ? code.tripCode : null;
+    sendJson(res, 200, { ride: { ...serializeRideDetail(ride), tripCode } });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }

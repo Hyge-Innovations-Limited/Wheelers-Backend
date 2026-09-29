@@ -1,5 +1,5 @@
 import { formatTripId } from '@wheleers/config';
-import { chatClient, driverClient, rideClient, userClient, virtualAccountClient } from '@wheleers/db';
+import { chatClient, driverClient, rideClient, tripCodeClient, userClient, virtualAccountClient } from '@wheleers/db';
 import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
@@ -23,6 +23,8 @@ export interface ConfirmedRideForChat {
   pickupAddress?: string; destAddress?: string; stopAddresses?: string[];
   /** The short trip ID, e.g. WH-01234. Filled in by sendRideConfirmation when absent. */
   tripId?: string | null;
+  /** The 4 digits the rider gives the driver to start the trip. */
+  tripCode?: string | null;
 }
 
 export const SOS_REPLY_ID = 'ride_sos';
@@ -66,6 +68,7 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
     `Car: ${ride.vehicleModel}`,
     `Plate: *${ride.vehiclePlate}* — check it before you get in`,
     ``,
+    ...(ride.tripCode ? [`*TRIP CODE: ${ride.tripCode}*`, `Give it to your driver when you get in. They cannot start the trip without it.`, ``] : []),
     `*YOUR TRIP*${ride.tripId ? ` · ${ride.tripId}` : ''}`,
     ...(ride.pickupAddress && ride.destAddress
       ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
@@ -112,7 +115,10 @@ export async function sendRideConfirmation(
   // The ride was assigned a moment ago, so it is the rider's active ride: its trip ID goes on the card.
   const active = await rideClient.findActiveByRider(userId).catch(() => null);
   const tripId = ride.tripId ?? formatTripId(active?.tripNumber);
-  const details = rideDetailsText({ ...ride, tripId }, deps.appBaseUrl ? { chat: deps.liveCallEnabled ? 'chat_and_call' : 'chat' } : {});
+  // The trip code, on the card the rider already gets: no extra message. Not for a group seat.
+  const groupSeat = active?.id ? await getGroupSeat(deps.redisClient, active.id).catch(() => null) : null;
+  const tripCode = ride.tripCode ?? (active?.id && !groupSeat ? await tripCodeClient.ensure(active.id).catch(() => null) : null);
+  const details = rideDetailsText({ ...ride, tripId, tripCode }, deps.appBaseUrl ? { chat: deps.liveCallEnabled ? 'chat_and_call' : 'chat' } : {});
 
   const card = (photo: string | null) => ({
     type: 'button',
