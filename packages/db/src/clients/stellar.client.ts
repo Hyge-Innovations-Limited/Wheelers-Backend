@@ -7,7 +7,7 @@ import { prisma } from '../prisma';
  */
 
 export type StellarTransferKind = 'ACCOUNT_OPEN' | 'TOPUP' | 'FARE' | 'COMMISSION' | 'WITHDRAWAL';
-export type StellarTransferStatus = 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED';
+export type StellarTransferStatus = 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' | 'SKIPPED';
 
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
@@ -69,6 +69,7 @@ export const stellarClient = {
     toPublicKey: string;
     amountXlm: string;
     amountNgn?: number | null;
+    rateNgnPerXlm?: number | null;
     memo?: string | null;
   }) {
     try {
@@ -82,6 +83,7 @@ export const stellarClient = {
           toPublicKey: params.toPublicKey,
           amountXlm: new Prisma.Decimal(params.amountXlm),
           amountNgn: params.amountNgn === undefined || params.amountNgn === null ? null : new Prisma.Decimal(params.amountNgn),
+          rateNgnPerXlm: params.rateNgnPerXlm === undefined || params.rateNgnPerXlm === null ? null : new Prisma.Decimal(params.rateNgnPerXlm),
           memo: params.memo ?? null,
         },
       });
@@ -108,8 +110,16 @@ export const stellarClient = {
     await prisma.stellarTransfer.update({ where: { id }, data: { status: 'SUBMITTED', txHash, submittedAt: new Date(), attempts: { increment: 1 } } });
   },
 
-  async markConfirmed(id: string, ledger: number | null): Promise<void> {
-    await prisma.stellarTransfer.update({ where: { id }, data: { status: 'CONFIRMED', ledger, confirmedAt: new Date(), lastError: null } });
+  async markConfirmed(id: string, ledger: number | null, txHash?: string | null): Promise<void> {
+    await prisma.stellarTransfer.update({
+      where: { id },
+      data: { status: 'CONFIRMED', ledger, confirmedAt: new Date(), lastError: null, ...(txHash ? { txHash } : {}) },
+    });
+  },
+
+  /** Not done, on purpose (the rider's account had too little test XLM). The trip itself is unaffected. */
+  async markSkipped(id: string, reason: string): Promise<void> {
+    await prisma.stellarTransfer.update({ where: { id }, data: { status: 'SKIPPED', lastError: reason.slice(0, 500) } });
   },
 
   /** Try again later from scratch: a new transaction, a new hash. */
@@ -130,9 +140,10 @@ export const stellarClient = {
     return prisma.stellarTransfer.findMany({ where: { rideId }, orderBy: { createdAt: 'asc' } });
   },
 
-  listForUser(userId: string, limit = 20) {
+  /** Everything into or out of one address, newest first. */
+  listForAccount(publicKey: string, limit = 20) {
     return prisma.stellarTransfer.findMany({
-      where: { OR: [{ userId }] },
+      where: { OR: [{ fromPublicKey: publicKey }, { toPublicKey: publicKey }] },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });

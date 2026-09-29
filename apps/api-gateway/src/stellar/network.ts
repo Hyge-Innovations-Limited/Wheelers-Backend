@@ -12,8 +12,8 @@ export interface StellarNetwork {
   submit(tx: Transaction | FeeBumpTransaction): Promise<{ hash: string; ledger: number | null }>;
   /** A sent transaction by hash: whether it made it, or null when Horizon has never seen it. */
   transaction(hash: string): Promise<{ ledger: number | null; successful: boolean } | null>;
-  /** Friendbot: free testnet XLM for a new account. Operations only. */
-  fund(publicKey: string): Promise<void>;
+  /** Friendbot: opens a new testnet account with free test XLM. The opening transaction's hash, when it says. */
+  fund(publicKey: string): Promise<{ hash: string | null }>;
 }
 
 export class StellarSubmitError extends Error {
@@ -63,8 +63,15 @@ export function createHorizonNetwork(config: Pick<StellarConfig, 'horizonUrl' | 
     },
 
     async fund(publicKey) {
-      const response = await fetch(`${config.friendbotUrl}?addr=${encodeURIComponent(publicKey)}`);
-      if (!response.ok) throw new Error(`Friendbot refused (${response.status}): ${(await response.text().catch(() => '')).slice(0, 200)}`);
+      const response = await fetch(`${config.friendbotUrl}?addr=${encodeURIComponent(publicKey)}`, { signal: AbortSignal.timeout(30_000) });
+      const text = await response.text().catch(() => '');
+      if (!response.ok) throw new Error(`Friendbot refused (${response.status}): ${text.slice(0, 200)}`);
+      try {
+        const hash = (JSON.parse(text) as { hash?: unknown }).hash;
+        return { hash: typeof hash === 'string' ? hash : null };
+      } catch {
+        return { hash: null };
+      }
     },
   };
 }

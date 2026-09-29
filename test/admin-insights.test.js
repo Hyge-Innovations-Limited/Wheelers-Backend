@@ -589,7 +589,7 @@ test('EXCEL TRIP ACTIVITY · chat, calls, the trip code and Stellar per trip; a 
     const stellar = book.getWorksheet('Stellar');
     const sh = stellar.getRow(1).values.filter(Boolean);
     const stellarRows = stellar.getSheetValues().filter(Boolean).slice(1).filter((r) => r[sh.indexOf('Kind') + 1]);
-    assert.deepEqual(stellarRows.map((r) => r[sh.indexOf('Kind') + 1]), ['Top-up', 'Trip fare', 'Commission'], 'every transfer in the week, oldest first');
+    assert.deepEqual(stellarRows.map((r) => r[sh.indexOf('Kind') + 1]), ['Top-up (earlier design)', 'Trip fare', 'Commission'], 'every transfer in the week, oldest first');
     assert.ok(stellarRows.every((r) => r[sh.indexOf('Transaction') + 1]?.hyperlink?.startsWith('https://stellar.expert/explorer/testnet/tx/')));
   } finally {
     await prisma.stellarTransfer.deleteMany({ where: { id: { in: rows.stellar } } });

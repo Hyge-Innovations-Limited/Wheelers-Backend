@@ -25,27 +25,28 @@ async function handleMe(req: IncomingMessage, res: ServerResponse, deps: Stellar
   const stellar = deps.stellar;
   if (!stellar) return sendJson(res, 200, { enabled: false });
   const account = await stellarClient.accountForUser(user.id);
-  const balanceXlm = account?.openedAt ? await stellar.balanceOf(account.publicKey) : null;
-  const transfers = account ? await stellarClient.listForUser(user.id, 10) : [];
-  const incoming = account
-    ? (await stellarClient.list({ limit: 50 })).filter((t) => t.toPublicKey === account.publicKey && t.userId !== user.id).slice(0, 10)
-    : [];
-  const all = [...transfers, ...incoming].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 10);
+  const [balanceXlm, transfers, rate] = await Promise.all([
+    account?.openedAt ? stellar.balanceOf(account.publicKey) : Promise.resolve(null),
+    // In and out of this address, looked up by the address itself.
+    account ? stellarClient.listForAccount(account.publicKey, 15) : Promise.resolve([]),
+    stellar.rates.current().catch(() => null),
+  ]);
   sendJson(res, 200, {
     enabled: true,
     network: 'testnet',
-    ngnPerXlm: stellar.config.ngnPerXlm,
+    // The live naira value of 1 XLM, shown as an equivalent only; null when no price could be had.
+    rate: rate ? { ngnPerXlm: rate.ngnPerXlm, source: rate.source, at: rate.at } : null,
     reserveXlm: RESERVE_XLM,
     account: account
       ? {
           publicKey: account.publicKey,
           opened: Boolean(account.openedAt),
           balanceXlm: balanceXlm === null ? null : String(balanceXlm),
-          balanceNgn: balanceXlm === null ? null : Math.round(balanceXlm * stellar.config.ngnPerXlm),
+          balanceNgnEquivalent: balanceXlm === null || !rate ? null : Math.round(balanceXlm * rate.ngnPerXlm),
           explorerUrl: stellar.accountUrl(account.publicKey),
         }
       : null,
-    transfers: all.map((t) => ({ ...stellar.describe(t), direction: t.toPublicKey === account?.publicKey ? 'in' : 'out' })),
+    transfers: transfers.map((t) => ({ ...stellar.describe(t), direction: t.toPublicKey === account?.publicKey ? 'in' : 'out' })),
   });
 }
 
@@ -71,10 +72,11 @@ async function handleAdmin(req: IncomingMessage, res: ServerResponse, deps: Stel
     status: url.searchParams.get('status'),
     before: before ? new Date(before) : null,
   });
+  const rate = await stellar.rates.current().catch(() => null);
   sendJson(res, 200, {
     enabled: true,
     network: 'testnet',
-    ngnPerXlm: stellar.config.ngnPerXlm,
+    rate: rate ? { ngnPerXlm: rate.ngnPerXlm, source: rate.source, at: rate.at } : null,
     operations: ops
       ? { publicKey: ops.publicKey, balanceXlm: String(await stellar.balanceOf(ops.publicKey) ?? '0'), explorerUrl: stellar.accountUrl(ops.publicKey) }
       : null,

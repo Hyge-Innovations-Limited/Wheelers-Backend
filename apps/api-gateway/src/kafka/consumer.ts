@@ -917,8 +917,9 @@ export async function handleRideEvent(
 
     await announceTripChatClosed(deps, event.rideId, await participantsFor(event.rideId, rideParticipants));
 
-    // On Stellar Testnet: the fare rider → driver, then the commission driver → operations, memo the trip ID.
-    if (deps.stellar && event.paymentMethod !== 'CASH') {
+    // On Stellar Testnet, its own ledger: the fare rider → driver, then the commission
+    // driver → operations, in XLM at the live rate, memo the trip ID. Not for a group seat.
+    if (deps.stellar && event.paymentMethod !== 'CASH' && !(await getGroupSeat(deps.redisClient, event.rideId).catch(() => null))) {
       const fees = calculateRideFees(event.fareNgn);
       const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
       await deps.stellar.settleRide({
@@ -1066,11 +1067,6 @@ async function handleWalletEvent(
   const registry = deps.registry;
 
   if (event.eventType === 'WALLET_CREDITED') {
-    // A naira deposit: the same value lands in the rider's Stellar Testnet account.
-    if (deps.stellar && event.creditType === 'deposit') {
-      await deps.stellar.mirrorTopup({ userId: event.userId, reference: event.referenceId, amountNgn: event.amountNgn })
-        .catch((error) => console.warn('[stellar] top-up not queued', { userId: event.userId, error: error instanceof Error ? error.message : String(error) }));
-    }
     await registry.sendToUser(event.userId, 'wallet:updated', {
       walletId: event.walletId,
       balanceNgn: event.newBalanceNgn,

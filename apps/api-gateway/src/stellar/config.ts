@@ -8,7 +8,7 @@ import { Networks } from '@stellar/stellar-sdk';
  *
  *   STELLAR_ENABLED=true
  *   STELLAR_MASTER_SEED=<64 hex characters>   every account's secret comes from this; keep it like a password
- *   STELLAR_NGN_PER_XLM=1000                  the demo rate: ₦1,000 = 1 XLM
+ *   STELLAR_NGN_PER_XLM=<optional>            only if the live price can never be had (see rates.ts)
  */
 
 export interface StellarConfig {
@@ -16,9 +16,12 @@ export interface StellarConfig {
   friendbotUrl: string;
   networkPassphrase: string;
   masterSeed: Buffer;
-  ngnPerXlm: number;
-  /** What a new rider or driver account is opened with: Stellar's minimum balance, and a little over. */
-  startingXlm: string;
+  /** Used only when no live price can be had at all. Null: none. */
+  fallbackNgnPerXlm: number | null;
+  /** Friendbot opens new accounts with this much test XLM. */
+  friendbotXlm: string;
+  /** If Friendbot will not, operations opens the account with this much instead. */
+  fallbackStartingXlm: string;
   explorerBase: string;
 }
 
@@ -38,15 +41,16 @@ export function stellarConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Stel
   if (!/^[0-9a-fA-F]{64,128}$/.test(seedHex)) {
     throw new Error('[stellar] STELLAR_MASTER_SEED must be 64 to 128 hex characters (make one with: openssl rand -hex 32).');
   }
-  const ngnPerXlm = Number(env.STELLAR_NGN_PER_XLM ?? 1000);
-  if (!Number.isFinite(ngnPerXlm) || ngnPerXlm <= 0) throw new Error('[stellar] STELLAR_NGN_PER_XLM must be a positive number.');
+  const fallback = env.STELLAR_NGN_PER_XLM ? Number(env.STELLAR_NGN_PER_XLM) : null;
+  if (fallback !== null && (!Number.isFinite(fallback) || fallback <= 0)) throw new Error('[stellar] STELLAR_NGN_PER_XLM must be a positive number when set.');
   return {
     horizonUrl,
     friendbotUrl: (env.STELLAR_FRIENDBOT_URL ?? 'https://friendbot.stellar.org').trim(),
     networkPassphrase: Networks.TESTNET,
     masterSeed: Buffer.from(seedHex, 'hex'),
-    ngnPerXlm,
-    startingXlm: '2',
+    fallbackNgnPerXlm: fallback,
+    friendbotXlm: '10000',
+    fallbackStartingXlm: '100',
     explorerBase: 'https://stellar.expert/explorer/testnet',
   };
 }

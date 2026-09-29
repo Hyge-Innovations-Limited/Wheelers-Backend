@@ -321,14 +321,16 @@ async function stellarSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, trips: 
   const transfers = await tripActivityClient.stellarBetween(from, to).catch(() => []);
   if (!transfers.length) return;
   const tripIdOf = new Map(trips.map((t) => [t.id, t.tripId ?? '']));
-  const KIND: Record<string, string> = { ACCOUNT_OPEN: 'Account opened', TOPUP: 'Top-up', FARE: 'Trip fare', COMMISSION: 'Commission', WITHDRAWAL: 'Driver withdrawal' };
+  const KIND: Record<string, string> = { ACCOUNT_OPEN: 'Account opened', TOPUP: 'Top-up (earlier design)', FARE: 'Trip fare', COMMISSION: 'Commission', WITHDRAWAL: 'Driver withdrawal' };
   addSheet(book, 'Stellar', [
     { header: 'Time (Lagos)', key: 'time', width: 18 },
     { header: 'Kind', key: 'kind', width: 18 },
     { header: 'Trip ID', key: 'tripId', width: 11 },
     { header: 'XLM', key: 'amountXlm', format: '#,##0.0000000', width: 14 },
-    { header: 'Naira value', key: 'amountNgn', format: NAIRA, width: 13 },
+    { header: 'Naira equivalent', key: 'amountNgn', format: NAIRA, width: 16 },
+    { header: '₦ per XLM used', key: 'rate', format: '#,##0.00', width: 15 },
     { header: 'Status', key: 'status', width: 11 },
+    { header: 'Why skipped', key: 'note', width: 40 },
     { header: 'Transaction', key: 'tx', width: 16 },
     { header: 'From', key: 'from', width: 58 },
     { header: 'To', key: 'to', width: 58 },
@@ -339,12 +341,14 @@ async function stellarSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, trips: 
     tripId: t.rideId ? tripIdOf.get(t.rideId) ?? '' : '',
     amountXlm: Number(t.amountXlm),
     amountNgn: t.amountNgn === null ? '' : Number(t.amountNgn),
+    rate: t.rateNgnPerXlm === null ? '' : Number(t.rateNgnPerXlm),
     status: t.status,
+    note: t.status === 'SKIPPED' ? t.lastError ?? '' : '',
     tx: t.status === 'CONFIRMED' ? txLink(t.txHash) : '',
     from: t.fromPublicKey,
     to: t.toPublicKey,
     memo: t.memo ?? '',
-  })), 'Stellar TESTNET only: test XLM, no real value. Naira is converted at the demo rate. Click a transaction to open it on stellar.expert.');
+  })), 'Stellar TESTNET only: test XLM, no real value, on its own ledger. A trip is paid in XLM at the live XLM price of the moment (the rate is kept on each row); the naira column is only its equivalent. Skipped: the rider\'s account had too little test XLM; the trip itself was paid in naira. Click a transaction to open it on stellar.expert.');
 }
 
 async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<void> {

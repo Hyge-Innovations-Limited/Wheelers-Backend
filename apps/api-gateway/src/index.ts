@@ -108,6 +108,7 @@ import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { stellarConfigFromEnv } from "./stellar/config";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
+import { createRateProvider } from "./stellar/rates";
 import { handleStellarRoute } from "./stellar/routes";
 import { createTripWhatsapp } from "./trip-chat/whatsapp";
 import { describeLlm } from "./LLM/llm";
@@ -552,7 +553,13 @@ async function bootstrap(): Promise<void> {
 
   // Stellar Testnet (grant deliverable 3): off unless STELLAR_ENABLED=true. Testnet only.
   const stellarConfig = stellarConfigFromEnv();
-  const stellar = stellarConfig ? createStellarService({ config: stellarConfig, network: createHorizonNetwork(stellarConfig) }) : null;
+  const stellar = stellarConfig
+    ? createStellarService({
+        config: stellarConfig,
+        network: createHorizonNetwork(stellarConfig),
+        rates: createRateProvider({ redis: redisCommandClient, fallbackNgnPerXlm: stellarConfig.fallbackNgnPerXlm }),
+      })
+    : null;
   // Our own pages' address: the Trip chat page's socket comes from there.
   const pageOrigins = new Set<string>();
   try {

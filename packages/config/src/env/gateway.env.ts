@@ -103,7 +103,8 @@ const GatewayEnvSchema = z.object({
   // feature must never stop the gateway booting.
   STELLAR_NETWORK:     z.string().optional(),
   STELLAR_MASTER_SEED: z.string().optional().transform(v => v?.trim() || undefined),
-  STELLAR_NGN_PER_XLM: z.coerce.number().positive().default(1000),
+  // Only used when no live XLM price can be had (see apps/api-gateway/src/stellar/rates.ts).
+  STELLAR_NGN_PER_XLM: z.coerce.number().positive().optional(),
   STELLAR_HORIZON_URL: z.string().optional(),
   // The rider's 4-digit trip code must be entered to start a trip. Switch on
   // only once drivers have the app with the keypad.

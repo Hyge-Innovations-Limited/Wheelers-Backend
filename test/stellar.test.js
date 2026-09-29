@@ -1,7 +1,9 @@
-// Stellar Testnet (grant deliverable 3): keys derived, never stored; testnet
-// only; account opening, top-ups, a trip's fare and commission, and a
-// driver's withdrawal, each sent once and confirmed. Against a fake Stellar
-// network (no internet needed) and the real local Postgres.
+// Stellar Testnet (grant deliverable 3), its own ledger: keys derived, never
+// stored; testnet only; accounts opened by Friendbot; a trip's fare and
+// commission in XLM at the live rate (kept on each transfer), skipped when the
+// rider's account is short; a driver's withdrawal; each sent once and
+// confirmed. Against a fake Stellar network and price feed (no internet
+// needed) and the real local Postgres.
 //
 //   node scripts/run-with-env.cjs node --test --test-force-exit test/stellar.test.js
 
@@ -15,6 +17,7 @@ const { stellarConfigFromEnv } = require('../apps/api-gateway/dist/stellar/confi
 const { keypairAt } = require('../apps/api-gateway/dist/stellar/keys.js');
 const { StellarSubmitError } = require('../apps/api-gateway/dist/stellar/network.js');
 const { createStellarService } = require('../apps/api-gateway/dist/stellar/service.js');
+const { createRateProvider } = require('../apps/api-gateway/dist/stellar/rates.js');
 
 const prisma = new PrismaClient();
 
@@ -31,10 +34,48 @@ test('keys follow SEP-0005 (the published test vector) and are different per acc
 test('testnet only: off by default, and anything that is not testnet stops it', () => {
   const seed = randomBytes(32).toString('hex');
   assert.equal(stellarConfigFromEnv({}), null);
-  assert.equal(stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seed }).networkPassphrase, sdk.Networks.TESTNET);
+  const on = stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seed });
+  assert.equal(on.networkPassphrase, sdk.Networks.TESTNET);
+  assert.equal(on.fallbackNgnPerXlm, null, 'no fixed rate unless one is set');
+  assert.equal(stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seed, STELLAR_NETWORK: 'TESTNET' }).networkPassphrase, sdk.Networks.TESTNET, 'any case');
   assert.throws(() => stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seed, STELLAR_NETWORK: 'public' }), /only testnet/);
   assert.throws(() => stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seed, STELLAR_HORIZON_URL: 'https://horizon.stellar.org' }), /not a testnet Horizon/);
   assert.throws(() => stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: 'short' }), /STELLAR_MASTER_SEED/);
+});
+
+test('the live rate: Stellar market × dollar-to-naira first, then CoinGecko, then the last good rate, then .env; nonsense is refused', async () => {
+  const replies = {};
+  const fetcher = async (url) => {
+    const key = Object.keys(replies).find((k) => url.includes(k));
+    const reply = key ? replies[key] : null;
+    if (!reply) return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => reply };
+  };
+  let clock = Date.parse('2026-09-30T10:00:00Z');
+  const store = new Map();
+  const redis = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); } };
+  const rates = createRateProvider({ redis, fetcher, now: () => clock });
+
+  replies['horizon.stellar.org/order_book'] = { bids: [{ price: '0.22' }], asks: [{ price: '0.24' }] };
+  replies['open.er-api.com'] = { rates: { NGN: 1300 } };
+  const first = await rates.current();
+  assert.deepEqual([first.ngnPerXlm, first.source], [299, 'stellar-dex × er-api'], '0.23 USD × ₦1,300');
+
+  // The market is down: CoinGecko, once the cached rate is 10 minutes old.
+  delete replies['horizon.stellar.org/order_book'];
+  replies['api.coingecko.com'] = { stellar: { ngn: 305.5 } };
+  assert.equal((await rates.current()).ngnPerXlm, 299, 'fresh enough: no new call');
+  clock += 11 * 60 * 1000;
+  assert.deepEqual([(await rates.current()).ngnPerXlm, (await rates.current()).source], [305.5, 'coingecko']);
+
+  // Everything down: the last good rate, for a day.
+  replies['api.coingecko.com'] = { stellar: { ngn: 0 } };   // nonsense is refused
+  clock += 60 * 60 * 1000;
+  assert.equal((await rates.current()).ngnPerXlm, 305.5);
+  clock += 25 * 60 * 60 * 1000;
+  assert.equal(await rates.current(), null, 'older than a day, and no .env rate: none');
+  const withFallback = createRateProvider({ fetcher: async () => ({ ok: false, json: async () => ({}) }), fallbackNgnPerXlm: 250 });
+  assert.deepEqual([(await withFallback.current()).ngnPerXlm, (await withFallback.current()).source], [250, 'STELLAR_NGN_PER_XLM']);
 });
 
 /* ── a fake Stellar network: balances, sequences, signatures, fee bumps ── */
@@ -49,9 +90,14 @@ function fakeNetwork() {
       const a = accounts.get(publicKey);
       return a ? { sequence: a.sequence.toString(), balanceXlm: a.balance.toFixed(7) } : null;
     },
+    friendbotDown: false,
     async fund(publicKey) {
+      if (net.friendbotDown) throw new Error('Friendbot refused (503)');
       if (accounts.has(publicKey)) throw new Error('already funded');
       accounts.set(publicKey, { sequence: 1000n, balance: 10000 });
+      const hash = randomBytes(32).toString('hex');
+      ledgerTxs.set(hash, { ledger: ++ledger, successful: true, memo: null, feeSource: 'FRIENDBOT', source: 'FRIENDBOT' });
+      return { hash };
     },
     async transaction(hash) {
       return ledgerTxs.get(hash) ?? null;
@@ -91,7 +137,9 @@ function fakeNetwork() {
 /* ── the whole flow, on the local database ──────────────────────────────── */
 
 const seedHex = randomBytes(32).toString('hex');
-const config = stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seedHex, STELLAR_NGN_PER_XLM: '1000' });
+const config = stellarConfigFromEnv({ STELLAR_ENABLED: 'true', STELLAR_MASTER_SEED: seedHex });
+/** A fixed live rate for the flow tests: ₦300 per XLM. */
+const rates = { current: async () => ({ ngnPerXlm: 300, source: 'test', at: new Date().toISOString() }) };
 const opsKey = keypairAt(config.masterSeed, 0).publicKey();
 const made = { users: [] };
 let skip = false;
@@ -115,74 +163,92 @@ test.before(async () => {
   if (existing && existing.publicKey !== opsKey) skip = 'a local operations account from another seed exists';
 });
 
-test('a deposit, a trip and a withdrawal, mirrored on Stellar: accounts opened, fare and commission with the trip ID, fees paid by operations', async (t) => {
+test('its own ledger: accounts opened by Friendbot, the fare and commission in XLM at the live rate with the trip ID, fees paid by operations, then a withdrawal', async (t) => {
   if (skip) return t.skip(skip);
   const net = fakeNetwork();
-  const stellar = createStellarService({ config, network: net });
+  const stellar = createStellarService({ config, network: net, rates });
   const riderId = await user('RIDER');
   const driverId = await user('DRIVER');
 
-  // ₦5,000 deposit → 5 XLM.
-  await stellar.mirrorTopup({ userId: riderId, reference: `dep-${riderId}`, amountNgn: 5000 });
-  await stellar.mirrorTopup({ userId: riderId, reference: `dep-${riderId}`, amountNgn: 5000 });   // the same deposit twice
-  await drain(stellar);
-  const rider = await prisma.stellarAccount.findUnique({ where: { userId: riderId } });
-  assert.equal(balance(net, rider.publicKey), 2 + 5, 'opened with 2 XLM, then one top-up of 5 (not two)');
-
-  // A ₦3,000 trip with ₦600 commission.
-  const ride = { rideId: randomUUID(), tripId: 'WH-04821', riderId, driverUserId: driverId, fareNgn: 3000, commissionNgn: 600 };
+  // A ₦3,000 trip with ₦525 commission, at ₦300 per XLM: 10 XLM and 1.75 XLM.
+  const ride = { rideId: randomUUID(), tripId: 'WH-04821', riderId, driverUserId: driverId, fareNgn: 3000, commissionNgn: 525 };
   await stellar.settleRide(ride);
   await stellar.settleRide(ride);   // a replayed event
   await drain(stellar);
+  const rider = await prisma.stellarAccount.findUnique({ where: { userId: riderId } });
   const driver = await prisma.stellarAccount.findUnique({ where: { userId: driverId } });
-  assert.equal(balance(net, rider.publicKey), 7 - 3);
-  assert.equal(balance(net, driver.publicKey), 4.4);
+  const opened = await prisma.stellarTransfer.findMany({ where: { kind: 'ACCOUNT_OPEN', toPublicKey: { in: [rider.publicKey, driver.publicKey] } } });
+  assert.deepEqual(opened.map((o) => [o.fromPublicKey, o.status, Boolean(o.txHash)]), [['FRIENDBOT', 'CONFIRMED', true], ['FRIENDBOT', 'CONFIRMED', true]], 'Friendbot opened both, with its transaction');
+  assert.equal(balance(net, rider.publicKey), 10000 - 10);
+  assert.equal(balance(net, driver.publicKey), 10000 + 10 - 1.75);
 
   const transfers = await prisma.stellarTransfer.findMany({ where: { rideId: ride.rideId }, orderBy: { createdAt: 'asc' } });
-  assert.deepEqual(transfers.map((x) => [x.kind, x.status]), [['FARE', 'CONFIRMED'], ['COMMISSION', 'CONFIRMED']]);
+  assert.deepEqual(transfers.map((x) => [x.kind, x.status, Number(x.amountXlm), Number(x.amountNgn), Number(x.rateNgnPerXlm)]),
+    [['FARE', 'CONFIRMED', 10, 3000, 300], ['COMMISSION', 'CONFIRMED', 1.75, 525, 300]], 'each keeps the rate it used');
   for (const x of transfers) {
     const onChain = net.ledgerTxs.get(x.txHash);
     assert.equal(onChain.memo, 'WH-04821', 'the trip ID is the memo');
     assert.equal(onChain.feeSource, opsKey, 'operations paid the fee');
     assert.notEqual(onChain.source, opsKey, 'the rider / driver account is the one paying');
   }
-  assert.deepEqual(stellar.describe(transfers[0]).explorerUrl, `https://stellar.expert/explorer/testnet/tx/${transfers[0].txHash}`);
+  assert.equal(stellar.describe(transfers[0]).explorerUrl, `https://stellar.expert/explorer/testnet/tx/${transfers[0].txHash}`);
+  assert.equal(stellar.describe(transfers[0]).rateNgnPerXlm, 300);
 
   // The driver withdraws to their own outside address.
   const outside = sdk.Keypair.random().publicKey();
   net.accounts.set(outside, { sequence: 1n, balance: 1 });
   await assert.rejects(stellar.requestWithdrawal({ userId: driverId, destination: 'GNOPE', amountXlm: 1 }), { code: 'BAD_ADDRESS' });
-  await assert.rejects(stellar.requestWithdrawal({ userId: driverId, destination: outside, amountXlm: 4 }), { code: 'TOO_MUCH' });
-  await stellar.requestWithdrawal({ userId: driverId, destination: outside, amountXlm: 2 });
+  await assert.rejects(stellar.requestWithdrawal({ userId: driverId, destination: outside, amountXlm: 99999 }), { code: 'TOO_MUCH' });
+  const out = await stellar.requestWithdrawal({ userId: driverId, destination: outside, amountXlm: 20 });
+  assert.deepEqual([Number(out.amountNgn), Number(out.rateNgnPerXlm)], [6000, 300], 'its naira equivalent, at the live rate');
   await drain(stellar);
-  assert.equal(balance(net, outside), 3);
-  assert.equal(balance(net, driver.publicKey), 2.4);
+  assert.equal(balance(net, outside), 21);
 
   // No secret anywhere in the database: accounts are public keys and numbers.
   const columns = await prisma.$queryRawUnsafe(`select column_name from information_schema.columns where table_name = 'StellarAccount'`);
   assert.ok(!columns.some((c) => /secret|private|seed|mnemonic/i.test(c.column_name)));
 });
 
-test('a rider with no deposit on Stellar is topped up first, then pays; a send cut short is looked up, not repeated', async (t) => {
+test('a rider short of test XLM is skipped (and so is the commission), never topped up; Friendbot down means operations opens the account', async (t) => {
   if (skip) return t.skip(skip);
   const net = fakeNetwork();
-  const stellar = createStellarService({ config, network: net });
-  // Operations exists on this fresh network under the same key: open it again (a testnet reset).
-  await prisma.stellarAccount.updateMany({ where: { publicKey: opsKey }, data: { openedAt: null } });
+  const stellar = createStellarService({ config, network: net, rates });
+  await prisma.stellarAccount.updateMany({ where: { publicKey: opsKey }, data: { openedAt: null } });   // a fresh network
   const riderId = await user('RIDER');
   const driverId = await user('DRIVER');
 
-  const ride = { rideId: randomUUID(), tripId: 'WH-00077', riderId, driverUserId: driverId, fareNgn: 8000, commissionNgn: 1000 };
+  // The rider's address already exists with only 5 test XLM (they spent the rest).
+  const riderRow = await stellar.ensureUserAccount(riderId);
+  net.accounts.set(riderRow.publicKey, { sequence: 7n, balance: 5 });
+  await stellar.ensureOperations();
+  net.friendbotDown = true;          // the driver's account has to be opened by operations
+  const ride = { rideId: randomUUID(), tripId: 'WH-00077', riderId, driverUserId: driverId, fareNgn: 3000, commissionNgn: 525 };
   await stellar.settleRide(ride);
-  net.cutNext = true;
+  net.cutNext = true;                // and the first send is cut short
   await drain(stellar, 20);
+
+  const driver = await prisma.stellarAccount.findUnique({ where: { userId: driverId } });
+  assert.equal(balance(net, driver.publicKey), 100, 'opened by operations with 100 test XLM');
   const fare = await prisma.stellarTransfer.findUnique({ where: { reference: `fare:${ride.rideId}` } });
-  assert.equal(fare.status, 'CONFIRMED');
-  const catchUp = await prisma.stellarTransfer.findUnique({ where: { reference: `topup:catchup:${ride.rideId}` } });
-  assert.equal(catchUp.status, 'CONFIRMED', 'topped up to cover the fare');
-  const hashes = new Set((await prisma.stellarTransfer.findMany({ where: { OR: [{ userId: riderId }, { userId: driverId }] } })).map((x) => x.txHash));
-  assert.equal([...net.ledgerTxs.keys()].filter((h) => hashes.has(h)).length, hashes.size, 'every confirmed transfer is on the ledger');
-  assert.equal(net.ledgerTxs.size, net.submits, 'the send that was cut short was not sent again');
+  assert.equal(fare.status, 'SKIPPED');
+  assert.match(fare.lastError, /had 5 test XLM, not enough for 10 XLM/);
+  assert.equal((await prisma.stellarTransfer.findUnique({ where: { reference: `commission:${ride.rideId}` } })).status, 'SKIPPED');
+  assert.equal(await prisma.stellarTransfer.count({ where: { kind: 'TOPUP', userId: riderId } }), 0, 'no top-up: its own ledger');
+  assert.equal(balance(net, riderRow.publicKey), 5, 'nothing moved');
+  assert.equal(net.ledgerTxs.size, net.submits + [...net.ledgerTxs.values()].filter((x) => x.source === 'FRIENDBOT').length, 'the send that was cut short was not sent again');
+});
+
+test('with no price at all, the fare is skipped and says why', async (t) => {
+  if (skip) return t.skip(skip);
+  const net = fakeNetwork();
+  const stellar = createStellarService({ config, network: net, rates: { current: async () => null } });
+  const riderId = await user('RIDER');
+  const driverId = await user('DRIVER');
+  const ride = { rideId: randomUUID(), tripId: 'WH-00078', riderId, driverUserId: driverId, fareNgn: 3000, commissionNgn: 525 };
+  await stellar.settleRide(ride);
+  const fare = await prisma.stellarTransfer.findUnique({ where: { reference: `fare:${ride.rideId}` } });
+  assert.equal(fare.status, 'SKIPPED');
+  assert.match(fare.lastError, /no XLM price/);
 });
 
 test.after(async () => {

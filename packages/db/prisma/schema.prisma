@@ -749,8 +749,8 @@ model StellarAccount {
   @@index([role])
 }
 
-/// One movement on Stellar Testnet, mirroring one in the naira ledger:
-/// opening an account, a top-up, a trip's fare, its commission, a driver's
+/// One movement on Stellar Testnet, its own ledger beside the naira one:
+/// opening an account (Friendbot), a trip's fare, its commission, a driver's
 /// withdrawal. Queued, then sent and confirmed by a background job; the
 /// reference makes each happen once.
 model StellarTransfer {
@@ -764,10 +764,12 @@ model StellarTransfer {
   fromPublicKey  String
   toPublicKey    String
   amountXlm      Decimal   @db.Decimal(20, 7)
-  /// The naira this mirrors, at the demo rate in force.
+  /// Its naira equivalent, at the live rate below.
   amountNgn      Decimal?  @db.Decimal(18, 2)
+  /// Naira per XLM used for this transfer (live market rate), so the evidence adds up.
+  rateNgnPerXlm  Decimal?  @db.Decimal(18, 4)
   memo           String?
-  /// PENDING, SUBMITTED, CONFIRMED, FAILED
+  /// PENDING, SUBMITTED, CONFIRMED, FAILED, SKIPPED (the rider's account had too little test XLM)
   status         String    @default("PENDING")
   /// Known before it is sent, so a send cut short is checked, not repeated.
   txHash         String?   @unique

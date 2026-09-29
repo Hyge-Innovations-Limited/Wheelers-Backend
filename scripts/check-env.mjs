@@ -124,7 +124,7 @@ for (const [label, value] of [
   ['gateway port', file.PORT || '3000 (default)'],
   ['database', `${host(file.DATABASE_URL)} · pool ${Number.isFinite(poolSize) ? poolSize : 'default'} × ${services} services`],
   ['redis', host(file.REDIS_URL)],
-  ['stellar', file.STELLAR_ENABLED === 'true' ? `TESTNET, ₦${file.STELLAR_NGN_PER_XLM || 1000} = 1 XLM` : 'off'],
+  ['stellar', file.STELLAR_ENABLED === 'true' ? `TESTNET, own ledger, live XLM price${file.STELLAR_NGN_PER_XLM ? ` (fallback ₦${file.STELLAR_NGN_PER_XLM})` : ''}` : 'off'],
   ['trip code', file.TRIP_CODE_REQUIRED === 'true' ? 'required to start trips' : 'not required'],
   ['live call', file.LIVE_CALL_ENABLED === 'true' ? `ON via ${file.TURN_HOST || '— no TURN_HOST'}${file.TURN_SHARED_SECRET ? '' : ' (no TURN_SHARED_SECRET)'}` : 'off (chat only)'],
   ['kafka', file.KAFKA_BROKERS || '— not set'],
