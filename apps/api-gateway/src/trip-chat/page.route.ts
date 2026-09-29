@@ -46,6 +46,7 @@ async function handleState(req: IncomingMessage, res: ServerResponse, deps: Trip
     deps.tripChat.history(rideId, userId),
     deps.tripChat.calls.current({ rideId, userId }).catch(() => ({ call: null })),
   ]);
+  if (state.open) void deps.tripChat.pageOpened(rideId);
   sendJson(res, 200, { ...state, call: current.call });
 }
 

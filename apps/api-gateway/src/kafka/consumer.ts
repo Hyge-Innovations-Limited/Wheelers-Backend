@@ -70,6 +70,7 @@ import {
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
 import { loadTripChat } from '../trip-chat/access';
+import { setCardStatus } from '../trip-chat/card-status';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
@@ -900,7 +901,7 @@ export async function handleRideEvent(
     // Clean up WhatsApp Redis state
     await cleanupRideKeys(deps.redisClient, event.rideId);
 
-    await announceTripChatClosed(registry, event.rideId, await participantsFor(event.rideId, rideParticipants));
+    await announceTripChatClosed(deps, event.rideId, await participantsFor(event.rideId, rideParticipants));
     rideParticipants.delete(event.rideId);
     return;
   }
@@ -1007,7 +1008,7 @@ export async function handleRideEvent(
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => {});
     }
 
-    await announceTripChatClosed(registry, event.rideId, await participantsFor(event.rideId, rideParticipants));
+    await announceTripChatClosed(deps, event.rideId, await participantsFor(event.rideId, rideParticipants));
     rideParticipants.delete(event.rideId);
     return;
   }
@@ -1377,12 +1378,17 @@ async function handleGroupRideEvent(
  * the chat is still open: a ride whose driver bailed goes back to searching.
  */
 async function announceTripChatClosed(
-  registry: SocketRegistry,
+  deps: StartGatewayConsumerDeps,
   rideId: string,
   participants: RideParticipantState | undefined,
 ): Promise<void> {
+  const { registry } = deps;
   const info = await loadTripChat(rideId).catch(() => null);
   if (!info || info.open) return;
+  // The WhatsApp ride card's status light goes out with the trip.
+  if (info.channel === 'WHATSAPP' && deps.whatsappNotifier) {
+    await setCardStatus({ redis: deps.redisClient, meta: deps.whatsappNotifier }, rideId, 'none').catch(() => false);
+  }
   const people = new Set(
     [participants?.riderId, participants?.driverUserId, info.rider.userId, info.driver?.userId].filter((id): id is string => Boolean(id)),
   );

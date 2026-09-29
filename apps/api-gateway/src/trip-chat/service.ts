@@ -122,9 +122,15 @@ export function createTripChatService(deps: TripChatDeps) {
     }
   }
 
+  /** The WhatsApp rider opened the Trip chat page: what the card was flagging has been seen. */
+  async function pageOpened(rideId: string): Promise<void> {
+    await deps.whatsapp?.setCardStatus(rideId, 'live').catch(() => false);
+  }
+
   return {
     handleWsMessage,
     history,
+    pageOpened,
     sendMessage: (input: { rideId: string; userId: string; content: unknown }) => sendTripMessage(deps, input),
     calls,
     callsEnabled: deps.calls.enabled,

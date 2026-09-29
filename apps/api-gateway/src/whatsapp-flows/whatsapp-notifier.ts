@@ -377,6 +377,39 @@ export async function sendMetaLinkMessage(
   }
 }
 
+/**
+ * An emoji reaction on a message already in the chat, or none ("" removes
+ * it). WhatsApp keeps one reaction per sender per message, so a new one
+ * replaces the old: a status light, with no new message. False when Meta
+ * refuses it.
+ */
+export async function sendMetaReaction(
+  deps: Pick<WhatsappNotifierDeps, 'metaAccessToken' | 'metaPhoneNumberId'>,
+  to: string,
+  messageId: string,
+  emoji: string,
+): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: to.replace(/^\+/, ''),
+      type: 'reaction',
+      reaction: { message_id: messageId, emoji },
+    }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] reaction refused', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
 // ── Build a single message listing all driver bids ────────────────────────
 
 /** +234-format so WhatsApp renders the number as a tappable link. */

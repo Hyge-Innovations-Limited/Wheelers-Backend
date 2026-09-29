@@ -91,6 +91,8 @@ export function createCallService(deps: TripChatDeps) {
 
     if (call.calleeChannel === 'whatsapp') {
       if (!deps.whatsapp || !info.rider.phone) return;
+      // 📞 on the ride card instead of a new message; the message only when there is no card.
+      if (await deps.whatsapp.setCardStatus(call.rideId, 'call')) return;
       const url = deps.whatsapp.pageUrl(call.calleeId, call.rideId, call.callId);
       const body = `*${call.callerName}, your ${roleWord(call.callerRole)}, is calling you on Wheelers.*\n\nTap *Answer call* to talk. It stops ringing in ${Math.round(ringMs.whatsapp / 1000)} seconds.`;
       await deps.whatsapp.send(info.rider.phone, body, url ? { text: 'Answer call', url } : undefined)
@@ -116,6 +118,8 @@ export function createCallService(deps: TripChatDeps) {
   async function tellMissed(call: LiveCall, info: TripChatInfo): Promise<void> {
     if (call.calleeChannel === 'whatsapp') {
       if (!deps.whatsapp || !info.rider.phone) return;
+      // The 📞 stays on the card until they open the chat: that is the missed call.
+      if (await deps.whatsapp.setCardStatus(call.rideId, 'call')) return;
       const url = deps.whatsapp.pageUrl(call.calleeId, call.rideId);
       await deps.whatsapp.send(info.rider.phone, `You missed a call from *${call.callerName}*, your ${roleWord(call.callerRole)}.`, url ? { text: 'Call back', url } : undefined)
         .catch(() => undefined);
@@ -187,6 +191,8 @@ export function createCallService(deps: TripChatDeps) {
       await recordCallLine(deps, info, { userId: call.callerId, role: call.callerRole }, line)
         .catch((error) => console.warn('[live-call] call line not written', { callId, error: error instanceof Error ? error.message : String(error) }));
       if (finalOutcome === 'missed' || finalOutcome === 'cancelled') await tellMissed(call, info);
+      // Talked, or they said no: the card goes back to 🟢.
+      else if (call.calleeChannel === 'whatsapp') await deps.whatsapp?.setCardStatus(call.rideId, 'live');
     }
     return call;
   }

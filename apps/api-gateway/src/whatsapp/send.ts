@@ -316,7 +316,16 @@ export async function sendMetaButtons(
 
 /** One interactive message. False when it could not be sent, so the caller can say it in text. */
 export async function sendInteractive(deps: MetaWhatsappRouteDeps, to: string, interactive: Record<string, unknown>): Promise<boolean> {
-  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return false;
+  return (await sendInteractiveForId(deps, to, interactive)) !== null;
+}
+
+/**
+ * The same, answering with WhatsApp's id for the message sent ("wamid…"), so
+ * something can be done to it later (a reaction on the ride card). Null when
+ * it was not sent. An empty string when it was sent but no id came back.
+ */
+export async function sendInteractiveForId(deps: MetaWhatsappRouteDeps, to: string, interactive: Record<string, unknown>): Promise<string | null> {
+  if (!deps.metaAccessToken || !deps.metaPhoneNumberId) return null;
   const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
     method: 'POST',
     headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
@@ -328,8 +337,10 @@ export async function sendInteractive(deps: MetaWhatsappRouteDeps, to: string, i
       status: response?.status ?? null,
       payload: response ? await response.text().catch(() => '') : 'network error',
     });
-    return false;
+    return null;
   }
-  return true;
+  const body = await response.json().catch(() => null) as { messages?: Array<{ id?: unknown }> } | null;
+  const id = body?.messages?.[0]?.id;
+  return typeof id === 'string' ? id : '';
 }
 

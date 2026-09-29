@@ -531,6 +531,7 @@ async function bootstrap(): Promise<void> {
             },
             gatewayEnv.APP_BASE_URL,
             gatewayEnv.JWT_SECRET,
+            redisCommandClient,
           )
         : undefined,
     calls: {

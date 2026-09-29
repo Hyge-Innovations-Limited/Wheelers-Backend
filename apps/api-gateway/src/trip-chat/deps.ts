@@ -32,9 +32,15 @@ export interface TripWhatsapp {
   pageUrl(riderId: string, rideId: string, callId?: string): string | null;
   /** A message, with one button that opens `button.url` when given. */
   send(phone: string, body: string, button?: { text: string; url: string }): Promise<void>;
+  /**
+   * The ride card's status light (card-status.ts). False when this ride has
+   * no card to react to, or Meta refused: send a real message instead.
+   */
+  setCardStatus(rideId: string, status: 'live' | 'message' | 'call' | 'none'): Promise<boolean>;
 }
 
-export const RING_MS = { app: 30_000, whatsapp: 45_000 };
+// WhatsApp riders see 📞 on the ride card, tap it, and open the page: they get a minute.
+export const RING_MS = { app: 30_000, whatsapp: 60_000 };
 export const MAX_CALL_MS = 30 * 60 * 1000;
 /** Calls one person may start on one trip in ten minutes. */
 export const CALLS_PER_TEN_MINUTES = 5;

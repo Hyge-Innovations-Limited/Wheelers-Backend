@@ -83,6 +83,36 @@ test('a Trip chat link names its ride, and no other page accepts it', () => {
   assert.equal(local.verifyWalletPageToken(rideLink, JWT_SECRET).rideId, undefined);
 });
 
+test('the ride card status light: Meta is asked only when the status changes, "none" removes it, and a refusal says so', async () => {
+  const { rememberRideCard, setCardStatus, cardStatusOf } = require('../apps/api-gateway/dist/trip-chat/card-status.js');
+  const store = new Map();
+  const redis = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); }, del: async (k) => { store.delete(k); } };
+  const calls = [];
+  let refuse = false;
+  const realFetch = global.fetch;
+  global.fetch = async (_url, init) => { calls.push(JSON.parse(init.body).reaction); return { ok: !refuse, status: refuse ? 400 : 200, text: async () => '' }; };
+  try {
+    const deps = { redis, meta: { metaAccessToken: 't', metaPhoneNumberId: '1' } };
+    assert.equal(await setCardStatus(deps, 'ride-x', 'message'), false, 'no card yet: the caller sends a real message');
+    await rememberRideCard(deps, 'ride-x', '+2348030000001', 'wamid.CARD');
+    assert.deepEqual(calls, [{ message_id: 'wamid.CARD', emoji: '🟢' }]);
+    await setCardStatus(deps, 'ride-x', 'message');
+    await setCardStatus(deps, 'ride-x', 'message');
+    await setCardStatus(deps, 'ride-x', 'message');
+    assert.equal(calls.length, 2, 'three messages, one reaction');
+    assert.equal(await cardStatusOf(redis, 'ride-x'), 'message');
+    refuse = true;
+    assert.equal(await setCardStatus(deps, 'ride-x', 'call'), false, 'refused: say so');
+    assert.equal(await cardStatusOf(redis, 'ride-x'), 'message', 'and the status is not pretended');
+    refuse = false;
+    assert.equal(await setCardStatus(deps, 'ride-x', 'none'), true);
+    assert.deepEqual(calls.at(-1), { message_id: 'wamid.CARD', emoji: '' }, 'removed');
+    assert.equal(await cardStatusOf(redis, 'ride-x'), null, 'forgotten with the trip');
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
 /* ── two gateway processes, one Redis, one Postgres ─────────────────────── */
 
 const clients = [];
@@ -118,9 +148,16 @@ const publisher = {
   publishNotificationEvent: async (event) => { captured.pushes.push(event); },
   publishDriverEvent: async () => {},
 };
+// The ride card's status light: rides listed in `cards` have a card to react to.
+const cards = new Map();
 const whatsapp = {
   pageUrl: (riderId, rideId, callId) => `https://app.test/widget/trip/chat.html#rider=${riderId}&ride=${rideId}${callId ? `&call=${callId}` : ''}`,
   send: async (phone, body, button) => { captured.whatsapp.push({ phone, body, button }); },
+  setCardStatus: async (rideId, status) => {
+    if (!cards.has(rideId)) return false;
+    cards.get(rideId).push(status);
+    return true;
+  },
 };
 
 const gateways = [];
@@ -440,6 +477,36 @@ test('two gateways', { concurrency: false }, async (t) => {
     await until(() => captured.whatsapp.length === 2);
     assert.match(captured.whatsapp[1].body, /You missed a call from \*Tunde\*/);
     assert.equal(captured.whatsapp[1].button.text, 'Call back');
+  });
+
+  await t.test('a WhatsApp rider with a ride card: 💬 and 📞 change on the card, and no new messages are sent', async () => {
+    const { rideId, riderId, driverUserId } = await trip({ channel: 'WHATSAPP' });
+    cards.set(rideId, []);
+    const driver = await sock(A, driverUserId);
+    captured.whatsapp.length = 0;
+
+    say(driver, 'chat:send', { rideId, content: 'I dey your gate' });
+    await next(driver, 'chat:send:accepted');
+    say(driver, 'chat:send', { rideId, content: 'Blue Corolla' });
+    await next(driver, 'chat:send:accepted');
+    await until(() => cards.get(rideId).length >= 2);
+    assert.deepEqual(cards.get(rideId).slice(0, 2), ['message', 'message'], '💬 (the store skips the repeat at Meta)');
+
+    // The rider opens the Trip chat page: seen, back to 🟢.
+    const pageToken = local.createWalletPageToken(riderId, 'trip', JWT_SECRET, 600, rideId);
+    await fetch(`http://127.0.0.1:${A.port}/trip-chat/state`, { headers: { authorization: `Bearer ${pageToken}` } });
+    await until(() => cards.get(rideId).at(-1) === 'live');
+
+    // The driver calls: 📞, and it stays after the call is missed.
+    say(driver, 'call:start', { rideId });
+    await next(driver, 'call:start:accepted');
+    await until(() => cards.get(rideId).at(-1) === 'call');
+    await sleep(650);
+    await A.tripChat.sweepOnce();
+    await next(driver, 'call:ended');
+    await sleep(200);
+    assert.equal(cards.get(rideId).at(-1), 'call', 'the missed call keeps 📞');
+    assert.equal(captured.whatsapp.length, 0, 'not one WhatsApp message');
   });
 
   await t.test('calls switched off: refused, and chat still works', async () => {

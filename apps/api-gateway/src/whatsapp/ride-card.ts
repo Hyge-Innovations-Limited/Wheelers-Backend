@@ -11,7 +11,8 @@ import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import { formatBidList, sendOffersInChat, sortOffers } from '../whatsapp-flows/whatsapp-notifier';
 import { MetaWhatsappRouteDeps } from './deps';
-import { sendInteractive, sendMetaLinkButton, sendMetaReply } from './send';
+import { sendInteractive, sendInteractiveForId, sendMetaLinkButton, sendMetaReply } from './send';
+import { rememberRideCard } from '../trip-chat/card-status';
 import { ridePageUrl, sendSearchStarted } from './trip';
 import { loadTripChat } from '../trip-chat/access';
 import { tripPageUrl } from '../trip-chat/whatsapp';
@@ -77,6 +78,7 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
     ...(options.chat === 'chat_and_call'
       ? [`*Chat or call driver* — message or call ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`]
       : options.chat === 'chat' ? [`*Chat with driver* — message ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`] : []),
+    ...(options.chat ? [`On this card: 🟢 trip on · 💬 new message${options.chat === 'chat_and_call' ? ' · 📞 calling' : ''}.`] : []),
     `*SOS* — feel unsafe at any point? One tap and Wheelers' safety team has your trip and location.`,
   ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
@@ -108,9 +110,8 @@ export async function sendRideConfirmation(
 ): Promise<string> {
   const selfieUrl = await driverPhotoUrl(deps, ride.driverId, 'selfie');
   // The ride was assigned a moment ago, so it is the rider's active ride: its trip ID goes on the card.
-  const tripId = ride.tripId ?? await rideClient.findActiveByRider(userId)
-    .then((active) => formatTripId(active?.tripNumber))
-    .catch(() => null);
+  const active = await rideClient.findActiveByRider(userId).catch(() => null);
+  const tripId = ride.tripId ?? formatTripId(active?.tripNumber);
   const details = rideDetailsText({ ...ride, tripId }, deps.appBaseUrl ? { chat: deps.liveCallEnabled ? 'chat_and_call' : 'chat' } : {});
 
   const card = (photo: string | null) => ({
@@ -127,8 +128,19 @@ export async function sendRideConfirmation(
   });
   // A photo Meta refuses (an expired link, a format it dislikes) must not cost
   // the rider their driver's details: the same card goes again without it.
-  const sent = (selfieUrl !== null && await sendInteractive(deps, phone, card(selfieUrl))) || await sendInteractive(deps, phone, card(null));
-  if (!sent) await sendMetaReply(deps, phone, details);
+  const withPhoto = selfieUrl !== null ? await sendInteractiveForId(deps, phone, card(selfieUrl)) : null;
+  const sentId = withPhoto ?? await sendInteractiveForId(deps, phone, card(null));
+  if (sentId === null) {
+    await sendMetaReply(deps, phone, details);
+    return details;
+  }
+  // The card is the trip's status light from here: 🟢 now, 💬 / 📞 when the driver writes or calls.
+  if (active?.id && sentId && deps.metaAccessToken && deps.metaPhoneNumberId) {
+    await rememberRideCard(
+      { redis: deps.redisClient, meta: { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId } },
+      active.id, phone, sentId,
+    ).catch((error) => console.warn('[ride-card] status light not set', { error: error instanceof Error ? error.message : String(error) }));
+  }
   return details;
 }
 

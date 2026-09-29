@@ -1,5 +1,7 @@
 import { createWalletPageToken, TRIP_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import { sendMetaLinkMessage, sendMetaWhatsappMessage, type WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import type { RedisClient } from '../redis/client';
+import { setCardStatus } from './card-status';
 import type { TripWhatsapp } from './deps';
 
 /**
@@ -12,8 +14,10 @@ export function tripPageUrl(appBaseUrl: string, jwtSecret: string, riderId: stri
   return `${base}/widget/trip/chat.html#t=${encodeURIComponent(token)}${callId ? `&call=${encodeURIComponent(callId)}` : ''}`;
 }
 
-export function createTripWhatsapp(notifier: WhatsappNotifierDeps, appBaseUrl: string | undefined, jwtSecret: string): TripWhatsapp {
+export function createTripWhatsapp(notifier: WhatsappNotifierDeps, appBaseUrl: string | undefined, jwtSecret: string, redis: RedisClient): TripWhatsapp {
+  const cardDeps = { redis, meta: { metaAccessToken: notifier.metaAccessToken, metaPhoneNumberId: notifier.metaPhoneNumberId } };
   return {
+    setCardStatus: (rideId, status) => setCardStatus(cardDeps, rideId, status).catch(() => false),
     pageUrl: (riderId, rideId, callId) => (appBaseUrl ? tripPageUrl(appBaseUrl, jwtSecret, riderId, rideId, callId) : null),
     send: async (phone, body, button) => {
       if (button) {

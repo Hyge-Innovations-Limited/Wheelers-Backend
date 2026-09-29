@@ -156,7 +156,8 @@ async function deliver(
 /**
  * A WhatsApp rider has no app to buzz. If the Trip chat page is open (it keeps
  * a socket only while it is on screen), the page already has the message.
- * Otherwise it goes to their WhatsApp, with the button back to the page.
+ * Otherwise the ride card shows 💬; only when there is no card to mark does
+ * the message go to their WhatsApp, with the button back to the page.
  */
 async function forwardToWhatsappRider(
   deps: TripChatDeps,
@@ -166,6 +167,8 @@ async function forwardToWhatsappRider(
 ): Promise<void> {
   if (!deps.whatsapp || !info.rider.phone) return;
   if (await deps.sockets.isUserConnected(info.rider.userId).catch(() => false)) return;
+  // 💬 on the ride card: no new message, however many the driver sends.
+  if (await deps.whatsapp.setCardStatus(info.rideId, 'message')) return;
   const url = deps.whatsapp.pageUrl(info.rider.userId, info.rideId);
   const body = `*${driverName} (your driver):*\n${content}`.slice(0, 1024);
   await deps.whatsapp.send(info.rider.phone, body, url ? { text: 'Reply', url } : undefined)

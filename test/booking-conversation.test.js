@@ -1095,7 +1095,7 @@ test('Chat with driver: the tap answers with the Trip chat link for the rider\'s
 
   await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED', completedAt: new Date(Date.now() - 40 * 60_000) } });
   await tapButton(deps, who, 'ride_chat', 'Chat or call driver');
-  assert.match(textOf(last(sent)), /has ended\. It closes 30 minutes after a trip/);
+  assert.match(textOf(last(sent)), /has ended: it closes when the trip ends/);
 });
 
 test('a WhatsApp trip longer than 3 hours still ends with "Trip complete" on WhatsApp: the ride, not the expiring note, says it is a WhatsApp ride', async () => {
