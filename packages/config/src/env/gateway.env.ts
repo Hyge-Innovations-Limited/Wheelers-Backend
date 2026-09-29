@@ -94,6 +94,9 @@ const GatewayEnvSchema = z.object({
   // 'true' logs every connect, close and message, as before. Off, the log gets
   // warnings and one summary line a minute.
   WS_VERBOSE_LOG: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Minutes the trip chat stays open after a trip ends or is cancelled. 0 (the
+  // default): it closes with the trip, on both sides at once.
+  TRIP_CHAT_AFTER_TRIP_MINUTES: z.coerce.number().int().min(0).max(24 * 60).default(0),
   // Live call: the rider and driver of a trip call each other through Wheelers.
   // Off until the TURN server below is set; chat works either way.
   LIVE_CALL_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),

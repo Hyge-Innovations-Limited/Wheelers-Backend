@@ -69,6 +69,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import { loadTripChat } from '../trip-chat/access';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
@@ -899,6 +900,7 @@ export async function handleRideEvent(
     // Clean up WhatsApp Redis state
     await cleanupRideKeys(deps.redisClient, event.rideId);
 
+    await announceTripChatClosed(registry, event.rideId, await participantsFor(event.rideId, rideParticipants));
     rideParticipants.delete(event.rideId);
     return;
   }
@@ -1005,6 +1007,7 @@ export async function handleRideEvent(
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => {});
     }
 
+    await announceTripChatClosed(registry, event.rideId, await participantsFor(event.rideId, rideParticipants));
     rideParticipants.delete(event.rideId);
     return;
   }
@@ -1366,6 +1369,25 @@ async function handleGroupRideEvent(
   }
 }
 
+
+/**
+ * The trip ended or was cancelled: its chat is closed, and both people's
+ * screens (the driver's app, the rider's app or Trip chat page) are told at
+ * once instead of finding out on their next message. Nothing is said while
+ * the chat is still open: a ride whose driver bailed goes back to searching.
+ */
+async function announceTripChatClosed(
+  registry: SocketRegistry,
+  rideId: string,
+  participants: RideParticipantState | undefined,
+): Promise<void> {
+  const info = await loadTripChat(rideId).catch(() => null);
+  if (!info || info.open) return;
+  const people = new Set(
+    [participants?.riderId, participants?.driverUserId, info.rider.userId, info.driver?.userId].filter((id): id is string => Boolean(id)),
+  );
+  await Promise.all([...people].map((userId) => registry.sendToUser(userId, 'chat:closed', { rideId }).catch(() => undefined)));
+}
 
 /**
  * The rider's WhatsApp number when this ride is a WhatsApp ride, else null.

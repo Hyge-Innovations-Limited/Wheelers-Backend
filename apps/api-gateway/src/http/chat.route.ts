@@ -57,7 +57,7 @@ export function handleGetRideChatMessagesRoute(deps: ChatRouteDeps) {
         createdAt: msg.createdAt.toISOString(),
       })),
       nextCursor: result.nextCursor,
-      // Whether the chat still takes messages, and until when (30 minutes after the trip).
+      // Whether the chat still takes messages, and until when (it closes when the trip ends).
       open: window.open,
       closesAt: window.closesAt ? window.closesAt.toISOString() : null,
       callsEnabled: deps.liveCallEnabled === true,

@@ -5,14 +5,15 @@ import { TripChatError } from './errors';
 /**
  * Who may chat and call on a ride, and when.
  *
- * Only the ride's rider and its driver. From the moment a driver is assigned,
- * through arriving, pickup and the trip, and for 30 minutes after it ends or
- * is cancelled: long enough to say "I left my bag in the car", short enough
- * that nobody can reach the other a day later.
+ * Only the ride's rider and its driver, from the moment a driver is assigned,
+ * through arriving, pickup and the trip. It closes when the trip ends or is
+ * cancelled. TRIP_CHAT_AFTER_TRIP_MINUTES keeps it open a while longer (for
+ * "I left my bag in the car") without a code change; it is 0 by default:
+ * lost items go to support.
  */
 
 export const LIVE_TRIP_STATUSES: ReadonlySet<string> = new Set(['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']);
-export const CHAT_AFTER_TRIP_MS = 30 * 60 * 1000;
+export const CHAT_AFTER_TRIP_MS = Math.max(0, Number(process.env.TRIP_CHAT_AFTER_TRIP_MINUTES ?? 0) || 0) * 60 * 1000;
 
 export type TripRole = 'RIDER' | 'DRIVER';
 
@@ -46,14 +47,18 @@ interface WindowInput {
 }
 
 /** Is the chat open on this ride right now, and until when? */
-export function chatWindow(ride: WindowInput, now: number = Date.now()): { open: boolean; closesAt: Date | null } {
+export function chatWindow(
+  ride: WindowInput,
+  now: number = Date.now(),
+  afterTripMs: number = CHAT_AFTER_TRIP_MS,
+): { open: boolean; closesAt: Date | null } {
   if (!ride.driverId) return { open: false, closesAt: null };
   if (LIVE_TRIP_STATUSES.has(ride.status)) return { open: true, closesAt: null };
   let endedAt: Date | null = null;
   if (ride.status === 'COMPLETED' || ride.status === 'DISPUTED') endedAt = ride.completedAt ?? ride.updatedAt;
   if (ride.status === 'CANCELLED') endedAt = ride.cancelledAt ?? ride.updatedAt;
   if (!endedAt) return { open: false, closesAt: null };
-  const closesAt = new Date(endedAt.getTime() + CHAT_AFTER_TRIP_MS);
+  const closesAt = new Date(endedAt.getTime() + afterTripMs);
   return { open: now < closesAt.getTime(), closesAt };
 }
 
@@ -117,7 +122,7 @@ export async function requireTripParticipant(
 export function requireOpen(info: TripChatInfo): void {
   if (!info.open) {
     throw new TripChatError('CHAT_CLOSED', info.closesAt
-      ? 'This chat has ended. It closes 30 minutes after the trip.'
+      ? 'This trip has ended, so the chat is closed.'
       : 'This chat opens when a driver is assigned to the trip.');
   }
 }

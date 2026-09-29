@@ -106,7 +106,7 @@
   function drawOpen() {
     var banner = $('banner');
     if (!state.open) {
-      banner.textContent = 'This chat has ended. It closes 30 minutes after the trip.';
+      banner.textContent = 'This trip has ended, so the chat is closed.';
       banner.hidden = false;
     } else if (state.closesAt) {
       banner.textContent = 'Your trip has ended. This chat stays open for ' + (W.until(state.closesAt) || 'a few minutes') + '.';
@@ -293,6 +293,10 @@
     switch (type) {
       case 'chat:message':
         if (state && payload.rideId === state.rideId) addMessage(payload);
+        break;
+      case 'chat:closed':
+        // The driver ended the trip: show the closed chat at once.
+        if (state && payload.rideId === state.rideId) refresh();
         break;
       case 'chat:send:accepted':
         settled(payload.clientId, payload.message);

@@ -55,19 +55,23 @@ test("a TURN login is coturn's REST scheme: expiry:user, HMAC-SHA1 of it with th
   assert.equal(servers[1].credential, createHmac('sha1', 's').update(servers[1].username).digest('base64'));
 });
 
-test('the chat opens when a driver is assigned and closes 30 minutes after the trip', () => {
+test('the chat opens when a driver is assigned and closes when the trip ends (or a set time after)', () => {
   const now = Date.now();
   const base = { driverId: 'd', completedAt: null, cancelledAt: null, updatedAt: new Date(now) };
   assert.equal(chatWindow({ ...base, status: 'MATCHING', driverId: null }, now).open, false);
   for (const status of ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']) {
     assert.deepEqual(chatWindow({ ...base, status }, now), { open: true, closesAt: null }, status);
   }
-  const justDone = chatWindow({ ...base, status: 'COMPLETED', completedAt: new Date(now - 10 * 60_000) }, now);
-  assert.equal(justDone.open, true);
-  assert.equal(justDone.closesAt.getTime(), now - 10 * 60_000 + CHAT_AFTER_TRIP_MS);
-  assert.equal(chatWindow({ ...base, status: 'COMPLETED', completedAt: new Date(now - 31 * 60_000) }, now).open, false);
-  assert.equal(chatWindow({ ...base, status: 'CANCELLED', cancelledAt: new Date(now - 5 * 60_000) }, now).open, true);
-  assert.equal(chatWindow({ ...base, status: 'CANCELLED', driverId: null, cancelledAt: new Date(now) }, now).open, false, 'cancelled before a driver: never opened');
+  // By default the chat closes the moment the trip ends or is cancelled.
+  assert.equal(CHAT_AFTER_TRIP_MS, 0);
+  const ended = chatWindow({ ...base, status: 'COMPLETED', completedAt: new Date(now - 1000) }, now);
+  assert.deepEqual([ended.open, ended.closesAt.getTime()], [false, now - 1000]);
+  assert.equal(chatWindow({ ...base, status: 'CANCELLED', cancelledAt: new Date(now - 1000) }, now).open, false);
+  // TRIP_CHAT_AFTER_TRIP_MINUTES = 30 keeps it open half an hour longer.
+  const thirty = 30 * 60_000;
+  assert.equal(chatWindow({ ...base, status: 'COMPLETED', completedAt: new Date(now - 10 * 60_000) }, now, thirty).open, true);
+  assert.equal(chatWindow({ ...base, status: 'COMPLETED', completedAt: new Date(now - 31 * 60_000) }, now, thirty).open, false);
+  assert.equal(chatWindow({ ...base, status: 'CANCELLED', driverId: null, cancelledAt: new Date(now) }, now, thirty).open, false, 'cancelled before a driver: never opened');
 });
 
 test('a Trip chat link names its ride, and no other page accepts it', () => {
@@ -255,8 +259,8 @@ test('two gateways', { concurrency: false }, async (t) => {
     await next(rider, 'chat:send:accepted');
   });
 
-  await t.test('the chat is closed 30 minutes after the trip', async () => {
-    const { rideId, riderId } = await trip({ status: 'COMPLETED', completedAt: new Date(Date.now() - 31 * 60_000) });
+  await t.test('the chat is closed once the trip has ended', async () => {
+    const { rideId, riderId } = await trip({ status: 'COMPLETED', completedAt: new Date(Date.now() - 1000) });
     const rider = await sock(A, riderId);
     say(rider, 'chat:send', { rideId, content: 'I left my bag' });
     assert.equal((await next(rider, 'error')).code, 'CHAT_CLOSED');

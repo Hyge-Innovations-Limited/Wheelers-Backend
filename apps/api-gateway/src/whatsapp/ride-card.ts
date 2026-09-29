@@ -176,7 +176,7 @@ export async function sendTripChatLink(deps: MetaWhatsappRouteDeps, userId: stri
     return;
   }
   if (!info.open) {
-    await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} has ended. It closes 30 minutes after a trip.
+    await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} has ended: it closes when the trip ends.
 
 Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
     return;

@@ -1117,13 +1117,18 @@ test('a WhatsApp trip longer than 3 hours still ends with "Trip complete" on Wha
   await redis.del(`whatsapp:phone_by_user:${user.id}`).catch(() => {});
 
   const before = sent.length;
+  const toScreens = [];
   const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' };
   await handleRideEvent({
     eventType: 'RIDE_COMPLETED', rideId: ride.id, riderId: user.id, driverId: driver.driverId, driverUserId: driver.userId,
     fareNgn: 4500, distanceKm: 120, durationSeconds: 5 * 3600, completedAt: new Date().toISOString(), timestamp: new Date().toISOString(),
-  }, { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  }, { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async (userId, type, payload) => { toScreens.push([userId, type, payload.rideId]); }, hasUser: () => false } }, new Map());
   const after = sent.slice(before).map(textOf).join('\n');
   assert.match(after, /Trip complete!/, 'the rider hears the trip ended');
+  // And the trip chat closes on both sides at once.
+  const closed = toScreens.filter(([, type]) => type === 'chat:closed');
+  assert.deepEqual(new Set(closed.map(([userId]) => userId)), new Set([user.id, driver.userId]));
+  assert.ok(closed.every(([, , rideId]) => rideId === ride.id));
 });
 
 /* ── SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
