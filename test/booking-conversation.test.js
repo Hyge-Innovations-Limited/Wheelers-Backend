@@ -1098,6 +1098,34 @@ test('Chat with driver: the tap answers with the Trip chat link for the rider\'s
   assert.match(textOf(last(sent)), /has ended\. It closes 30 minutes after a trip/);
 });
 
+test('a WhatsApp trip longer than 3 hours still ends with "Trip complete" on WhatsApp: the ride, not the expiring note, says it is a WhatsApp ride', async () => {
+  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  const driver = await onlineDriver();
+  const startedAt = new Date(Date.now() - 5 * 60 * 60 * 1000);
+  const ride = await prisma.ride.create({ data: {
+    riderId: user.id, driverId: driver.driverId, status: 'COMPLETED', channel: 'WHATSAPP', startedAt, completedAt: new Date(),
+    pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address,
+  } });
+  // Five hours in: the "this rider is on WhatsApp" note and the phone note have both expired.
+  await bidState.clearActiveRide(redis, user.id);
+  await redis.del(`whatsapp:phone_by_user:${user.id}`).catch(() => {});
+
+  const before = sent.length;
+  const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' };
+  await handleRideEvent({
+    eventType: 'RIDE_COMPLETED', rideId: ride.id, riderId: user.id, driverId: driver.driverId, driverUserId: driver.userId,
+    fareNgn: 4500, distanceKm: 120, durationSeconds: 5 * 3600, completedAt: new Date().toISOString(), timestamp: new Date().toISOString(),
+  }, { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
+  const after = sent.slice(before).map(textOf).join('\n');
+  assert.match(after, /Trip complete!/, 'the rider hears the trip ended');
+});
+
 /* ── SOS: one tap on the ride card tells the safety team — the same alerts the app raises ── */
 
 test('SOS: one tap records the emergency with the trip, the driver and the car\'s position; pressing again is ONE incident; "I\'m safe" withdraws it', async () => {

@@ -648,7 +648,7 @@ export async function handleRideEvent(
     }
 
     // Notify rider
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
+    const waRider = (await whatsappRiderPhone(deps, event.riderId, event.rideId)) !== null;
     if (waRider && deps.whatsappNotifier) {
       await setRideState(deps.redisClient, event.rideId, 'confirmed', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
@@ -789,11 +789,10 @@ export async function handleRideEvent(
   if (event.eventType === 'RIDE_ARRIVED') {
     // The "your driver is outside" moment. WhatsApp riders get a message; app
     // riders get a socket event their ride screen can react to.
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
-    if (waRider && deps.whatsappNotifier) {
+    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
+    if (phone && deps.whatsappNotifier) {
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
+      {
         const arrivedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
         await sendDriverArrivedNotification(deps.whatsappNotifier, phone, {
           driverName: arrivedBid?.driverName,
@@ -820,12 +819,11 @@ export async function handleRideEvent(
     const driverUserId = participants?.driverUserId;
 
     // Notify rider
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
-    if (waRider && deps.whatsappNotifier) {
+    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
+    if (phone && deps.whatsappNotifier) {
       await setRideState(deps.redisClient, event.rideId, 'in_progress', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
+      {
         const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
         await sendRideStartedNotification(deps.whatsappNotifier, phone, tripId).catch(() => {});
       }
@@ -851,10 +849,9 @@ export async function handleRideEvent(
     const settledReferralUsages = await referralClient.settleRideCashback(event.rideId);
 
     // Notify rider
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
-    if (waRider && deps.whatsappNotifier) {
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
+    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
+    if (phone && deps.whatsappNotifier) {
+      {
         const riderWallet = await walletClient.findByUserId(event.riderId).catch(() => null);
         await sendRideCompletedNotification(
           deps.whatsappNotifier, phone, event.fareNgn, event.distanceKm,
@@ -941,10 +938,9 @@ export async function handleRideEvent(
     // Notify rider
     // A search replaced by the rider's own newer request: clean up, say nothing — they asked for it.
     const superseded = event.cancelledBy === 'system' && /newer request/i.test(event.reason ?? '');
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
-    if (waRider && deps.whatsappNotifier) {
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone && !superseded) {
+    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
+    if (phone && deps.whatsappNotifier) {
+      if (!superseded) {
         await sendRideCancelledNotification(deps.whatsappNotifier, phone, {
           reason: event.reason,
           cancelledBy: event.cancelledBy,
@@ -1370,6 +1366,34 @@ async function handleGroupRideEvent(
   }
 }
 
+
+/**
+ * The rider's WhatsApp number when this ride is a WhatsApp ride, else null.
+ *
+ * The Redis note that says "this rider is on WhatsApp" expires 3 hours into
+ * a trip (and goes with a Redis restart), so a trip that ran longer ended in
+ * silence: no "trip ended", no receipt. The ride itself records how it was
+ * booked, so that decides once a driver is assigned; the note stays only as
+ * the quick answer. Before a driver, the note alone decides: a search the
+ * rider cancelled in the chat clears it on purpose, to say nothing twice.
+ */
+async function whatsappRiderPhone(
+  deps: StartGatewayConsumerDeps,
+  riderId: string,
+  rideId: string,
+): Promise<string | null> {
+  if (!deps.whatsappNotifier) return null;
+  let onWhatsapp = await isWhatsappRider(deps.redisClient, riderId).catch(() => false);
+  if (!onWhatsapp) {
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    onWhatsapp = ride?.channel === 'WHATSAPP' && Boolean(ride.driverId);
+  }
+  if (!onWhatsapp) return null;
+  const cached = await lookupPhoneByUserId(deps.redisClient, riderId).catch(() => null);
+  if (cached) return cached;
+  const user = await userClient.findById(riderId).catch(() => null);
+  return user?.phone ?? null;
+}
 
 /**
  * Participants of a ride, from memory or — after a gateway restart emptied
