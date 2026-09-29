@@ -98,10 +98,13 @@ const GatewayEnvSchema = z.object({
   // commission, top-up and driver withdrawal. Testnet only; see
   // apps/api-gateway/src/stellar/config.ts, which refuses anything else.
   STELLAR_ENABLED:     z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
-  STELLAR_NETWORK:     z.literal('testnet').default('testnet'),
+  // Checked only when STELLAR_ENABLED is on (apps/api-gateway/src/stellar/config.ts,
+  // which accepts "testnet" in any case and refuses anything else). A switched-off
+  // feature must never stop the gateway booting.
+  STELLAR_NETWORK:     z.string().optional(),
   STELLAR_MASTER_SEED: z.string().optional().transform(v => v?.trim() || undefined),
   STELLAR_NGN_PER_XLM: z.coerce.number().positive().default(1000),
-  STELLAR_HORIZON_URL: z.string().url().optional(),
+  STELLAR_HORIZON_URL: z.string().optional(),
   // The rider's 4-digit trip code must be entered to start a trip. Switch on
   // only once drivers have the app with the keypad.
   TRIP_CODE_REQUIRED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
