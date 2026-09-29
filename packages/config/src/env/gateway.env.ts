@@ -94,6 +94,14 @@ const GatewayEnvSchema = z.object({
   // 'true' logs every connect, close and message, as before. Off, the log gets
   // warnings and one summary line a minute.
   WS_VERBOSE_LOG: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Stellar TESTNET (grant deliverable 3): a testnet mirror of every fare,
+  // commission, top-up and driver withdrawal. Testnet only; see
+  // apps/api-gateway/src/stellar/config.ts, which refuses anything else.
+  STELLAR_ENABLED:     z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  STELLAR_NETWORK:     z.literal('testnet').default('testnet'),
+  STELLAR_MASTER_SEED: z.string().optional().transform(v => v?.trim() || undefined),
+  STELLAR_NGN_PER_XLM: z.coerce.number().positive().default(1000),
+  STELLAR_HORIZON_URL: z.string().url().optional(),
   // The rider's 4-digit trip code must be entered to start a trip. Switch on
   // only once drivers have the app with the keypad.
   TRIP_CODE_REQUIRED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),

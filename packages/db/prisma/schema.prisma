@@ -729,6 +729,60 @@ model AdminUser {
   @@index([username])
 }
 
+/// A Stellar TESTNET account Wheelers holds for a rider or driver, or for
+/// Wheelers itself (operations: collects commission, pays every fee). Only
+/// the public address is kept: the secret is derived on the server from one
+/// master secret and this account's derivation index, and never stored.
+model StellarAccount {
+  id              String    @id @default(uuid())
+  /// Null for Wheelers' own operations account.
+  userId          String?   @unique
+  /// "operations" or "user".
+  role            String    @default("user")
+  publicKey       String    @unique
+  /// Which child of the master secret this account is (SEP-0005 path m/44'/148'/index').
+  derivationIndex Int       @unique
+  createdAt       DateTime  @default(now())
+  /// When the account exists on the network.
+  openedAt        DateTime?
+
+  @@index([role])
+}
+
+/// One movement on Stellar Testnet, mirroring one in the naira ledger:
+/// opening an account, a top-up, a trip's fare, its commission, a driver's
+/// withdrawal. Queued, then sent and confirmed by a background job; the
+/// reference makes each happen once.
+model StellarTransfer {
+  id             String    @id @default(uuid())
+  /// ACCOUNT_OPEN, TOPUP, FARE, COMMISSION, WITHDRAWAL
+  kind           String
+  /// "fare:<rideId>", "topup:<transactionId>"…: one transfer per thing, however often it is asked for.
+  reference      String    @unique
+  rideId         String?
+  userId         String?
+  fromPublicKey  String
+  toPublicKey    String
+  amountXlm      Decimal   @db.Decimal(20, 7)
+  /// The naira this mirrors, at the demo rate in force.
+  amountNgn      Decimal?  @db.Decimal(18, 2)
+  memo           String?
+  /// PENDING, SUBMITTED, CONFIRMED, FAILED
+  status         String    @default("PENDING")
+  /// Known before it is sent, so a send cut short is checked, not repeated.
+  txHash         String?   @unique
+  ledger         Int?
+  attempts       Int       @default(0)
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  submittedAt    DateTime?
+  confirmedAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([rideId])
+  @@index([userId, createdAt])
+}
+
 // ─── Enums ───────────────────────────────────────────────────────
 
 enum PrivacyConsent {

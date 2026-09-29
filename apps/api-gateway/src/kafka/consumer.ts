@@ -72,6 +72,7 @@ import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
 import { loadTripChat } from '../trip-chat/access';
 import { setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
+import type { StellarService } from '../stellar/service';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
@@ -89,6 +90,8 @@ export interface StartGatewayConsumerDeps {
    * has already said what happened — and the plain "deposit received" is skipped.
    */
   onWhatsappDeposit?: (deposit: { userId: string; amountNgn: number; newBalanceNgn: number }) => Promise<boolean>;
+  /** Stellar Testnet mirror (grant deliverable 3). Absent when STELLAR_ENABLED is off. */
+  stellar?: StellarService | null;
 }
 
 interface RideParticipantState {
@@ -913,6 +916,16 @@ export async function handleRideEvent(
     await cleanupRideKeys(deps.redisClient, event.rideId);
 
     await announceTripChatClosed(deps, event.rideId, await participantsFor(event.rideId, rideParticipants));
+
+    // On Stellar Testnet: the fare rider → driver, then the commission driver → operations, memo the trip ID.
+    if (deps.stellar && event.paymentMethod !== 'CASH') {
+      const fees = calculateRideFees(event.fareNgn);
+      const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
+      await deps.stellar.settleRide({
+        rideId: event.rideId, tripId, riderId: event.riderId, driverUserId: event.driverUserId,
+        fareNgn: event.fareNgn, commissionNgn: fees.platformTotalNgn,
+      }).catch((error) => console.warn('[stellar] trip settlement not queued', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
+    }
     rideParticipants.delete(event.rideId);
     return;
   }
@@ -1053,6 +1066,11 @@ async function handleWalletEvent(
   const registry = deps.registry;
 
   if (event.eventType === 'WALLET_CREDITED') {
+    // A naira deposit: the same value lands in the rider's Stellar Testnet account.
+    if (deps.stellar && event.creditType === 'deposit') {
+      await deps.stellar.mirrorTopup({ userId: event.userId, reference: event.referenceId, amountNgn: event.amountNgn })
+        .catch((error) => console.warn('[stellar] top-up not queued', { userId: event.userId, error: error instanceof Error ? error.message : String(error) }));
+    }
     await registry.sendToUser(event.userId, 'wallet:updated', {
       walletId: event.walletId,
       balanceNgn: event.newBalanceNgn,

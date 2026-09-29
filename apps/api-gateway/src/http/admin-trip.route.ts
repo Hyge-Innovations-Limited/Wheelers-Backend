@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { chatClient, tripCallClient, tripCodeClient } from '@wheleers/db';
+import { chatClient, stellarClient, tripCallClient, tripCodeClient } from '@wheleers/db';
+import type { StellarService } from '../stellar/service';
 import type { RedisClient } from '../redis/client';
 import { loadTripChat } from '../trip-chat/access';
 import { cardStatusOf } from '../trip-chat/card-status';
@@ -21,6 +22,8 @@ export interface AdminTripRouteDeps {
   adminApiKey: string;
   redis: RedisClient;
   sockets: { sendToUser(userId: string, type: string, payload: Record<string, unknown>): Promise<void> };
+  /** The trip's Stellar Testnet transfers, with explorer links. Absent when Stellar is off. */
+  stellar?: StellarService | null;
 }
 
 /** Before the trip starts: waiting for the driver, or the driver at the pickup. */
@@ -66,11 +69,12 @@ export async function handleAdminTripRoute(
   }
 
   if (action === 'trip') {
-    const [messages, calls, code, card] = await Promise.all([
+    const [messages, calls, code, card, stellarTransfers] = await Promise.all([
       chatClient.latestForRide(rideId, 500),
       tripCallClient.listForRide(rideId),
       tripCodeClient.state(rideId),
       cardStatusOf(deps.redis, rideId).catch(() => null),
+      deps.stellar ? stellarClient.listForRide(rideId) : Promise.resolve([]),
     ]);
     const nameOf = (userId: string) => (userId === info.rider.userId ? info.rider.name : info.driver?.userId === userId ? info.driver.name : 'Unknown');
     sendJson(res, 200, {
@@ -83,6 +87,7 @@ export async function handleAdminTripRoute(
       driver: info.driver ? { userId: info.driver.userId, name: info.driver.name } : null,
       tripCode: codeState(code),
       whatsappCardStatus: card,
+      stellar: deps.stellar ? stellarTransfers.map((t) => deps.stellar!.describe(t)) : null,
       messages: messages.map((m) => ({
         id: m.id, senderRole: m.senderRole, senderName: nameOf(m.senderId), kind: m.kind, content: m.content, createdAt: m.createdAt.toISOString(),
       })),

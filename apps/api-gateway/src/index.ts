@@ -105,6 +105,10 @@ import { handleRidePageRoute } from "./http/ride-page.route";
 import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
+import { stellarConfigFromEnv } from "./stellar/config";
+import { createHorizonNetwork } from "./stellar/network";
+import { createStellarService, startStellarJob } from "./stellar/service";
+import { handleStellarRoute } from "./stellar/routes";
 import { createTripWhatsapp } from "./trip-chat/whatsapp";
 import { describeLlm } from "./LLM/llm";
 import {
@@ -545,6 +549,10 @@ async function bootstrap(): Promise<void> {
     },
   });
   tripChat.start();
+
+  // Stellar Testnet (grant deliverable 3): off unless STELLAR_ENABLED=true. Testnet only.
+  const stellarConfig = stellarConfigFromEnv();
+  const stellar = stellarConfig ? createStellarService({ config: stellarConfig, network: createHorizonNetwork(stellarConfig) }) : null;
   // Our own pages' address: the Trip chat page's socket comes from there.
   const pageOrigins = new Set<string>();
   try {
@@ -946,6 +954,11 @@ async function bootstrap(): Promise<void> {
       });
 
       return;
+    }
+
+    if (url.pathname.startsWith("/stellar/") || url.pathname === "/admin/stellar") {
+      const handled = await handleStellarRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, adminApiKey: process.env.ADMIN_API_KEY ?? '', stellar }, url);
+      if (handled) return;
     }
 
     if (url.pathname.startsWith("/trip-chat/")) {
@@ -1680,7 +1693,7 @@ async function bootstrap(): Promise<void> {
       }
 
       // A trip's chat, calls and trip code, and support's unlock: /admin/rides/:id/trip…
-      if (await handleAdminTripRoute(req, res, { ...adminDeps, redis: redisCommandClient, sockets: registry }, url)) {
+      if (await handleAdminTripRoute(req, res, { ...adminDeps, redis: redisCommandClient, sockets: registry, stellar }, url)) {
         return;
       }
 
@@ -2305,6 +2318,12 @@ async function bootstrap(): Promise<void> {
   });
 
   const referralJobs = startReferralJobs(leader.isLeader);
+  const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
+  if (stellar) {
+    void stellar.ensureOperations()
+      .then((ops) => console.info("[stellar] testnet on; operations account", { publicKey: ops.publicKey }))
+      .catch((error) => console.warn("[stellar] operations account not ready yet", { error: error instanceof Error ? error.message : String(error) }));
+  }
 
   await startGatewayKafkaConsumer({
     consumer,
@@ -2327,6 +2346,7 @@ async function bootstrap(): Promise<void> {
     kycStorage: driverKycStorage ?? undefined,
     // A rider who tapped a driver and went to add money: the deposit confirms the ride.
     onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
+    stellar,
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in
@@ -2359,6 +2379,7 @@ async function bootstrap(): Promise<void> {
   // First: let go of the sockets and the job lock while Redis is still connected.
   onShutdown(async () => {
     tripChat.stop();
+    stopStellarJob();
     await leader.release();
     await registry.shutdown();
   });
