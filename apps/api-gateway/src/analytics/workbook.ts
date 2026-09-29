@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { adminAnalyticsClient, CHANNEL_LABELS } from '@wheleers/db';
+import { adminAnalyticsClient, CHANNEL_LABELS, tripActivityClient } from '@wheleers/db';
 import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
 import { cleanName, cleanText } from './clean-text';
 
@@ -185,8 +185,16 @@ function platformId(t: TripRow, contacts: boolean): string {
 const asDuration = (seconds: number | null) => (seconds == null ? null : seconds / 86_400);
 const DURATION = '[m]:ss';
 
-async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: 'all' | 'completed', contacts: boolean, name: string): Promise<void> {
+const STELLAR_TX = 'https://stellar.expert/explorer/testnet/tx/';
+/** A transaction hash as a clickable cell, opening it on the testnet explorer. */
+const txLink = (hash: string | null) => (hash ? { text: `${hash.slice(0, 10)}…`, hyperlink: `${STELLAR_TX}${hash}` } : '');
+const LONG_TRIP_SECONDS = 3 * 60 * 60;
+const CODE_LABEL: Record<string, string> = { none: '', waiting: 'Not entered', verified: 'Entered', unlocked: 'Unlocked by support' };
+
+async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: 'all' | 'completed', contacts: boolean, name: string): Promise<TripRow[]> {
   const { items, total } = await all((offset) => adminAnalyticsClient.trips(f, status, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  // Chat, calls, the trip code and the trip's Stellar transfers, for all these trips at once.
+  const activity = await tripActivityClient.forRides(items.map((t) => t.id)).catch(() => new Map());
   // In the order the team keeps its own sheet: who, when, how it ended, where, how long, for how much.
   const columns: Column[] = [
     { header: 'Trip ID', key: 'tripId', width: 11 },
@@ -223,13 +231,39 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
     { header: 'Trip minutes', key: 'minutes', format: WHOLE },
     { header: 'Bids', key: 'bids', format: WHOLE },
     { header: 'Cancel reason', key: 'cancelReason', width: 30 },
+    { header: 'Long trip (3h+)', key: 'longTrip', width: 15, note: 'Yes when the trip ran 3 hours or more from start to end.' },
+    { header: 'Chat: rider messages', key: 'riderMessages', format: WHOLE, width: 20 },
+    { header: 'Chat: driver messages', key: 'driverMessages', format: WHOLE, width: 21 },
+    { header: 'Calls', key: 'calls', format: WHOLE },
+    { header: 'Calls answered', key: 'callsAnswered', format: WHOLE, width: 15 },
+    { header: 'Calls missed', key: 'callsMissed', format: WHOLE, width: 13 },
+    { header: 'Call minutes', key: 'callMinutes', format: '#,##0.0', width: 13 },
+    { header: 'Trip code', key: 'tripCodeLabel', width: 20, note: "Entered: the driver typed the rider's code. Unlocked by support: started without it. Empty: no code (group seats, older trips)." },
+    { header: 'Wrong codes', key: 'wrongCodes', format: WHOLE, width: 12 },
+    { header: 'Unlocked by', key: 'unlockedBy', width: 16 },
+    { header: 'Stellar fare tx', key: 'stellarFare', width: 16, note: 'Stellar TESTNET: the fare, rider to driver, with the trip ID as memo. Click to open it on stellar.expert.' },
+    { header: 'Stellar commission tx', key: 'stellarCommission', width: 20, note: 'Stellar TESTNET: the commission, driver to Wheelers operations.' },
     { header: 'Ride ID', key: 'id', width: 38 },
   ];
   addSheet(book, name, columns, items.map((t) => {
     const booked = lagosParts(t.createdAt)!;
     const ended = t.completedAt ?? t.cancelledAt;
+    const a = activity.get(t.id);
+    const ranSeconds = t.startedAt && t.completedAt ? (Date.parse(t.completedAt) - Date.parse(t.startedAt)) / 1000 : null;
     return {
       ...t,
+      longTrip: ranSeconds !== null && ranSeconds >= LONG_TRIP_SECONDS ? 'yes' : '',
+      riderMessages: a?.riderMessages ?? 0,
+      driverMessages: a?.driverMessages ?? 0,
+      calls: a?.calls ?? 0,
+      callsAnswered: a?.callsAnswered ?? 0,
+      callsMissed: a?.callsMissed ?? 0,
+      callMinutes: a ? Math.round((a.callSeconds / 60) * 10) / 10 : 0,
+      tripCodeLabel: CODE_LABEL[a?.tripCode ?? 'none'],
+      wrongCodes: a?.wrongCodes ?? 0,
+      unlockedBy: a?.unlockedBy ?? '',
+      stellarFare: txLink(a?.stellarFareTx ?? null),
+      stellarCommission: txLink(a?.stellarCommissionTx ?? null),
       tripId: t.tripId ?? '',
       riderName: cleanName(t.riderName),
       driverName: t.driverId ? cleanName(t.driverName, 'Unnamed driver') : '',
@@ -251,6 +285,66 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
       cancelReason: cleanText(t.cancelReason),
     };
   }), cut(items.length, total));
+  return items;
+}
+
+/** One row per Live call on the exported trips. */
+async function callsSheet(book: ExcelJS.Workbook, trips: TripRow[]): Promise<void> {
+  const tripIdOf = new Map(trips.map((t) => [t.id, t.tripId ?? '']));
+  const calls = await tripActivityClient.callsForRides(trips.map((t) => t.id)).catch(() => []);
+  const OUTCOME: Record<string, string> = { COMPLETED: 'Talked', MISSED: 'Missed', CANCELLED: 'Missed (caller hung up)', DECLINED: 'Declined', FAILED: 'Could not connect', RINGING: 'Ringing', ACTIVE: 'On the call' };
+  addSheet(book, 'Calls', [
+    { header: 'Time (Lagos)', key: 'time', width: 18 },
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'Caller', key: 'caller', width: 10 },
+    { header: 'Rung on', key: 'channel', width: 10 },
+    { header: 'Outcome', key: 'outcome', width: 22 },
+    { header: 'Talk seconds', key: 'durationSeconds', format: WHOLE, width: 13 },
+    { header: 'Ended because', key: 'endReason', width: 14 },
+    { header: 'Ride ID', key: 'rideId', width: 38 },
+  ], calls.map((c) => ({
+    time: lagosTime(c.createdAt.toISOString()),
+    tripId: tripIdOf.get(c.rideId) ?? '',
+    caller: c.callerRole === 'DRIVER' ? 'Driver' : 'Rider',
+    channel: c.calleeChannel === 'whatsapp' ? 'WhatsApp' : 'App',
+    outcome: OUTCOME[c.status] ?? c.status,
+    durationSeconds: c.durationSeconds ?? '',
+    endReason: c.endReason ?? '',
+    rideId: c.rideId,
+  })), 'Every Live call on the trips in this export. Talk seconds are from answering to hanging up.');
+}
+
+/** Every Stellar TESTNET transfer in the period: the grant evidence, with explorer links. */
+async function stellarSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, trips: TripRow[]): Promise<void> {
+  const from = new Date(`${f.from}T00:00:00+01:00`);
+  const to = new Date(Date.parse(`${f.to}T00:00:00+01:00`) + 24 * 60 * 60 * 1000);
+  const transfers = await tripActivityClient.stellarBetween(from, to).catch(() => []);
+  if (!transfers.length) return;
+  const tripIdOf = new Map(trips.map((t) => [t.id, t.tripId ?? '']));
+  const KIND: Record<string, string> = { ACCOUNT_OPEN: 'Account opened', TOPUP: 'Top-up', FARE: 'Trip fare', COMMISSION: 'Commission', WITHDRAWAL: 'Driver withdrawal' };
+  addSheet(book, 'Stellar', [
+    { header: 'Time (Lagos)', key: 'time', width: 18 },
+    { header: 'Kind', key: 'kind', width: 18 },
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'XLM', key: 'amountXlm', format: '#,##0.0000000', width: 14 },
+    { header: 'Naira value', key: 'amountNgn', format: NAIRA, width: 13 },
+    { header: 'Status', key: 'status', width: 11 },
+    { header: 'Transaction', key: 'tx', width: 16 },
+    { header: 'From', key: 'from', width: 58 },
+    { header: 'To', key: 'to', width: 58 },
+    { header: 'Memo', key: 'memo', width: 16 },
+  ], transfers.map((t) => ({
+    time: lagosTime(t.createdAt.toISOString()),
+    kind: KIND[t.kind] ?? t.kind,
+    tripId: t.rideId ? tripIdOf.get(t.rideId) ?? '' : '',
+    amountXlm: Number(t.amountXlm),
+    amountNgn: t.amountNgn === null ? '' : Number(t.amountNgn),
+    status: t.status,
+    tx: t.status === 'CONFIRMED' ? txLink(t.txHash) : '',
+    from: t.fromPublicKey,
+    to: t.toPublicKey,
+    memo: t.memo ?? '',
+  })), 'Stellar TESTNET only: test XLM, no real value. Naira is converted at the demo rate. Click a transaction to open it on stellar.expert.');
 }
 
 async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<void> {
@@ -401,7 +495,9 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       ...Array.from({ length: 24 }, (_, hour) => ({ header: clock(hour), key: `h${hour}`, width: 7, format: WHOLE })),
     ], byHour.grid.map((row, i) => ({ day: byHour.weekdays[i]?.label ?? '', ...Object.fromEntries(row.map((n, hour) => [`h${hour}`, n])) })));
 
-    await tripsSheet(book, f, 'all', contacts, 'Trips');
+    const trips = await tripsSheet(book, f, 'all', contacts, 'Trips');
+    await callsSheet(book, trips);
+    await stellarSheet(book, f, trips);
 
     const drivers = await all((offset) => adminAnalyticsClient.drivers(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
     addSheet(book, 'Drivers', [

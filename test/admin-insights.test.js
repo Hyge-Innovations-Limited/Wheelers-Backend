@@ -334,7 +334,7 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   assert.match(res.headers['content-disposition'], /wheelers-overview-2024-03-04-to-2024-03-10\.xlsx/);
   const book = new ExcelJS.Workbook();
   await book.xlsx.load(res.body);
-  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Hours', 'Weekdays', 'Hours by weekday', 'Trips', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
+  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Hours', 'Weekdays', 'Hours by weekday', 'Trips', 'Calls', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
   const trips = book.getWorksheet('Trips');
   assert.equal(trips.rowCount - 1, 6, 'one row per ride in the week');
   assert.equal(trips.getRow(1).font.bold, true);
@@ -526,5 +526,74 @@ test('EXCEL TRIPS · the team\'s layout: trip ID, clean names, plain status, tim
     assert.deepEqual(search.items.map((t) => t.id), [trip.id], 'the trips table finds a trip by its ID');
   } finally {
     await prisma.userActivityEvent.deleteMany({ where: { id: { in: events } } });
+  }
+});
+
+test('EXCEL TRIP ACTIVITY · chat, calls, the trip code and Stellar per trip; a Calls sheet and a Stellar sheet with explorer links', async () => {
+  // A week of its own: 13 to 19 May 2024.
+  const WEEK = { from: '2024-05-13', to: '2024-05-19' };
+  const at = (day, hh, mm = 0) => lagos(day, hh, mm);
+  const long = await ride({ status: 'COMPLETED', channel: 'WHATSAPP', pickup: YABA, dest: ISLAND, fare: 20000, createdAt: at('2024-05-14', 9), completedAt: at('2024-05-14', 14, 5) });
+  await prisma.ride.update({ where: { id: long.id }, data: {
+    startedAt: at('2024-05-14', 10), tripCode: '4821', tripCodeWrongTries: 2, tripCodeUnlockedBy: 'Support Ada', tripCodeUnlockedAt: at('2024-05-14', 9, 58),
+  } });
+  const short = await ride({ status: 'COMPLETED', channel: 'APP', pickup: YABA, dest: ISLAND, fare: 3000, createdAt: at('2024-05-15', 9), completedAt: at('2024-05-15', 9, 40) });
+  await prisma.ride.update({ where: { id: short.id }, data: { startedAt: at('2024-05-15', 9, 10), tripCode: '1111', tripCodeVerifiedAt: at('2024-05-15', 9, 10) } });
+
+  const rows = { chat: [], calls: [], stellar: [] };
+  const chat = async (senderId, senderRole, kind = 'text') => rows.chat.push((await prisma.chatMessage.create({ data: { rideId: long.id, senderId, senderRole, content: 'hi', kind, createdAt: at('2024-05-14', 9, 30) } })).id);
+  await chat(rider.id, 'RIDER');
+  await chat(rider.id, 'RIDER');
+  await chat(driver.userId, 'DRIVER');
+  await chat(driver.userId, 'DRIVER', 'call');   // a call line is not a message
+  const call = async (data) => rows.calls.push((await prisma.tripCall.create({ data: { rideId: long.id, callerId: driver.userId, callerRole: 'DRIVER', calleeId: rider.id, ...data } })).id);
+  await call({ calleeChannel: 'whatsapp', status: 'MISSED', endReason: 'no_answer', createdAt: at('2024-05-14', 9, 40), endedAt: at('2024-05-14', 9, 41) });
+  await call({ calleeChannel: 'whatsapp', status: 'COMPLETED', endReason: 'hung_up', createdAt: at('2024-05-14', 9, 45), answeredAt: at('2024-05-14', 9, 45), endedAt: at('2024-05-14', 9, 46, 35), durationSeconds: 95 });
+  const hash = (c) => c.repeat(64);
+  const transfer = async (data) => rows.stellar.push((await prisma.stellarTransfer.create({ data: { fromPublicKey: `G${'A'.repeat(55)}`, toPublicKey: `G${'B'.repeat(55)}`, status: 'CONFIRMED', createdAt: at('2024-05-14', 14, 6), ...data } })).id);
+  await transfer({ kind: 'FARE', reference: `fare:${long.id}`, rideId: long.id, amountXlm: 20, amountNgn: 20000, memo: 'WH-TEST', txHash: hash('a') });
+  await transfer({ kind: 'COMMISSION', reference: `commission:${long.id}`, rideId: long.id, amountXlm: 1.205, amountNgn: 1205, memo: 'WH-TEST', txHash: hash('b') });
+  await transfer({ kind: 'TOPUP', reference: `topup:excel-${long.id}`, amountXlm: 5, amountNgn: 5000, txHash: hash('c'), createdAt: at('2024-05-13', 8) });
+
+  try {
+    const res = await get(`/admin/insights/export?${new URLSearchParams({ ...WEEK, scope: 'overview' })}`, { raw: true });
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(res.body);
+    const sheet = book.getWorksheet('Trips');
+    const headers = sheet.getRow(1).values.filter(Boolean);
+    const col = (name) => headers.indexOf(name) + 1;
+    const rowFor = (rideId) => {
+      for (let i = 2; i <= sheet.rowCount; i += 1) if (sheet.getRow(i).getCell(col('Ride ID')).value === rideId) return sheet.getRow(i);
+      return null;
+    };
+    const cell = (row, name) => row.getCell(col(name)).value;
+
+    const l = rowFor(long.id);
+    assert.equal(cell(l, 'Long trip (3h+)'), 'yes', 'four hours from start to end');
+    assert.deepEqual([cell(l, 'Chat: rider messages'), cell(l, 'Chat: driver messages')], [2, 1], 'call lines are not messages');
+    assert.deepEqual([cell(l, 'Calls'), cell(l, 'Calls answered'), cell(l, 'Calls missed'), cell(l, 'Call minutes')], [2, 1, 1, 1.6]);
+    assert.deepEqual([cell(l, 'Trip code'), cell(l, 'Wrong codes'), cell(l, 'Unlocked by')], ['Unlocked by support', 2, 'Support Ada']);
+    assert.deepEqual(cell(l, 'Stellar fare tx'), { text: `${hash('a').slice(0, 10)}…`, hyperlink: `https://stellar.expert/explorer/testnet/tx/${hash('a')}` });
+    assert.equal(cell(l, 'Stellar commission tx').hyperlink, `https://stellar.expert/explorer/testnet/tx/${hash('b')}`);
+
+    const s = rowFor(short.id);
+    assert.deepEqual([cell(s, 'Long trip (3h+)'), cell(s, 'Trip code'), cell(s, 'Calls'), cell(s, 'Stellar fare tx')], ['', 'Entered', 0, '']);
+
+    const calls = book.getWorksheet('Calls');
+    const ch = calls.getRow(1).values.filter(Boolean);
+    const callRows = calls.getSheetValues().filter(Boolean).slice(1).filter((r) => r[ch.indexOf('Caller') + 1]);
+    assert.equal(callRows.length, 2);
+    assert.deepEqual(callRows.map((r) => [r[ch.indexOf('Caller') + 1], r[ch.indexOf('Rung on') + 1], r[ch.indexOf('Outcome') + 1]]),
+      [['Driver', 'WhatsApp', 'Missed'], ['Driver', 'WhatsApp', 'Talked']]);
+
+    const stellar = book.getWorksheet('Stellar');
+    const sh = stellar.getRow(1).values.filter(Boolean);
+    const stellarRows = stellar.getSheetValues().filter(Boolean).slice(1).filter((r) => r[sh.indexOf('Kind') + 1]);
+    assert.deepEqual(stellarRows.map((r) => r[sh.indexOf('Kind') + 1]), ['Top-up', 'Trip fare', 'Commission'], 'every transfer in the week, oldest first');
+    assert.ok(stellarRows.every((r) => r[sh.indexOf('Transaction') + 1]?.hyperlink?.startsWith('https://stellar.expert/explorer/testnet/tx/')));
+  } finally {
+    await prisma.stellarTransfer.deleteMany({ where: { id: { in: rows.stellar } } });
+    await prisma.tripCall.deleteMany({ where: { id: { in: rows.calls } } });
+    await prisma.chatMessage.deleteMany({ where: { id: { in: rows.chat } } });
   }
 });

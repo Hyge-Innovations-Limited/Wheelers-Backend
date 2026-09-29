@@ -27,6 +27,8 @@ export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';
 export { tripCodeClient }       from './clients/trip-code.client';
 export { stellarClient }        from './clients/stellar.client';
+export { tripActivityClient }   from './clients/trip-activity.client';
+export type { TripActivity }     from './clients/trip-activity.client';
 export type { StellarTransferKind, StellarTransferStatus } from './clients/stellar.client';
 export type { TripCallStatus } from './clients/trip-call.client';
 export { riderKycClient }       from './clients/rider-kyc.client';
