@@ -47,6 +47,7 @@ import {
   getAcceptedBid,
   storeLastCompletedRide,
   getLastBatch,
+  takeChatCancellation,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
@@ -966,7 +967,9 @@ export async function handleRideEvent(
     // Notify rider
     // A search replaced by the rider's own newer request: clean up, say nothing — they asked for it.
     const superseded = event.cancelledBy === 'system' && /newer request/i.test(event.reason ?? '');
-    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
+    // Cancelled in the chat with a reason: that chat gets one message, reason and refund together.
+    const toldInChat = await takeChatCancellation(deps.redisClient, event.rideId).catch(() => null);
+    const phone = toldInChat?.phone ?? await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       if (!superseded) {
         await sendRideCancelledNotification(deps.whatsappNotifier, phone, {
@@ -974,6 +977,7 @@ export async function handleRideEvent(
           cancelledBy: event.cancelledBy,
           refundedNgn: holdRelease?.holdAmountNgn,
           balanceNgn: holdRelease ? Number(holdRelease.wallet.balanceNgn) : undefined,
+          riderReason: toldInChat?.reason,
         }).catch(() => {});
       }
       if (driverBailed) {

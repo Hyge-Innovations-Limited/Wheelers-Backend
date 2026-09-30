@@ -251,6 +251,28 @@ export async function isWhatsappRider(
   return activeRide !== null;
 }
 
+/**
+ * A rider cancelled in the chat and gave a reason: kept for the one message
+ * that follows (reason + refund together), sent once the cancellation and
+ * the refund have gone through.
+ */
+const cancelChatKey = (rideId: string) => `whatsapp:cancel:${rideId}`;
+
+export async function rememberChatCancellation(redis: RedisClient, rideId: string, phone: string, reason: string): Promise<void> {
+  await redis.set(cancelChatKey(rideId), JSON.stringify({ phone, reason }), 15 * 60);
+}
+
+export async function takeChatCancellation(redis: RedisClient, rideId: string): Promise<{ phone: string; reason: string } | null> {
+  const raw = await redis.get(cancelChatKey(rideId)).catch(() => null);
+  if (!raw) return null;
+  await redis.del(cancelChatKey(rideId)).catch(() => undefined);
+  try {
+    return JSON.parse(raw) as { phone: string; reason: string };
+  } catch {
+    return null;
+  }
+}
+
 const userLookupKey = (phone: string) => `whatsapp:phone:${phone.replace(/^\+/, '')}:user`;
 
 /** Both directions: the consumer needs user → phone; the reply sender needs phone → user. */

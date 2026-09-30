@@ -693,6 +693,8 @@ export async function sendRideCancelledNotification(
     /** Money that was held for this ride and is now back in the wallet. */
     refundedNgn?: number;
     balanceNgn?: number;
+    /** The rider's own reason, when they cancelled in the chat: it leads the message. */
+    riderReason?: string;
   },
 ): Promise<void> {
   // A rider must never see a raw enum, and after paying they must be told —
@@ -705,7 +707,7 @@ export async function sendRideCancelledNotification(
         ? 'This ride was cancelled.'
         : 'Your ride has been cancelled.';
 
-  const lines = [`${who}`];
+  const lines = details.riderReason ? ['Ride cancelled.', `Reason: ${details.riderReason}`] : [`${who}`];
   if (details.refundedNgn && details.refundedNgn > 0) {
     lines.push(
       '',

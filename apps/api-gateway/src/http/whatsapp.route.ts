@@ -15,7 +15,7 @@ import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '.
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
-import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide } from '../whatsapp-flows/bid-state';
+import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { CHANGE_PRICE_REPLY_ID, parseOfferReplyId } from '../whatsapp-flows/whatsapp-notifier';
@@ -327,6 +327,8 @@ async function handleIncomingMetaMessage(
       }
 
       if (activeRideId) {
+        // One message, not two: the reason goes out with the refund, once it is through.
+        await rememberChatCancellation(deps.redisClient, activeRideId, phone, reason).catch(() => undefined);
         const cancelledRide = await rideClient.findById(activeRideId).catch(() => null);
         const cancelEvent = RideCancelledEvent.parse({
           eventType: 'RIDE_CANCELLED',
@@ -347,12 +349,16 @@ async function handleIncomingMetaMessage(
       await clearPendingRoute(deps.redisClient, user.id);
       await clearPendingLocation(deps.redisClient, user.id);
 
-      const reply = [
-        activeRideId ? 'Ride cancelled.' : 'Booking cancelled.',
-        `Reason: ${reason}`,
-        '',
-        'Any fare held for this ride will be returned to your wallet.',
-      ].join('\n');
+      if (activeRideId) {
+        // "Ride cancelled. Reason … Your ₦… is back in your wallet" arrives as
+        // ONE message once the refund is done (sendRideCancelledNotification).
+        await appendWhatsappConversation(deps.redisClient, phone, [
+          { role: 'user', content: incomingMessage },
+          { role: 'assistant', content: `[ride cancelled, reason: ${reason}; the refund message follows]` },
+        ]);
+        return;
+      }
+      const reply = ['Booking cancelled.', `Reason: ${reason}`].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
