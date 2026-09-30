@@ -1,7 +1,7 @@
 import { formatTripId } from '@wheleers/config';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
-import { driverLocationClient, userClient } from '@wheleers/db';
+import { driverClient, driverLocationClient, rideClient, userClient } from '@wheleers/db';
 import type { ActiveRide, MapDriverRow } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
@@ -360,8 +360,33 @@ export async function handleLiveNudgeRoute(
       return;
     }
 
+    // About a ride: the ride itself goes to this driver, however far they are
+    // (the dispatch panel suggests drivers well outside the 5 km match radius,
+    // so a push alone left them with nothing to accept). Only a ride still
+    // looking for a driver, and only to an approved driver.
+    if (rideId) {
+      const ride = await rideClient.findById(rideId).catch(() => null);
+      if (!ride || ride.driverId || (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING')) {
+        sendJson(res, 409, { error: 'This ride is no longer looking for a driver.', code: 'RIDE_NOT_SEARCHING' });
+        return;
+      }
+      const driver = await driverClient.findByUserId(row.userId).catch(() => null);
+      if (driver?.kycStatus !== 'APPROVED') {
+        sendJson(res, 409, { error: 'This driver has not been approved yet.', code: 'KYC_REQUIRED' });
+        return;
+      }
+      await deps.publisher.publishRideEvent({
+        eventType: 'RIDE_DISPATCH_DIRECTED',
+        rideId,
+        driverId,
+        driverUserId: row.userId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const alreadyOnline = row.status === 'ONLINE';
-    await deps.publisher.publishNotificationEvent({
+    // An online driver sent a ride gets it with the ride's own notification: no second push.
+    if (!(rideId && alreadyOnline)) await deps.publisher.publishNotificationEvent({
       eventType: 'PUSH_SEND',
       notificationId: randomUUID(),
       userId: row.userId,
@@ -369,7 +394,8 @@ export async function handleLiveNudgeRoute(
       body: alreadyOnline
         ? 'A rider close to you is waiting. Open Wheelers to send your offer.'
         : 'A rider close to you is waiting. Go online to take it.',
-      data: { type: 'dispatch_nudge', ...(rideId ? { rideId } : {}) },
+      // online: the app opens the offers (Active); offline: Home, where Go online is.
+      data: { type: 'dispatch_nudge', online: alreadyOnline ? '1' : '0', ...(rideId ? { rideId } : {}) },
       priority: 'high',
       timestamp: new Date().toISOString(),
     });

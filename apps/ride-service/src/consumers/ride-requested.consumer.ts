@@ -8,6 +8,7 @@ import {
   type RideCancelledEvent,
   type RideCounterOfferEvent,
   type RideRiderCounterOfferEvent,
+  type RideDispatchDirectedEvent,
   type RideDriverRejectedEvent,
   type RideOfferAcceptedEvent,
   type RideRouteUpdateRequestedEvent,
@@ -17,6 +18,7 @@ import {
 import type { PendingRideMatch, RideServiceState } from '../index';
 import type { RideEventsProducer } from '../producers/ride-events.producer';
 import { matchDriver } from '../handlers/match-driver.handler';
+import { haversineKm } from '../utils/geo';
 
 /** How long one offer card rings on a driver's phone. */
 const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
@@ -53,6 +55,11 @@ export function createRideRequestedConsumer(params: {
 
       if (event.eventType === 'RIDE_RIDER_COUNTER_OFFER') {
         await handleRiderCounterOffer(event);
+        return;
+      }
+
+      if (event.eventType === 'RIDE_DISPATCH_DIRECTED') {
+        await handleDispatchDirected(event);
         return;
       }
 
@@ -303,12 +310,57 @@ export function createRideRequestedConsumer(params: {
     console.log(`[ride-service] counter-offer on ride ${event.rideId} from driver ${event.driverId}: ₦${event.counterOfferNgn}`);
   }
 
+  /**
+   * An operator sent this ride to one driver (admin live map, "Nudge"). They
+   * join the ride's drivers however far away they are, so they also get price
+   * changes. Online now: the offer goes to them at once. Offline: it is held,
+   * and sent the moment they go online (onDriverOnline).
+   */
+  async function handleDispatchDirected(event: RideDispatchDirectedEvent): Promise<void> {
+    const pending = findPendingForRideId(event.rideId) ?? await rebuildPending(event.rideId);
+    if (!pending || state.assignedDriversByRideId.has(event.rideId)) return;
+    (pending.directedDriverIds ??= new Set()).add(event.driverId);
+    // Sent on purpose by a person: a driver who passed on it earlier may still take it now.
+    pending.attemptedDriverIds.delete(event.driverId);
+
+    const row = await driverClient.findById(event.driverId).catch(() => null);
+    if (!row || row.status !== 'ONLINE' || row.lat === null || row.lng === null) {
+      console.log(`[ride-service] ride ${event.rideId} held for driver ${event.driverId} until they go online`);
+      return;
+    }
+    const driver = state.onlineDrivers.get(event.driverId) ?? {
+      driverId: row.id,
+      userId: row.userId,
+      lat: row.lat,
+      lng: row.lng,
+      vehiclePlate: row.vehiclePlate ?? '',
+      vehicleModel: row.vehicleModel ?? '',
+    };
+    const withDistance = { ...driver, distanceKm: haversineKm(pending.rideRequested.pickup.lat, pending.rideRequested.pickup.lng, driver.lat, driver.lng) };
+    // A new list, never a push into one an offer already went out with.
+    if (!pending.candidates.some((c) => c.driverId === event.driverId)) pending.candidates = [...pending.candidates, withDistance];
+    await rideEventsProducer.broadcastRideOffer({
+      drivers: [withDistance],
+      rideRequested: pending.rideRequested,
+      expiresAt: new Date(Date.now() + OFFER_TTL_MS),
+      group: pending.group,
+    });
+    console.log(`[ride-service] ride ${event.rideId} sent by an operator to driver ${event.driverId} (${withDistance.distanceKm.toFixed(1)}km away)`);
+  }
+
   async function handleRiderCounterOffer(event: RideRiderCounterOfferEvent): Promise<void> {
     // No auction in memory for a live ride means the service restarted mid-search.
     // Rebuild it from the database — silently dropping the new price left drivers
     // on the old one while the rider's form said "Bid updated".
     const pending = findPendingForRideId(event.rideId) ?? await rebuildPending(event.rideId);
     if (!pending) return;
+
+    // The ride keeps the price the rider is offering NOW: the gateway checks a
+    // driver's acceptance against it, and a search rebuilt after a restart
+    // re-offers it. It used to stay at the first price.
+    await rideClient.updateRiderOffer(event.rideId, event.counterOfferNgn).catch((err) => {
+      console.warn('[ride-service] could not save the rider\'s new price', { rideId: event.rideId, error: (err as any)?.message ?? err });
+    });
 
     // A group member countering on THEIR seat: update that seat's offer and
     // re-broadcast so every driver's card shows the new per-seat price. The

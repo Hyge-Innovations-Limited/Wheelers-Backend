@@ -282,6 +282,17 @@ export const rideClient = {
       return ride;
     }),
 
+  /**
+   * The rider changed their price during the search: the ride keeps the
+   * CURRENT price, so every check (and a search rebuilt after a restart) uses
+   * it, never the first one. Only while the search is open.
+   */
+  updateRiderOffer: (rideId: string, riderOfferNgn: number) =>
+    prisma.ride.updateMany({
+      where: { id: rideId, status: { in: ['REQUESTED', 'MATCHING'] } },
+      data:  { riderOfferNgn: new Prisma.Decimal(riderOfferNgn) },
+    }),
+
   markMatching: (rideId: string) =>
     prisma.ride.update({
       where: { id: rideId },

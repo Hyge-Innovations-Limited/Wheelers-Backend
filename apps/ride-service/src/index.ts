@@ -101,6 +101,11 @@ export type PendingRideMatch = {
   counterOfferDrivers: Map<string, CounterOfferDriverInfo>;
   /** Only set for group rides. */
   group?: PendingRideGroupInfo;
+  /**
+   * Drivers an operator sent this ride to (admin nudge). They get it however
+   * far away they are: at once when online, the moment they go online if not.
+   */
+  directedDriverIds?: Set<string>;
 };
 
 export type RideParticipantState = {
@@ -212,7 +217,8 @@ async function bootstrap(): Promise<void> {
           driver.lat,
           driver.lng,
         );
-        if (dist <= radiusKm) {
+        // In range, or sent to this driver by an operator (however far).
+        if (dist <= radiusKm || pending.directedDriverIds?.has(event.driverId)) {
           if (!pending.candidates.some((c) => c.driverId === event.driverId)) {
             pending.candidates.push(driver);
           }

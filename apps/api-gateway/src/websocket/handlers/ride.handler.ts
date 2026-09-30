@@ -77,7 +77,7 @@ async function assertRideOpenForBids(rideId: string) {
   return ride;
 }
 
-async function assertOfferWithinBand(
+export async function assertOfferWithinBand(
   rideId: string,
   offerNgn: number,
   who: 'rider' | 'driver',
@@ -95,6 +95,9 @@ async function assertOfferWithinBand(
   }
 
   const { suggestedFareNgn, distanceKm, riderOfferNgn } = context;
+  // A driver taking the rider's own price is never refused, however high: the
+  // typo guard below is for a counter-bid the driver typed, not for yes.
+  if (who === 'driver' && riderOfferNgn !== undefined && offerNgn === riderOfferNgn) return;
   // A driver is measured against what the rider is offering, never the suggested fare:
   // any amount is a bid, and accepting a rider's generous price must always go through.
   const validation =

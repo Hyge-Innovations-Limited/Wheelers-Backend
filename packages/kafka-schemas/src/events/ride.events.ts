@@ -278,6 +278,16 @@ export const RideRiderCounterOfferEvent = BaseRideEvent.extend({
   counterOfferNgn:  z.number(),
 });
 
+// Fired by api-gateway when an operator nudges a driver about one ride (admin
+// live map). That driver gets the ride's offer however far they are: now if
+// online, the moment they go online if not.
+// Consumed by: ride-service.
+export const RideDispatchDirectedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_DISPATCH_DIRECTED'),
+  driverId:     z.string().uuid(),
+  driverUserId: z.string().uuid(),
+});
+
 // Fired by ride-service after 3 minutes with no counter-offers.
 // Consumed by: api-gateway (relay to rider as ride:bid_timeout).
 export const RideBidTimeoutEvent = BaseRideEvent.extend({
@@ -304,6 +314,7 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideOfferSentEvent,
   RideCounterOfferEvent,
   RideRiderCounterOfferEvent,
+  RideDispatchDirectedEvent,
   RideOfferAcceptedEvent,
   RideDriverAssignedEvent,
   RideRouteUpdatedEvent,
@@ -332,6 +343,7 @@ export type RideCompletedEvent       = z.infer<typeof RideCompletedEvent>;
 export type RideCancelledEvent       = z.infer<typeof RideCancelledEvent>;
 export type RideDriverRejectedEvent  = z.infer<typeof RideDriverRejectedEvent>;
 export type RideRiderCounterOfferEvent = z.infer<typeof RideRiderCounterOfferEvent>;
+export type RideDispatchDirectedEvent = z.infer<typeof RideDispatchDirectedEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
 export type ChatMessageSentEvent     = z.infer<typeof ChatMessageSentEvent>;
 export type RideEvent                = z.infer<typeof RideEvent>;

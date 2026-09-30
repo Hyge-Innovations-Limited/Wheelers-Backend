@@ -75,12 +75,17 @@ function fakeHttp(method, { token, adminKey, body } = {}) {
 
 function adminDeps() {
   const pushes = [];
+  const rideEvents = [];
   return {
     pushes,
+    rideEvents,
     deps: {
       adminApiKey: ADMIN_KEY,
       jwtSecret: JWT_SECRET,
-      publisher: { publishNotificationEvent: async (event) => { pushes.push(event); } },
+      publisher: {
+        publishNotificationEvent: async (event) => { pushes.push(event); },
+        publishRideEvent: async (event) => { rideEvents.push(event); },
+      },
     },
   };
 }
@@ -338,7 +343,7 @@ test('dispatch ranks who to ring: on shift first, then nearest; never someone on
 test('a nudge pushes the driver, is logged, and cannot be spammed', async () => {
   const ride = await makeRide();
   const { driverId, userId } = await makeDriver();
-  const { deps, pushes } = adminDeps();
+  const { deps, pushes, rideEvents } = adminDeps();
 
   const noPhone = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [driverId], body: {} });
   assert.equal(noPhone.status, 409, '"sent" must never be claimed for a push that cannot arrive');
@@ -353,7 +358,9 @@ test('a nudge pushes the driver, is logged, and cannot be spammed', async () => 
   assert.equal(pushes[0].userId, userId);
   assert.equal(pushes[0].data.type, 'dispatch_nudge');
   assert.equal(pushes[0].data.rideId, ride.id);
+  assert.equal(pushes[0].data.online, '0');
   assert.match(pushes[0].body, /Go online/);
+  assert.deepEqual(rideEvents.map((e) => [e.eventType, e.rideId, e.driverId, e.driverUserId]), [['RIDE_DISPATCH_DIRECTED', ride.id, driverId, userId]], 'the ride itself is sent to this driver, not only a push');
 
   const again = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [driverId], body: {} });
   assert.equal(again.status, 429);
@@ -368,6 +375,33 @@ test('a nudge pushes the driver, is logged, and cannot be spammed', async () => 
   await registerPhone(onTrip.userId);
   const busy = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [onTrip.driverId], body: {} });
   assert.equal(busy.status, 409);
+});
+
+test('a nudge about a ride: an online driver gets the ride (no second push); a ride already taken, or an unapproved driver, is refused', async () => {
+  const ride = await makeRide();
+  const online = await makeDriver({ status: 'ONLINE' });
+  await registerPhone(online.userId);
+  const { deps, pushes, rideEvents } = adminDeps();
+
+  const sent = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [online.driverId], body: { rideId: ride.id } });
+  assert.equal(sent.status, 200);
+  assert.equal(rideEvents.length, 1, 'the ride goes to them');
+  assert.equal(pushes.length, 0, "the ride's own notification is the one they get");
+
+  const unapproved = await makeDriver({ status: 'ONLINE' });
+  await prisma.driver.update({ where: { id: unapproved.driverId }, data: { kycStatus: 'SUBMITTED' } });
+  await registerPhone(unapproved.userId);
+  const refused = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [unapproved.driverId], body: { rideId: ride.id } });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.code, 'KYC_REQUIRED');
+
+  await prisma.ride.update({ where: { id: ride.id }, data: { status: 'CANCELLED' } });
+  const other = await makeDriver();
+  await registerPhone(other.userId);
+  const gone = await admin(liveMap.handleLiveNudgeRoute, 'POST', { deps, args: [other.driverId], body: { rideId: ride.id } });
+  assert.equal(gone.status, 409);
+  assert.equal(gone.body.code, 'RIDE_NOT_SEARCHING');
+  assert.equal(rideEvents.length, 1, 'nothing else was sent');
 });
 
 test('a call is logged with its outcome and shows up on the driver', async () => {
