@@ -15,6 +15,7 @@ import { logActivity } from '../analytics/log-activity';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { sendEmail } from '../email/resend';
 import { buildWelcomeDriverEmail } from '../email/templates';
+import { fillMissingName, nameFromEmail } from '../auth/display-name';
 
 interface AuthRouteDeps {
   jwtSecret: string;
@@ -162,7 +163,7 @@ export async function handleUsernamePasswordSignupRoute(
         const claimed = await userClient.updateAuthIdentity(existingByEmail.id, {
           passwordHash: await hashPassword(password),
           username: username ?? undefined,
-          name: existingByEmail.name ? undefined : name,
+          name: existingByEmail.name ? undefined : name ?? nameFromEmail(email) ?? undefined,
           phone: existingByEmail.phone ? undefined : phone,
         });
         if (
@@ -200,7 +201,8 @@ export async function handleUsernamePasswordSignupRoute(
       passwordHash,
       email,
       role: ROLE_MAP[role],
-      name,
+      // No name typed: one from the email, never a blank "Driver".
+      name: name ?? nameFromEmail(email) ?? undefined,
       phone,
     });
 
@@ -318,6 +320,8 @@ export async function handleUsernamePasswordSigninRoute(
       sendJson(res, 401, { error: 'Invalid email or password.' });
       return;
     }
+
+    user = await fillMissingName(user);
 
     logActivity({
       userId: user.id,

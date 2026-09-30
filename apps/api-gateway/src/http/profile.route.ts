@@ -4,6 +4,7 @@ import { authenticateHttpUser } from "./authenticate";
 import { readJsonBody, sendJson } from "./utils";
 import { getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
+import { fillMissingName } from '../auth/display-name';
 
 interface ProfileRouteDeps {
   jwtSecret: string;
@@ -89,7 +90,8 @@ export async function handleGetCurrentProfileRoute(
   deps: ProfileRouteDeps,
 ): Promise<void> {
   try {
-    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    // Accounts made before names were filled in get one the next time the app asks.
+    const user = await fillMissingName(await authenticateHttpUser(req, deps.jwtSecret));
 
     sendJson(res, 200, {
       user: serializeUser(user),

@@ -9,6 +9,7 @@ import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
 import { sendEmail } from '../email/resend';
 import { buildWelcomeDriverEmail } from '../email/templates';
+import { fillMissingName, nameFromEmail } from '../auth/display-name';
 
 interface SocialAuthDeps {
   jwtSecret: string;
@@ -308,13 +309,14 @@ async function findOrCreateSocialUser(
 
   if (existing) {
     userId = existing.id;
-    userRecord = existing;
+    // An account made without a name (e.g. by email) takes Google's / Apple's now, or one from the email.
+    userRecord = await fillMissingName(existing, name);
   } else {
     const created = await userClient.create({
       privyDid,
       email: email ?? undefined,
       role,
-      name: name ?? undefined,
+      name: name?.trim() || nameFromEmail(email) || undefined,
     });
     userId = created.id;
     userRecord = created;
