@@ -18,10 +18,10 @@ export interface StellarConfig {
   masterSeed: Buffer;
   /** Used only when no live price can be had at all. Null: none. */
   fallbackNgnPerXlm: number | null;
-  /** Friendbot opens new accounts with this much test XLM. */
+  /** What Friendbot gives an account it opens (operations, and its top-ups). */
   friendbotXlm: string;
-  /** If Friendbot will not, operations opens the account with this much instead. */
-  fallbackStartingXlm: string;
+  /** Every rider and driver account is opened by operations with this much test XLM. */
+  startingXlm: string;
   explorerBase: string;
 }
 
@@ -50,7 +50,7 @@ export function stellarConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Stel
     masterSeed: Buffer.from(seedHex, 'hex'),
     fallbackNgnPerXlm: fallback,
     friendbotXlm: '10000',
-    fallbackStartingXlm: '100',
+    startingXlm: '100',
     explorerBase: 'https://stellar.expert/explorer/testnet',
   };
 }

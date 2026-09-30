@@ -114,12 +114,14 @@ function fakeNetwork() {
       if (!source) throw new StellarSubmitError('no source', ['tx_no_source_account'], true);
       if (BigInt(inner.sequence) !== source.sequence + 1n) throw new StellarSubmitError('bad seq', ['tx_bad_seq'], true);
       for (const op of inner.operations) {
+        if (op.type === 'accountMerge') continue;
         const amount = Number(op.type === 'createAccount' ? op.startingBalance : op.amount);
         if (source.balance - amount < 1) throw new StellarSubmitError('underfunded', ['tx_failed', 'op_underfunded'], true);
         if (op.type === 'payment' && !accounts.has(op.destination)) throw new StellarSubmitError('no destination', ['tx_failed', 'op_no_destination'], true);
       }
       source.sequence += 1n;
       for (const op of inner.operations) {
+        if (op.type === 'accountMerge') { accounts.get(op.destination).balance += source.balance; accounts.delete(inner.source); continue; }
         const amount = Number(op.type === 'createAccount' ? op.startingBalance : op.amount);
         source.balance -= amount;
         if (op.type === 'createAccount') accounts.set(op.destination, { sequence: 5000n, balance: amount });
@@ -178,9 +180,9 @@ test('its own ledger: accounts opened by Friendbot, the fare and commission in X
   const rider = await prisma.stellarAccount.findUnique({ where: { userId: riderId } });
   const driver = await prisma.stellarAccount.findUnique({ where: { userId: driverId } });
   const opened = await prisma.stellarTransfer.findMany({ where: { kind: 'ACCOUNT_OPEN', toPublicKey: { in: [rider.publicKey, driver.publicKey] } } });
-  assert.deepEqual(opened.map((o) => [o.fromPublicKey, o.status, Boolean(o.txHash)]), [['FRIENDBOT', 'CONFIRMED', true], ['FRIENDBOT', 'CONFIRMED', true]], 'Friendbot opened both, with its transaction');
-  assert.equal(balance(net, rider.publicKey), 10000 - 10);
-  assert.equal(balance(net, driver.publicKey), 10000 + 10 - 1.75);
+  assert.deepEqual(opened.map((o) => [o.fromPublicKey, o.status, Number(o.amountXlm), Boolean(o.txHash)]), [[opsKey, 'CONFIRMED', 100, true], [opsKey, 'CONFIRMED', 100, true]], 'operations opened both with 100 XLM, with its transaction');
+  assert.equal(balance(net, rider.publicKey), 100 - 10);
+  assert.equal(balance(net, driver.publicKey), 100 + 10 - 1.75);
 
   const transfers = await prisma.stellarTransfer.findMany({ where: { rideId: ride.rideId }, orderBy: { createdAt: 'asc' } });
   assert.deepEqual(transfers.map((x) => [x.kind, x.status, Number(x.amountXlm), Number(x.amountNgn), Number(x.rateNgnPerXlm)]),
@@ -209,7 +211,7 @@ test('its own ledger: accounts opened by Friendbot, the fare and commission in X
   assert.ok(!columns.some((c) => /secret|private|seed|mnemonic/i.test(c.column_name)));
 });
 
-test('a rider short of test XLM is skipped (and so is the commission), never topped up; Friendbot down means operations opens the account', async (t) => {
+test('a rider short of test XLM is skipped (and so is the commission), never topped up; Friendbot down does not stop operations opening an account', async (t) => {
   if (skip) return t.skip(skip);
   const net = fakeNetwork();
   const stellar = createStellarService({ config, network: net, rates });
@@ -257,19 +259,31 @@ test('everyone gets an account by default, no trip needed: a few at a time, driv
   for (const userId of among) {
     const row = await prisma.stellarAccount.findUnique({ where: { userId } });
     assert.ok(row.openedAt, 'open on the network');
-    assert.equal(balance(net, row.publicKey), 10000, 'with Friendbot\'s test XLM');
+    assert.equal(balance(net, row.publicKey), 100, 'with 100 test XLM');
   }
 
-  // Friendbot down and operations low: the opening waits rather than draining operations.
+  // Operations running low is topped up from Friendbot through a throwaway account, merged in.
+  net.accounts.get(opsKey).balance = 600;
+  const topped = await user('RIDER');
+  await stellar.openForEveryone({ among: [topped] });
+  await drain(stellar, 3);
+  assert.ok((await prisma.stellarAccount.findUnique({ where: { userId: topped } })).openedAt);
+  const refill = await prisma.stellarTransfer.findFirst({ where: { kind: 'OPS_REFILL', toPublicKey: opsKey }, orderBy: { createdAt: 'desc' } });
+  assert.deepEqual([refill.status, Number(refill.amountXlm), Boolean(refill.txHash)], ['CONFIRMED', 10000, true]);
+  assert.ok(Math.abs(balance(net, opsKey) - (600 + 10000 - 100)) < 0.01, 'operations +10,000, −100 for the account');
+  assert.equal(net.accounts.has(refill.fromPublicKey), false, 'the throwaway account is gone');
+  assert.equal(await prisma.stellarAccount.count({ where: { publicKey: refill.fromPublicKey } }), 0, 'and never stored');
+
+  // Friendbot down and operations nearly empty: the opening waits rather than draining operations.
   net.friendbotDown = true;
-  net.accounts.get(opsKey).balance = 1050;
+  net.accounts.get(opsKey).balance = 50;
   const late = await user('RIDER');
   await stellar.openForEveryone({ among: [late] });
   await drain(stellar, 3);
   const lateRow = await prisma.stellarAccount.findUnique({ where: { userId: late } });
   const opening = await prisma.stellarTransfer.findUnique({ where: { reference: `open:${lateRow.publicKey}` } });
-  assert.deepEqual([opening.status, lateRow.openedAt, balance(net, opsKey)], ['PENDING', null, 1050]);
-  assert.match(opening.lastError, /Friendbot is not answering/);
+  assert.deepEqual([opening.status, lateRow.openedAt, balance(net, opsKey)], ['PENDING', null, 50]);
+  assert.match(opening.lastError, /operations is low on test XLM/);
   net.friendbotDown = false;
   await drain(stellar, 2);
   assert.ok((await prisma.stellarAccount.findUnique({ where: { userId: late } })).openedAt, 'opened once Friendbot is back');

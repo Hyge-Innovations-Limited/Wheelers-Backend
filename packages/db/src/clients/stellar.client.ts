@@ -6,7 +6,7 @@ import { prisma } from '../prisma';
  * addresses only: secrets are derived on the server and never stored.
  */
 
-export type StellarTransferKind = 'ACCOUNT_OPEN' | 'TOPUP' | 'FARE' | 'COMMISSION' | 'WITHDRAWAL';
+export type StellarTransferKind = 'ACCOUNT_OPEN' | 'OPS_REFILL' | 'TOPUP' | 'FARE' | 'COMMISSION' | 'WITHDRAWAL';
 export type StellarTransferStatus = 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' | 'SKIPPED';
 
 function isUniqueViolation(error: unknown): boolean {
@@ -68,6 +68,11 @@ export const stellarClient = {
       ORDER BY (u.role = 'RIDER') ASC, u."createdAt" DESC
       LIMIT ${limit}`;
     return rows.map((row) => row.id);
+  },
+
+  /** An opening queued under the earlier design (by Friendbot, 10,000 XLM): now operations, with the starting amount. */
+  async reshapeOpen(id: string, fromPublicKey: string, amountXlm: string): Promise<void> {
+    await prisma.stellarTransfer.update({ where: { id }, data: { fromPublicKey, amountXlm: new Prisma.Decimal(amountXlm) } });
   },
 
   /** Account openings still in the queue. */

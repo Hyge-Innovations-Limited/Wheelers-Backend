@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Account, BASE_FEE, Memo, Operation, StrKey, TransactionBuilder, Asset, type Keypair, type Transaction } from '@stellar/stellar-sdk';
+import { Account, BASE_FEE, Keypair, Memo, Operation, StrKey, TransactionBuilder, Asset, type Transaction } from '@stellar/stellar-sdk';
 import { stellarClient } from '@wheleers/db';
 import { explorerAccount, explorerTx, type StellarConfig } from './config';
 import { keypairAt } from './keys';
@@ -10,8 +10,10 @@ import type { NgnRate, RateProvider } from './rates';
  * Wheelers on Stellar Testnet (grant deliverable 3): its OWN ledger, in test
  * XLM, beside the naira one. Nothing naira is copied onto it.
  *
- *   ACCOUNT_OPEN  every rider and driver gets an address, opened by Friendbot
- *                 with free test XLM (operations opens it if Friendbot will not)
+ *   ACCOUNT_OPEN  every rider and driver gets an address, opened by operations
+ *                 with 100 test XLM
+ *   OPS_REFILL    operations running low: Friendbot funds a throwaway account
+ *                 that is merged straight into operations (+~10,000 XLM)
  *   FARE          when a wallet trip ends: rider → driver, the fare in XLM at
  *                 the live rate, memo = the trip ID
  *   COMMISSION    then driver → operations, the platform's share, same rate
@@ -32,10 +34,11 @@ const MAX_ATTEMPTS = 8;
 const LOST_AFTER_MS = 3 * 60 * 1000;
 /** Account openings queued at once while everyone is given one. */
 const OPENS_IN_FLIGHT = 3;
-/** Operations opens accounts itself (when Friendbot will not) only while it keeps this much for fees. */
+/** Operations is topped up from Friendbot when it would drop below this. */
 const OPS_KEEPS_XLM = 1000;
+/** Without a top-up, operations still opens accounts while this much would be left for fees. */
+const OPS_FLOOR_XLM = 20;
 /** Who "sends" an account's opening XLM when Friendbot opens it. */
-export const FRIENDBOT = 'FRIENDBOT';
 
 export type StellarTransferRow = Awaited<ReturnType<typeof stellarClient.due>>[number];
 
@@ -68,14 +71,14 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     return row;
   }
 
-  /** A rider's or driver's address: recorded now, opened on Stellar (by Friendbot) by the job. */
+  /** A rider's or driver's address: recorded now, opened on Stellar (by operations) by the job. */
   async function ensureUserAccount(userId: string) {
     const row = await stellarClient.accountForUser(userId)
       ?? await stellarClient.createAccount({ userId, role: 'user', derive: (i) => keypair(i).publicKey() });
     if (!row.openedAt) {
       await stellarClient.enqueue({
         kind: 'ACCOUNT_OPEN', reference: `open:${row.publicKey}`, userId,
-        fromPublicKey: FRIENDBOT, toPublicKey: row.publicKey, amountXlm: config.friendbotXlm,
+        fromPublicKey: keypair(0).publicKey(), toPublicKey: row.publicKey, amountXlm: config.startingXlm,
       });
     }
     return row;
@@ -208,24 +211,51 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     if (t.kind === 'ACCOUNT_OPEN') await stellarClient.markOpened(t.toPublicKey);
   }
 
-  /** Friendbot opens the account; if it will not, operations does, with less. */
-  async function openAccount(t: StellarTransferRow): Promise<'confirmed' | 'retry'> {
+  /**
+   * Keep operations stocked. Friendbot only funds accounts that do not exist
+   * yet, so it funds a throwaway one that is merged straight into operations.
+   * The throwaway's key lives only in memory for those few seconds.
+   * True when operations can open another account.
+   */
+  async function stockOperations(opsKey: string): Promise<boolean> {
+    const starting = Number(config.startingXlm);
+    const balance = await balanceOf(opsKey);
+    if (balance !== null && balance - starting >= OPS_KEEPS_XLM) return true;
     try {
-      const funded = await network.fund(t.toPublicKey);
-      await confirmed(t, null, funded.hash);
-      console.info('[stellar] account opened by Friendbot', { publicKey: t.toPublicKey });
-      return 'confirmed';
+      const helper = Keypair.random();
+      await network.fund(helper.publicKey());
+      const source = await network.account(helper.publicKey());
+      if (!source) throw new Error('the Friendbot account did not appear');
+      const tx = new TransactionBuilder(new Account(helper.publicKey(), source.sequence), { fee: BASE_FEE, networkPassphrase: config.networkPassphrase })
+        .addOperation(Operation.accountMerge({ destination: opsKey }))
+        .setTimeout(120)
+        .build();
+      tx.sign(helper);
+      const result = await network.submit(tx);
+      const row = await stellarClient.enqueue({
+        kind: 'OPS_REFILL', reference: `refill:${helper.publicKey()}`,
+        fromPublicKey: helper.publicKey(), toPublicKey: opsKey, amountXlm: source.balanceXlm, memo: null,
+      });
+      await stellarClient.markConfirmed(row.id, result.ledger, tx.hash().toString('hex'));
+      console.info('[stellar] operations topped up from Friendbot', { amountXlm: source.balanceXlm });
+      return true;
     } catch (error) {
-      console.warn('[stellar] Friendbot would not open an account; operations will', { error: error instanceof Error ? error.message : String(error) });
+      console.warn('[stellar] could not top up operations', { error: error instanceof Error ? error.message : String(error) });
+      return balance !== null && balance - starting >= OPS_FLOOR_XLM;
     }
+  }
+
+  /** Operations opens the account with the starting amount (and pays its own fee). */
+  async function openAccount(t: StellarTransferRow): Promise<'confirmed' | 'retry'> {
     const ops = await ensureOperations();
-    // Operations pays every fee: it never spends itself down opening accounts. Wait for Friendbot instead.
-    const opsBalance = await balanceOf(ops.publicKey);
-    if (opsBalance === null || opsBalance - Number(config.fallbackStartingXlm) < OPS_KEEPS_XLM) {
-      await stellarClient.markWaiting(t.id, 'Friendbot is not answering; trying again shortly');
+    if (t.fromPublicKey !== ops.publicKey || Number(t.amountXlm) !== Number(config.startingXlm)) {
+      await stellarClient.reshapeOpen(t.id, ops.publicKey, config.startingXlm);
+    }
+    if (!(await stockOperations(ops.publicKey))) {
+      await stellarClient.markWaiting(t.id, 'operations is low on test XLM and Friendbot is not answering; trying again shortly');
       return 'retry';
     }
-    const tx = await build({ kind: 'ACCOUNT_OPEN', fromPublicKey: ops.publicKey, toPublicKey: t.toPublicKey, amountXlm: config.fallbackStartingXlm as never, memo: null });
+    const tx = await build({ kind: 'ACCOUNT_OPEN', fromPublicKey: ops.publicKey, toPublicKey: t.toPublicKey, amountXlm: config.startingXlm as never, memo: null });
     const hash = tx.hash().toString('hex');
     await stellarClient.markSubmitted(t.id, hash);
     try {
@@ -250,6 +280,9 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
       await stellarClient.markRetry(t.id, 'never reached the network');
       return 'retry';
     }
+
+    // A top-up is recorded after it happened; one left waiting was never finished and is not retried.
+    if (t.kind === 'OPS_REFILL') { await stellarClient.markFailed(t.id, 'top-up record left unfinished'); return 'failed'; }
 
     if (t.kind === 'ACCOUNT_OPEN') {
       // Already open (a rerun): just note it.
