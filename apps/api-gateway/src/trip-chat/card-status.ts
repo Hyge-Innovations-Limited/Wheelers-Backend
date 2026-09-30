@@ -2,8 +2,11 @@ import type { RedisClient } from '../redis/client';
 import { sendMetaReaction } from '../whatsapp-flows/whatsapp-notifier';
 
 /**
- * The WhatsApp ride card as a status light: one reaction on the card that
- * changes, instead of a new message every time the driver writes or calls.
+ * The trip's status light on WhatsApp: one reaction that changes, instead of
+ * a new message every time the driver writes or calls. It sits on the chat
+ * message ("Message or call <driver> … [Chat or call]"), the newest one when
+ * the rider asks for a fresh link; on the ride card only if that could not
+ * be sent.
  *
  *   live     🟢  the trip is on, nothing waiting
  *   message  💬  the driver wrote and the Trip chat page is closed
@@ -44,11 +47,19 @@ async function read(redis: RedisClient, rideId: string): Promise<CardRecord | nu
   }
 }
 
-/** The ride card was sent: remember it, and light it 🟢. */
+/**
+ * This message now carries the light: 🟢, or whatever the trip already
+ * showed. A message that had it before loses its reaction, so only one
+ * message in the chat ever wears it.
+ */
 export async function rememberRideCard(deps: CardStatusDeps, rideId: string, phone: string, messageId: string): Promise<void> {
   if (!messageId) return;
+  const before = await read(deps.redis, rideId);
+  if (before?.messageId === messageId) return;
+  const carried = before?.status && before.status !== 'none' ? before.status : 'live';
+  if (before?.status) await sendMetaReaction(deps.meta, before.phone, before.messageId, '').catch(() => false);
   await deps.redis.set(cardKey(rideId), JSON.stringify({ messageId, phone, status: null } satisfies CardRecord), CARD_TTL_SECONDS);
-  await setCardStatus(deps, rideId, 'live');
+  await setCardStatus(deps, rideId, carried);
 }
 
 export async function setCardStatus(deps: CardStatusDeps, rideId: string, status: CardStatus): Promise<boolean> {

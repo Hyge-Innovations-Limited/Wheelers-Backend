@@ -113,6 +113,35 @@ test('the ride card status light: Meta is asked only when the status changes, "n
   }
 });
 
+test('the status light lives on the chat message: a fresh link takes it over, the old one loses it, the status carries', async () => {
+  const { rememberRideCard, setCardStatus, cardStatusOf } = require('../apps/api-gateway/dist/trip-chat/card-status.js');
+  const { tripChatLinkText } = require('../apps/api-gateway/dist/whatsapp/ride-card.js');
+  const store = new Map();
+  const redis = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); }, del: async (k) => { store.delete(k); } };
+  const calls = [];
+  const realFetch = global.fetch;
+  global.fetch = async (_url, init) => { calls.push(JSON.parse(init.body).reaction); return { ok: true, status: 200, text: async () => '' }; };
+  try {
+    const deps = { redis, meta: { metaAccessToken: 't', metaPhoneNumberId: '1' } };
+    await rememberRideCard(deps, 'ride-y', '+2348030000001', 'wamid.CHAT1');
+    await setCardStatus(deps, 'ride-y', 'message');
+    await rememberRideCard(deps, 'ride-y', '+2348030000001', 'wamid.CHAT2');   // the rider asked for a fresh link
+    assert.deepEqual(calls, [
+      { message_id: 'wamid.CHAT1', emoji: '🟢' },
+      { message_id: 'wamid.CHAT1', emoji: '💬' },
+      { message_id: 'wamid.CHAT1', emoji: '' },
+      { message_id: 'wamid.CHAT2', emoji: '💬' },
+    ], 'one message wears it, and it keeps saying there is a message');
+    assert.equal(await cardStatusOf(redis, 'ride-y'), 'message');
+    await rememberRideCard(deps, 'ride-y', '+2348030000001', 'wamid.CHAT2');
+    assert.equal(calls.length, 4, 'the same message again: nothing to do');
+  } finally {
+    global.fetch = realFetch;
+  }
+  assert.match(tripChatLinkText('Oke', true), /Message or call \*Oke\*.*\n\nOn this message: 🟢 trip on · 💬 new message · 📞 calling\./s);
+  assert.doesNotMatch(tripChatLinkText('Oke', false), /📞/);
+});
+
 /* ── two gateway processes, one Redis, one Postgres ─────────────────────── */
 
 const clients = [];

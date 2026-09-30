@@ -81,7 +81,6 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
     ...(options.chat === 'chat_and_call'
       ? [`*Chat or call driver* — message or call ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`]
       : options.chat === 'chat' ? [`*Chat with driver* — message ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`] : []),
-    ...(options.chat ? [`On this card: 🟢 trip on · 💬 new message${options.chat === 'chat_and_call' ? ' · 📞 calling' : ''}.`] : []),
     `*SOS* — feel unsafe at any point? One tap and Wheelers' safety team has your trip and location.`,
   ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
@@ -140,12 +139,12 @@ export async function sendRideConfirmation(
     await sendMetaReply(deps, phone, details);
     return details;
   }
-  // The card is the trip's status light from here: 🟢 now, 💬 / 📞 when the driver writes or calls.
-  if (active?.id && sentId && deps.metaAccessToken && deps.metaPhoneNumberId) {
-    await rememberRideCard(
-      { redis: deps.redisClient, meta: { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId } },
-      active.id, phone, sentId,
-    ).catch((error) => console.warn('[ride-card] status light not set', { error: error instanceof Error ? error.message : String(error) }));
+  // Straight after it, the chat message: Chat or call, and the trip's status
+  // light (🟢 now, 💬 / 📞 when the driver writes or calls). If that one
+  // cannot be sent, the light goes on the card instead.
+  if (active?.id) {
+    const chatId = deps.appBaseUrl ? await sendTripChatLink(deps, userId, phone, active.id).catch(() => null) : null;
+    if (!chatId && sentId) await lightTrip(deps, active.id, phone, sentId);
   }
   return details;
 }
@@ -181,27 +180,61 @@ export async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: str
   if (!sent) await sendMetaReply(deps, phone, text);
 }
 
+/** Put the trip's status light on this message (and take it off any other). */
+async function lightTrip(deps: MetaWhatsappRouteDeps, rideId: string, phone: string, messageId: string): Promise<void> {
+  if (!messageId || !deps.metaAccessToken || !deps.metaPhoneNumberId) return;
+  await rememberRideCard(
+    { redis: deps.redisClient, meta: { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId } },
+    rideId, phone, messageId,
+  ).catch((error) => console.warn('[ride-card] status light not set', { error: error instanceof Error ? error.message : String(error) }));
+}
+
+/** The chat message's text: who to reach, and what the light on it means. */
+export function tripChatLinkText(driverFirstName: string, liveCall: boolean): string {
+  return [
+    `${liveCall ? 'Message or call' : 'Message'} *${driverFirstName}*, your driver, through Wheelers.`,
+    ``,
+    `On this message: 🟢 trip on · 💬 new message${liveCall ? ' · 📞 calling' : ''}.`,
+  ].join('\n');
+}
+
 /**
- * "Chat or call driver": the link to the Trip chat page for the rider's latest
- * trip, while its chat is open. After that, the rider is told it has closed
- * and where to go instead.
+ * "Chat or call driver": the link to the Trip chat page, sent with the ride
+ * card and again whenever the rider asks (links expire). The newest one
+ * carries the trip's status light. After the trip, the rider is told the
+ * chat has closed and where to go instead. The message id when a chat
+ * message went out, else null.
  */
-export async function sendTripChatLink(deps: MetaWhatsappRouteDeps, userId: string, phone: string): Promise<void> {
-  const latest = await chatClient.latestTripOfRider(userId).catch(() => null);
+export async function sendTripChatLink(deps: MetaWhatsappRouteDeps, userId: string, phone: string, rideId?: string): Promise<string | null> {
+  const latest = rideId ? { id: rideId } : await chatClient.latestTripOfRider(userId).catch(() => null);
   const info = latest ? await loadTripChat(latest.id).catch(() => null) : null;
   if (!info || !info.driver || !deps.appBaseUrl) {
+    if (rideId) return null;   // sent with the card: the card then carries the light, no "no trip" message
     await sendMetaReply(deps, phone, 'You have no trip with a driver right now. Once a driver accepts your ride, you can chat or call them here.');
-    return;
+    return null;
   }
   if (!info.open) {
+    if (rideId) return null;
     await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} has ended: it closes when the trip ends.
 
 Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
-    return;
+    return null;
   }
   const url = tripPageUrl(deps.appBaseUrl, deps.jwtSecret, userId, info.rideId);
-  const what = deps.liveCallEnabled ? 'Message or call' : 'Message';
-  await sendMetaLinkButton(deps, phone, `${what} *${info.driver.firstName}*, your driver, through Wheelers.`, deps.liveCallEnabled ? 'Chat or call' : 'Open chat', url);
+  const text = tripChatLinkText(info.driver.firstName, Boolean(deps.liveCallEnabled));
+  const button = deps.liveCallEnabled ? 'Chat or call' : 'Open chat';
+  const sentId = await sendInteractiveForId(deps, phone, {
+    type: 'cta_url',
+    body: { text },
+    action: { name: 'cta_url', parameters: { display_text: button, url } },
+  });
+  if (sentId === null) {
+    // Meta refused the button: the plain link still gets through, without the light.
+    await sendMetaLinkButton(deps, phone, text, button, url);
+    return null;
+  }
+  await lightTrip(deps, info.rideId, phone, sentId);
+  return sentId || null;
 }
 
 /**
