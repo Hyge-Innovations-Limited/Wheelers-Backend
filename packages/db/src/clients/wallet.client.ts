@@ -301,6 +301,23 @@ export const walletClient = {
 
   // ── Ride Hold Operations ──────────────────────────────────────────────────
 
+  /**
+   * Holds still locking money on a ride that ended (cancelled) before
+   * `endedBefore`: nothing will ever settle them. The sweeper releases them.
+   * (A rider paying for a chosen driver after a search timed out revives the
+   * ride within minutes, so the cut-off leaves that window alone.)
+   */
+  strandedRideHolds: async (endedBefore: Date, limit = 50): Promise<Array<{ rideId: string; riderId: string; amountNgn: number }>> => {
+    const rows = await prisma.$queryRaw<Array<{ rideId: string; riderId: string; amountNgn: unknown }>>`
+      SELECT h."rideId", h."riderId", h."amountNgn"
+      FROM "RideHold" h
+      JOIN "Ride" r ON r.id = h."rideId"
+      WHERE h.status = 'ACTIVE' AND r.status = 'CANCELLED' AND r."updatedAt" < ${endedBefore}
+      ORDER BY r."updatedAt" ASC
+      LIMIT ${limit}`;
+    return rows.map((row) => ({ rideId: row.rideId, riderId: row.riderId, amountNgn: Number(row.amountNgn) }));
+  },
+
   createRideHold: async (params: {
     rideId: string;
     walletId: string;

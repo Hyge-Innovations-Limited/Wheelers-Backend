@@ -695,6 +695,8 @@ export async function sendRideCancelledNotification(
     balanceNgn?: number;
     /** The rider's own reason, when they cancelled in the chat: it leads the message. */
     riderReason?: string;
+    /** The driver cancelled and the search goes on: say so, not "book another ride". */
+    searchingAgain?: boolean;
   },
 ): Promise<void> {
   // A rider must never see a raw enum, and after paying they must be told —
@@ -717,7 +719,9 @@ export async function sendRideCancelledNotification(
           : '.'),
     );
   }
-  lines.push('', 'Book another ride anytime — just send your route.');
+  lines.push('', details.searchingAgain
+    ? "We're finding you another driver. New offers will show up here."
+    : 'Book another ride anytime — just send your route.');
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 

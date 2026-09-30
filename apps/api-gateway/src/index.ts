@@ -108,6 +108,7 @@ import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { stellarConfigFromEnv } from "./stellar/config";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
+import { startHoldSweeper } from "./payments/hold-sweeper";
 import { createRateProvider } from "./stellar/rates";
 import { handleStellarRoute } from "./stellar/routes";
 import { createTripWhatsapp } from "./trip-chat/whatsapp";
@@ -2326,6 +2327,7 @@ async function bootstrap(): Promise<void> {
 
   const referralJobs = startReferralJobs(leader.isLeader);
   const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
+  const stopHoldSweeper = startHoldSweeper(leader.isLeader);
   if (stellar) {
     void stellar.ensureOperations()
       .then((ops) => console.info("[stellar] testnet on; operations account", { publicKey: ops.publicKey }))
@@ -2387,6 +2389,7 @@ async function bootstrap(): Promise<void> {
   onShutdown(async () => {
     tripChat.stop();
     stopStellarJob();
+    stopHoldSweeper();
     await leader.release();
     await registry.shutdown();
   });

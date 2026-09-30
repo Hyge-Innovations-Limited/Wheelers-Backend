@@ -952,13 +952,13 @@ export async function handleRideEvent(
     // wallet-service releases it too (consumer race) — whichever ran first,
     // the result still carries the hold amount and the wallet's balance, so
     // the rider's message can state the refund as a fact, not a hope.
-    // A driver bailing puts the ride back into matching under the same id.
-    // The rider's fare stays held for the next driver; releasing it here
-    // meant the re-match ran unsecured and completion found no hold.
+    // A driver bailing puts the ride back into matching under the same id,
+    // and the rider gets their money back NOW: the next driver they accept
+    // takes a fresh hold (createRideHold re-arms a released one). Keeping it
+    // locked for the re-match told nobody, asked the rider to pay a second
+    // time, and could leave it locked for good.
     const driverBailed = event.cancelledBy === 'driver';
-    const holdRelease = driverBailed
-      ? null
-      : await walletClient.cancelRideHold(event.rideId).catch(() => null);
+    const holdRelease = await walletClient.cancelRideHold(event.rideId).catch(() => null);
 
     const releasedReferralCashback = await referralClient.releaseRideCashback(
       event.rideId,
@@ -978,6 +978,7 @@ export async function handleRideEvent(
           refundedNgn: holdRelease?.holdAmountNgn,
           balanceNgn: holdRelease ? Number(holdRelease.wallet.balanceNgn) : undefined,
           riderReason: toldInChat?.reason,
+          searchingAgain: driverBailed,
         }).catch(() => {});
       }
       if (driverBailed) {
@@ -994,6 +995,8 @@ export async function handleRideEvent(
         cancelledBy: event.cancelledBy ?? 'rider',
         referralCashbackReleasedNgn:
           releasedReferralCashback.releasedCashbackNgn,
+        refundedNgn: holdRelease?.holdAmountNgn ?? 0,
+        ...(driverBailed ? { searchingAgain: true } : {}),
       });
     }
 

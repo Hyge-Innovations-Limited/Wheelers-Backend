@@ -241,15 +241,9 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_CANCELLED') {
-        // A driver bailing puts the ride back into matching with the same
-        // rideId; the rider's fare must stay held for the next driver. The
-        // hold is released when the ride truly ends (rider cancel, timeout).
-        if (event.cancelledBy === 'driver') {
-          console.info(`[${serviceId}][escrow] driver cancelled — hold kept for re-match`, {
-            rideId: event.rideId,
-          });
-          return;
-        }
+        // Every cancellation gives the rider their money back, a driver's
+        // included: the re-match takes a fresh hold when the rider accepts
+        // the next driver. (The gateway releases it too; this is idempotent.)
         try {
           const holdResult = await walletRepository.cancelRideHold(event.rideId);
           if (!holdResult) {

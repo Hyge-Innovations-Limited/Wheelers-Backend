@@ -655,7 +655,8 @@ export function createRideRequestedConsumer(params: {
     if (!ride) return null;
     if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') return null;
     if (options.resetStatus) {
-      await rideClient.markMatching(rideId).catch((err) => {
+      // Only after the assigned driver cancelled: back to matching, without them.
+      await rideClient.reopenForMatching(rideId).catch((err) => {
         console.warn('[ride-service] could not reset ride to MATCHING', { rideId, error: (err as any)?.message ?? err });
       });
     } else if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') {

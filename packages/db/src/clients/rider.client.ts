@@ -293,6 +293,16 @@ export const rideClient = {
       data:  { riderOfferNgn: new Prisma.Decimal(riderOfferNgn) },
     }),
 
+  /**
+   * Back to matching after the assigned driver cancelled: the driver who left
+   * is no longer this ride's driver (a later cancel used to re-notify them).
+   */
+  reopenForMatching: (rideId: string) =>
+    prisma.ride.update({
+      where: { id: rideId },
+      data:  { status: 'MATCHING', driverId: null },
+    }),
+
   markMatching: (rideId: string) =>
     prisma.ride.update({
       where: { id: rideId },
