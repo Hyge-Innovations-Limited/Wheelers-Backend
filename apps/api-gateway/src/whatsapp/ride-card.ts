@@ -69,7 +69,8 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
     `Plate: *${ride.vehiclePlate}* — check it before you get in`,
     ``,
     ...(ride.tripCode ? [`*TRIP CODE: ${ride.tripCode}*`, `Give it to your driver when you get in. They cannot start the trip without it.`, ``] : []),
-    `*YOUR TRIP*${ride.tripId ? ` · ${ride.tripId}` : ''}`,
+    // No trip ID in the chat: riders never need it (admin and the Excel keep it).
+    `*YOUR TRIP*`,
     ...(ride.pickupAddress && ride.destAddress
       ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
       : []),

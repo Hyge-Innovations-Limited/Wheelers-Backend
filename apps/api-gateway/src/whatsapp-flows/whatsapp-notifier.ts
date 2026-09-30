@@ -628,7 +628,8 @@ export async function sendRideStartedNotification(
   tripId?: string | null,
 ): Promise<void> {
   await sendMetaWhatsappMessage(deps, phone, [
-    `*Trip started*${tripId ? ` · ${tripId}` : ''}`,
+    // No trip ID in the chat: riders never need it (admin and the Excel keep it).
+    `*Trip started*`,
     ``,
     `Sit back and stay safe. We'll send your receipt when you arrive.`,
   ].join('\n'));
@@ -650,7 +651,6 @@ async function sendRideCompletedNotification(
   const text = [
     `*Trip complete!*`,
     ``,
-    ...(tripId ? [`Trip ID: ${tripId}`] : []),
     `Distance: ${distanceKm.toFixed(1)} km`,
     `Fare: ₦${fees.totalNgn.toLocaleString()} — paid from your wallet`,
     ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),
