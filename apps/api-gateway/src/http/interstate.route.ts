@@ -45,7 +45,7 @@ function fail(res: ServerResponse, error: unknown, fallback: string): void {
             error.code === 'DEPARTURE_ALREADY_CLAIMED' ||
             error.code === 'DEPARTURE_WRONG_STATE'
           ? 409
-          : error.code === 'DEPARTURE_NOT_YOURS' || error.code === 'NOT_A_DRIVER'
+          : error.code === 'DEPARTURE_NOT_YOURS' || error.code === 'NOT_A_DRIVER' || error.code === 'KYC_REQUIRED'
             ? 403
             : 400;
     sendJson(res, status, { error: error.message, code: error.code, ...(error.details ?? {}) });
@@ -740,6 +740,9 @@ async function requireDriver(req: IncomingMessage, jwtSecret: string) {
       'Finish your driver sign-up before taking interstate trips.',
       'NOT_A_DRIVER',
     );
+  }
+  if (driver.kycStatus !== 'APPROVED') {
+    throw new InterstateError('Finish your verification (KYC) before taking interstate trips.', 'KYC_REQUIRED');
   }
 
   return { user, driver };

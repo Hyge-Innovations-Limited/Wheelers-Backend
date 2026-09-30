@@ -4,6 +4,7 @@ import {
   DriverOnlineEvent,
   GpsUpdateEvent,
 } from '@wheleers/kafka-schemas';
+import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import type { GatewayAuthContext } from '../../types';
 import { getNumber, getString } from '../../utils/object';
 import type { GatewayPublisher } from '../publisher';
@@ -46,6 +47,8 @@ export async function handleDriverMessage(
   const timestamp = new Date().toISOString();
 
   if (type === 'driver:online') {
+    // Not approved (KYC not done, in review or rejected): never on shift.
+    await assertDriverApproved(auth.userId);
     const event = DriverOnlineEvent.parse({
       eventType: 'DRIVER_ONLINE',
       driverId: resolveDriverId(payload, auth),

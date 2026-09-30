@@ -32,6 +32,7 @@ import { findGroupRideSuggestion } from '../../group-ride/suggestion';
 import type { GatewayPublisher } from '../publisher';
 import type { HandlerResponse } from './types';
 import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
+import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 
 interface LatLngAddress {
   lat: number;
@@ -787,6 +788,8 @@ export async function handleRideMessage(
   }
 
   if (type === 'driver:accept') {
+    // Only an approved driver may bid on or take a request.
+    await assertDriverApproved(auth.userId);
     // Driver accepts / bids — look up real driver profile from DB
     const driverId = getString(payload, 'driverId') ?? auth.driverId ?? auth.userId;
 
