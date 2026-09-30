@@ -55,6 +55,26 @@ export const stellarClient = {
     throw new Error('Could not allocate a Stellar account index.');
   },
 
+  /**
+   * Riders and drivers who have no Stellar address yet: drivers first, then
+   * the newest. `among` narrows it to some users (tests).
+   */
+  async usersWithoutAccount(limit: number, among?: string[]): Promise<string[]> {
+    if (limit <= 0 || (among && among.length === 0)) return [];
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT u.id FROM "User" u
+      LEFT JOIN "StellarAccount" s ON s."userId" = u.id
+      WHERE s.id IS NULL ${among ? Prisma.sql`AND u.id IN (${Prisma.join(among)})` : Prisma.empty}
+      ORDER BY (u.role = 'RIDER') ASC, u."createdAt" DESC
+      LIMIT ${limit}`;
+    return rows.map((row) => row.id);
+  },
+
+  /** Account openings still in the queue. */
+  pendingOpens(): Promise<number> {
+    return prisma.stellarTransfer.count({ where: { kind: 'ACCOUNT_OPEN', status: { in: ['PENDING', 'SUBMITTED'] } } });
+  },
+
   async markOpened(publicKey: string): Promise<void> {
     await prisma.stellarAccount.updateMany({ where: { publicKey, openedAt: null }, data: { openedAt: new Date() } });
   },

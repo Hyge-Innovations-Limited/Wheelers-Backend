@@ -238,6 +238,43 @@ test('a rider short of test XLM is skipped (and so is the commission), never top
   assert.equal(net.ledgerTxs.size, net.submits + [...net.ledgerTxs.values()].filter((x) => x.source === 'FRIENDBOT').length, 'the send that was cut short was not sent again');
 });
 
+test('everyone gets an account by default, no trip needed: a few at a time, drivers first; operations never spends itself down opening them', async (t) => {
+  if (skip) return t.skip(skip);
+  const net = fakeNetwork();
+  const stellar = createStellarService({ config, network: net, rates });
+  await prisma.stellarAccount.updateMany({ where: { publicKey: opsKey }, data: { openedAt: null } });   // a fresh network
+  await stellar.ensureOperations();
+  const riders = [await user('RIDER'), await user('RIDER')];
+  const driverId = await user('DRIVER');
+  const among = [...riders, driverId];
+
+  assert.equal(await stellar.openForEveryone({ among, inFlight: 2 + await prisma.stellarTransfer.count({ where: { kind: 'ACCOUNT_OPEN', status: { in: ['PENDING', 'SUBMITTED'] } } }) }), 2, 'two at a time');
+  assert.ok(await prisma.stellarAccount.findUnique({ where: { userId: driverId } }), 'the driver first');
+  await drain(stellar);
+  assert.equal(await stellar.openForEveryone({ among }), 1, 'then the rest');
+  await drain(stellar);
+  assert.equal(await stellar.openForEveryone({ among }), 0, 'nobody left');
+  for (const userId of among) {
+    const row = await prisma.stellarAccount.findUnique({ where: { userId } });
+    assert.ok(row.openedAt, 'open on the network');
+    assert.equal(balance(net, row.publicKey), 10000, 'with Friendbot\'s test XLM');
+  }
+
+  // Friendbot down and operations low: the opening waits rather than draining operations.
+  net.friendbotDown = true;
+  net.accounts.get(opsKey).balance = 1050;
+  const late = await user('RIDER');
+  await stellar.openForEveryone({ among: [late] });
+  await drain(stellar, 3);
+  const lateRow = await prisma.stellarAccount.findUnique({ where: { userId: late } });
+  const opening = await prisma.stellarTransfer.findUnique({ where: { reference: `open:${lateRow.publicKey}` } });
+  assert.deepEqual([opening.status, lateRow.openedAt, balance(net, opsKey)], ['PENDING', null, 1050]);
+  assert.match(opening.lastError, /Friendbot is not answering/);
+  net.friendbotDown = false;
+  await drain(stellar, 2);
+  assert.ok((await prisma.stellarAccount.findUnique({ where: { userId: late } })).openedAt, 'opened once Friendbot is back');
+});
+
 test('with no price at all, the fare is skipped and says why', async (t) => {
   if (skip) return t.skip(skip);
   const net = fakeNetwork();

@@ -24,7 +24,8 @@ async function handleMe(req: IncomingMessage, res: ServerResponse, deps: Stellar
   const user = await authenticateHttpUser(req, deps.jwtSecret);
   const stellar = deps.stellar;
   if (!stellar) return sendJson(res, 200, { enabled: false });
-  const account = await stellarClient.accountForUser(user.id);
+  // Everyone has one by default; someone the background pass has not reached yet gets theirs now.
+  const account = await stellarClient.accountForUser(user.id) ?? await stellar.ensureUserAccount(user.id);
   const [balanceXlm, transfers, rate] = await Promise.all([
     account?.openedAt ? stellar.balanceOf(account.publicKey) : Promise.resolve(null),
     // In and out of this address, looked up by the address itself.

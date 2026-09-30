@@ -30,6 +30,10 @@ export const RESERVE_XLM = 1.5;
 const MAX_ATTEMPTS = 8;
 /** A sent transaction not seen on Stellar after this long never will be (it has a 2-minute time limit). */
 const LOST_AFTER_MS = 3 * 60 * 1000;
+/** Account openings queued at once while everyone is given one. */
+const OPENS_IN_FLIGHT = 3;
+/** Operations opens accounts itself (when Friendbot will not) only while it keeps this much for fees. */
+const OPS_KEEPS_XLM = 1000;
 /** Who "sends" an account's opening XLM when Friendbot opens it. */
 export const FRIENDBOT = 'FRIENDBOT';
 
@@ -77,6 +81,18 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     return row;
   }
 
+  /**
+   * Everyone gets an account by default, not only at their first trip: each
+   * pass queues a few riders and drivers who have none, so Friendbot is
+   * asked a few at a time and trip payments never wait behind a long queue.
+   */
+  async function openForEveryone(options: { inFlight?: number; among?: string[] } = {}): Promise<number> {
+    const room = (options.inFlight ?? OPENS_IN_FLIGHT) - await stellarClient.pendingOpens();
+    const userIds = await stellarClient.usersWithoutAccount(room, options.among);
+    for (const userId of userIds) await ensureUserAccount(userId);
+    return userIds.length;
+  }
+
   const toXlm = (ngn: number, rate: NgnRate) => xlm(ngn / rate.ngnPerXlm);
   const ngnOf = (amountXlm: number, rate: NgnRate | null) => (rate ? Math.round(amountXlm * rate.ngnPerXlm * 100) / 100 : null);
 
@@ -120,7 +136,7 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     const amount = Number(input.amountXlm);
     if (!Number.isFinite(amount) || amount <= 0) throw new StellarUserError('BAD_AMOUNT', 'Enter an amount of XLM.');
     const account = await stellarClient.accountForUser(input.userId);
-    if (!account?.openedAt) throw new StellarUserError('NO_ACCOUNT', 'Your Stellar account is not open yet. It opens with your first trip.', 409);
+    if (!account?.openedAt) throw new StellarUserError('NO_ACCOUNT', 'Your Stellar account is still being opened. Try again in a minute.', 409);
     if (destination === account.publicKey) throw new StellarUserError('SAME_ADDRESS', 'That is your own Wheelers address.');
     const balance = await balanceOf(account.publicKey);
     const spendable = balance === null ? 0 : balance - RESERVE_XLM;
@@ -203,6 +219,12 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
       console.warn('[stellar] Friendbot would not open an account; operations will', { error: error instanceof Error ? error.message : String(error) });
     }
     const ops = await ensureOperations();
+    // Operations pays every fee: it never spends itself down opening accounts. Wait for Friendbot instead.
+    const opsBalance = await balanceOf(ops.publicKey);
+    if (opsBalance === null || opsBalance - Number(config.fallbackStartingXlm) < OPS_KEEPS_XLM) {
+      await stellarClient.markWaiting(t.id, 'Friendbot is not answering; trying again shortly');
+      return 'retry';
+    }
     const tx = await build({ kind: 'ACCOUNT_OPEN', fromPublicKey: ops.publicKey, toPublicKey: t.toPublicKey, amountXlm: config.fallbackStartingXlm as never, memo: null });
     const hash = tx.hash().toString('hex');
     await stellarClient.markSubmitted(t.id, hash);
@@ -313,6 +335,7 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     rates,
     ensureOperations,
     ensureUserAccount,
+    openForEveryone,
     settleRide,
     requestWithdrawal,
     balanceOf,
@@ -330,6 +353,7 @@ export function startStellarJob(service: StellarService, shouldRun: () => Promis
   const timer = setInterval(() => {
     void (async () => {
       if (!(await shouldRun().catch(() => false))) return;
+      await service.openForEveryone().catch((error) => console.warn('[stellar] opening accounts failed', { error: error instanceof Error ? error.message : String(error) }));
       await service.processDue().catch((error) => console.warn('[stellar] job failed', { error: error instanceof Error ? error.message : String(error) }));
     })();
   }, everyMs);
