@@ -358,10 +358,9 @@ export const CANCELLATION_REASON_PROMPT = [
   '',
   '1. Long waiting time',
   '2. Wrong pickup or destination point',
-  '3. Want to change ride type',
-  '4. Accidental request',
+  '3. Accidental request',
   '',
-  'Reply with *1–4* or type your reason.',
+  'Reply with *1–3* or type your reason.',
 ].join('\n');
 
 export function parseCancellationReason(message: string): string | null {
@@ -424,6 +423,5 @@ export const BOOKING_STEPS: ReadonlySet<string> = new Set([
 export const CANCELLATION_REASONS: Record<string, string> = {
   '1': 'Long waiting time',
   '2': 'Wrong pickup or destination point',
-  '3': 'Want to change ride type',
-  '4': 'Accidental request',
+  '3': 'Accidental request',
 };

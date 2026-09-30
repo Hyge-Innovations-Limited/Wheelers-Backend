@@ -1929,9 +1929,9 @@ test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why 
 
   const why = await form('data_exchange', { action: 'offers_choice', choice: 'cancel_search' });
   assert.equal(why.screen, 'CANCEL_SEARCH');
-  assert.deepEqual(why.data.reasons.map((r) => r.id), ['1', '2', '3', '4']);
+  assert.deepEqual(why.data.reasons.map((r) => r.id), ['1', '2', '3']);
   assert.ok(why.data.reasons.every((r) => r.title.length <= 30));
-  const cancelled = await form('data_exchange', { action: 'cancel_search', reason: '4' });
+  const cancelled = await form('data_exchange', { action: 'cancel_search', reason: '3' });
   assert.match(cancelled.data.headline, /Search cancelled/);
   assert.deepEqual(events('RIDE_CANCELLED').map((e) => [e.rideId, e.reason, e.cancelledBy]), [[rideId, 'Accidental request', 'rider']]);
   assert.equal(await bidState.getActiveRide(redis, user.id), null);

@@ -69,12 +69,11 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const CANCEL_SEARCH = 'cancel_search';
 const CLOSE = 'close';
 
-/** The same four reasons the chat asks for (CANCELLATION_REASONS in whatsapp.route.ts), so the admin sees one vocabulary. */
+/** The same three reasons the chat asks for (CANCELLATION_REASONS in whatsapp.route.ts), so the admin sees one vocabulary. */
 const CANCEL_REASONS: Record<string, string> = {
   '1': 'Long waiting time',
   '2': 'Wrong pickup or destination point',
-  '3': 'Want to change ride type',
-  '4': 'Accidental request',
+  '3': 'Accidental request',
 };
 
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`);
