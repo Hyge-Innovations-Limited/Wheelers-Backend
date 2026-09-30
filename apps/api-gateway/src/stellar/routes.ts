@@ -82,7 +82,7 @@ async function handleAdmin(req: IncomingMessage, res: ServerResponse, deps: Stel
       ? { publicKey: ops.publicKey, balanceXlm: String(await stellar.balanceOf(ops.publicKey) ?? '0'), explorerUrl: stellar.accountUrl(ops.publicKey) }
       : null,
     counts: await stellarClient.counts(),
-    transfers: transfers.map((t) => ({ id: t.id, reference: t.reference, ...stellar.describe(t) })),
+    transfers: transfers.map((t) => ({ reference: t.reference, ...stellar.describe(t) })),
     nextBefore: transfers.length ? transfers[transfers.length - 1]!.createdAt.toISOString() : null,
   });
 }

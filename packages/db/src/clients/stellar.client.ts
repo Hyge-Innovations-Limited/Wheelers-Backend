@@ -6,7 +6,7 @@ import { prisma } from '../prisma';
  * addresses only: secrets are derived on the server and never stored.
  */
 
-export type StellarTransferKind = 'ACCOUNT_OPEN' | 'OPS_REFILL' | 'TOPUP' | 'FARE' | 'COMMISSION' | 'WITHDRAWAL';
+export type StellarTransferKind = 'ACCOUNT_OPEN' | 'OPS_REFILL' | 'RESET' | 'TOPUP' | 'FARE' | 'COMMISSION' | 'WITHDRAWAL';
 export type StellarTransferStatus = 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' | 'SKIPPED';
 
 function isUniqueViolation(error: unknown): boolean {
@@ -78,6 +78,11 @@ export const stellarClient = {
   /** Account openings still in the queue. */
   pendingOpens(): Promise<number> {
     return prisma.stellarTransfer.count({ where: { kind: 'ACCOUNT_OPEN', status: { in: ['PENDING', 'SUBMITTED'] } } });
+  },
+
+  /** Every rider's and driver's account that is open on the network. */
+  openedUserAccounts() {
+    return prisma.stellarAccount.findMany({ where: { role: 'user', openedAt: { not: null } }, orderBy: { derivationIndex: 'asc' } });
   },
 
   async markOpened(publicKey: string): Promise<void> {

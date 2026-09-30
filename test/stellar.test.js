@@ -287,6 +287,21 @@ test('everyone gets an account by default, no trip needed: a few at a time, driv
   net.friendbotDown = false;
   await drain(stellar, 2);
   assert.ok((await prisma.stellarAccount.findUnique({ where: { userId: late } })).openedAt, 'opened once Friendbot is back');
+
+  // The reset: an account opened under the earlier design (10,000) goes back to 100; the rest to operations.
+  const old = await prisma.stellarAccount.findUnique({ where: { userId: riders[0] } });
+  net.accounts.get(old.publicKey).balance = 10000;
+  const opsBefore = balance(net, opsKey);
+  const plan = await stellar.resetBalances({ dryRun: true });
+  assert.deepEqual(plan.filter((p) => p.publicKey === old.publicKey).map((p) => p.returnXlm), [9900]);
+  assert.equal(await prisma.stellarTransfer.count({ where: { kind: 'RESET', fromPublicKey: old.publicKey } }), 0, 'a dry run queues nothing');
+  await stellar.resetBalances();
+  await stellar.resetBalances();   // twice the same day: once
+  await drain(stellar, 3);
+  const resets = await prisma.stellarTransfer.findMany({ where: { kind: 'RESET', fromPublicKey: old.publicKey } });
+  assert.deepEqual(resets.map((r) => [r.status, Number(r.amountXlm), r.toPublicKey]), [['CONFIRMED', 9900, opsKey]]);
+  assert.equal(balance(net, old.publicKey), 100);
+  assert.ok(Math.abs(balance(net, opsKey) - (opsBefore + 9900)) < 0.01, 'back to operations (which paid the fee)');
 });
 
 test('with no price at all, the fare is skipped and says why', async (t) => {

@@ -18,6 +18,8 @@ import type { NgnRate, RateProvider } from './rates';
  *                 the live rate, memo = the trip ID
  *   COMMISSION    then driver → operations, the platform's share, same rate
  *   WITHDRAWAL    a driver sends test XLM to any testnet address
+ *   RESET         one-off: an account's test XLM above the starting amount
+ *                 goes back to operations (scripts/stellar-reset.mjs)
  *
  * A rider whose account has too little test XLM for a fare is SKIPPED, not
  * topped up: the trip itself is paid in naira as always. Operations pays
@@ -123,6 +125,31 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
         amountXlm: toXlm(input.commissionNgn, rate), amountNgn: input.commissionNgn, rateNgnPerXlm: rate.ngnPerXlm, memo,
       });
     }
+  }
+
+  /**
+   * Bring every open account back to the starting amount: whatever is above
+   * it goes back to operations. Queued (the job sends them, operations pays
+   * the fees); asking twice on one day queues nothing new.
+   */
+  async function resetBalances(options: { dryRun?: boolean } = {}): Promise<Array<{ userId: string | null; publicKey: string; balanceXlm: number; returnXlm: number }>> {
+    const ops = await ensureOperations();
+    const starting = Number(config.startingXlm);
+    const day = new Date().toISOString().slice(0, 10);
+    const plan = [];
+    for (const account of await stellarClient.openedUserAccounts()) {
+      const balance = await balanceOf(account.publicKey);
+      if (balance === null) continue;
+      const returnXlm = Math.floor((balance - starting) * 1e7) / 1e7;
+      if (returnXlm <= 0) continue;
+      plan.push({ userId: account.userId, publicKey: account.publicKey, balanceXlm: balance, returnXlm });
+      if (options.dryRun) continue;
+      await stellarClient.enqueue({
+        kind: 'RESET', reference: `reset:${account.publicKey}:${day}`, userId: account.userId,
+        fromPublicKey: account.publicKey, toPublicKey: ops.publicKey, amountXlm: xlm(returnXlm), memo: `Reset to ${config.startingXlm} XLM`,
+      });
+    }
+    return plan;
   }
 
   async function balanceOf(publicKey: string): Promise<number | null> {
@@ -344,8 +371,9 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     return done;
   }
 
-  function describe(t: { kind: string; status: string; amountXlm: unknown; amountNgn: unknown; rateNgnPerXlm?: unknown; memo: string | null; txHash: string | null; rideId: string | null; fromPublicKey: string; toPublicKey: string; createdAt: Date; confirmedAt: Date | null; lastError: string | null }) {
+  function describe(t: { id: string; kind: string; status: string; amountXlm: unknown; amountNgn: unknown; rateNgnPerXlm?: unknown; memo: string | null; txHash: string | null; rideId: string | null; fromPublicKey: string; toPublicKey: string; createdAt: Date; confirmedAt: Date | null; lastError: string | null }) {
     return {
+      id: t.id,
       kind: t.kind,
       status: t.status,
       amountXlm: String(t.amountXlm),
@@ -369,6 +397,7 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     ensureOperations,
     ensureUserAccount,
     openForEveryone,
+    resetBalances,
     settleRide,
     requestWithdrawal,
     balanceOf,
