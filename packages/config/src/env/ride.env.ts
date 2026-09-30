@@ -5,8 +5,10 @@ const RideEnvSchema = z.object({
   MATCH_RADIUS_KM:           z.string().default('5'),
   // How long to wait for a driver to accept before trying the next one (seconds)
   DRIVER_ACCEPT_TIMEOUT_S:   z.string().default('15'),
-  // How many drivers to attempt matching before giving up and emitting RIDE_CANCELLED
-  MAX_MATCH_ATTEMPTS:        z.string().default('5'),
+  // How many drivers each request is sent to, nearest first. It goes to EVERY
+  // approved, online driver inside MATCH_RADIUS_KM; this is only a safety cap
+  // (it used to be 5, so 15 of 20 drivers in an area never saw a request).
+  MAX_MATCH_ATTEMPTS:        z.string().default('200'),
   SCHEDULED_RIDE_DISPATCH_INTERVAL_S: z.string().default('20'),
   SCHEDULED_RIDE_DISPATCH_LEAD_TIME_S: z.string().default('300'),
   // GPS stale detection — run every N seconds

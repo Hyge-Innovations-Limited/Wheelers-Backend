@@ -20,9 +20,9 @@ export const RIDE = {
   // end of a search was a chat message the rider had to wait for.)
   BID_TIMEOUT_SECONDS: 1800,
 
-  // Maximum number of drivers to attempt before cancelling the ride
-  // with a "no drivers available" reason.
-  MAX_MATCH_ATTEMPTS: 5,
+  // How many drivers one request reaches at most: in practice every driver
+  // inside the match radius (see MAX_MATCH_ATTEMPTS in ride.env).
+  MAX_MATCH_ATTEMPTS: 200,
 
   // How long after RIDE_COMPLETED the rider has to submit a rating.
   RATING_WINDOW_HOURS: 24,
