@@ -65,7 +65,7 @@ export interface WhatsappBid {
 const RIDE_META_TTL = 7200;          // 2 hours
 const BIDS_TTL = 7200;               // 2 hours
 const RIDE_STATE_TTL = 7200;         // 2 hours
-const ACTIVE_RIDE_TTL = 3600;        // 1 hour — while still looking for a driver
+const ACTIVE_RIDE_TTL = 7200;        // 2 hours — outlives the hour-long search (and a price change restarting it)
 /**
  * Once a driver is assigned the pointer must outlive the trip. It used to
  * expire 30 minutes after booking, so on a long ride "cancel" fell into the

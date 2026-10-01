@@ -85,6 +85,6 @@ test("a driver's bid leaves the auction's clock alone — the search runs its fu
   await send({ eventType: 'RIDE_COUNTER_OFFER', rideId, riderId, driverId: randomUUID(), driverUserId: randomUUID(), counterOfferNgn: 2700, driverName: 'Chinedu', driverRating: 4.8, vehiclePlate: 'LND-1', vehicleModel: 'Corolla', etaSeconds: 300 });
   assert.equal(pending.timeout, clock, 'same timer: a bid used to replace it with a 10-minute one');
   assert.equal(pending.counterOfferDrivers.size, 1, 'the bid is on the table');
-  assert.equal(RIDE.BID_TIMEOUT_SECONDS, 1800);
+  assert.equal(RIDE.BID_TIMEOUT_SECONDS, 3600);
   clearTimeout(clock);
 });
