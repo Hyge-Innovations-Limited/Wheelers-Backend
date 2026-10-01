@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
-import { driverClient, rideClient, walletClient } from '@wheleers/db';
+import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
   clearActiveRide,
+  clearBids,
   clearBookingStage,
   clearPendingAccept,
   clearPendingRoute,
@@ -15,6 +16,7 @@ import {
   setActiveRide,
   setRideState,
   storeAcceptedBid,
+  storeLastBatch,
   storeLastRoute,
   storeRiderOfferChange,
   storeWhatsappRide,
@@ -162,6 +164,32 @@ export async function changeRiderOffer(
   return { ok: true, offerNgn: amountNgn };
 }
 
+/* ── decline every offer ─────────────────────────────────────────────────── */
+
+/**
+ * The rider declined every offer on the table. The search goes on (new
+ * offers still come in); the offers declined are DECLINED for good and each
+ * driver is told at once — their card turns red — instead of waiting on a
+ * rider who has said no. The WhatsApp form and the offers page both use this.
+ */
+export async function declineAllOffers(deps: RideServiceDeps, riderId: string, rideId: string): Promise<{ declined: number }> {
+  await clearBids(deps.redisClient, rideId);
+  await storeLastBatch(deps.redisClient, rideId, []).catch(() => undefined);
+  await clearPendingAccept(deps.redisClient, riderId).catch(() => undefined);
+  await setRideState(deps.redisClient, rideId, 'searching').catch(() => undefined);
+  const declined = await driverBidClient.declineOpen(rideId).catch(() => []);
+  if (declined.length > 0) {
+    await deps.publisher.publishRideEvent({
+      eventType: 'RIDE_BIDS_DECLINED',
+      rideId,
+      riderId,
+      driverUserIds: declined.map((bid) => bid.driverUserId),
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return { declined: declined.length };
+}
+
 /* ── accept an offer ────────────────────────────────────────────────────── */
 
 export interface ConfirmedRide {
@@ -230,6 +258,10 @@ async function confirmOnce(
   const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
   if (!wallet || balanceNgn < fareNgn) {
     const shortNgn = Math.ceil(fareNgn - balanceNgn);
+    // The rider chose this driver and is adding money: their card says "Rider is paying…".
+    await deps.publisher.publishRideEvent({
+      eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
+    }).catch(() => undefined);
     return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
   }
 

@@ -937,6 +937,8 @@ enum DriverBidStatus {
   WITHDRAWN
   EXPIRED
   CANCELLED
+  /// The rider declined every offer on the table; the search goes on.
+  DECLINED
 }
 
 enum RideStopType {

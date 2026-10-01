@@ -185,6 +185,8 @@ export const RideDriverAssignedEvent = BaseRideEvent.extend({
   agreedFareNgn:  z.number(),
   lockedFareNgn:  z.number(),
   paymentMethod:  PaymentMethod,
+  /** Every driver this request was offered to (users), so each can be told it is taken. */
+  offeredDriverUserIds: z.array(z.string().uuid()).optional(),
 });
 
 export const RideRouteUpdatedEvent = BaseRideEvent.extend({
@@ -288,6 +290,22 @@ export const RideDispatchDirectedEvent = BaseRideEvent.extend({
   driverUserId: z.string().uuid(),
 });
 
+// Fired by api-gateway when the rider declines every offer on the table.
+// The search goes on. Consumed by: api-gateway (tell each driver: ride:bid_declined).
+export const RideBidsDeclinedEvent = BaseRideEvent.extend({
+  eventType:     z.literal('RIDE_BIDS_DECLINED'),
+  riderId:       z.string().uuid(),
+  driverUserIds: z.array(z.string().uuid()),
+});
+
+// Fired by api-gateway when the rider chose a driver but must add money first.
+// Consumed by: api-gateway (tell that driver: ride:rider_paying).
+export const RideRiderPayingEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_RIDER_PAYING'),
+  riderId:      z.string().uuid(),
+  driverUserId: z.string().uuid(),
+});
+
 // Fired by ride-service after 3 minutes with no counter-offers.
 // Consumed by: api-gateway (relay to rider as ride:bid_timeout).
 export const RideBidTimeoutEvent = BaseRideEvent.extend({
@@ -315,6 +333,8 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideCounterOfferEvent,
   RideRiderCounterOfferEvent,
   RideDispatchDirectedEvent,
+  RideBidsDeclinedEvent,
+  RideRiderPayingEvent,
   RideOfferAcceptedEvent,
   RideDriverAssignedEvent,
   RideRouteUpdatedEvent,
@@ -344,6 +364,8 @@ export type RideCancelledEvent       = z.infer<typeof RideCancelledEvent>;
 export type RideDriverRejectedEvent  = z.infer<typeof RideDriverRejectedEvent>;
 export type RideRiderCounterOfferEvent = z.infer<typeof RideRiderCounterOfferEvent>;
 export type RideDispatchDirectedEvent = z.infer<typeof RideDispatchDirectedEvent>;
+export type RideBidsDeclinedEvent = z.infer<typeof RideBidsDeclinedEvent>;
+export type RideRiderPayingEvent = z.infer<typeof RideRiderPayingEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
 export type ChatMessageSentEvent     = z.infer<typeof ChatMessageSentEvent>;
 export type RideEvent                = z.infer<typeof RideEvent>;

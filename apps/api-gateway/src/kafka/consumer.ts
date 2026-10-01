@@ -616,6 +616,20 @@ export async function handleRideEvent(
     return;
   }
 
+  if (event.eventType === 'RIDE_BIDS_DECLINED') {
+    // The rider declined every offer: each driver's card turns to "Declined".
+    for (const userId of new Set(event.driverUserIds)) {
+      void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
+    }
+    return;
+  }
+
+  if (event.eventType === 'RIDE_RIDER_PAYING') {
+    // The rider chose this driver and is adding money: the card says so.
+    void registry.sendToUser(event.driverUserId, 'ride:rider_paying', { rideId: event.rideId });
+    return;
+  }
+
   if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
     rideParticipants.set(event.rideId, {
       riderId: event.riderId,
@@ -637,6 +651,13 @@ export async function handleRideEvent(
       void registry.sendToUser(losing.driverUserId, 'ride:bid_lost', {
         rideId: event.rideId,
       });
+    }
+    // Drivers who were offered it but never bid: their request card closes as
+    // "Taken by another driver" instead of lingering until it expires.
+    const bidders = new Set(losingBids.map((bid) => bid.driverUserId));
+    for (const userId of event.offeredDriverUserIds ?? []) {
+      if (userId === event.driverUserId || bidders.has(userId)) continue;
+      void registry.sendToUser(userId, 'ride:bid_lost', { rideId: event.rideId });
     }
 
     // The winner is off the market: withdraw their bids on every OTHER ride

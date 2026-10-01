@@ -512,6 +512,9 @@ export function createRideRequestedConsumer(params: {
       agreedFareNgn: event.agreedFareNgn,
       lockedFareNgn: event.agreedFareNgn,
       paymentMethod: event.paymentMethod,
+      // Everyone who got this request hears it is taken, not only those who bid.
+      offeredDriverUserIds: [...new Set((pending?.candidates ?? []).map((driver) => driver.userId))]
+        .filter((userId) => userId !== event.driverUserId),
       timestamp: new Date().toISOString(),
     });
 

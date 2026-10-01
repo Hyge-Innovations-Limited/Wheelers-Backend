@@ -62,6 +62,23 @@ export const driverBidClient = {
       data: { status, resolvedAt: new Date() },
     }),
 
+  /**
+   * The rider declined every open offer (the search goes on). Answers which
+   * drivers to tell.
+   */
+  declineOpen: async (rideId: string): Promise<Array<{ driverId: string; driverUserId: string }>> => {
+    const open = await prisma.driverBid.findMany({
+      where: { rideId, status: 'PENDING' },
+      select: { driverId: true, driverUserId: true },
+    });
+    if (open.length === 0) return [];
+    await prisma.driverBid.updateMany({
+      where: { rideId, status: 'PENDING', driverId: { in: open.map((bid) => bid.driverId) } },
+      data: { status: 'DECLINED', resolvedAt: new Date() },
+    });
+    return open;
+  },
+
   /** The driver took their own bid back before the rider answered. */
   markWithdrawn: (rideId: string, driverId: string) =>
     prisma.driverBid.updateMany({

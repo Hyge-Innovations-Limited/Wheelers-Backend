@@ -5,6 +5,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
+  declineAllOffers,
   confirmRideWithOffer,
   offerKey,
   publishWhatsappRide,
@@ -285,10 +286,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (choice === CHANGE_PRICE) return priceScreen(deps, rideId);
   if (choice === CANCEL_SEARCH) return cancelScreen();
   if (choice === DECLINE_ALL) {
-    await clearBids(deps.redisClient, rideId);
-    await storeLastBatch(deps.redisClient, rideId, []).catch(() => undefined);
-    await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
-    await setRideState(deps.redisClient, rideId, 'searching').catch(() => undefined);
+    await declineAllOffers(service, userId, rideId);
     // Straight back to the live search, not a dead end: the list is empty now, with Check for
     // more offers, Change my price and Cancel still on it.
     return offersScreen(deps, rideId, 'Offers declined. The search is still on — raising your price usually gets drivers moving.');
