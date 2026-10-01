@@ -21,12 +21,19 @@ services:
 
   redis:
     image: redis:7-alpine
+    # A password when REDIS_PASSWORD is set (.env.compose); none when it is not, so a
+    # laptop needs no setup. The services reach it with the same password in REDIS_URL:
+    # redis://:<password>@localhost:6379. Letters and digits only (openssl rand -hex 32):
+    # it travels inside a URL.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: ["sh", "-c", "exec redis-server $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+--no-auth-warning -a \"$$REDIS_PASSWORD\"} ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10

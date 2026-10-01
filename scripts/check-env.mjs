@@ -79,6 +79,9 @@ if (file.NODE_ENV && file.NODE_ENV !== 'production') {
 }
 const paystackMode = /^sk_live_/.test(file.PAYSTACK_SECRET_KEY ?? '') ? 'LIVE' : /^sk_test_/.test(file.PAYSTACK_SECRET_KEY ?? '') ? 'TEST' : 'MISSING';
 if (paystackMode === 'TEST') warnings.push('PAYSTACK_SECRET_KEY is a TEST key: no real money will move.');
+try {
+  if (file.REDIS_URL && !new URL(file.REDIS_URL).password) warnings.push('REDIS_URL has no password. Set REDIS_PASSWORD in .env.compose, recreate Redis (npm run infra:up) and use redis://:<password>@localhost:6379 here.');
+} catch { /* an unparseable REDIS_URL is reported below */ }
 
 let services = 8;
 try { services = require('../ecosystem.config.cjs').apps.length; } catch { /* keep the default */ }
