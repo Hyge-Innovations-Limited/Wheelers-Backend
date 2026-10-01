@@ -49,14 +49,20 @@ export async function handleDriverMessage(
   if (type === 'driver:online') {
     // Not approved (KYC not done, in review or rejected): never on shift.
     await assertDriverApproved(auth.userId);
+    // The car comes from the driver's profile when the app does not send it.
+    // It used to default to "UNKNOWN", which rode all the way to the rider's
+    // "Driver is here. Look for the UNKNOWN, plate UNKNOWN."
+    const sentPlate = getString(payload, 'vehiclePlate');
+    const sentModel = getString(payload, 'vehicleModel');
+    const profile = sentPlate && sentModel ? null : await driverClient.findByUserId(auth.userId).catch(() => null);
     const event = DriverOnlineEvent.parse({
       eventType: 'DRIVER_ONLINE',
       driverId: resolveDriverId(payload, auth),
       userId: auth.userId,
       lat: requireNumber(payload, 'lat'),
       lng: requireNumber(payload, 'lng'),
-      vehiclePlate: getString(payload, 'vehiclePlate') ?? 'UNKNOWN',
-      vehicleModel: getString(payload, 'vehicleModel') ?? 'UNKNOWN',
+      vehiclePlate: sentPlate ?? profile?.vehiclePlate ?? '',
+      vehicleModel: sentModel ?? profile?.vehicleModel ?? '',
       timestamp,
     });
 

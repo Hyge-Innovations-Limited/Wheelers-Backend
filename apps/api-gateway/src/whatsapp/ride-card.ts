@@ -142,13 +142,11 @@ export async function sendRideConfirmation(
     await sendMetaReply(deps, phone, details);
     return details;
   }
-  // Straight after it, the chat message: Chat or call, and the trip's status
-  // light (🟢 now, 💬 / 📞 when the driver writes or calls). If that one
-  // cannot be sent, the light goes on the card instead.
-  if (active?.id) {
-    const chatId = deps.appBaseUrl ? await sendTripChatLink(deps, userId, phone, active.id).catch(() => null) : null;
-    if (!chatId && sentId) await lightTrip(deps, active.id, phone, sentId);
-  }
+  // The card is the one message: it carries the trip's status light (🟢 now,
+  // 💬 / 📞 when the driver writes or calls). The chat link is NOT sent with it
+  // any more — one message too many; "Chat or call driver" on the card sends it
+  // when the rider wants it, and the light moves onto that message.
+  if (active?.id && sentId) await lightTrip(deps, active.id, phone, sentId);
   return details;
 }
 
@@ -202,8 +200,8 @@ export function tripChatLinkText(driverFirstName: string, liveCall: boolean): st
 }
 
 /**
- * "Chat or call driver": the link to the Trip chat page, sent with the ride
- * card and again whenever the rider asks (links expire). The newest one
+ * "Chat or call driver": the link to the Trip chat page, sent whenever the
+ * rider taps it on the ride card (links expire). The newest one
  * carries the trip's status light. After the trip, the rider is told the
  * chat has closed and where to go instead. The message id when a chat
  * message went out, else null.

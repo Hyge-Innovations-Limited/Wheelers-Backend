@@ -341,6 +341,12 @@ async function carPhotoFor(deps: StartGatewayConsumerDeps, driverId: string): Pr
   }
 }
 
+/** A car's model or plate worth showing a rider — never a placeholder. */
+function knownVehicleText(value: string | null | undefined): string | undefined {
+  const text = value?.trim();
+  return text && !/^unknown$/i.test(text) ? text : undefined;
+}
+
 /**
  * Still in the search: waiting on the rider, or declined by them (a declined
  * driver's card stays live and red — they can bid again). When the ride is
@@ -855,10 +861,13 @@ export async function handleRideEvent(
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
       {
         const arrivedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
+        // The car as the rider will see it at the kerb: the driver's profile wins
+        // over whatever the bid carried (an old "UNKNOWN" placeholder, or nothing).
+        const car = event.driverId ? await driverClient.findById(event.driverId).catch(() => null) : null;
         await sendDriverArrivedNotification(deps.whatsappNotifier, phone, {
-          driverName: arrivedBid?.driverName,
-          vehicleModel: arrivedBid?.vehicleModel,
-          vehiclePlate: arrivedBid?.vehiclePlate,
+          driverName: arrivedBid?.driverName ?? car?.user?.name?.split(' ')[0] ?? undefined,
+          vehicleModel: knownVehicleText(car?.vehicleModel) ?? knownVehicleText(arrivedBid?.vehicleModel),
+          vehiclePlate: knownVehicleText(car?.vehiclePlate) ?? knownVehicleText(arrivedBid?.vehiclePlate),
           driverPhone: arrivedBid?.driverPhone,
           carPhotoUrl: await carPhotoFor(deps, event.driverId),
         }).catch(() => {});
