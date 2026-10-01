@@ -2,9 +2,9 @@ import { loadWorkspaceEnv, validateNotificationEnv, validateSharedEnv } from '@w
 import { prisma, userClient, type NotificationDevice } from '@wheleers/db';
 import { createConsumer } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS, type PushSendEvent } from '@wheleers/kafka-schemas';
+import { sendPush } from './expo-push';
 
 const SERVICE_ID = 'notification-worker';
-const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
 
 bootstrap().catch((err) => {
   console.error(`[${SERVICE_ID}] fatal`, err);
@@ -51,7 +51,8 @@ async function bootstrap(): Promise<void> {
       }
     }
 
-    console.log(`[${SERVICE_ID}] ${event.eventType} -> user=${event.userId}`);
+    // PUSH_SEND says for itself what happened (sent to how many phones, or none registered).
+    if (event.eventType !== 'PUSH_SEND') console.log(`[${SERVICE_ID}] ${event.eventType} -> user=${event.userId}`);
   });
 
   console.log(`[${SERVICE_ID}] consuming — Expo pushes ${notificationEnv.EXPO_ACCESS_TOKEN ? 'WITH an access token' : 'without an access token (fine unless Expo enhanced security is on)'}`);
@@ -81,72 +82,18 @@ async function handlePushSend(
   expoAccessToken: string | undefined,
 ): Promise<void> {
   const devices = await userClient.listActiveNotificationDevices(event.userId);
-  if (devices.length === 0) {
-    return;
-  }
-
-  const messages = devices.map((device: NotificationDevice) => ({
-    to: device.expoPushToken,
-    title: event.title,
-    body: event.body,
-    data: event.data,
-    priority: event.priority === 'high' ? 'high' : 'default',
-    sound: 'default',
-  }));
-
-  const response = await fetch(EXPO_PUSH_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-      // Only a REAL token. This used to default to "Bearer dev", which Expo
-      // rejects outright — so with no token configured, every push to every
-      // driver and rider failed with 401. No header at all is accepted.
-      ...(expoAccessToken ? { authorization: `Bearer ${expoAccessToken}` } : {}),
+  await sendPush(
+    {
+      fetch,
+      accessToken: expoAccessToken,
+      markDelivered: (token) => userClient.touchNotificationDeviceDelivery(token),
+      disable: (token) => userClient.disableNotificationDevice(token),
+      log: (message) => console.log(message),
+      warn: (message) => console.warn(message),
+      later: (fn, ms) => { setTimeout(() => void fn(), ms).unref(); },
     },
-    body: JSON.stringify(messages),
-  });
-
-  const payload = (await response.json().catch(() => null)) as
-    | {
-        data?: Array<{
-          status?: string;
-          details?: {
-            error?: string;
-          };
-        }>;
-        errors?: Array<{ message?: string }>;
-      }
-    | null;
-
-  if (!response.ok) {
-    const message =
-      payload?.errors?.map((error) => error.message).filter(Boolean).join('; ') ||
-      `Expo push send failed with status ${response.status}`;
-    throw new Error(message);
-  }
-
-  const results = Array.isArray(payload?.data) ? payload.data : [];
-  await Promise.all(
-    devices.map(async (device: NotificationDevice, index: number) => {
-      const result = results[index];
-      if (!result) {
-        return;
-      }
-
-      if (result.status === 'ok') {
-        await userClient.touchNotificationDeviceDelivery(device.expoPushToken);
-        return;
-      }
-
-      if (result.details?.error === 'DeviceNotRegistered') {
-        await userClient.disableNotificationDevice(device.expoPushToken);
-        return;
-      }
-
-      console.warn(
-        `[${SERVICE_ID}] push delivery warning token=${device.expoPushToken} status=${result.status ?? 'unknown'} error=${result.details?.error ?? 'unknown'}`,
-      );
-    }),
+    event.userId,
+    devices.map((device: NotificationDevice) => ({ expoPushToken: device.expoPushToken })),
+    { title: event.title, body: event.body, data: event.data, priority: event.priority },
   );
 }
