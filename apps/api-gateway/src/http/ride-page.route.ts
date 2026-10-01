@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { rideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
@@ -11,7 +11,8 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { getAcceptedBid, getActiveRide, getBids, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute } from '../whatsapp-flows/bid-state';
+import { getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute } from '../whatsapp-flows/bid-state';
+import { tripPageUrl } from '../trip-chat/whatsapp';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
@@ -176,12 +177,19 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
     const planned = await getLastRoute(deps.redisClient, userId).catch(() => null);
     const geometry = planned?.route as { coordinates?: Array<{ lat: number; lng: number }> } | undefined;
     const line = Array.isArray(geometry?.coordinates) ? geometry.coordinates.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number') : [];
+    // Before the trip starts: the code the rider gives the driver (not for a group seat).
+    const beforeStart = trip.status !== 'IN_PROGRESS';
+    const groupSeat = beforeStart ? await getGroupSeat(deps.redisClient, trip.rideId).catch(() => null) : null;
+    const tripCode = beforeStart && !groupSeat ? await tripCodeClient.ensure(trip.rideId).catch(() => null) : null;
     return {
       phase: 'confirmed' as const, rideId: trip.rideId, balanceNgn, route: trip.route, offerNgn: trip.fareNgn,
       driver: {
         name: trip.driver.name, phone: trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
       },
+      tripCode,
+      // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
+      tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
       trip: {
         tripId: trip.tripId,
         status: trip.status,

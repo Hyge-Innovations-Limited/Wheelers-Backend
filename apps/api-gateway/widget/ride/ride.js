@@ -69,6 +69,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('.stop.mid'), function (row) { row.parentNode.removeChild(row); });
     Array.prototype.forEach.call(document.querySelectorAll('[data-route="dest"]'), function (dest) {
       var destRow = dest.closest('.stop');
+      if (!destRow) return;
       stops.forEach(function (address, index) {
         var row = el('div', 'stop mid');
         row.appendChild(el('span', 'dot mid'));
@@ -246,8 +247,12 @@
     seenOffers = count;
 
     drawOffers(list, showingDeclined, s.offerNgn);
-    W.show(W.$('list-head'), list.length > 0);
-    W.$('offer-count').textContent = showingDeclined ? 'Declined' : count === 1 ? '1 waiting' : count + ' waiting';
+    W.$('offers-title').textContent = showingDeclined
+      ? 'Offers declined'
+      : count === 0 ? 'Driver offers' : count === 1 ? '1 driver offered' : count + ' drivers offered';
+    W.$('offers-lede').textContent = count > 0 && !showingDeclined
+      ? 'Pick one. New offers show up here as drivers answer.'
+      : 'Drivers near you can see your price. Offers show up here.';
     W.show(W.$('decline-all'), count > 0 && !paying && !showingDeclined);
 
     var back = W.$('back-to-chat');
@@ -531,12 +536,31 @@
     var call = W.$('d-call');
     W.show(call, Boolean(driver.phone));
     if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);
+    var chat = W.$('d-chat');
+    W.show(chat, Boolean(s.tripChatUrl));
+    if (s.tripChatUrl) chat.setAttribute('href', s.tripChatUrl);
+    // Before the trip: the code to give the driver. Then: when they arrive.
+    W.show(W.$('d-code-box'), Boolean(s.tripCode));
+    W.show(W.$('d-eta-box'), !s.tripCode);
+    W.$('d-code').textContent = s.tripCode || '';
   }
 
   /* ── the loop ─────────────────────────────────────────────────────────── */
 
+  /** The badge in the header: where the booking is, at a glance. */
+  function drawPill(next) {
+    var pill = W.$('top-pill');
+    var text = next.phase === 'price' ? 'Step 1 of 2'
+      : next.phase === 'offers' ? 'Live'
+      : '';
+    pill.textContent = text;
+    pill.className = 'top-pill' + (next.phase === 'offers' ? ' live' : '');
+    W.show(pill, Boolean(text));
+  }
+
   function apply(next) {
     var before = state && state.phase;
+    drawPill(next);
     state = next;
     if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; declinedOnce = false; }
 
