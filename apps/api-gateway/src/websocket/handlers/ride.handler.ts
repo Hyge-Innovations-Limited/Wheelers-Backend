@@ -476,7 +476,21 @@ export async function handleRideMessage(
       ? await rideClient.findActiveByDriver(driverId).catch(() => null)
       : null;
     if (!driver || driver.status !== 'ONLINE' || !seenRecently || busyRide) {
-      await driverBidClient.markWithdrawn(rideId, driverId).catch(() => {});
+      // Gone or on another trip: their bid is over. Only stepped away (app in
+      // the background): it stays held — their open bids wait for them.
+      const away = Boolean(driver) && !busyRide;
+      if (!away) await driverBidClient.markWithdrawn(rideId, driverId).catch(() => {});
+      if (away) {
+        return {
+          type: 'ride:accept_offer:rejected',
+          payload: {
+            rideId,
+            driverId,
+            reason: 'driver_away',
+            message: "That driver's app is closed for a moment. Try again in a minute, or pick another offer.",
+          },
+        };
+      }
       return {
         type: 'ride:accept_offer:rejected',
         payload: {

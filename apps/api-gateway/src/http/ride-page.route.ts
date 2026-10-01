@@ -342,6 +342,7 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
   RIDE_GONE: { status: 409, message: 'This search has ended.' },
   OFFER_GONE: { status: 409, message: 'That offer is no longer on the table.' },
   DRIVER_UNAVAILABLE: { status: 409, message: 'That driver just became unavailable — your money has not moved. Pick another offer.' },
+  DRIVER_AWAY: { status: 409, message: "That driver's app is closed for a moment — we've sent them a notification. Try again in a minute, or pick another offer. Your money has not moved." },
   DRIVER_TAKEN: { status: 409, message: 'Another rider is confirming that driver right now. Pick another offer.' },
   HOLD_FAILED: { status: 503, message: 'Could not hold the fare in your wallet. Please try again.' },
   CONFIRM_FAILED: { status: 503, message: 'Could not confirm just now — your money is held safely. Tap Accept again.' },

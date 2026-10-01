@@ -15,7 +15,7 @@ const WebSocket = require('../apps/api-gateway/node_modules/ws');
 const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
 const { SocketRegistry } = require('../apps/api-gateway/dist/websocket/registry.js');
 const { createRateLimiter } = require('../apps/api-gateway/dist/websocket/rate-limit.js');
-const { createDriverOfflineGrace, DRIVER_OFFLINE_GRACE_MS } = require('../apps/api-gateway/dist/websocket/driver-offline-grace.js');
+const { createDriverOfflineGrace, DRIVER_OFFLINE_GRACE_MS, BID_HOLD_AFTER_DISCONNECT_MS } = require('../apps/api-gateway/dist/websocket/driver-offline-grace.js');
 const { createLeaderLock } = require('../apps/api-gateway/dist/cluster/leader.js');
 const { createGatewayWebSocketServer } = require('../apps/api-gateway/dist/websocket/server.js');
 const local = require('../apps/api-gateway/dist/auth/local.js');
@@ -357,6 +357,64 @@ test('a driver still heard from over HTTP is given another grace, then goes offl
   await sleep(50);
   assert.equal(published.length, 1, 'silence everywhere: offline');
   assert.equal(await driverPresence.get(driverId), null);
+});
+
+test('a driver who stepped away comes off new requests at once, but their bids wait 10 minutes for them', async () => {
+  await main.send('FLUSHDB');
+  const connected = { value: false };
+  const told = [];
+  const published = [];
+  const registry = { isUserConnected: async () => connected.value, sendToUser: async (userId, type, payload) => { told.push({ userId, type, payload }); } };
+  const publisher = { publishDriverEvent: async (event) => { published.push(event); } };
+  const grace = createDriverOfflineGrace({ redis: await redis(), registry, publisher });
+
+  const riderId = randomUUID();
+  const driverUserId = randomUUID();
+  await prisma.user.createMany({ data: [
+    { id: riderId, privyDid: `test:hold:${riderId}`, role: 'RIDER', name: 'Hold Rider' },
+    { id: driverUserId, privyDid: `test:hold:${driverUserId}`, role: 'DRIVER', name: 'Hold Driver' },
+  ] });
+  const driver = await prisma.driver.create({ data: { userId: driverUserId, kycStatus: 'APPROVED', status: 'ONLINE', lat: YABA.lat, lng: YABA.lng, lastSeenAt: new Date() } });
+  const ride = await prisma.ride.create({ data: { riderId, status: 'MATCHING', pickupLat: YABA.lat, pickupLng: YABA.lng, pickupAddress: 'Yaba', destLat: 6.52, destLng: 3.38, destAddress: 'Akoka', riderOfferNgn: 18000, fareEstimateNgn: 18000, distanceKm: 3, paymentMethod: 'WALLET' } });
+  await prisma.driverBid.create({ data: { rideId: ride.id, driverId: driver.id, driverUserId, riderId, amountNgn: 18000, etaSeconds: 180 } });
+  const bidStatus = async () => (await prisma.driverBid.findFirst({ where: { rideId: ride.id } })).status;
+
+  try {
+    const t0 = Date.now();
+    await grace.schedule({ userId: driverUserId, driverId: driver.id }, t0 - DRIVER_OFFLINE_GRACE_MS);
+    assert.equal(await grace.sweep(t0), 1);
+    await sleep(80);
+    assert.equal(published.filter((e) => e.eventType === 'DRIVER_OFFLINE').length, 1, 'off new requests');
+    assert.equal(await bidStatus(), 'PENDING', 'their bid is still on the table');
+    assert.equal(told.filter((m) => m.type === 'ride:bid_withdrawn').length, 0, 'and their card is not touched');
+
+    assert.equal(await grace.sweep(t0 + BID_HOLD_AFTER_DISCONNECT_MS - 1000), 0, 'nothing more inside the hold');
+    assert.equal(await grace.sweep(t0 + BID_HOLD_AFTER_DISCONNECT_MS + 1000), 1);
+    await sleep(80);
+    assert.equal(await bidStatus(), 'WITHDRAWN', 'still gone after the hold: now it goes');
+    assert.equal(told.filter((m) => m.type === 'ride:bid_withdrawn' && m.userId === driverUserId).length, 1);
+  } finally {
+    await prisma.driverBid.deleteMany({ where: { rideId: ride.id } });
+    await prisma.ride.delete({ where: { id: ride.id } });
+    await prisma.driver.delete({ where: { id: driver.id } });
+    await prisma.user.deleteMany({ where: { id: { in: [riderId, driverUserId] } } });
+  }
+});
+
+test('back within the hold: the bids were never touched', async () => {
+  await main.send('FLUSHDB');
+  const connected = { value: false };
+  const told = [];
+  const registry = { isUserConnected: async () => connected.value, sendToUser: async (userId, type) => { told.push(type); } };
+  const grace = createDriverOfflineGrace({ redis: await redis(), registry, publisher: { publishDriverEvent: async () => {} } });
+  const driverId = randomUUID();
+  const t0 = Date.now();
+  await grace.schedule({ userId: randomUUID(), driverId }, t0 - DRIVER_OFFLINE_GRACE_MS);
+  assert.equal(await grace.sweep(t0), 1);
+  await grace.cancel(driverId);          // they opened the app again
+  assert.equal(await grace.sweep(t0 + BID_HOLD_AFTER_DISCONNECT_MS + 1000), 0);
+  await sleep(50);
+  assert.equal(told.includes('ride:bid_withdrawn'), false);
 });
 
 // ── The socket server's guards ──────────────────────────────────────────────

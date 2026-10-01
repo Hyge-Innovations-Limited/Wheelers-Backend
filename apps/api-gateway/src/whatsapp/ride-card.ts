@@ -431,6 +431,10 @@ export async function acceptOfferInChat(
       await clearPendingAccept(deps.redisClient, user.id);
       await log(await sendCurrentOffers(deps, phone, rideId, `${bid.driverName} can't be reached right now. Nothing was charged. Pick another driver.`));
       return;
+    case 'DRIVER_AWAY':
+      await clearPendingAccept(deps.redisClient, user.id);
+      await log(await sendCurrentOffers(deps, phone, rideId, `${bid.driverName}'s app is closed for a moment — we've sent them a notification. Try again in a minute, or pick another driver. Nothing was charged.`));
+      return;
     case 'DRIVER_TAKEN':
       await clearPendingAccept(deps.redisClient, user.id);
       await log(await sendCurrentOffers(deps, phone, rideId, `Another rider is booking ${bid.driverName} right now. Nothing was charged. Pick another driver.`));
@@ -552,6 +556,13 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
       return true;
     }
     if (result.code === 'ALREADY_CONFIRMING') return true;   // their own tap got there first and is speaking
+    if (result.code === 'DRIVER_AWAY') {
+      // Their app is closed for a moment and they have been pinged: the choice stays, "pay" books them.
+      const reply = `${received}\n\n*${pending.driverName}*'s app is closed for a moment — we've sent them a notification. Reply *pay* in a minute to book them, or pick another driver. Your money is safe in your wallet.`;
+      await log(reply);
+      await sendMetaReply(deps, phone, reply);
+      return true;
+    }
     if (result.code === 'HOLD_FAILED' || result.code === 'CONFIRM_FAILED') {
       const reply = `${received}\n\nI couldn't book *${pending.driverName}* just now. Reply *pay* to try again.`;
       await log(reply);

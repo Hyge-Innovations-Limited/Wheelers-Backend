@@ -192,6 +192,22 @@ export async function declineAllOffers(deps: RideServiceDeps, riderId: string, r
 
 /* ── accept an offer ────────────────────────────────────────────────────── */
 
+/** "A rider wants to book you" — once a minute at most, however often the rider taps. */
+async function pingAwayDriver(deps: RideServiceDeps, rideId: string, driverUserId: string): Promise<void> {
+  const first = await deps.redisClient.setIfNotExists(`ride:${rideId}:pinged:${driverUserId}`, '1', 60).catch(() => true);
+  if (!first) return;
+  await deps.publisher.publishNotificationEvent({
+    eventType: 'PUSH_SEND',
+    notificationId: randomUUID(),
+    userId: driverUserId,
+    title: 'A rider wants to book you',
+    body: 'They tapped Accept on your offer. Open Wheelers now so they can confirm you.',
+    data: { type: 'rider_waiting', rideId },
+    priority: 'high',
+    timestamp: new Date().toISOString(),
+  }).catch(() => undefined);
+}
+
 export interface ConfirmedRide {
   rideId: string;
   fareNgn: number;
@@ -210,7 +226,7 @@ export interface ConfirmedRide {
 
 export type ConfirmResult =
   | { ok: true; ride: ConfirmedRide }
-  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' }
+  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' }
   | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number };
 
 /**
@@ -268,7 +284,17 @@ async function confirmOnce(
   const driver = await driverClient.findById(bid.driverId).catch(() => null);
   const fresh = driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
   const busy = driver ? await rideClient.findActiveByDriver(bid.driverId).catch(() => null) : null;
-  if (!driver || driver.status !== 'ONLINE' || !fresh || busy) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
+  if (!driver || busy) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
+  if (driver.status !== 'ONLINE' || !fresh) {
+    // Stepped away (another app, phone in a pocket) with their bid still held:
+    // nothing is lost — they are pinged, and the rider can try again in a
+    // moment or pick someone else. A bid that was withdrawn is really gone.
+    const held = (await driverBidClient.findByRide(rideId).catch(() => []))
+      .some((row) => row.driverId === bid.driverId && row.status === 'PENDING');
+    if (!held) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
+    await pingAwayDriver(deps, rideId, bid.driverUserId);
+    return { ok: false, code: 'DRIVER_AWAY' };
+  }
 
   const driverClaimKey = `whatsapp:driver:${bid.driverId}:accepting`;
   const claimed = await deps.redisClient.setIfNotExists(driverClaimKey, rideId, 60).catch(() => true);

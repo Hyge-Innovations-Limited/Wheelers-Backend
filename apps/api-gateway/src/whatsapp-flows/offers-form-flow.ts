@@ -313,6 +313,8 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
         `Your wallet has ${naira(result.balanceNgn)} and the fare is ${naira(result.fareNgn)}. The Add money button is in your chat — the moment it lands, ${bid.driverName.split(' ')[0]} is confirmed by itself.`, false);
     case 'DRIVER_UNAVAILABLE':
       return offersScreen(deps, rideId, `${bid.driverName} can't be reached right now — your money has not moved. Pick another driver.`);
+    case 'DRIVER_AWAY':
+      return offersScreen(deps, rideId, `${bid.driverName}'s app is closed for a moment — we've sent them a notification. Try again in a minute, or pick another driver. Your money has not moved.`);
     case 'DRIVER_TAKEN':
       return offersScreen(deps, rideId, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`);
     case 'ALREADY_CONFIRMING':

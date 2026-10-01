@@ -25,6 +25,14 @@ import type { SocketRegistry } from './registry';
  */
 
 export const DRIVER_OFFLINE_GRACE_MS = 45_000;
+/**
+ * A driver who stepped away (switched apps, phone in a pocket without the
+ * background heartbeat) comes off NEW requests after the grace — but the bids
+ * they already sent stay on the table this long. Until the rider pays anything
+ * can happen; a bid used to vanish 45 seconds after the driver glanced at
+ * WhatsApp, and their card read "Your offer was withdrawn".
+ */
+export const BID_HOLD_AFTER_DISCONNECT_MS = 10 * 60_000;
 const SWEEP_EVERY_MS = 5_000;
 const SWEEP_BATCH = 100;
 /** After a restart thousands fall due together; one pass takes this many and leaves the rest to the next. */
@@ -44,6 +52,8 @@ interface GraceMeta {
   userId: string;
   since: number;
   extended: boolean;
+  /** Set once they are off new requests: the next check is the one that withdraws their bids. */
+  away?: boolean;
 }
 
 export async function withdrawDriverFromMarket(registry: SocketRegistry, driverUserId: string): Promise<void> {
@@ -66,7 +76,7 @@ export async function withdrawDriverFromMarket(registry: SocketRegistry, driverU
 export function createDriverOfflineGrace(deps: GraceDeps) {
   const { redis, registry, publisher } = deps;
   const verbose = deps.verbose === true;
-  const tally = { keptOnline: 0, takenOffline: 0 };
+  const tally = { keptOnline: 0, takenOffline: 0, bidsWithdrawn: 0 };
 
   /** The socket closed: start (or restart) the grace. */
   async function schedule(auth: { userId: string; driverId: string }, now = Date.now()): Promise<void> {
@@ -132,7 +142,20 @@ export function createDriverOfflineGrace(deps: GraceDeps) {
       return;
     }
 
-    await redis.send('HDEL', META_KEY, driverId);
+    if (meta.away) {
+      // Still gone, long after they came off new requests: now their bids go.
+      await redis.send('HDEL', META_KEY, driverId);
+      tally.bidsWithdrawn += 1;
+      if (verbose) console.info('[ws] driver still away — open bids withdrawn', { driverId, awayForMs: now - meta.since });
+      void withdrawDriverFromMarket(registry, meta.userId);
+      return;
+    }
+
+    // Off NEW requests now; the bids they sent wait for them a while longer.
+    await Promise.all([
+      redis.send('ZADD', DUE_KEY, String(now + BID_HOLD_AFTER_DISCONNECT_MS), driverId),
+      redis.send('HSET', META_KEY, driverId, JSON.stringify({ ...meta, away: true } satisfies GraceMeta)),
+    ]);
     tally.takenOffline += 1;
     if (verbose) {
       console.info('[ws] driver offline after disconnect grace', {
@@ -152,7 +175,6 @@ export function createDriverOfflineGrace(deps: GraceDeps) {
       )
       .catch(() => undefined);
     void driverPresence.remove(driverId);
-    void withdrawDriverFromMarket(registry, meta.userId);
   }
 
   /** One pass: every grace that has run out, claimed and checked. Returns how many this process handled. */
@@ -185,10 +207,11 @@ export function createDriverOfflineGrace(deps: GraceDeps) {
     } finally {
       sweeping = false;
     }
-    if (tally.keptOnline + tally.takenOffline > 0) {
+    if (tally.keptOnline + tally.takenOffline + tally.bidsWithdrawn > 0) {
       console.info('[ws] disconnect grace', { ...tally });
       tally.keptOnline = 0;
       tally.takenOffline = 0;
+      tally.bidsWithdrawn = 0;
     }
     return handled;
   }

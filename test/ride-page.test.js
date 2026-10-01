@@ -69,7 +69,7 @@ function world() {
   const deps = {
     jwtSecret: JWT_SECRET,
     redisClient: redis,
-    publisher: { publishRideEvent: async (event) => { events.push(event); } },
+    publisher: { publishRideEvent: async (event) => { events.push(event); }, publishNotificationEvent: async (event) => { events.push(event); } },
     paymentsClient: {},
     notifyChat: async (event) => { chat.push(event); },
   };
@@ -327,6 +327,31 @@ test('a driver who went quiet, went offline, or is being taken by someone else c
     assert.equal(result.body.code, code);
   }
   assert.equal((await call(deps, rider, 'POST', '/ride-page/accept', { key: 'not-an-offer' })).body.code, 'OFFER_GONE');
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: rider } })).lockedNgn), 0);
+});
+
+test('a driver who stepped away with their bid still held: not refused for good — pinged once, the rider can try again, no money moves', async () => {
+  const { deps, redis, events } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const { body } = await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+
+  const away = await makeDriver({ status: 'OFFLINE', seenSecondsAgo: 120 });
+  const bid = bidFrom(away, 6400);
+  await prisma.ride.upsert({ where: { id: body.rideId }, update: {}, create: { id: body.rideId, riderId: rider, status: 'MATCHING', pickupLat: QUOTE.pickupLat, pickupLng: QUOTE.pickupLng, pickupAddress: QUOTE.pickupAddress, destLat: QUOTE.destLat, destLng: QUOTE.destLng, destAddress: QUOTE.destAddress, riderOfferNgn: 6400, fareEstimateNgn: 6400, distanceKm: QUOTE.distanceKm, paymentMethod: 'WALLET' } });
+  await prisma.driverBid.create({ data: { id: bid.bidId, rideId: body.rideId, driverId: away.driverId, driverUserId: away.userId, riderId: rider, amountNgn: 6400, etaSeconds: 240 } });
+  await bidState.addBid(redis, body.rideId, bid);
+
+  for (let tap = 0; tap < 2; tap += 1) {
+    const result = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, 'DRIVER_AWAY');
+    assert.match(result.body.error, /sent them a notification/);
+  }
+  const pings = events.filter((e) => e.eventType === 'PUSH_SEND' && e.userId === away.userId);
+  assert.equal(pings.length, 1, 'pinged once, not per tap');
+  assert.equal(pings[0].data.type, 'rider_waiting');
+  assert.equal((await prisma.driverBid.findUnique({ where: { id: bid.bidId } })).status, 'PENDING', 'the bid is still held');
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: rider } })).lockedNgn), 0);
 });
 

@@ -255,10 +255,10 @@
     if (s.chatUrl) back.setAttribute('href', s.chatUrl);
   }
 
-  /** How a driver's price sits next to the rider's: "Your price", "₦200 more", "₦300 less". */
+  /** How a driver's price sits next to the rider's: "Took your price", "₦200 more", "₦300 less". */
   function versusYours(priceNgn, yoursNgn) {
     var gap = Math.round(Number(priceNgn) - Number(yoursNgn));
-    if (!yoursNgn || gap === 0) return { text: 'Your price', tone: 'same' };
+    if (!yoursNgn || gap === 0) return { text: 'Took your price', tone: 'same' };
     return gap > 0
       ? { text: W.naira(gap) + ' more', tone: 'up' }
       : { text: W.naira(-gap) + ' less', tone: 'down' };
