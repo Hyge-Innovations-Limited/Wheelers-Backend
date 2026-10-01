@@ -68,11 +68,14 @@
     stopsDrawn = signature;
     Array.prototype.forEach.call(document.querySelectorAll('.stop.mid'), function (row) { row.parentNode.removeChild(row); });
     Array.prototype.forEach.call(document.querySelectorAll('[data-route="dest"]'), function (dest) {
-      var destRow = dest.parentNode;
-      stops.forEach(function (address) {
+      var destRow = dest.closest('.stop');
+      stops.forEach(function (address, index) {
         var row = el('div', 'stop mid');
         row.appendChild(el('span', 'dot mid'));
-        row.appendChild(el('span', 'where', address));
+        var place = el('div', 'place');
+        place.appendChild(el('span', 'label', stops.length > 1 ? 'Stop ' + (index + 1) : 'Stop'));
+        place.appendChild(el('span', 'where', address));
+        row.appendChild(place);
         destRow.parentNode.insertBefore(row, destRow);
       });
     });
@@ -121,8 +124,38 @@
   function closeSheets() {
     W.show(W.$('sheet-offer'), false);
     W.show(W.$('sheet-pay'), false);
+    W.show(W.$('sheet-confirm'), false);
     W.show(W.$('overlay'), false);
+    if (asking) { var answer = asking; asking = null; answer(false); }
   }
+
+  /**
+   * A question in the page's own sheet — never the browser's confirm() box,
+   * which says "The page at app.wheelersng.com says" and looks like a warning
+   * from somewhere else. Resolves true only on the red button.
+   */
+  var asking = null;
+  function ask(options) {
+    return new Promise(function (resolve) {
+      openSheet('sheet-confirm');
+      W.$('sc-title').textContent = options.title;
+      W.$('sc-text').textContent = options.text;
+      W.$('sc-yes').textContent = options.yes;
+      W.$('sc-no').textContent = options.no;
+      asking = resolve;
+      setTimeout(function () { W.$('sc-no').focus(); }, 30);
+    });
+  }
+  W.$('sc-yes').addEventListener('click', function () {
+    var answer = asking;
+    asking = null;
+    closeSheets();
+    if (answer) answer(true);
+  });
+  W.$('sc-no').addEventListener('click', closeSheets);
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !W.$('overlay').hidden) W.$('overlay').click();
+  });
   W.$('overlay').addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (button) {
     button.addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
@@ -212,7 +245,9 @@
     if (seenOffers !== null && count > seenOffers && !paying) say(count - seenOffers === 1 ? 'New offer' : (count - seenOffers) + ' new offers', 'good');
     seenOffers = count;
 
-    drawOffers(list, showingDeclined);
+    drawOffers(list, showingDeclined, s.offerNgn);
+    W.show(W.$('list-head'), list.length > 0);
+    W.$('offer-count').textContent = showingDeclined ? 'Declined' : count === 1 ? '1 waiting' : count + ' waiting';
     W.show(W.$('decline-all'), count > 0 && !paying && !showingDeclined);
 
     var back = W.$('back-to-chat');
@@ -220,30 +255,51 @@
     if (s.chatUrl) back.setAttribute('href', s.chatUrl);
   }
 
+  /** How a driver's price sits next to the rider's: "Your price", "₦200 more", "₦300 less". */
+  function versusYours(priceNgn, yoursNgn) {
+    var gap = Math.round(Number(priceNgn) - Number(yoursNgn));
+    if (!yoursNgn || gap === 0) return { text: 'Your price', tone: 'same' };
+    return gap > 0
+      ? { text: W.naira(gap) + ' more', tone: 'up' }
+      : { text: W.naira(-gap) + ' less', tone: 'down' };
+  }
+
   /** One card per offer: white while open, green while paying, red once declined. */
-  function drawOffers(offers, asDeclined) {
+  function drawOffers(offers, asDeclined, yoursNgn) {
     var holder = W.$('offer-list');
     holder.innerHTML = '';
     offers.forEach(function (offer) {
       var isPaying = paying && paying.key === offer.key;
       var card = el('div', 'offer' + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
       var top = el('div', 'offer-top');
+      var name = offer.driverName || 'Driver';
+      top.appendChild(el('div', 'avatar', name.trim().charAt(0).toUpperCase()));
       var who = el('div', 'who');
-      who.appendChild(el('strong', '', offer.driverName || 'Driver'));
+      who.appendChild(el('strong', '', name));
       who.appendChild(el('span', '', [
         offer.rating ? '★ ' + Number(offer.rating).toFixed(1) : '',
-        offer.vehicle || '',
-        offer.plate || ''
+        offer.vehicle || ''
       ].filter(Boolean).join(' · ')));
       top.appendChild(who);
-      top.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
+      var price = el('div', 'price', W.naira(offer.priceNgn));
+      var versus = versusYours(offer.priceNgn, yoursNgn);
+      price.appendChild(el('small', versus.tone, versus.text));
+      top.appendChild(price);
       card.appendChild(top);
-      card.appendChild(el('div', 'offer-meta', minutes(offer.etaMin) + ' away' + (offer.distanceKm ? ' · ' + Number(offer.distanceKm).toFixed(1) + ' km' : '')));
+
+      var facts = el('div', 'offer-facts');
+      facts.appendChild(el('span', 'pill', minutes(offer.etaMin) + ' away'));
+      if (offer.distanceKm) facts.appendChild(el('span', 'pill', Number(offer.distanceKm).toFixed(1) + ' km to you'));
+      if (offer.plate) facts.appendChild(el('span', 'pill plate', offer.plate));
+      card.appendChild(facts);
 
       if (asDeclined) {
         card.appendChild(el('div', 'offer-status', 'Declined'));
       } else if (isPaying) {
-        card.appendChild(el('div', 'offer-status', 'Making payment…'));
+        var status = el('div', 'offer-status');
+        status.appendChild(el('span', 'spinner'));
+        status.appendChild(document.createTextNode('Making payment…'));
+        card.appendChild(status);
       } else {
         var accept = el('button', 'btn primary', 'Accept ' + W.naira(offer.priceNgn));
         accept.type = 'button';
@@ -296,7 +352,17 @@
 
   W.$('decline-all').addEventListener('click', function () {
     if (busy || !state || state.phase !== 'offers') return;
-    if (!window.confirm('Decline every offer? The search goes on, and new offers can still come in.')) return;
+    var count = (state.offers || []).length;
+    ask({
+      title: count === 1 ? 'Decline this offer?' : 'Decline all ' + count + ' offers?',
+      text: 'We keep looking for a driver, and new offers still come in here. The drivers you decline won’t see this trip again.',
+      yes: count === 1 ? 'Decline offer' : 'Decline all',
+      no: 'Keep offers'
+    }).then(function (yes) { if (yes) declineAll(); });
+  });
+
+  function declineAll() {
+    if (busy || !state || state.phase !== 'offers') return;
     busy = true;
     var shownOffers = (state.offers || []).slice();
     W.api('POST', '/ride-page/decline-all').then(function (next) {
@@ -308,7 +374,7 @@
       if (error.status === 401) return W.fatal(error.message);
       say(error.message, 'bad');
     }).then(function () { busy = false; });
-  });
+  }
 
   /* change the bid */
 
@@ -348,7 +414,17 @@
   /* cancel */
 
   W.$('cancel-search').addEventListener('click', function () {
-    if (busy || !window.confirm('Stop looking for a driver? Nothing has been charged.')) return;
+    if (busy) return;
+    ask({
+      title: 'Stop looking for a driver?',
+      text: 'Nothing has been charged. You can book again from the chat any time.',
+      yes: 'Cancel search',
+      no: 'Keep looking'
+    }).then(function (yes) { if (yes) cancelSearch(); });
+  });
+
+  function cancelSearch() {
+    if (busy) return;
     busy = true;
     W.api('POST', '/ride-page/cancel').then(function (next) {
       apply(next);
@@ -358,7 +434,7 @@
       if (error.status === 401) return W.fatal(error.message);
       say(error.message, 'bad');
     }).then(function () { busy = false; });
-  });
+  }
 
   /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
 
@@ -400,7 +476,7 @@
     }
     // The planned road, once: pickup to destination through the stops.
     if (!routeLine && trip.line && trip.line.length > 1) {
-      routeLine = L.polyline(trip.line.map(function (p) { return [p.lat, p.lng]; }), { color: '#F97316', weight: 5, opacity: 0.85 }).addTo(map);
+      routeLine = L.polyline(trip.line.map(function (p) { return [p.lat, p.lng]; }), { color: '#FF7700', weight: 5, opacity: 0.9 }).addTo(map);
     }
 
     var position = trip.driverPosition;

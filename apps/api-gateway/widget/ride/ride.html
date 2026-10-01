@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#FFFFFF">
+<meta name="theme-color" content="#FEFAEF">
 <meta name="format-detection" content="telephone=no">
 <link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="preload" href="fonts/ClashDisplay-Semibold.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="ride.css">
 <title>Your price · Wheelers</title>
 </head>
@@ -38,13 +39,13 @@
 
   <!-- 1 · name your price -->
   <section data-view="price" hidden>
-    <p class="eyebrow">Your trip</p>
+    <p class="eyebrow"><span class="eyebrow-dot"></span>Your trip</p>
     <h1>Name your <em>price</em></h1>
 
     <div class="card trip">
-      <div class="stop"><span class="dot from"></span><span class="where" data-route="pickup"></span></div>
-      <div class="stop"><span class="dot to"></span><span class="where" data-route="dest"></span></div>
-      <div class="trip-meta"><span data-route="distance"></span><span data-route="time"></span></div>
+      <div class="stop"><span class="dot from"></span><div class="place"><span class="label">Pickup</span><span class="where" data-route="pickup"></span></div></div>
+      <div class="stop"><span class="dot to"></span><div class="place"><span class="label">Drop-off</span><span class="where" data-route="dest"></span></div></div>
+      <div class="trip-meta"><span class="pill" data-route="distance"></span><span class="pill" data-route="time"></span></div>
     </div>
 
     <label class="amount" for="price-input"><span class="naira">₦</span><input id="price-input" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Your price in naira"></label>
@@ -58,16 +59,16 @@
 
   <!-- 2 · the price is out — drivers' offers, live -->
   <section data-view="offers" hidden>
-    <p class="eyebrow ok">Your price is out</p>
+    <p class="eyebrow ok"><span class="eyebrow-dot"></span>Your price is out</p>
     <h1>Driver <em>offers</em></h1>
 
     <div class="card trip compact">
-      <div class="stop"><span class="dot from"></span><span class="where" data-route="pickup"></span></div>
-      <div class="stop"><span class="dot to"></span><span class="where" data-route="dest"></span></div>
+      <div class="stop"><span class="dot from"></span><div class="place"><span class="label">Pickup</span><span class="where" data-route="pickup"></span></div></div>
+      <div class="stop"><span class="dot to"></span><div class="place"><span class="label">Drop-off</span><span class="where" data-route="dest"></span></div></div>
     </div>
 
     <div class="mine">
-      <div><span class="label">Your offer</span><span class="big" id="my-offer"></span></div>
+      <div><span class="label">Your price</span><span class="big" id="my-offer"></span></div>
       <button class="btn small" type="button" id="change-offer">Change</button>
     </div>
 
@@ -76,6 +77,7 @@
       <div><strong id="sent-title">Asking drivers near you…</strong><span id="sent-text">Offers show up here as drivers answer.</span></div>
     </div>
 
+    <div class="list-head" id="list-head" hidden><h2>Offers</h2><span class="count" id="offer-count"></span></div>
     <div class="offer-list" id="offer-list" aria-live="polite"></div>
     <button class="btn decline" type="button" id="decline-all" hidden>Decline all offers</button>
 
@@ -86,7 +88,7 @@
 
   <!-- 3 · confirmed -->
   <section data-view="confirmed" hidden>
-    <p class="eyebrow ok" id="trip-eyebrow">Ride confirmed</p>
+    <p class="eyebrow ok"><span class="eyebrow-dot"></span><span id="trip-eyebrow">Ride confirmed</span></p>
     <h1 id="trip-title">Your driver is <em>on the way</em></h1>
 
     <div class="map-card" id="map-card" hidden>
@@ -139,6 +141,14 @@
     <div><strong>Waiting for your transfer…</strong><span id="pay-note">Your driver is booked the moment it lands. You don’t need to tap anything again.</span></div>
   </div>
   <button class="btn quiet" type="button" data-close>Choose another driver</button>
+</div>
+
+<div class="sheet confirm" id="sheet-confirm" hidden role="alertdialog" aria-modal="true" aria-labelledby="sc-title" aria-describedby="sc-text">
+  <div class="confirm-mark" aria-hidden="true">!</div>
+  <h2 id="sc-title"></h2>
+  <p class="sub" id="sc-text"></p>
+  <button class="btn danger" type="button" id="sc-yes"></button>
+  <button class="btn" type="button" id="sc-no"></button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
