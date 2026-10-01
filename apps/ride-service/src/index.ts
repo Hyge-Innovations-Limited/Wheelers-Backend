@@ -102,6 +102,12 @@ export type PendingRideMatch = {
   /** Only set for group rides. */
   group?: PendingRideGroupInfo;
   /**
+   * When this search closes (epoch ms) — set with its bid timeout. Every offer
+   * of this ride carries it, so a re-send (a reconnect, a nudge, a rebuild)
+   * shows the same countdown instead of starting the clock over.
+   */
+  closesAt?: number;
+  /**
    * Drivers an operator sent this ride to (admin nudge). They get it however
    * far away they are: at once when online, the moment they go online if not.
    */
@@ -222,7 +228,9 @@ async function bootstrap(): Promise<void> {
           if (!pending.candidates.some((c) => c.driverId === event.driverId)) {
             pending.candidates.push(driver);
           }
-          const expiresAt = new Date(Date.now() + RIDE.OFFER_TTL_SECONDS * 1000);
+          // The search's own clock: a driver coming back online sees the time
+          // actually left, not a fresh half hour.
+          const expiresAt = new Date(pending.closesAt ?? Date.now() + RIDE.OFFER_TTL_SECONDS * 1000);
           await rideEventsProducer.broadcastRideOffer({
             drivers: [driver],
             rideRequested: pending.rideRequested,

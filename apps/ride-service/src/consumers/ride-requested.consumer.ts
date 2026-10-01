@@ -26,6 +26,11 @@ const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
 const BID_TIMEOUT_MS = RIDE.BID_TIMEOUT_SECONDS * 1000;
 /** A rebuilt auction (after a restart) gets at least this long, whatever is left of its window. */
 const REBUILT_MIN_WINDOW_MS = 60_000;
+/** Every offer of a ride shows when ITS search closes — the same instant on a first send and on any re-send. */
+function searchClock(pending: PendingRideMatch | undefined): Date {
+  return new Date(pending?.closesAt ?? Date.now() + OFFER_TTL_MS);
+}
+
 /** A rider has one search at a time: a new request ends the older one, wherever it came from. */
 const SUPERSEDED_REASON = 'Replaced by a newer request';
 
@@ -252,19 +257,17 @@ export function createRideRequestedConsumer(params: {
       counterOfferDrivers: new Map(),
     });
 
-    // Broadcast to ALL nearby drivers simultaneously
-    const expiresAt = new Date(Date.now() + OFFER_TTL_MS);
+    // The search's clock first: every offer of this ride, now or re-sent later, shows it.
+    startBidTimeout(event);
 
+    // Broadcast to ALL nearby drivers simultaneously
     await rideEventsProducer.broadcastRideOffer({
       drivers: result.drivers,
       rideRequested: event,
-      expiresAt,
+      expiresAt: searchClock(state.pendingMatchesByRideId.get(event.rideId)),
     });
 
     console.log(`[ride-service] broadcasted ride ${event.rideId} to ${result.drivers.length} drivers`);
-
-    // Start bid timeout
-    startBidTimeout(event);
   }
 
   /**
@@ -342,7 +345,7 @@ export function createRideRequestedConsumer(params: {
     await rideEventsProducer.broadcastRideOffer({
       drivers: [withDistance],
       rideRequested: pending.rideRequested,
-      expiresAt: new Date(Date.now() + OFFER_TTL_MS),
+      expiresAt: searchClock(pending),
       group: pending.group,
     });
     console.log(`[ride-service] ride ${event.rideId} sent by an operator to driver ${event.driverId} (${withDistance.distanceKm.toFixed(1)}km away)`);
@@ -388,7 +391,8 @@ export function createRideRequestedConsumer(params: {
     }
     startBidTimeout(pending.rideRequested);
 
-    const expiresAt = new Date(Date.now() + OFFER_TTL_MS);
+    // The rider's new price restarted the search window: that is the clock now.
+    const expiresAt = searchClock(pending);
     // For a seat counter, the card's headline number is the updated TOTAL —
     // the per-seat change itself travels in group.members.
     const broadcastOfferNgn = seatMember
@@ -586,9 +590,11 @@ export function createRideRequestedConsumer(params: {
       });
     }, windowMs);
     timeout.unref();
+    const closesAt = Date.now() + windowMs;
 
     if (pending) {
       pending.timeout = timeout;
+      pending.closesAt = closesAt;
     } else {
       // No drivers found — create a minimal pending entry for the timeout
       state.pendingMatchesByRideId.set(event.rideId, {
@@ -597,6 +603,7 @@ export function createRideRequestedConsumer(params: {
         attemptedDriverIds: new Set(),
         offeredDriverId: null,
         timeout,
+        closesAt,
         counterOfferDrivers: new Map(),
       });
     }
@@ -701,7 +708,7 @@ export function createRideRequestedConsumer(params: {
       await rideEventsProducer.broadcastRideOffer({
         drivers,
         rideRequested,
-        expiresAt: new Date(Date.now() + OFFER_TTL_MS),
+        expiresAt: searchClock(pending),
       });
     }
     console.info('[ride-service] search rebuilt from the database', {
