@@ -40,7 +40,11 @@ export const driverBidClient = {
       },
     }),
 
-  /** The rider picked this driver: their bid won, every other open bid lost. */
+  /**
+   * The rider picked this driver: their bid won, every other open bid lost.
+   * Open includes DECLINED — a declined driver is still in the search (their
+   * card is live, red) until the ride goes, so it ends for them too.
+   */
   markAccepted: (rideId: string, driverId: string) => {
     const now = new Date();
     return prisma.$transaction([
@@ -49,7 +53,7 @@ export const driverBidClient = {
         data: { status: 'ACCEPTED', resolvedAt: now },
       }),
       prisma.driverBid.updateMany({
-        where: { rideId, driverId: { not: driverId }, status: 'PENDING' },
+        where: { rideId, driverId: { not: driverId }, status: { in: ['PENDING', 'DECLINED'] } },
         data: { status: 'LOST', resolvedAt: now },
       }),
     ]);
@@ -70,7 +74,8 @@ export const driverBidClient = {
   /** The auction ended with nobody chosen — timeout or cancellation. */
   resolvePending: (rideId: string, status: Extract<DriverBidStatus, 'EXPIRED' | 'CANCELLED'>) =>
     prisma.driverBid.updateMany({
-      where: { rideId, status: 'PENDING' },
+      // DECLINED bids are still open (the driver can bid again): they end with the search too.
+      where: { rideId, status: { in: ['PENDING', 'DECLINED'] } },
       data: { status, resolvedAt: new Date() },
     }),
 

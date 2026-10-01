@@ -341,6 +341,15 @@ async function carPhotoFor(deps: StartGatewayConsumerDeps, driverId: string): Pr
   }
 }
 
+/**
+ * Still in the search: waiting on the rider, or declined by them (a declined
+ * driver's card stays live and red — they can bid again). When the ride is
+ * taken, cancelled or times out, both are told.
+ */
+function isOpenBid(status: string): boolean {
+  return status === 'PENDING' || status === 'DECLINED';
+}
+
 /** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
 export async function handleRideEvent(
   event: RideEvent,
@@ -573,7 +582,7 @@ export async function handleRideEvent(
     // who has money on this table; tell each of them before resolving.
     const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
     for (const bid of openBids) {
-      if (bid.status !== 'PENDING') continue;
+      if (!isOpenBid(bid.status)) continue;
       void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
         rideId: event.rideId,
       });
@@ -661,7 +670,7 @@ export async function handleRideEvent(
       });
     });
     for (const losing of losingBids) {
-      if (losing.driverId === event.driverId || losing.status !== 'PENDING') continue;
+      if (losing.driverId === event.driverId || !isOpenBid(losing.status)) continue;
       void registry.sendToUser(losing.driverUserId, 'ride:bid_lost', {
         rideId: event.rideId,
       });
@@ -975,7 +984,7 @@ export async function handleRideEvent(
     // timeout: to a bidder, "request gone" is all that matters.
     const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
     for (const bid of openBids) {
-      if (bid.status !== 'PENDING') continue;
+      if (!isOpenBid(bid.status)) continue;
       if (event.driverUserId && bid.driverUserId === event.driverUserId) continue;
       void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
         rideId: event.rideId,

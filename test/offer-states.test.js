@@ -13,6 +13,7 @@ const { driverBidClient } = require('../packages/db/dist/index.js');
 const { declineAllOffers } = require('../apps/api-gateway/dist/rides/whatsapp-ride.service.js');
 const { getBids } = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { createRideRequestedConsumer } = require('../apps/ride-service/dist/consumers/ride-requested.consumer.js');
+const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
 
 const prisma = new PrismaClient();
 const made = { users: [], rides: [] };
@@ -92,6 +93,35 @@ test('the rider accepts one driver: every OTHER driver who got the request is li
   assert.ok(told.includes(other.userId) && told.includes(silent.userId), 'bidders and non-bidders alike');
   assert.ok(!told.includes(winner.userId), 'never the winner');
   for (const p of state.pendingMatchesByRideId.values()) if (p.timeout) clearTimeout(p.timeout);
+});
+
+test('the rider pays one driver: every other bidder\'s request ends at once — including a driver they had declined', async () => {
+  const riderId = await user('RIDER');
+  const rideId = await openRide(riderId);
+  const winner = await driver(); const waiting = await driver(); const declined = await driver();
+  for (const d of [winner, waiting, declined]) await driverBidClient.record({ rideId, driverId: d.driverId, driverUserId: d.userId, riderId, amountNgn: 3000, etaSeconds: 300 });
+  await prisma.driverBid.updateMany({ where: { rideId, driverId: declined.driverId }, data: { status: 'DECLINED' } });
+
+  const told = [];
+  const deps = {
+    registry: { sendToUser: async (userId, type, payload) => { told.push({ userId, type, payload }); }, isUserConnected: async () => false },
+    redisClient: memoryRedis(),
+    publisher: { publishRideEvent: async () => {}, publishDriverEvent: async () => {}, publishNotificationEvent: async () => {} },
+  };
+  await handleRideEvent({
+    eventType: 'RIDE_DRIVER_ASSIGNED', rideId, riderId, driverId: winner.driverId, driverUserId: winner.userId,
+    driverName: 'Winner', driverRating: 5, vehiclePlate: 'LAG1', vehicleModel: 'Camry', etaSeconds: 180,
+    agreedFareNgn: 3000, lockedFareNgn: 3000, paymentMethod: 'WALLET',
+    offeredDriverUserIds: [winner.userId, waiting.userId, declined.userId], timestamp: new Date().toISOString(),
+  }, deps, new Map());
+
+  const taken = (userId) => told.filter((m) => m.userId === userId && m.type === 'ride:bid_lost').length;
+  assert.equal(taken(waiting.userId), 1, 'the driver waiting on the rider: taken');
+  assert.equal(taken(declined.userId), 1, 'the declined driver too — their red card closes');
+  assert.equal(taken(winner.userId), 0, 'never the winner');
+  const status = async (d) => (await prisma.driverBid.findFirst({ where: { rideId, driverId: d.driverId } })).status;
+  assert.equal(await status(waiting), 'LOST');
+  assert.equal(await status(declined), 'LOST', 'not left DECLINED, which the app would rebuild as a live card');
 });
 
 test.after(async () => {
