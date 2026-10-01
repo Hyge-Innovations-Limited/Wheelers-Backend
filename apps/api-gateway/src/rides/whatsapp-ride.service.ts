@@ -185,7 +185,6 @@ export async function declineAllOffers(deps: RideServiceDeps, riderId: string, r
     rideId,
     riderId,
     driverUserIds: declined.map((bid) => bid.driverUserId),
-    driverIds: declined.map((bid) => bid.driverId),
     timestamp: new Date().toISOString(),
   });
   return { declined: declined.length };

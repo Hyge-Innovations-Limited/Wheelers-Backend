@@ -355,7 +355,7 @@
     var count = (state.offers || []).length;
     ask({
       title: count === 1 ? 'Decline this offer?' : 'Decline all ' + count + ' offers?',
-      text: 'We keep looking for a driver, and new offers still come in here. The drivers you decline won’t see this trip again.',
+      text: 'We keep looking for a driver. New offers still come in here, and these drivers can send you a new price too.',
       yes: count === 1 ? 'Decline offer' : 'Decline all',
       no: 'Keep offers'
     }).then(function (yes) { if (yes) declineAll(); });

@@ -1,11 +1,10 @@
-import { driverBidClient, driverClient, rideClient } from '@wheleers/db';
+import { driverClient, rideClient } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, zoneFor } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
 import {
   safeParseKafkaEvent,
   TOPICS,
-  type RideBidsDeclinedEvent,
   type RideCancelledEvent,
   type RideCounterOfferEvent,
   type RideRiderCounterOfferEvent,
@@ -61,11 +60,6 @@ export function createRideRequestedConsumer(params: {
 
       if (event.eventType === 'RIDE_DISPATCH_DIRECTED') {
         await handleDispatchDirected(event);
-        return;
-      }
-
-      if (event.eventType === 'RIDE_BIDS_DECLINED') {
-        handleBidsDeclined(event);
         return;
       }
 
@@ -352,27 +346,6 @@ export function createRideRequestedConsumer(params: {
       group: pending.group,
     });
     console.log(`[ride-service] ride ${event.rideId} sent by an operator to driver ${event.driverId} (${withDistance.distanceKm.toFixed(1)}km away)`);
-  }
-
-  /**
-   * The rider declined every offer and the search goes on. Those drivers are
-   * done with this ride: their card reads "Declined", so the ride must not
-   * come back to them as a new request — not on a reconnect (onDriverOnline
-   * skips attemptedDriverIds), not with the rider's next price (that goes to
-   * candidates only).
-   */
-  function handleBidsDeclined(event: RideBidsDeclinedEvent): void {
-    const pending = findPendingForRideId(event.rideId);
-    if (!pending) return;
-    const declinedUsers = new Set(event.driverUserIds);
-    const declinedDrivers = new Set(event.driverIds ?? []);
-    for (const candidate of pending.candidates) {
-      if (declinedUsers.has(candidate.userId)) declinedDrivers.add(candidate.driverId);
-    }
-    if (declinedDrivers.size === 0) return;
-    for (const driverId of declinedDrivers) pending.attemptedDriverIds.add(driverId);
-    pending.candidates = pending.candidates.filter((candidate) => !declinedDrivers.has(candidate.driverId));
-    console.log(`[ride-service] rider declined ${declinedDrivers.size} offer(s) on ride ${event.rideId} — those drivers won't get it again`);
   }
 
   async function handleRiderCounterOffer(event: RideRiderCounterOfferEvent): Promise<void> {
@@ -699,17 +672,13 @@ export function createRideRequestedConsumer(params: {
       { stopOrder: rideRequested.stops.length, type: 'final' as const, status: 'pending' as const, lat: ride.destLat, lng: ride.destLng, address: ride.destAddress },
     ]);
 
-    // Drivers the rider declined stay declined across a restart.
-    const declinedDriverIds = (await driverBidClient.findByRide(rideId).catch(() => []))
-      .filter((bid) => bid.status === 'DECLINED')
-      .map((bid) => bid.driverId);
-    const attemptedDriverIds = new Set<string>(declinedDriverIds);
-    if (options.excludeDriverId) attemptedDriverIds.add(options.excludeDriverId);
-
     const result = await matchDriver({ rideEnv, onlineDrivers: state.onlineDrivers, rideRequested });
     const drivers = result.ok
-      ? result.drivers.filter((driver) => !attemptedDriverIds.has(driver.driverId))
+      ? result.drivers.filter((driver) => driver.driverId !== options.excludeDriverId)
       : [];
+
+    const attemptedDriverIds = new Set<string>();
+    if (options.excludeDriverId) attemptedDriverIds.add(options.excludeDriverId);
 
     const existing = state.pendingMatchesByRideId.get(ride.id);
     if (existing?.timeout) clearTimeout(existing.timeout);
