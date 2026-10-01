@@ -60,6 +60,8 @@ export async function sendOffersPageMessage(
   rideId: string,
   pageUrl: string,
   trip: { pickupAddress: string; destAddress: string; stopAddresses?: string[] },
+  /** Another message carries the button instead (e.g. "Your driver had to cancel"): its words, not "Your bid is in". */
+  bodyText?: string,
 ): Promise<boolean> {
   const response = await fetch(`https://graph.facebook.com/v21.0/${deps.meta.metaPhoneNumberId}/messages`, {
     method: 'POST',
@@ -71,7 +73,7 @@ export async function sendOffersPageMessage(
       type: 'interactive',
       interactive: {
         type: 'cta_url',
-        body: { text: bidPlacedText(trip) },
+        body: { text: bodyText ?? bidPlacedText(trip) },
         action: { name: 'cta_url', parameters: { display_text: 'See driver offers', url: pageUrl } },
       },
     }),

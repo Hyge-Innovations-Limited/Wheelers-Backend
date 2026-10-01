@@ -682,22 +682,25 @@ export function setGroupRideChecker(check: (rideId: string) => Promise<boolean>)
   groupRideChecker = check;
 }
 
-export async function sendRideCancelledNotification(
-  deps: WhatsappNotifierDeps,
-  phone: string,
-  details: {
-    /** Raw machine reason (e.g. driver_cancelled) — never shown verbatim. */
-    reason?: string;
-    cancelledBy?: 'rider' | 'driver' | 'system';
-    /** Money that was held for this ride and is now back in the wallet. */
-    refundedNgn?: number;
-    balanceNgn?: number;
-    /** The rider's own reason, when they cancelled in the chat: it leads the message. */
-    riderReason?: string;
-    /** The driver cancelled and the search goes on: say so, not "book another ride". */
-    searchingAgain?: boolean;
-  },
-): Promise<void> {
+export interface RideCancelledDetails {
+  /** Raw machine reason (e.g. driver_cancelled) — never shown verbatim. */
+  reason?: string;
+  cancelledBy?: 'rider' | 'driver' | 'system';
+  /** Money that was held for this ride and is now back in the wallet. */
+  refundedNgn?: number;
+  balanceNgn?: number;
+  /** The rider's own reason, when they cancelled in the chat: it leads the message. */
+  riderReason?: string;
+  /** The driver cancelled and the search goes on: say so, not "book another ride". */
+  searchingAgain?: boolean;
+}
+
+/**
+ * What the rider reads when a ride is cancelled. `withOffersButton`: this very
+ * message carries "See driver offers" (the search goes on after a driver bailed),
+ * so it points at the button below, not at an older message.
+ */
+export function rideCancelledText(details: RideCancelledDetails, options: { withOffersButton?: boolean } = {}): string {
   // A rider must never see a raw enum, and after paying they must be told —
   // in the same breath — that their money is back. "driver_cancelled" with
   // no refund line reads like a scam.
@@ -719,9 +722,30 @@ export async function sendRideCancelledNotification(
     );
   }
   lines.push('', details.searchingAgain
-    ? "We're finding you another driver. Tap *See driver offers* on your bid message to watch the offers come in."
+    ? options.withOffersButton
+      ? "We're finding you another driver. Tap *See driver offers* below — new offers show up there, and the number on this message counts them."
+      : "We're finding you another driver. Tap *See driver offers* on your bid message to watch the offers come in."
     : 'Need another ride? Send your trip anytime.');
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+  return lines.join('\n');
+}
+
+export async function sendRideCancelledNotification(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  details: {
+    /** Raw machine reason (e.g. driver_cancelled) — never shown verbatim. */
+    reason?: string;
+    cancelledBy?: 'rider' | 'driver' | 'system';
+    /** Money that was held for this ride and is now back in the wallet. */
+    refundedNgn?: number;
+    balanceNgn?: number;
+    /** The rider's own reason, when they cancelled in the chat: it leads the message. */
+    riderReason?: string;
+    /** The driver cancelled and the search goes on: say so, not "book another ride". */
+    searchingAgain?: boolean;
+  },
+): Promise<void> {
+  await sendMetaWhatsappMessage(deps, phone, rideCancelledText(details));
 }
 
 /** A driver whose offer was on the rider's list is no longer available. */

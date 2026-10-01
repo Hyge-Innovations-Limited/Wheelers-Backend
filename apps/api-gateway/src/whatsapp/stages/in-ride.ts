@@ -373,6 +373,23 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
       }
     }
 
+    // ── "What's my balance?" while searching — answer it, not with the offers ──
+    if (isBalanceQuestion(incomingMessage)) {
+      const wallet = await walletClient.findByUserId(user.id).catch(() => null);
+      const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
+      const reply = [
+        `Your wallet balance is *₦${balanceNgn.toLocaleString()}*.`,
+        '',
+        "Your search is still on. Tap *See driver offers* on your bid message to see who has answered.",
+      ].join('\n');
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: incomingMessage },
+        { role: 'assistant', content: reply },
+      ]);
+      await sendMetaReply(deps, phone, reply);
+      return true;
+    }
+
     // ── Chose a driver, still adding money — point back at the one button ──
     if (pendingAccept) {
       const wallet = await walletClient.findByUserId(user.id);
@@ -398,4 +415,16 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
     ]);
     return true;
     return false;
+}
+
+/**
+ * "What's my balance", "how much is in my wallet", "my balance?" — asking, not
+ * moving money. A search must not swallow it and answer with the offers.
+ */
+export function isBalanceQuestion(message: string): boolean {
+  const text = message.trim().toLowerCase();
+  if (!text || /\b(deposit|withdraw|send|transfer|top ?up|fund|add money|cash ?out)\b/.test(text)) return false;
+  return /\b(balance|bal)\b/.test(text)
+    || /how much (do i have|(money )?(is |do i have )?(in|on) my (wallet|account))/.test(text)
+    || /^(my )?wallet\??$/.test(text);
 }

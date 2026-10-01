@@ -124,6 +124,7 @@ import {
 } from "./http/live-map.route";
 import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
 import { lookupUserIdByPhone } from "./whatsapp-flows/bid-state";
+import { ridePageUrl } from "./whatsapp/trip";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -2356,6 +2357,7 @@ async function bootstrap(): Promise<void> {
     // A rider who tapped a driver and went to add money: the deposit confirms the ride.
     onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
     stellar,
+    ridePageUrlFor: (userId: string) => ridePageUrl(buildMetaWhatsappDeps(), userId),
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in

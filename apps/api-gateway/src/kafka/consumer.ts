@@ -48,6 +48,7 @@ import {
   storeLastCompletedRide,
   getLastBatch,
   takeChatCancellation,
+  clearBids,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
@@ -61,6 +62,7 @@ import {
   sendRideCompletedNotification,
   setGroupRideChecker,
   sendRideCancelledNotification,
+  rideCancelledText,
   sendBidTimeoutNotification,
   sendOfferWithdrawnNotification,
   sendRiderPaidNotification,
@@ -70,7 +72,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
-import { clearOfferCount, hasOffersPageMessage, showOfferCount } from '../whatsapp-flows/offers-page-message';
+import { clearOfferCount, hasOffersPageMessage, sendOffersPageMessage, showOfferCount } from '../whatsapp-flows/offers-page-message';
 import { loadTripChat } from '../trip-chat/access';
 import { setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
@@ -94,6 +96,8 @@ export interface StartGatewayConsumerDeps {
   onWhatsappDeposit?: (deposit: { userId: string; amountNgn: number; newBalanceNgn: number }) => Promise<boolean>;
   /** Stellar Testnet mirror (grant deliverable 3). Absent when STELLAR_ENABLED is off. */
   stellar?: StellarService | null;
+  /** The rider's own link to the offers page — for the message that reopens a search after a driver bailed. */
+  ridePageUrlFor?: (userId: string) => string | null;
 }
 
 interface RideParticipantState {
@@ -979,6 +983,8 @@ export async function handleRideEvent(
     }
 
     await driverBidClient.resolvePending(event.rideId, 'CANCELLED').catch(() => {});
+    // The chosen driver's bid too: the trip it won is gone (see cancelAccepted).
+    await driverBidClient.cancelAccepted(event.rideId).catch(() => {});
 
     // Release wallet hold so locked funds return to rider's balance.
     // wallet-service releases it too (consumer race) — whichever ran first,
@@ -990,6 +996,14 @@ export async function handleRideEvent(
     // locked for the re-match told nobody, asked the rider to pay a second
     // time, and could leave it locked for good.
     const driverBailed = event.cancelledBy === 'driver';
+    if (driverBailed) {
+      // The search starts again. The offers on the table were the old search's:
+      // the driver who just left, and the ones who lost to them. "1 driver found"
+      // for the driver who bailed is not an offer.
+      await clearBids(deps.redisClient, event.rideId).catch(() => {});
+      await storeLastBatch(deps.redisClient, event.rideId, []).catch(() => {});
+      await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
+    }
     const holdRelease = await walletClient.cancelRideHold(event.rideId).catch(() => null);
 
     const releasedReferralCashback = await referralClient.releaseRideCashback(
@@ -1004,14 +1018,29 @@ export async function handleRideEvent(
     const phone = toldInChat?.phone ?? await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       if (!superseded) {
-        await sendRideCancelledNotification(deps.whatsappNotifier, phone, {
+        const details = {
           reason: event.reason,
           cancelledBy: event.cancelledBy,
           refundedNgn: holdRelease?.holdAmountNgn,
           balanceNgn: holdRelease ? Number(holdRelease.wallet.balanceNgn) : undefined,
           riderReason: toldInChat?.reason,
           searchingAgain: driverBailed,
-        }).catch(() => {});
+        };
+        // A driver bailed and the search goes on: this one message says so AND
+        // carries "See driver offers" — it becomes the search's offers message,
+        // with the count of new offers on it. The old "Your bid is in" was closed
+        // when the driver was chosen.
+        const pageUrl = driverBailed ? deps.ridePageUrlFor?.(event.riderId) ?? null : null;
+        const countDeps = offerCountDeps(deps);
+        const sentWithButton = pageUrl && countDeps
+          ? await sendOffersPageMessage(countDeps, phone, event.rideId, pageUrl, { pickupAddress: '', destAddress: '' }, rideCancelledText(details, { withOffersButton: true }))
+              .catch(() => false)
+          : false;
+        if (sentWithButton) {
+          await markOffersMessageSent(deps.redisClient, event.rideId).catch(() => undefined);
+        } else {
+          await sendRideCancelledNotification(deps.whatsappNotifier, phone, details).catch(() => {});
+        }
       }
       if (driverBailed) {
         // Back to bidding on the same ride: new offers land in the same chat.

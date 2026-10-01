@@ -55,6 +55,18 @@ export const driverBidClient = {
     ]);
   },
 
+  /**
+   * The trip itself was cancelled after a driver was chosen (by them, by the
+   * rider, by the system). Their bid stops reading ACCEPTED: the driver app
+   * rebuilds cards from these rows, and an ACCEPTED one came back as a green
+   * "Starting your trip…" for a trip that no longer exists.
+   */
+  cancelAccepted: (rideId: string) =>
+    prisma.driverBid.updateMany({
+      where: { rideId, status: 'ACCEPTED' },
+      data: { status: 'CANCELLED', resolvedAt: new Date() },
+    }),
+
   /** The auction ended with nobody chosen — timeout or cancellation. */
   resolvePending: (rideId: string, status: Extract<DriverBidStatus, 'EXPIRED' | 'CANCELLED'>) =>
     prisma.driverBid.updateMany({
