@@ -381,6 +381,8 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
         `Your wallet balance is *₦${balanceNgn.toLocaleString()}*.`,
         '',
         "Your search is still on. Tap *See driver offers* on your bid message to see who has answered.",
+        '',
+        'To change your price, send the new amount here (e.g. *3000*), or tap *Quick Actions* → *Your current trip* → *Change my price*.',
       ].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },

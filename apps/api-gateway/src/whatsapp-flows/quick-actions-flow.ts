@@ -36,9 +36,9 @@ import { handleOffersFormFlow, offersScreen, republishLastSearch, OFFERS_FORM_AC
  *   BOOK_REVIEW   the trip with its stops, one more look            [Confirm trip]
  *   REVIEW_TRIP   the planned trip and its fare      [Confirm trip] → SET_PRICE
  *   SET_PRICE     the price                          [Find drivers] → DONE
- *   STATUS        the current trip: the driver on the way, or the search with
- *                 a button that keeps checking for offers → OFFERS
- *   OFFERS        the offers form's own list: accept, change price, decline
+ *   STATUS        the current trip once a driver is on it (or a group seat)
+ *   OFFERS        the current trip while it is still a search — the offers
+ *                 form's own list, offers or none: accept, change price, decline
  *   CHANGE_PRICE  all, cancel — the same handler, so the money rules are not
  *   CANCEL_SEARCH restated here
  *   ADD_MONEY     the account number to transfer to, right on the screen
@@ -200,7 +200,7 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       ? (driver === 'driving' ? 'Your driver is driving you now' : 'Your driver is on the way — where things are')
       : seat ? 'Your group ride — where things are'
       : await getBids(deps.redisClient, activeRideId).then((bids) => (bids.length === 0
-        ? 'Still looking for drivers — check for offers'
+        ? 'Still looking for drivers — check for offers or change your price'
         : bids.length === 1 ? '1 driver offer waiting for you' : `${bids.length} driver offers waiting for you`)).catch(() => 'See where your ride is');
     choices.push({ id: MENU_IDS.current, title: 'Your current trip', description });
   } else {
@@ -436,9 +436,10 @@ async function planPastTrip(trip: PastTrip, backwards: boolean, userId: string, 
 
 /**
  * The current trip. A driver on the way: their details, and the chat holds the
- * card. Still searching: the offers list when there are offers, otherwise a
- * screen whose one button checks again — waiting a few seconds each time, so
- * a rider tapping it is effectively watching the search live.
+ * card. Still searching: the offers list, offers or none — an empty list still
+ * carries Check for more offers, Change my price and Cancel search, so a rider
+ * nobody has answered yet can raise their price right here instead of being
+ * left with a button that only checks again.
  */
 async function statusOrOffers(rideId: string, userId: string, deps: QuickActionsFlowDeps, wait: boolean): Promise<FlowScreen> {
   const [driver, meta, seat] = await Promise.all([driverOnRide(deps.redisClient, rideId), getRideMeta(deps.redisClient, rideId), getGroupSeat(deps.redisClient, rideId).catch(() => null)]);
@@ -486,25 +487,9 @@ async function statusOrOffers(rideId: string, userId: string, deps: QuickActions
       bids = await getBids(deps.redisClient, rideId);
     }
   }
-  if (bids.length > 0) {
-    // They are looking at the offers: the next one that arrives may buzz them again.
-    await markOffersMessageOpened(deps.redisClient, rideId).catch(() => undefined);
-    return offersScreen(offersDeps(deps), rideId);
-  }
-  return {
-    screen: 'STATUS',
-    data: {
-      headline: 'Looking for drivers',
-      line_1: clip(`${shortPlace(meta.pickupAddress)} → ${shortPlace(meta.destinationAddress)}`, 200),
-      line_2: `Your price: ${naira(meta.offerNgn)}`,
-      line_3: '',
-      has_line_3: false,
-      note: wait
-        ? 'No offers yet. Drivers usually answer within a minute — tap below to check again, or wait for the offers message in your chat.'
-        : 'No offers yet. Drivers near you are seeing your request now. Tap below to check for offers.',
-      cta_label: 'Check for offers',
-    },
-  };
+  // They are looking at the search: the next offer that arrives may buzz them again.
+  await markOffersMessageOpened(deps.redisClient, rideId).catch(() => undefined);
+  return offersScreen(offersDeps(deps), rideId);
 }
 
 async function statusNext(userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {

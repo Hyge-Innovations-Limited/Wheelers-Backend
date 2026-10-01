@@ -2397,20 +2397,32 @@ test('QUICK ACTIONS FORM · Book a ride starts CLEAN: a Repeat they walked away 
   assert.equal((await form('INIT')).data.choices[0].id, 'book', 'nothing to continue any more');
 });
 
-test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose button keeps checking for offers — and the offers list, right there, when one lands', async () => {
+test('QUICK ACTIONS FORM · mid-search: Your current trip is the live offers list even with no offers yet — Change my price is right there — and an offer shows on it when one lands', async () => {
   const at = await searchingRider(10_000);
   const form = menuForm(at);
   const opened = await form('INIT');
   assert.deepEqual(opened.data.choices.map((c) => c.id), ['current', 'deposit'], 'no Book, Repeat or Withdraw with a ride going');
-  assert.match(opened.data.choices[0].description, /Still looking/);
+  assert.match(opened.data.choices[0].description, /Still looking[\s\S]*change your price/);
   assert.match((await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU')).data.error, /already have a ride in progress/);
 
+  // Nobody has answered yet: not a dead-end "Check for offers" screen, but the list with the ways forward on it.
   const status = await form('data_exchange', { action: 'menu_choice', choice: 'current' }, 'MENU');
-  assert.equal(status.screen, 'STATUS');
-  assert.equal(status.data.cta_label, 'Check for offers');
-  assert.match(status.data.line_2, /Your price: ₦2,000/);
+  assert.equal(status.screen, 'OFFERS');
+  assert.match(status.data.offer_line, /Your price: ₦2,000/);
+  assert.match(status.data.count_line, /No offers yet/);
+  assert.deepEqual(status.data.choices.map((c) => c.title), ['Check for more offers', 'Change my price', 'Cancel search']);
 
-  // The button checks again — waiting a few seconds for a driver — and lands on the offers when one answers.
+  // The bid is changed right here, with no offer on the table.
+  const priceBox = await form('data_exchange', { action: 'offers_choice', choice: 'change_price' }, 'OFFERS');
+  assert.equal(priceBox.screen, 'CHANGE_PRICE');
+  assert.equal(priceBox.data.current_price, '2000');
+  const raised = await form('data_exchange', { action: 'update_price', new_price: '3000' }, 'CHANGE_PRICE');
+  assert.equal(raised.screen, 'OFFERS');
+  assert.match(raised.data.error, /Price updated to ₦3,000/);
+  assert.match(raised.data.offer_line, /Your price: ₦3,000/);
+  assert.equal((await bidState.getRideMeta(at.redis, at.rideId)).offerNgn, 3000);
+
+  // A STATUS screen left open from before still works: its button waits a few seconds and lands on the offers.
   setTimeout(() => onlineDriver().then((driver) => bidState.addBid(at.redis, at.rideId, offerFrom(driver, 2400))), 300);
   const offers = await form('data_exchange', { action: 'status_next' }, 'STATUS');
   assert.equal(offers.screen, 'OFFERS');
