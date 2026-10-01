@@ -5,7 +5,15 @@ export const RATE_PER_KM_NGN = 375;
  * suggested price, by construction.
  */
 export const MAX_RATE_PER_KM_NGN = 500;
-export const PLATFORM_FEE_NGN = 0;
+/**
+ * Wheelers' booking fee: flat, on every ride, since 2026-10-01. It is part of
+ * the price — the suggested fare is the distance price PLUS this — and it is
+ * Wheelers' before anything else: whatever the agreed fare, the first ₦375 is
+ * the booking fee and the rest is the driver's share.
+ */
+export const BOOKING_FEE_NGN = 375;
+/** The booking fee is the platform's part of a suggested fare. (Old name.) */
+export const PLATFORM_FEE_NGN = BOOKING_FEE_NGN;
 export const MIN_OFFER_DISCOUNT = 0.17;
 /**
  * Hard floor on what any ride can cost, regardless of distance. Nothing —
@@ -16,12 +24,21 @@ export const MIN_OFFER_DISCOUNT = 0.17;
 export const MIN_FARE_NGN = 2500;
 export const FARE_ROUNDING_INCREMENT = 100;
 /**
- * What comes off a fare before the driver is paid, since 2026-09-26:
- * a flat service fee, a 4% platform fee (shown to riders and drivers as
- * "Fees"), and the Lagos state levy. There is no separate VAT line.
+ * What comes off a fare before the driver is paid, since 2026-10-01:
+ *
+ *   fare ₦3,500
+ *   − booking fee ₦375 (Wheelers')         = driver's share ₦3,125
+ *   − commission 4% of the driver's share   ₦125
+ *   − VAT 7.5% of the driver's share        ₦234.38
+ *   − Lagos state levy                      ₦30
+ *   = the driver is paid                    ₦2,735.62
+ *
+ * The driver's share is what they see per km (₦3,125 over 10 km = ₦312.5/km).
  */
-export const SERVICE_FEE_NGN = 375; // ₦375 flat per ride
-export const PLATFORM_FEE_RATE = 0.04; // 4% of the fare — "Fees"
+export const SERVICE_FEE_NGN = BOOKING_FEE_NGN; // the booking fee's old name
+export const COMMISSION_RATE = 0.04; // 4% of the driver's share — "Commission"
+export const PLATFORM_FEE_RATE = COMMISSION_RATE; // old name
+export const VAT_RATE = 0.075; // 7.5% of the driver's share
 export const LAGOS_STATE_FEE_NGN = 30; // ₦30 flat per ride
 
 export type SuggestedFare = {
@@ -44,7 +61,9 @@ export function calculateSuggestedFare(distanceKm: number): SuggestedFare {
     throw new TypeError('distanceKm must be a finite number >= 0');
   }
 
-  const rawFare = RATE_PER_KM_NGN * distanceKm + PLATFORM_FEE_NGN;
+  // The distance price plus the booking fee, rounded UP to ₦100 for the rider.
+  // (Drivers never see this rounding: they see their share per km, exactly.)
+  const rawFare = RATE_PER_KM_NGN * distanceKm + BOOKING_FEE_NGN;
   const suggestedFareNgn = Math.max(
     MIN_FARE_NGN,
     roundUpToIncrement(rawFare, FARE_ROUNDING_INCREMENT),
@@ -112,8 +131,24 @@ export function resolveMaxOfferNgn(distanceKm: number | undefined): number {
   }
   return Math.max(
     MIN_FARE_NGN,
-    roundUpToIncrement(MAX_RATE_PER_KM_NGN * distanceKm, FARE_ROUNDING_INCREMENT),
+    roundUpToIncrement(MAX_RATE_PER_KM_NGN * distanceKm + BOOKING_FEE_NGN, FARE_ROUNDING_INCREMENT),
   );
+}
+
+/** The driver's share of a fare: everything after Wheelers' booking fee. */
+export function driverShareNgn(fareNgn: number): number {
+  return Math.max(0, round2(fareNgn - BOOKING_FEE_NGN));
+}
+
+/**
+ * What a fare is worth to the driver per km — their share over the trip's
+ * distance, to one decimal (₦3,500 over 10 km: ₦312.5/km). It moves with the
+ * price: every rider price, counter and bid amount has its own. Null when the
+ * distance is unknown.
+ */
+export function driverRatePerKmNgn(fareNgn: number, distanceKm: number | null | undefined): number | null {
+  if (distanceKm === null || distanceKm === undefined || !Number.isFinite(distanceKm) || distanceKm <= 0) return null;
+  return Math.round((driverShareNgn(fareNgn) / distanceKm) * 10) / 10;
 }
 
 /** A bid this many times the rider's price is a typo, not an offer. */
@@ -147,42 +182,63 @@ export function validateDriverOffer(
 
 export type RideFeeBreakdown = {
   fareNgn: number;
-  /** 4% of the fare — the line called "Fees". */
-  platformFeeNgn: number;
+  /** Wheelers' flat booking fee, taken first. */
+  bookingFeeNgn: number;
+  /** The fare after the booking fee: what the driver's per-km is worked from. */
+  driverShareNgn: number;
+  /** 4% of the driver's share. */
+  commissionNgn: number;
+  /** 7.5% of the driver's share. */
+  vatNgn: number;
   stateLevyNgn: number;
-  serviceFeeNgn: number;
-  /** Everything that is not the driver's: fees + levy + service fee. */
+  /** Everything that is not the driver's: booking fee + commission + VAT + levy. */
   platformTotalNgn: number;
   driverPayoutNgn: number;
+  /** What the rider pays: the fare, nothing on top. */
   totalNgn: number;
+  /** Old names, kept for readers not yet moved: the commission, and the booking fee. */
+  platformFeeNgn: number;
+  serviceFeeNgn: number;
 };
 
 /**
- * fareNgn = the agreed fare (rider's offer / negotiated price).
- * Rider pays exactly fareNgn (totalNgn = fareNgn).
- * The 4% fee, the state levy and the service fee are deducted from the fare.
- * Driver receives fareNgn minus all deductions.
- * Driver sees the full breakdown so they know to bid accordingly.
- * Platform receives fees + state levy + service fee.
+ * fareNgn = the agreed fare (rider's price / the bid they accepted). The rider
+ * pays exactly that. The booking fee comes off first; commission and VAT are
+ * percentages of what is left (the driver's share); then the Lagos levy. The
+ * driver is paid the rest, and sees every line so they can bid accordingly.
  */
 export function calculateRideFees(fareNgn: number): RideFeeBreakdown {
-  const stateLevyNgn = LAGOS_STATE_FEE_NGN;
-  const platformFeeNgn = round2(fareNgn * PLATFORM_FEE_RATE);
-  const serviceFeeNgn = SERVICE_FEE_NGN;
-  const rawPlatformTotalNgn = round2(platformFeeNgn + stateLevyNgn + serviceFeeNgn);
-  const rawDriverPayoutNgn = round2(fareNgn - rawPlatformTotalNgn);
+  const fare = round2(fareNgn);
+  const bookingFeeNgn = Math.min(BOOKING_FEE_NGN, Math.max(0, fare));
+  const share = round2(fare - bookingFeeNgn);
+  let commissionNgn = round2(share * COMMISSION_RATE);
+  let vatNgn = round2(share * VAT_RATE);
+  let stateLevyNgn = LAGOS_STATE_FEE_NGN;
 
-  // The flat fees (₦375 service + ₦30 levy) exceed the fare on very short
-  // rides, which used to produce a NEGATIVE driver payout — the driver's own
-  // balance was debited to cover the platform's cut. Clamp the payout at zero
-  // and cap the platform's take at the fare, so the rider's debit always
-  // equals driverPayout + platformTotal and nobody pays to work.
-  const driverPayoutNgn = Math.max(0, rawDriverPayoutNgn);
-  const platformTotalNgn =
-    rawDriverPayoutNgn < 0 ? round2(fareNgn) : rawPlatformTotalNgn;
+  // A fare too small to carry every line (below the minimum fare, which the
+  // rules never allow, but a ride settled short can) must never make the driver
+  // pay to work: the levy, then the commission, then VAT shrink until the lines
+  // fit inside the share and the payout is zero.
+  let over = round2(commissionNgn + vatNgn + stateLevyNgn - share);
+  if (over > 0) { const cut = Math.min(stateLevyNgn, over); stateLevyNgn = round2(stateLevyNgn - cut); over = round2(over - cut); }
+  if (over > 0) { const cut = Math.min(commissionNgn, over); commissionNgn = round2(commissionNgn - cut); over = round2(over - cut); }
+  if (over > 0) { const cut = Math.min(vatNgn, over); vatNgn = round2(vatNgn - cut); }
 
-  const totalNgn = fareNgn;
-  return { fareNgn, platformFeeNgn, stateLevyNgn, serviceFeeNgn, platformTotalNgn, driverPayoutNgn, totalNgn };
+  const driverPayoutNgn = Math.max(0, round2(share - commissionNgn - vatNgn - stateLevyNgn));
+  const platformTotalNgn = round2(fare - driverPayoutNgn);
+  return {
+    fareNgn: fare,
+    bookingFeeNgn,
+    driverShareNgn: share,
+    commissionNgn,
+    vatNgn,
+    stateLevyNgn,
+    platformTotalNgn,
+    driverPayoutNgn,
+    totalNgn: fare,
+    platformFeeNgn: commissionNgn,
+    serviceFeeNgn: bookingFeeNgn,
+  };
 }
 
 /**

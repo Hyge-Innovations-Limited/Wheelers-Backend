@@ -48,11 +48,14 @@ export {
   PLATFORM_FEE_RATE,
   LAGOS_STATE_FEE_NGN,
   SERVICE_FEE_NGN,
+  BOOKING_FEE_NGN,
+  COMMISSION_RATE,
+  VAT_RATE,
   calculateSuggestedFare,
   resolveMaxOfferNgn,
   validateRiderOffer,
   validateDriverOffer,
-  calculateRideFees, splitPlatformTotal,
+  calculateRideFees, splitPlatformTotal, driverShareNgn, driverRatePerKmNgn,
 } from './pricing';
 export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown } from './pricing';
 export {

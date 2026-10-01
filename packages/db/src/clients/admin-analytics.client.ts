@@ -172,6 +172,8 @@ export interface Kpis {
   commissionNgn: number;
   serviceFeeNgn: number;
   stateLevyNgn: number;
+  /** 7.5% of the driver's share, since 2026-10-01. Owed to the government: not revenue. */
+  vatNgn: number;
   depositFeesNgn: number;
   /** Wheelers' fee on withdrawals that reached the bank. */
   withdrawalFeesNgn: number;
@@ -228,6 +230,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
       sum(f.commission_ngn) FILTER (WHERE ${done})                                      AS commission,
       sum(f.service_fee_ngn) FILTER (WHERE ${done})                                     AS service_fee,
       sum(f.state_levy_ngn) FILTER (WHERE ${done})                                      AS state_levy,
+      sum(f.vat_ngn) FILTER (WHERE ${done})                                             AS vat,
       sum(f.fare_ngn - f.platform_total_ngn) FILTER (WHERE ${done} AND f.platform_total_ngn IS NOT NULL) AS payouts,
       count(DISTINCT f.driver_id) FILTER (WHERE ${done})                                AS active_drivers,
       count(DISTINCT f.rider_id) FILTER (WHERE ${done})                                 AS active_riders
@@ -309,6 +312,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     commissionNgn,
     serviceFeeNgn,
     stateLevyNgn: num(ride?.state_levy),
+    vatNgn: num(ride?.vat),
     depositFeesNgn,
     withdrawalFeesNgn,
     platformRevenueNgn: num(commissionNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn + withdrawalFeesNgn)),
@@ -394,6 +398,8 @@ export interface SeriesPoint {
   commissionNgn: number;
   serviceFeeNgn: number;
   stateLevyNgn: number;
+  /** 7.5% of the driver's share, since 2026-10-01. Owed to the government: not revenue. */
+  vatNgn: number;
   depositFeesNgn: number;
   depositsNgn: number;
   newUsers: number;
@@ -412,7 +418,7 @@ async function timeseries(f: AnalyticsFilters, bucket: Bucket): Promise<SeriesPo
     ),
     comp AS (
       SELECT f.completed_day AS d, count(*) AS n, sum(f.fare_ngn) AS gmv, sum(f.commission_ngn) AS commission,
-             sum(f.service_fee_ngn) AS service_fee, sum(f.state_levy_ngn) AS state_levy
+             sum(f.service_fee_ngn) AS service_fee, sum(f.state_levy_ngn) AS state_levy, sum(f.vat_ngn) AS vat
       FROM ride_facts f
       ${where([...rideConditions(q, f), `f.status = 'COMPLETED'`, between(q, 'f.completed_day', f)])} GROUP BY 1
     ),
@@ -434,6 +440,7 @@ async function timeseries(f: AnalyticsFilters, bucket: Bucket): Promise<SeriesPo
            sum(coalesce(req.n, 0)) AS requests, sum(coalesce(comp.n, 0)) AS completed, sum(coalesce(canc.n, 0)) AS cancelled,
            sum(coalesce(comp.gmv, 0)) AS gmv, sum(coalesce(comp.commission, 0)) AS commission,
            sum(coalesce(comp.service_fee, 0)) AS service_fee, sum(coalesce(comp.state_levy, 0)) AS state_levy,
+           sum(coalesce(comp.vat, 0)) AS vat,
            sum(coalesce(money.deposit_fees, 0)) AS deposit_fees, sum(coalesce(money.deposits, 0)) AS deposits,
            sum(coalesce(signups.n, 0)) AS new_users
     FROM days
@@ -453,6 +460,7 @@ async function timeseries(f: AnalyticsFilters, bucket: Bucket): Promise<SeriesPo
     commissionNgn: num(r.commission),
     serviceFeeNgn: num(r.service_fee),
     stateLevyNgn: num(r.state_levy),
+    vatNgn: num(r.vat),
     depositFeesNgn: num(r.deposit_fees),
     depositsNgn: num(r.deposits),
     newUsers: num(r.new_users),
@@ -572,6 +580,7 @@ export interface TripRow {
   commissionNgn: number | null;
   serviceFeeNgn: number | null;
   stateLevyNgn: number | null;
+  vatNgn: number | null;
   platformTotalNgn: number | null;
   driverPayoutNgn: number | null;
   feeSplitEstimated: boolean;
@@ -680,6 +689,7 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
         commissionNgn: optNum(r.commission_ngn),
         serviceFeeNgn: optNum(r.service_fee_ngn),
         stateLevyNgn: optNum(r.state_levy_ngn),
+        vatNgn: optNum(r.vat_ngn),
         platformTotalNgn: platformTotal,
         driverPayoutNgn: fare != null && platformTotal != null ? num(fare - platformTotal) : null,
         feeSplitEstimated: Boolean(r.fee_split_estimated),
@@ -908,6 +918,8 @@ export interface FeeTotals {
   incomeNgn: number;
   /** Collected on rides and owed to Lagos State: a pass-through, not income. */
   stateLevyNgn: number;
+  /** 7.5% of the driver's share, since 2026-10-01. Owed to the government: not revenue. */
+  vatNgn: number;
   /** Paystack's fee on deposits, where Wheelers absorbs it. */
   depositProviderCostNgn: number;
   /** Paystack's fee on each withdrawal transfer. */
@@ -954,7 +966,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
     ),
     rides AS (
       SELECT f.completed_day AS d, count(*) AS n, sum(f.commission_ngn) AS commission, sum(f.service_fee_ngn) AS service_fee,
-             sum(f.state_levy_ngn) AS levy, sum(f.commission_ngn) FILTER (WHERE f.fee_split_estimated) AS estimated
+             sum(f.state_levy_ngn) AS levy, sum(f.vat_ngn) AS vat, sum(f.commission_ngn) FILTER (WHERE f.fee_split_estimated) AS estimated
       FROM ride_facts f
       ${where([...rideConditions(q, f), `f.status = 'COMPLETED'`, `f.platform_total_ngn IS NOT NULL`, between(q, 'f.completed_day', f)])}
       GROUP BY 1
@@ -979,6 +991,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
     SELECT to_char(date_trunc(${b}::text, days.day::timestamp), 'YYYY-MM-DD') AS bucket,
            sum(coalesce(rides.n, 0)) AS fee_rides, sum(coalesce(rides.commission, 0)) AS commission,
            sum(coalesce(rides.service_fee, 0)) AS service_fee, sum(coalesce(rides.levy, 0)) AS levy,
+           sum(coalesce(rides.vat, 0)) AS vat,
            sum(coalesce(rides.estimated, 0)) AS estimated,
            sum(coalesce(ledger.deposit_fees, 0)) AS deposit_fees, sum(coalesce(ledger.deposits, 0)) AS deposits,
            sum(coalesce(ledger.withdrawal_fees, 0)) AS withdrawal_fees, sum(coalesce(ledger.fee_withdrawals, 0)) AS fee_withdrawals,
@@ -1004,6 +1017,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
       withdrawalFeesNgn,
       incomeNgn,
       stateLevyNgn: num(r.levy),
+      vatNgn: num(r.vat),
       depositProviderCostNgn,
       transferCostNgn,
       otherProviderCostNgn,
@@ -1027,6 +1041,7 @@ function totalOf(points: FeePointFull[]): FeeTotals {
     withdrawalFeesNgn: sum('withdrawalFeesNgn'),
     incomeNgn: sum('incomeNgn'),
     stateLevyNgn: sum('stateLevyNgn'),
+    vatNgn: sum('vatNgn'),
     depositProviderCostNgn: sum('depositProviderCostNgn'),
     transferCostNgn: sum('transferCostNgn'),
     otherProviderCostNgn: sum('otherProviderCostNgn'),
@@ -1076,6 +1091,7 @@ export interface FeeLedgerRow {
   commissionNgn: number | null;
   serviceFeeNgn: number | null;
   stateLevyNgn: number | null;
+  vatNgn: number | null;
 }
 
 async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuery, maxLimit = 200): Promise<Page<FeeLedgerRow>> {
@@ -1095,7 +1111,7 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
   const result = await rows<Record<string, unknown>>(q, `
     SELECT t.id, t."createdAt" AS created_at, ${kindExpr} AS kind, t.direction::text AS direction, t."amountNgn" AS amount,
            t."referenceId" AS reference_id, r."commissionNgn" AS commission, r."serviceFeeNgn" AS service_fee, r."stateLevyNgn" AS levy,
-           count(*) OVER () AS total
+           r."vatNgn" AS vat, count(*) OVER () AS total
     FROM "Transaction" t
     JOIN "Wallet" w ON w.id = t."walletId" AND w."userId" = ${q.p(PLATFORM_USER_ID)}
     LEFT JOIN "Ride" r ON r.id = t."referenceId" AND t.type = 'PLATFORM_FEE'
@@ -1117,6 +1133,7 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
         commissionNgn: optNum(r.commission),
         serviceFeeNgn: optNum(r.service_fee),
         stateLevyNgn: optNum(r.levy),
+        vatNgn: optNum(r.vat),
       };
     }),
     total,
@@ -1465,7 +1482,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       (SELECT n FROM view_done) AS done_view,
       (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled) AS ride_fee_total,
       (SELECT coalesce(sum(fee), 0) FROM ledger) AS ledger_fee_total,
-      (SELECT coalesce(sum("commissionNgn" + "serviceFeeNgn" + "stateLevyNgn"), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_sum,
+      (SELECT coalesce(sum("commissionNgn" + "serviceFeeNgn" + "stateLevyNgn" + coalesce("vatNgn", 0)), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_sum,
       (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_total,
       (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn")), 0) FROM settled) AS fare_total,
       (SELECT coalesce(sum(paid), 0) FROM ledger) AS paid_total,

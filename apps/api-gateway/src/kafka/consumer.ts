@@ -10,7 +10,7 @@ import {
   WalletEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { calculateRideFees, formatTripId } from '@wheleers/config';
+import { BOOKING_FEE_NGN, calculateRideFees, formatTripId } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
 import { loadDriverRideSnapshot } from '../websocket/driver-ride-sync';
@@ -391,6 +391,9 @@ export async function handleRideEvent(
       // The floor, so the app can say it BEFORE a bid is typed.
       minOfferNgn: event.minOfferNgn,
       ratePerKmNgn: event.ratePerKmNgn,
+      // Wheelers' booking fee: the app shows every price as the driver's share
+      // per km — (price − booking fee) ÷ distance — so it moves with the price.
+      bookingFeeNgn: BOOKING_FEE_NGN,
       plannedDistanceKm: event.plannedDistanceKm,
       plannedDurationSeconds: event.plannedDurationSeconds,
       pickupDistanceKm: event.pickupDistanceKm,
@@ -815,6 +818,12 @@ export async function handleRideEvent(
       vehicleModel: event.vehicleModel,
       etaSeconds: event.etaSeconds,
       agreedFareNgn: event.agreedFareNgn,
+      // The driver's breakdown: booking fee first, then commission and VAT on their share, then the levy.
+      bookingFeeNgn: matchFees.bookingFeeNgn,
+      driverShareNgn: matchFees.driverShareNgn,
+      commissionNgn: matchFees.commissionNgn,
+      vatNgn: matchFees.vatNgn,
+      // (Old names, for apps not yet updated: commission, booking fee.)
       platformFeeNgn: matchFees.platformFeeNgn,
       stateLevyNgn: matchFees.stateLevyNgn,
       serviceFeeNgn: matchFees.serviceFeeNgn,
@@ -870,6 +879,10 @@ export async function handleRideEvent(
           vehiclePlate: knownVehicleText(car?.vehiclePlate) ?? knownVehicleText(arrivedBid?.vehiclePlate),
           driverPhone: arrivedBid?.driverPhone,
           carPhotoUrl: await carPhotoFor(deps, event.driverId),
+          // The code they give the driver now. Not for a group seat (no code there).
+          tripCode: await getGroupSeat(deps.redisClient, event.rideId).catch(() => null)
+            ? null
+            : await tripCodeClient.ensure(event.rideId).catch(() => null),
         }).catch(() => {});
       }
     } else {
@@ -956,6 +969,10 @@ export async function handleRideEvent(
     await registry.sendToUser(event.driverUserId, 'ride:completed', {
       rideId: event.rideId,
       fareNgn: event.fareNgn,
+      bookingFeeNgn: completionFees.bookingFeeNgn,
+      driverShareNgn: completionFees.driverShareNgn,
+      commissionNgn: completionFees.commissionNgn,
+      vatNgn: completionFees.vatNgn,
       platformFeeNgn: completionFees.platformFeeNgn,
       stateLevyNgn: completionFees.stateLevyNgn,
       serviceFeeNgn: completionFees.serviceFeeNgn,

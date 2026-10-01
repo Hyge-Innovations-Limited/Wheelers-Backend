@@ -1,7 +1,7 @@
 import { prisma }   from '../prisma';
 import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
-import { calculateRideFees, splitDeposit, splitPlatformTotal } from '@wheleers/config';
+import { calculateRideFees, splitDeposit } from '@wheleers/config';
 import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
 
 // The type of the transactional client Prisma passes into $transaction callbacks
@@ -519,8 +519,17 @@ export const walletClient = {
             amountNgn: platformFeeNgn,
             balanceAfterNgn: platformWallet.balanceNgn,
             referenceId: rideId,
-            // Tells ride fees apart from deposit fees (kind 'deposit_fee') in the same ledger type.
-            metadata: { kind: 'ride_fee', ...splitPlatformTotal(platformFeeNgn, { serviceFeeNgn: fees.serviceFeeNgn, stateLevyNgn: fees.stateLevyNgn }) },
+            // Tells ride fees apart from deposit fees (kind 'deposit_fee') in the same ledger type,
+            // with every line of it: booking fee, commission, VAT, levy.
+            metadata: {
+              kind: 'ride_fee',
+              bookingFeeNgn: fees.bookingFeeNgn,
+              commissionNgn: fees.commissionNgn,
+              vatNgn: fees.vatNgn,
+              stateLevyNgn: fees.stateLevyNgn,
+              // Old name of the booking fee, for readers of older rows.
+              serviceFeeNgn: fees.bookingFeeNgn,
+            },
           },
         });
 
@@ -539,15 +548,15 @@ export const walletClient = {
           );
         }
 
-        // 7. Store platform fee on the ride record, and its split for the Fees dashboard.
-        const split = splitPlatformTotal(platformFeeNgn, { serviceFeeNgn: fees.serviceFeeNgn, stateLevyNgn: fees.stateLevyNgn });
+        // 7. Store the platform's total on the ride record, and every line of it for the dashboard.
         await tx.ride.update({
           where: { id: rideId },
           data: {
             platformFeeNgn: platformFeeNgn,
-            commissionNgn: split.commissionNgn,
-            serviceFeeNgn: split.serviceFeeNgn,
-            stateLevyNgn: split.stateLevyNgn,
+            commissionNgn: fees.commissionNgn,
+            serviceFeeNgn: fees.bookingFeeNgn,
+            vatNgn: fees.vatNgn,
+            stateLevyNgn: fees.stateLevyNgn,
             feeSplitEstimated: false,
           },
         });

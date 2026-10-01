@@ -190,7 +190,8 @@
       hint.textContent = 'The lowest price for this trip is ' + W.naira(floor) + '.';
     } else {
       hint.className = 'hint';
-      hint.textContent = 'Suggested ' + W.naira(state.route.suggestedFareNgn) + ' · lowest ' + W.naira(floor);
+      hint.textContent = 'Suggested ' + W.naira(state.route.suggestedFareNgn) + ' · lowest ' + W.naira(floor)
+        + (state.bookingFeeNgn ? ' · includes ' + W.naira(state.bookingFeeNgn) + ' booking fee' : '');
     }
     W.$('find').disabled = !(amount >= floor);
   }

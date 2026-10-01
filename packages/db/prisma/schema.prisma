@@ -381,9 +381,11 @@ model Ride {
   agreedFareNgn          Decimal?          @db.Decimal(18, 2)
   fareFinalNgn           Decimal?          @db.Decimal(18, 2)
   platformFeeNgn         Decimal?          @db.Decimal(18, 2)
-  /// platformFeeNgn, split: the % commission, the flat service fee, the state levy (owed to Lagos).
+  /// platformFeeNgn, split: the commission (4% of the driver's share), the booking fee (serviceFeeNgn, flat ₦375),
+  /// VAT (7.5% of the driver's share, since 2026-10-01) and the state levy (owed to Lagos).
   commissionNgn          Decimal?          @db.Decimal(18, 2)
   serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
+  vatNgn                 Decimal?          @db.Decimal(18, 2)
   stateLevyNgn           Decimal?          @db.Decimal(18, 2)
   /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
   feeSplitEstimated      Boolean           @default(false)

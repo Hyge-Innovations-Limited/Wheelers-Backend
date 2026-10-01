@@ -579,6 +579,8 @@ export async function sendDriverArrivedNotification(
     driverPhone?: string | null;
     /** The car's own photo. THIS is the moment for it — the rider is looking for it. */
     carPhotoUrl?: string | null;
+    /** The 4 digits the rider gives the driver to start the trip — right here, when they need them. */
+    tripCode?: string | null;
   },
 ): Promise<void> {
   // Chat messages can't be edited, so each one stands alone: the rider must
@@ -589,13 +591,38 @@ export async function sendDriverArrivedNotification(
   const call = formatTappablePhone(details?.driverPhone);
   const text = [
     `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
+    ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
     ...(call ? [``, `Can't find them? Call ${call}`] : []),
   ].join('\n');
 
-  // ONE message: the car, with all of that as its caption. A photo Meta refuses
-  // must never swallow "your driver is outside", so the text goes on its own then.
+  // ONE message: the car on top, all of that under it, and the Quick Actions
+  // button. WhatsApp refuses that shape → the car with the words as its caption
+  // → the words on their own (with the button). "Your driver is outside" is
+  // never lost.
+  if (details?.carPhotoUrl && await postImageWithQuickActions(deps, phone, details.carPhotoUrl, text)) return;
   if (details?.carPhotoUrl && await postImage(deps, phone, details.carPhotoUrl, text)) return;
   await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** A picture on top, the words, and the Quick Actions form button. False when it cannot go that way. */
+async function postImageWithQuickActions(deps: WhatsappNotifierDeps, phone: string, link: string, text: string): Promise<boolean> {
+  if (!deps.quickActionsFlowId || !deps.flowTokenSecret || !deps.riderIdFor) return false;
+  const riderId = await deps.riderIdFor(phone.replace(/^\+/, '')).catch(() => null);
+  if (!riderId) return false;
+  const interactive = { header: { type: 'image', image: { link } }, ...withQuickActionsForm(text, deps.quickActionsFlowId, riderId, deps.flowTokenSecret) };
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: phone.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] arrived card with Quick Actions refused — sending the picture with a caption', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 /** One picture with a caption. False when Meta refuses it, so the caller can fall back to text. */
