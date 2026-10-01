@@ -39,7 +39,8 @@ export function bidPlacedText(trip: { pickupAddress: string; destAddress: string
     ...tripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: (trip.stopAddresses ?? []).map((address) => ({ address })) }),
     '',
     'Drivers near you can see it now.',
-    'Tap *See driver offers* to pick a driver, change your price or cancel. The number on this message is how many offers are waiting.',
+    '',
+    'Tap *See driver offers* to pick a driver, change your price or cancel. The number on this message shows how many offers are waiting.',
   ].join('\n').slice(0, 1024);
 }
 

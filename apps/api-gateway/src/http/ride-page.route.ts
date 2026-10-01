@@ -72,12 +72,12 @@ class PageError extends Error {
 
 function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
   const token = extractBearerToken(req.headers.authorization);
-  if (!token) throw new PageError('This link is not valid. Ask the Wheelers bot for a new one.', 401, 'LINK_INVALID');
+  if (!token) throw new PageError('This link is not valid. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_INVALID');
   let session;
   try {
     session = verifyWalletPageToken(token, deps.jwtSecret);
   } catch {
-    throw new PageError('This link has expired. Send any message to the Wheelers bot for a new one.', 401, 'LINK_EXPIRED');
+    throw new PageError('This link has expired. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_EXPIRED');
   }
   if (session.scope !== 'ride') throw new PageError('This link cannot be used for that.', 403, 'LINK_WRONG_SCOPE');
   return session.userId;

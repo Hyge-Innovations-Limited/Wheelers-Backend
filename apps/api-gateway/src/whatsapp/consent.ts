@@ -20,12 +20,13 @@ export function firstMessageKey(userId: string): string {
 
 export function consentPrompt(returning: boolean): string {
   return [
-    returning ? 'Welcome back to Wheelers!' : 'Welcome to Wheelers!',
+    returning ? '*Welcome back to Wheelers*' : '*Welcome to Wheelers*',
     '',
-    'Before we start: to book your rides and run your wallet, Wheelers uses your name, phone number, the locations you share, and your trip and payment details. Our privacy policy explains how we use and protect them:',
-    PRIVACY_POLICY_URL,
+    'Book and pay for rides right here in WhatsApp.',
     '',
-    `Tap *${CONSENT_CONTINUE}* to agree and get started, or *${CONSENT_NOT_NOW}*.`,
+    `To do that, we use your name, number, the places you share and your trip and payment details. Here is how we keep them safe: ${PRIVACY_POLICY_URL}`,
+    '',
+    `Tap *${CONSENT_CONTINUE}* to agree and get started.`,
   ].join('\n');
 }
 
@@ -73,11 +74,12 @@ export async function requirePrivacyConsent(
       first = null;
     }
     if (first) {
-      await sendMetaReply(deps, phone, "Thank you — you're all set.");
+      await sendMetaReply(deps, phone, "You're all set.");
       await replay({ ...first, messageId: '' });
       return true;
     }
-    await sendMetaReply(deps, phone, "Thank you — you're all set.");
+    // The menu that follows asks where they are going: one ask, not two.
+    await sendMetaReply(deps, phone, "You're all set.");
     await sendQuickActions(deps, user, phone, null, msgInfo.messageBody);
     return true;
   }
@@ -87,7 +89,7 @@ export async function requirePrivacyConsent(
     await deps.redisClient.del(firstMessageKey(user.id)).catch(() => undefined);
     logActivity({ userId: user.id, eventType: 'privacy_consent_declined', source: 'whatsapp', metadata: {} });
     await sendMetaReply(deps, phone,
-      `No problem. We can't book rides without it, so nothing has been set up and we won't message you.\n\nIf you change your mind, just send us a message and tap *${CONSENT_CONTINUE}*.`);
+      `No problem. We need that to book rides, so we haven't set anything up and we won't message you.\n\nChanged your mind? Send any message and tap *${CONSENT_CONTINUE}*.`);
     return true;
   }
 

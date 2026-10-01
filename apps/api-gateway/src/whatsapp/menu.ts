@@ -8,7 +8,7 @@ import { signFlowToken } from '../whatsapp-flows/encryption';
 import { MetaWhatsappRouteDeps } from './deps';
 import { createOffersFormChatHooks, sendCurrentOffers } from './ride-card';
 import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText } from './send';
-import { BOOKING_START_PROMPT, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
+import { BOOKING_START_PROMPT, BUSY_REPLY, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
 import { sendWalletPageButton } from './wallet';
 
 export const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
@@ -54,7 +54,7 @@ export async function sendQuickActions(deps: MetaWhatsappRouteDeps, user: { id: 
   await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: '[sent the quick actions menu]' }]);
   if (await sendInteractive(deps, phone, menu)) return;
   const rows = (menu['action'] as { sections: Array<{ rows: Array<{ title: string }> }> }).sections.flatMap((section) => section.rows);
-  await sendMetaReply(deps, phone, `${greeting ? 'Hey!' : ''}What would you like to do?\n\n${rows.map((row, index) => `*${index + 1}.* ${row.title}`).join('\n')}\n\nReply with the number.`);
+  await sendMetaReply(deps, phone, `${greeting ? 'Hi! ' : ''}What would you like to do?\n\n${rows.map((row, index) => `*${index + 1}.* ${row.title}`).join('\n')}\n\nReply with the number.`);
   await storePendingGeoChoices(deps.redisClient, user.id, { context: 'menu', options: rows.map((row) => ({ lat: 0, lng: 0, address: row.title })) }).catch(() => undefined);
 }
 
@@ -68,7 +68,7 @@ export async function bookFromPastTrip(deps: MetaWhatsappRouteDeps, user: { id: 
   const { pickup, destination, stops } = backwards ? reversed(trip) : trip;
   const planned = await planRouteSafe(deps, pickup, destination, stops);
   if (!planned) {
-    await replyAndLog(deps, phone, log, `I could not plan that trip today — a road may have changed.\n\nType it instead, e.g. *from ${shortAddress(pickup.address)} to ${shortAddress(destination.address)}*`);
+    await replyAndLog(deps, phone, log, `I couldn't plan that trip today. A road may have changed.\n\nType it instead, e.g. *from ${shortAddress(pickup.address)} to ${shortAddress(destination.address)}*.`);
     return;
   }
   await Promise.all([clearPendingGeoChoices(deps.redisClient, user.id), clearPendingFarPlace(deps.redisClient, user.id), clearBookingMisses(deps.redisClient, user.id)].map((step) => step.catch(() => undefined)));
@@ -99,14 +99,14 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
   if (replyId === QUICK_ACTION_IDS.withdraw) return sendWalletPageButton(deps, user, phone, log, 'withdraw');
   if (replyId === QUICK_ACTION_IDS.support) {
     const contact = supportContact();
-    return replyAndLog(deps, phone, log, contact ? `*Wheelers support*\n\n${contact}\n\nA person will reply as soon as they can.` : 'Support is not set up yet — reply here and we will see it.');
+    return replyAndLog(deps, phone, log, contact ? `*Wheelers support*\n\n${contact}\n\nA real person will reply as soon as they can.` : 'Reply here and a person at Wheelers will see it.');
   }
   if (replyId === QUICK_ACTION_IDS.currentTrip) {
     if (!activeRideId) return sendQuickActions(deps, user, phone, null, log);
     const state = await getRideState(deps.redisClient, activeRideId).catch(() => null);
     if (state === 'confirmed' || state === 'in_progress') {
       const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
-      return replyAndLog(deps, phone, log, `*${accepted?.driverName ?? 'Your driver'}* is ${state === 'in_progress' ? 'driving you now' : 'on the way'}.\n\nYour ride card is just above — tap *Track live trip* on it, or reply *cancel*.`);
+      return replyAndLog(deps, phone, log, `*${accepted?.driverName ?? 'Your driver'}* is ${state === 'in_progress' ? 'driving you now' : 'on the way'}.\n\nTap *Track live trip* on your ride card above to follow them, or reply *cancel* to cancel.`);
     }
     const said = await sendCurrentOffers(deps, phone, activeRideId);
     await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: said }]);
@@ -115,13 +115,13 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
 
   // Everything below starts a booking: not while one is live.
   if (activeRideId) {
-    return replyAndLog(deps, phone, log, 'You already have a ride going. Reply *cancel* to end it first, then book again.');
+    return replyAndLog(deps, phone, log, BUSY_REPLY);
   }
   if (replyId === QUICK_ACTION_IDS.book) return replyAndLog(deps, phone, log, BOOKING_START_PROMPT);
   if (replyId === QUICK_ACTION_IDS.history) {
     const trips = await recentTrips(user.id, 5);
     const list = buildHistoryList(trips);
-    if (!list) return replyAndLog(deps, phone, log, `No rides yet — your first one goes here.\n\n${BOOKING_START_PROMPT}`);
+    if (!list) return replyAndLog(deps, phone, log, `No rides yet. Your first one will show here.\n\n${BOOKING_START_PROMPT}`);
     await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: log }, { role: 'assistant', content: `[sent ${trips.length} past rides to pick from]` }]);
     if (!await sendInteractive(deps, phone, list)) {
       await sendMetaReply(deps, phone, `Your recent rides:\n\n${trips.map((trip, index) => `*${index + 1}.* ${shortAddress(trip.pickup.address)} → ${shortAddress(trip.destination.address)}`).join('\n')}\n\nReply with the number to book it again.`);

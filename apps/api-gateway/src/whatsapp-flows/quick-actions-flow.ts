@@ -105,7 +105,7 @@ async function clearBooking(redisClient: RedisClient, userId: string): Promise<v
 }
 const TRIP_ROW = /^trip:([0-9a-f-]{36})$/;
 
-const BUSY_NOTE = 'You already have a ride going. Finish or cancel it first, then book again.';
+const BUSY_NOTE = 'You already have a ride in progress. To book a new one, cancel it first.';
 const CHECK_OFFERS_MS = 3_500;
 
 /**
@@ -201,7 +201,7 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       : seat ? 'Your group ride — where things are'
       : await getBids(deps.redisClient, activeRideId).then((bids) => (bids.length === 0
         ? 'Still looking for drivers — check for offers'
-        : bids.length === 1 ? '1 driver offer waiting for you' : `${bids.length} driver offers waiting for you`)).catch(() => 'Where things are with your ride');
+        : bids.length === 1 ? '1 driver offer waiting for you' : `${bids.length} driver offers waiting for you`)).catch(() => 'See where your ride is');
     choices.push({ id: MENU_IDS.current, title: 'Your current trip', description });
   } else {
     // In the middle of booking: the booking's own choices, and money for it.
@@ -219,7 +219,7 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       choices.push(
         { id: MENU_IDS.startAgain, title: 'Start again', description: 'Clear this booking and book from the beginning' },
         { id: MENU_IDS.cancelBooking, title: 'Cancel booking', description: 'Stop here. Nothing is charged' },
-        { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number to transfer to' },
+        { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number for transfers' },
       );
       return {
         screen: 'MENU',
@@ -237,21 +237,21 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);
       if (ended && last) choices.push({ id: MENU_IDS.searchAgain, title: 'Search again', description: clip(`No driver took ${naira(ended.offerNgn || last.offerNgn)} — ${shortPlace(last.pickupAddress)} → ${shortPlace(last.destAddress)}, fresh search`, 300) });
     }
-    choices.push({ id: MENU_IDS.book, title: 'Book a ride', description: 'Pickup, destination, stops and your price — right here' });
+    choices.push({ id: MENU_IDS.book, title: 'Book a ride', description: 'Pickup, destination and your price' });
     const [last] = await recentTrips(userId, 1);
     if (last) {
       choices.push(
         { id: MENU_IDS.repeat, title: 'Repeat last ride', description: clip(`${shortPlace(last.pickup.address)} → ${shortPlace(last.destination.address)}`, 300) },
         { id: MENU_IDS.reverse, title: 'Reverse last ride', description: clip(`${shortPlace(last.destination.address)} → ${shortPlace(last.pickup.address)}`, 300) },
-        { id: MENU_IDS.history, title: 'Ride history', description: 'Places you have been — book any of them again' },
+        { id: MENU_IDS.history, title: 'Ride history', description: 'Book a past trip again' },
       );
     }
-    choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money from your wallet to your bank' });
+    choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' });
   }
   // Add money sits after the ride rows in both lists; Withdraw is not offered mid-ride (the fare is held).
-  choices.splice(activeRideId ? 1 : choices.length - 1, 0, { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number to transfer to' });
+  choices.splice(activeRideId ? 1 : choices.length - 1, 0, { id: MENU_IDS.deposit, title: 'Add money', description: 'Your account number for transfers' });
   // Mid-ride the menu is two things: the trip, and money for it.
-  if (support && !activeRideId) choices.push({ id: MENU_IDS.support, title: 'Contact support', description: 'Talk to a person at Wheelers' });
+  if (support && !activeRideId) choices.push({ id: MENU_IDS.support, title: 'Contact support', description: 'Talk to a person' });
 
   return {
     screen: 'MENU',

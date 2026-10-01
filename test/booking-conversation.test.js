@@ -268,7 +268,7 @@ test('a first message meets the privacy question — and nothing reaches the pay
   assert.equal(question.type, 'interactive');
   assert.deepEqual(question.interactive.action.buttons.map((b) => b.reply.title), ['Continue', 'Not now']);
   assert.match(textOf(question), /https:\/\/wheelersng\.com\/privacy/);
-  assert.doesNotMatch(textOf(question), /Suggested fare/, 'no booking before consent');
+  assert.doesNotMatch(textOf(question), /Suggested price/, 'no booking before consent');
 
   const before = await findRider(who);
   assert.equal(before.privacyConsent, 'PENDING');
@@ -302,7 +302,7 @@ test('"Not now" means not agreed: recorded, nothing set up, and the door stays o
   const declined = await findRider(who);
   assert.equal(declined.privacyConsent, 'DECLINED');
   assert.ok(declined.privacyConsentAt);
-  assert.match(textOf(last(sent)), /nothing has been set up/);
+  assert.match(textOf(last(sent)), /haven't set anything up/);
   assert.equal(providerCalls.length, 0);
 
   // Any later message offers the choice again — it does not start booking.
@@ -321,7 +321,7 @@ test('FREEZE never waits for a privacy form', async () => {
   const who = rider();
 
   await say(deps, who, 'FREEZE');
-  assert.match(textOf(last(sent)), /Withdrawals are now locked/);
+  assert.match(textOf(last(sent)), /Withdrawals are now paused/);
   const user = await findRider(who);
   assert.ok(user.withdrawalsFrozenUntil > new Date());
   assert.equal(user.privacyConsent, 'PENDING');
@@ -379,7 +379,7 @@ test('SCREENSHOT — two places called Admiralty: one message with a Choose butt
   const picker = last(sent);
   assert.equal(picker.interactive.type, 'list');
   assert.equal(picker.interactive.action.button, 'Choose');
-  assert.match(textOf(picker), /I found 2 places matching "admiralty"/);
+  assert.match(textOf(picker), /I found 2 places called "admiralty"/);
   assert.doesNotMatch(textOf(picker), /Reply with the number/);
   const rows = picker.interactive.action.sections[0].rows;
   assert.deepEqual(rows.map((r) => r.title), ['Admiralty Way', 'Admiralty Road', 'None of these']);
@@ -400,7 +400,7 @@ test('typing the number still works, and "None of these" asks again instead of g
 
   await say(deps, who, 'admiralty');
   await tap(deps, who, 'place_choice_none', 'None of these');
-  assert.match(textOf(last(sent)), /Type the destination again with the area or a nearby landmark/);
+  assert.match(textOf(last(sent)), /Type the destination again with the area/);
   assert.equal(await bidState.getPendingGeoChoices(redis, user.id), null);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination', 'still on the destination step');
 
@@ -420,7 +420,7 @@ test('the pickup gets the same picker', async () => {
 
   await say(deps, who, 'admiralty');
   assert.equal(last(sent).interactive.type, 'list');
-  assert.match(textOf(last(sent)), /pick the right pickup/);
+  assert.match(textOf(last(sent)), /pick your pickup/);
 
   await tap(deps, who, 'place_choice_1', 'Admiralty Way');
   assert.match(textOf(last(sent)), /Pickup: \*Admiralty Way, Lekki, Nigeria\*/);
@@ -483,8 +483,8 @@ test('THE CHAT — "from ikorodu garage to Caleb University" offers the Caleb Un
   const picker = last(sent);
   assert.equal(picker.interactive.type, 'list');
   assert.match(textOf(picker), /Pickup: \*Ikorodu Garage, Lagos Rd, Ikorodu, Lagos\*/, 'the garage by name — not just "Ikorodu"');
-  assert.match(textOf(picker), /I found 4 places matching/);
-  assert.doesNotMatch(textOf(picker), /Suggested fare/, 'no quote until they choose');
+  assert.match(textOf(picker), /I found 4 places called/);
+  assert.doesNotMatch(textOf(picker), /Suggested price/, 'no quote until they choose');
 
   const rows = picker.interactive.action.sections[0].rows;
   // "Caleb University …" does not fit 24 characters, so the shared words come off.
@@ -514,7 +514,7 @@ test('THE CHAT, part 2 — "No Caleb law" at the price step lands on the College
 
   await say(deps, who, 'No Caleb law');
   const requote = textOf(last(sent));
-  assert.match(requote, /Destination updated!/);
+  assert.match(requote, /Destination changed/);
   assert.match(requote, /Destination: \*Caleb University College of Law, Magodo, Lagos\*/);
   assert.doesNotMatch(requote, /\+2QW|Ketu/);
 });
@@ -576,8 +576,8 @@ test('THE CHAT, part 3 — "I want to go from ikorodu" asks whereabouts WITH spo
   assert.equal(sent.length - before, 1);
   const picker = last(sent);
   assert.equal(picker.interactive.type, 'list');
-  assert.match(textOf(picker), /Whereabouts in \*Ikorodu\* should the driver pick you up\?/);
-  assert.match(textOf(picker), /or type a landmark or street, or share a location pin/, 'typing still works');
+  assert.match(textOf(picker), /Where in \*Ikorodu\* should your driver pick you up\?/);
+  assert.match(textOf(picker), /or type a street or landmark/, 'typing still works');
   const titles = picker.interactive.action.sections[0].rows.map((r) => r.title);
   assert.deepEqual(titles, ['Agric Bus Terminal', 'Benson Busstop (Eco…', 'Aruna bus stop', 'None of these']);
 
@@ -600,7 +600,7 @@ test('no spots found for an area → the plain question, exactly as before', asy
   await agree(redis, await findRider(who));
   await say(deps, who, 'I want to go from ikorodu');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'one message, with Quick Actions under it');
-  assert.match(textOf(last(sent)), /Tell me a landmark, street or bus stop/);
+  assert.match(textOf(last(sent)), /Type a street, landmark or bus stop/);
 });
 
 test('"from unilag gate to lekki": the "Lekki" they said is kept, and its spots are offered (it used to be thrown away)', async () => {
@@ -624,11 +624,11 @@ test('"from unilag gate to lekki": the "Lekki" they said is kept, and its spots 
 
   await say(deps, who, 'from unilag gate to lekki');
   assert.match(textOf(last(sent)), /Pickup: \*University of Lagos Main Gate, Akoka, Lagos\*/);
-  assert.match(textOf(last(sent)), /Whereabouts in \*Lekki\* are you headed\?/);
+  assert.match(textOf(last(sent)), /Where in \*Lekki\* are you going\?/);
   assert.ok(await bidState.getPendingLocation(redis, user.id), 'the pickup is remembered');
 
   await tap(deps, who, 'place_choice_2', 'Ikate Bus Stop');
-  assert.doesNotMatch(textOf(last(sent)), /Session expired/);
+  assert.doesNotMatch(textOf(last(sent)), /timed out/);
   assert.match(textOf(last(sent)), /Destination: \*Ikate Bus Stop/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 });
@@ -677,7 +677,7 @@ test('with no model answering at all, a clearly stated trip is still understood'
   await say(deps, who, 'I want to book a ride from ikorodu garage to Caleb University');
   assert.equal(last(sent).interactive?.type, 'list');
   assert.match(textOf(last(sent)), /Pickup: \*Ikorodu Garage/);
-  assert.match(textOf(last(sent)), /places matching "Caleb University"/);
+  assert.match(textOf(last(sent)), /places called "Caleb University"/);
 });
 
 test('THE CHAT, part 4 — "I want to go from Caleb University" gets the picker even when the model misreads it', async () => {
@@ -695,7 +695,7 @@ test('THE CHAT, part 4 — "I want to go from Caleb University" gets the picker 
   await say(deps, who, 'I want to go from Caleb University');
   assert.doesNotMatch(textOf(last(sent)), /Send your \*pickup\* and your \*destination\*/);
   assert.equal(last(sent).interactive?.type, 'list');
-  assert.match(textOf(last(sent)), /pick the right pickup/);
+  assert.match(textOf(last(sent)), /pick your pickup/);
 });
 
 test('only a destination given: it is remembered, the pickup is asked for, and the trip carries on by itself', async () => {
@@ -710,8 +710,8 @@ test('only a destination given: it is remembered, the pickup is asked for, and t
   const user = await agree(redis, await findRider(who));
 
   await say(deps, who, 'take me to caleb law');
-  assert.match(textOf(last(sent)), /Heading to \*Caleb law\* — got it/);
-  assert.match(textOf(last(sent)), /Where should we pick you up\?/);
+  assert.match(textOf(last(sent)), /Going to \*Caleb law\*\. Got it/);
+  assert.match(textOf(last(sent)), /Where should your driver pick you up\?/);
   assert.doesNotMatch(textOf(last(sent)), /Send your \*pickup\* and your \*destination\*/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
 
@@ -787,8 +787,8 @@ test('when the only match IS in another city, the bot asks before quoting — an
   assert.match(question, /about \*2\d\d km\* from your pickup, in another city/);
   // One message, with Quick Actions under it; "yes" is still the answer for going that far.
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
-  assert.match(question, /Reply \*yes\* if you really are going that far/);
-  assert.doesNotMatch(question, /Suggested fare/, 'no ₦97,100 quote for a place they never meant');
+  assert.match(question, /Really going that far\? Reply \*yes\*/);
+  assert.doesNotMatch(question, /Suggested price/, 'no ₦97,100 quote for a place they never meant');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination', 'still waiting for a destination');
 
   // The rider does what the screenshot rider did: sends it again with the city.
@@ -838,7 +838,7 @@ test('the whole trip in one message gets the same care: destination searched nea
   await agree(redis, await findRider(other));
   await say(deps, other, 'take me from 31 emily akinola akoka to no 7 osaro isokpan');
   assert.match(textOf(last(sent)), /in another city/);
-  assert.doesNotMatch(textOf(last(sent)), /Suggested fare/);
+  assert.doesNotMatch(textOf(last(sent)), /Suggested price/);
   await say(deps, other, 'yes');
   assert.match(textOf(last(sent)), /Destination: \*Isokpan St, Use, Benin City/);
 });
@@ -866,18 +866,18 @@ test('SCREENSHOTS 2 + 3 — at the price step the rider is understood, not told 
 
   await say(deps, who, 'No 7 osaro isokpan Lagos');
   const requote = textOf(last(sent));
-  assert.match(requote, /Destination updated!/);
+  assert.match(requote, /Destination changed/);
   assert.match(requote, /Destination: \*7 Osaro Isokpan St, Yaba/);
-  assert.doesNotMatch(requote, /Please send a price/);
+  assert.doesNotMatch(requote, /What's your price for this ride/);
 
   await say(deps, who, 'Cancel first order');
-  assert.doesNotMatch(textOf(last(sent)), /Please send a price/);
+  assert.doesNotMatch(textOf(last(sent)), /What's your price for this ride/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_cancel_reason');
 
   // Back at a quote, "Book a ride" starts over instead of looping.
   await bidState.setBookingStage(redis, user.id, 'awaiting_price');
   await say(deps, who, 'Book a ride');
-  assert.match(textOf(last(sent)), /start fresh/);
+  assert.match(textOf(last(sent)), /start again/);
   assert.equal(await bidState.getBookingStage(redis, user.id), null);
   assert.equal(await bidState.getPendingRoute(redis, user.id), null, 'the old quote is gone');
 });
@@ -894,7 +894,7 @@ test('a price is still just a price — no model call, and the ride is published
   await say(deps, who, '2,000');
   assert.equal(calls.groq, groqBefore, 'a number never costs a model call');
   assert.ok(published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
-  assert.doesNotMatch(textOf(last(sent)), /Please send a price/);
+  assert.doesNotMatch(textOf(last(sent)), /What's your price for this ride/);
 });
 
 test('never turn "ok" into a fare; never guess an amount from words', async () => {
@@ -910,9 +910,9 @@ test('never turn "ok" into a fare; never guess an amount from words', async () =
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
 
   await say(deps, who, 'ok book it');
-  assert.match(textOf(last(sent)), /just tell me your price/);
+  assert.match(textOf(last(sent)), /What's your price\?/);
   await say(deps, who, 'two thousand five hundred');
-  assert.match(textOf(last(sent)), /send it in figures/);
+  assert.match(textOf(last(sent)), /Send your price in numbers/);
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0, 'nothing was booked on a guess');
 });
 
@@ -932,8 +932,8 @@ test('the quote comes with a "Set your price" button; typing a price still works
   const quote = last(sent);
   assert.equal(quote.interactive.type, 'cta_url');
   assert.equal(quote.interactive.action.parameters.display_text, 'Set your price');
-  assert.match(textOf(quote), /Suggested fare: ₦/);
-  assert.match(textOf(quote), /Tap \*Set your price\* — or just type your offer/, 'the chat fallback is named');
+  assert.match(textOf(quote), /Suggested price: \*₦/);
+  assert.match(textOf(quote), /Tap \*Set your price\*, or type it/, 'the chat fallback is named');
   const url = quote.interactive.action.parameters.url;
   assert.match(url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/);
   const local = require('../apps/api-gateway/dist/auth/local.js');
@@ -996,11 +996,12 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   assert.ok(text.length <= 1024);
   assert.doesNotMatch(text, /https?:\/\//, 'no link in the text — tracking is a button');
   const at = (needle) => { const i = text.indexOf(needle); assert.ok(i >= 0, `the info carries "${needle}"`); return i; };
-  const sequence = ['Ride confirmed & paid', '*YOUR DRIVER*', 'Chinedu Okafor', '4.9 · 412 rides', '+2348031234567',
-    '*THE CAR*', 'Toyota Corolla', 'Plate: *LND-174XA*',
-    '*YOUR TRIP*', 'Pickup: *Ikorodu Garage', 'Destination: *Caleb University College of Law', 'Fare: ₦6,200 — held in your wallet', 'Arrives in about 4 min',
-    '*Track live trip*', '*Chat with driver*', '*SOS*'].map(at);
-  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: tracking, chat, then SOS');
+  const sequence = ['Your ride is booked', '*YOUR DRIVER*', 'Chinedu Okafor', '★4.9 · 412 rides',
+    '*THE CAR*', 'Toyota Corolla', 'plate *LND-174XA*',
+    '*YOUR TRIP*', 'Pickup: *Ikorodu Garage', 'Destination: *Caleb University College of Law', 'Fare ₦6,200 · held in your wallet', 'Arriving in about 4 min',
+    '*Chat with driver*', '*SOS*'].map(at);
+  assert.deepEqual(sequence, [...sequence].sort((a, b) => a - b), 'in reading order: chat, then SOS');
+  assert.ok(!text.includes('+2348031234567'), "no driver's phone number: calls go through Wheelers");
   // Every section stands apart — no wall of text.
   for (const heading of ['*YOUR DRIVER*', '*THE CAR*', '*YOUR TRIP*']) assert.ok(text.includes(`\n\n${heading}`), `${heading} has air above it`);
 });
@@ -1013,14 +1014,14 @@ test('no driver photo on file, or WhatsApp refuses the picture: the SAME card go
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive']);
   assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS']);
-  assert.match(order[0].body.interactive.body.text, /Plate: \*LND-174XA\*/);
+  assert.match(order[0].body.interactive.body.text, /plate \*LND-174XA\*/);
 
   order = recordMeta({ refuseCards: true });
   const both = await driverWithPhotos();
   await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive'], 'one message still');
   assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_chat', 'ride_sos']);
-  assert.match(order[0].body.interactive.body.text, /Ride confirmed & paid/);
+  assert.match(order[0].body.interactive.body.text, /Your ride is booked/);
 });
 
 test('THE CAR shows up when it matters: "has arrived" is ONE message — the car\'s photo, with who and what to look for as its caption', async () => {
@@ -1033,13 +1034,13 @@ test('THE CAR shows up when it matters: "has arrived" is ONE message — the car
   await sendDriverArrivedNotification(meta, '+2348030000001', { ...details, carPhotoUrl: 'https://files.test/car.jpg' });
   assert.deepEqual(sent.map((m) => m.type), ['image'], 'ONE message, not a photo and then the words');
   assert.equal(sent[0].image.link, 'https://files.test/car.jpg');
-  assert.match(sent[0].image.caption, /oke oyebade has arrived\* — look for the \*Camry\* \(LAG-CAMRY\)[\s\S]*Can't see them\? Call: \+2349015208515/);
+  assert.match(sent[0].image.caption, /oke oyebade is here\.\* Look for the \*Camry\*, plate \*LAG-CAMRY\*\.[\s\S]*Can't find them\? Call \+2349015208515/);
 
   // No photo on file → the words alone (with Quick Actions under them). They must never wait on a picture.
   sent = [];
   await sendDriverArrivedNotification(meta, '+234', details);
   assert.deepEqual(sent.map((m) => m.type), ['interactive']);
-  assert.match(sent[0].interactive.body.text, /has arrived\* — look for the \*Camry\*/);
+  assert.match(sent[0].interactive.body.text, /is here\.\* Look for the \*Camry\*/);
   assert.equal(sent[0].interactive.action.button, 'Quick Actions');
 
   // Meta refuses the picture → the same words, still one message.
@@ -1047,7 +1048,7 @@ test('THE CAR shows up when it matters: "has arrived" is ONE message — the car
   global.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return { ok: body.type !== 'image', status: 200, text: async () => 'bad media' }; };
   await sendDriverArrivedNotification(meta, '+234', { ...details, carPhotoUrl: 'https://files.test/gone.jpg' });
   assert.deepEqual(sent.map((m) => m.type), ['image', 'interactive']);
-  assert.match(sent[1].interactive.body.text, /has arrived/);
+  assert.match(sent[1].interactive.body.text, /is here\./);
 });
 
 test('Track live trip is a reply button, and a reply button cannot open a link — so the tap is answered with ONE message: the map\'s link button', async () => {
@@ -1081,7 +1082,7 @@ test('Chat with driver: the tap answers with the Trip chat link for the rider\'s
   const user = await agree(redis, await findRider(who));
 
   await tapButton(deps, who, 'ride_chat', 'Chat with driver');
-  assert.match(textOf(last(sent)), /no trip with a driver right now/);
+  assert.match(textOf(last(sent)), /don't have a driver right now/);
 
   const driver = await onlineDriver();
   const ride = await prisma.ride.create({ data: { riderId: user.id, driverId: driver.driverId, status: 'DRIVER_EN_ROUTE', pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address } });
@@ -1100,7 +1101,7 @@ test('Chat with driver: the tap answers with the Trip chat link for the rider\'s
 
   await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED', completedAt: new Date(Date.now() - 40 * 60_000) } });
   await tapButton(deps, who, 'ride_chat', 'Chat or call driver');
-  assert.match(textOf(last(sent)), /has ended: it closes when the trip ends/);
+  assert.match(textOf(last(sent)), /closed when the trip ended/);
 });
 
 test('a WhatsApp trip longer than 3 hours still ends with "Trip complete" on WhatsApp: the ride, not the expiring note, says it is a WhatsApp ride', async () => {
@@ -1129,7 +1130,7 @@ test('a WhatsApp trip longer than 3 hours still ends with "Trip complete" on Wha
     fareNgn: 4500, distanceKm: 120, durationSeconds: 5 * 3600, completedAt: new Date().toISOString(), timestamp: new Date().toISOString(),
   }, { redisClient: redis, publisher: deps.publisher, whatsappNotifier: notifier, registry: { sendToUser: async (userId, type, payload) => { toScreens.push([userId, type, payload.rideId]); }, hasUser: () => false } }, new Map());
   const after = sent.slice(before).map(textOf).join('\n');
-  assert.match(after, /Trip complete!/, 'the rider hears the trip ended');
+  assert.match(after, /You've arrived/, 'the rider hears the trip ended');
   // And the trip chat closes on both sides at once.
   const closed = toScreens.filter(([, type]) => type === 'chat:closed');
   assert.deepEqual(new Set(closed.map(([userId]) => userId)), new Set([user.id, driver.userId]));
@@ -1157,16 +1158,16 @@ test('SOS: one tap records the emergency with the trip, the driver and the car\'
 
   // They are told it was heard — and how to take it back.
   const heard = last(sent).interactive;
-  assert.match(heard.body.text, /SOS received[\s\S]*your trip, your driver and your location[\s\S]*Call \*112\*/);
+  assert.match(heard.body.text, /We've got your SOS[\s\S]*your trip, your driver and where you are[\s\S]*Call \*112\*/);
   assert.deepEqual(heard.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['ride_sos_cancel', "I'm safe"]]);
 
   await tapButton(deps, who, 'ride_sos', 'SOS');                       // a frightened thumb
   assert.equal((await alerts()).length, 1, 'one emergency, not two');
-  assert.match(textOf(last(sent)), /We already have your alert/);
+  assert.match(textOf(last(sent)), /We already have your SOS/);
 
   await tapButton(deps, who, 'ride_sos_cancel', "I'm safe");
   assert.equal((await alerts())[0].status, 'CANCELLED');
-  assert.match(textOf(last(sent)), /alert has been withdrawn/);
+  assert.match(textOf(last(sent)), /closed the alert/);
   await prisma.ride.update({ where: { id: ride.id }, data: { status: 'COMPLETED' } });
 });
 
@@ -1183,7 +1184,7 @@ test('SOS is never stopped by anything else the chat is doing — not even the p
   const alert = await prisma.safetyAlert.findFirst({ where: { userId: user.id } });
   assert.ok(alert, 'the alert must get recorded');
   assert.deepEqual([alert.rideId, alert.lat], [null, null]);
-  assert.match(textOf(last(sent)), /SOS received/);
+  assert.match(textOf(last(sent)), /We've got your SOS/);
   assert.doesNotMatch(textOf(last(sent)), /privacy/i);
 });
 
@@ -1213,13 +1214,13 @@ test('after the destination comes "Check your trip" — Confirm / Add a stop / E
   assert.equal(card.type, 'button');
   assert.deepEqual(card.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['trip_confirm', 'Confirm trip'], ['trip_add_stop', 'Add a stop'], ['trip_edit', 'Edit trip']]);
   assert.match(card.body.text, /Check your trip[\s\S]*Pickup: \*31 Emily Akinola[\s\S]*Destination: \*7 Osaro Isokpan St, Yaba/);
-  assert.doesNotMatch(card.body.text, /Send your offer|Minimum fare|Set your price/, 'the price is not asked for yet');
+  assert.doesNotMatch(card.body.text, /Name your price|Lowest you can offer|Set your price/, 'the price is not asked for yet');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
   const quote = last(sent).interactive;
   assert.equal(quote.action.parameters.display_text, 'Set your price');
-  assert.match(quote.body.text, /Trip confirmed[\s\S]*Minimum fare: ₦[\s\S]*Suggested fare: ₦/);
+  assert.match(quote.body.text, /Trip confirmed[\s\S]*Suggested price: \*₦[\s\S]*Lowest you can offer: ₦/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
 });
@@ -1239,7 +1240,7 @@ test('ADD A STOP: tap, type the place, pick it from the Places list — the trip
   const before = await bidState.getPendingRoute(redis, user.id);
 
   await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
-  assert.match(textOf(last(sent)), /Where do you want to stop\?/);
+  assert.match(textOf(last(sent)), /Where do you want to stop on the way\?/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'adding_stop');
 
   // Two markets match: the same picker as every other place — never a guess.
@@ -1309,7 +1310,7 @@ test('EDIT TRIP opens the Choose sheet: change pickup, change destination, add a
   await tap(deps, who, 'trip_edit_pickup', 'Change pickup');
   assert.match(textOf(last(sent)), /Current pickup: \*31 Emily Akinola[\s\S]*Type the new pickup/);
   await say(deps, who, 'unilag main gate');
-  assert.match(textOf(last(sent)), /Pickup updated![\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market/);
+  assert.match(textOf(last(sent)), /Pickup changed[\s\S]*Pickup: \*UNILAG Main Gate[\s\S]*Stop 1: \*Sabo Market/);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
   await tap(deps, who, 'trip_remove_stop_1', 'Remove stop 1');
@@ -1350,7 +1351,7 @@ test('old cards stay tappable and stay safe: Edit after confirming re-opens the 
 
   await bidState.clearPendingRoute(redis, user.id);
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
-  assert.match(textOf(last(sent)), /That trip has expired/);
+  assert.match(textOf(last(sent)), /That booking timed out/);
 
   await bidState.setActiveRide(redis, user.id, 'ride-already-out');
   await tapButton(deps, who, 'trip_add_stop', 'Add a stop');
@@ -1393,14 +1394,14 @@ test('with the form published the trip card is ONE message with ONE button that 
   assert.equal(card.action.parameters.flow_id, 'flow-edit-trip-1');
   assert.equal(card.action.parameters.flow_action, 'data_exchange', 'opening it asks OUR server for the boxes, filled in');
   assert.equal(verifyFlowToken(card.action.parameters.flow_token, deps.jwtSecret), `edit:${user.id}`);
-  assert.match(card.body.text, /Check your trip[\s\S]*Pickup: \*31 Emily Akinola[\s\S]*Destination: \*7 Osaro Isokpan[\s\S]*suggested fare ₦/);
+  assert.match(card.body.text, /Check your trip[\s\S]*Pickup: \*31 Emily Akinola[\s\S]*Destination: \*7 Osaro Isokpan[\s\S]*suggested ₦/);
   assert.match(card.body.text, /Form not opening\? Reply_ \*yes\*/, 'a phone that cannot open forms is told what to do');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
 
   // …and that promise is kept: "yes" confirms without the form — and the price is TYPED, never a web page.
   await say(deps, who, 'yes');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'words with Quick Actions under them, never a web page');
-  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Send your offer \(e\.g\./);
+  assert.match(textOf(last(sent)), /Trip confirmed[\s\S]*Name your price, e\.g\./);
 });
 
 test('if WhatsApp refuses the form message, the card falls back to reply buttons — never silence', async () => {
@@ -1434,7 +1435,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
 
   const low = await form('data_exchange', { action: 'set_price', price: '100' });
   assert.equal(low.screen, 'SET_PRICE');
-  assert.match(low.data.error, /lowest price for this trip, ₦/);
+  assert.match(low.data.error, /below the lowest price for this trip, ₦1,120\. It's in the box now/);
   assert.equal(published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0);
 
   const out = await form('data_exchange', { price: '2,500' }, 'SET_PRICE');          // no `action` tag: the screen Meta names says it
@@ -1654,7 +1655,7 @@ test('TAP an offer with money in the wallet: fare held, ride confirmed — no "r
   assert.deepEqual(accepted().map((e) => [e.rideId, e.bidId, e.agreedFareNgn, e.paymentMethod]), [[rideId, bid.bidId, 2400, 'WALLET']]);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 2400, 'the fare is held');
   assert.deepEqual(last(sent).interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS'], 'the ride card');
-  assert.match(textOf(last(sent)), /Ride confirmed & paid[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
+  assert.match(textOf(last(sent)), /Your ride is booked[\s\S]*Chinedu Okafor[\s\S]*LND-174XA/);
   assert.equal(sent.some((m) => /reply \*pay\*/i.test(textOf(m))), false);
 
   // A second tap on the same message: they are told their driver is coming, and nothing is charged twice.
@@ -1692,13 +1693,13 @@ test('an OLD message must never hold a NEW price: the driver re-priced, so the t
   assert.equal(accepted().length, 0);
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: user.id } })).lockedNgn), 0, 'nothing was held');
   const fresh = last(sent).interactive;
-  assert.match(fresh.body.text, /Chinedu Okafor changed their price to ₦3,200 \(it was ₦2,400\) — nothing was charged/);
+  assert.match(fresh.body.text, /Chinedu Okafor changed their price to ₦3,200 \(was ₦2,400\)\. Nothing was charged/);
   assert.equal(fresh.action.buttons[0].reply.title, 'Accept ₦3,200', 'and the new price is one tap away');
 
   // A driver who pulled out entirely.
   await bidState.removeBid(redis, rideId, driver.driverId);
   await tapButton(deps, who, offerId(bid, 3200), 'Accept ₦3,200');
-  assert.match(textOf(last(sent)), /no longer on the table[\s\S]*Still asking drivers/);
+  assert.match(textOf(last(sent)), /isn't available any more[\s\S]*Still asking drivers/);
   assert.equal(accepted().length, 0);
 });
 
@@ -1714,7 +1715,7 @@ test('SHORT WALLET: the tap remembers the driver and sends ONE "Add money" butto
   assert.equal(ask.type, 'cta_url');
   assert.equal(ask.action.parameters.display_text, 'Add money');
   assert.match(ask.action.parameters.url, /\/widget\/wallet\/deposit\.html#t=/, 'the deposit flow — not the price page');
-  assert.match(ask.body.text, /Add money to ride with Chinedu[\s\S]*Fare: ₦2,400 · your wallet: ₦400[\s\S]*Send \*₦2,051\* and ₦2,000 lands/, '(2000 + 30) / 0.99');
+  assert.match(ask.body.text, /Add money to ride with Chinedu[\s\S]*Fare ₦2,400 · your wallet ₦400[\s\S]*Send \*₦2,051\* and ₦2,000 lands/, '(2000 + 30) / 0.99');
   assert.doesNotMatch(ask.body.text, /fee|charge|account number/i, 'one figure, no breakdown, no bank details in the chat');
   assert.equal((await bidState.getPendingAccept(redis, user.id)).bidId, bid.bidId);
 
@@ -1784,7 +1785,7 @@ test('the search TIMES OUT while they are adding money for a chosen driver: no "
   await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
   assert.equal(await createWhatsappDepositFinisher(deps)({ userId: user.id, amountNgn: 2400, newBalanceNgn: 2400 }), true);
   assert.deepEqual(accepted().map((e) => [e.bidId, e.agreedFareNgn]), [[bid.bidId, 2400]]);
-  assert.match(textOf(last(sent)), /Ride confirmed & paid/);
+  assert.match(textOf(last(sent)), /Your ride is booked/);
 });
 
 test('the search ended while the transfer was on its way: said plainly, money kept, a way forward', async () => {
@@ -1800,7 +1801,7 @@ test('the search ended while the transfer was on its way: said plainly, money ke
 
   // And a tap on the old message now says the same, instead of reaching the model as "Accept ₦2,400".
   await tapButton(deps, who, offerId(bid), 'Accept ₦2,400');
-  assert.match(textOf(last(sent)), /That search has ended — nothing was charged/);
+  assert.match(textOf(last(sent)), /That search has ended\. Nothing was charged/);
 });
 
 test('"cancel", then a tap on an offer instead of a reason: the tap wins — the ride is taken, not cancelled', async () => {
@@ -1899,12 +1900,12 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
 
   const low = await form('data_exchange', { action: 'update_price', new_price: '100' });
   assert.equal(low.screen, 'CHANGE_PRICE');
-  assert.match(low.data.error, /lowest price for this trip, ₦/);
+  assert.match(low.data.error, /below the lowest price for this trip, ₦2,500\. It's in the box now/);
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
   const updated = await form('data_exchange', { new_price: '2,800' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
   assert.equal(updated.screen, 'OFFERS', 'back on the live list, the news on it');
-  assert.match(updated.data.error, /Bid updated to ₦2,800/);
+  assert.match(updated.data.error, /Price updated to ₦2,800\. Every driver looking at your trip can see it/);
   assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [2800]);
   assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 2800);
   assert.equal(sent.length, before, 'not one chat message');
@@ -2000,7 +2001,7 @@ test('QUICK ACTIONS is under every plain reply — but not inside a booking step
   // A tapped row on ANY old message does the right thing for NOW: mid-search, Book is refused.
   await bidState.setActiveRide(redis, user.id, 'ride-live');
   await tap(deps, who, 'qa_book', 'Book a ride');
-  assert.match(textOf(last(sent)), /already have a ride going/);
+  assert.match(textOf(last(sent)), /already have a ride in progress/);
   await bidState.clearActiveRide(redis, user.id);
 
   // WhatsApp refuses the list → the words alone, never silence.
@@ -2040,7 +2041,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   const menu = last(sent).interactive;
   assert.equal(menu.type, 'list');
   assert.equal(menu.action.button, 'Quick Actions');
-  assert.match(menu.body.text, /everything I can do/);
+  assert.match(menu.body.text, /what I can do for you/);
   assert.doesNotMatch(menu.body.text, /Wallet|₦/, 'nobody asked about money');
   const rows = menu.action.sections.flatMap((s) => s.rows);
   assert.deepEqual(rows.map((r) => r.id), ['qa_book', 'qa_repeat', 'qa_reverse', 'qa_history', 'qa_deposit', 'qa_withdraw', 'qa_support']);
@@ -2051,7 +2052,7 @@ test('QUICK ACTIONS: "menu" is ONE message with the picker inside — Book / Rep
   // A bare greeting gets a greeting back, with the same Actions button under it.
   await say(deps, who, 'hello');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
-  assert.match(last(sent).interactive.body.text, /^Hey Test! Good to see you\.\n\nWant to book a ride\? Send your \*pickup\* and your \*destination\*[\s\S]*From Ikeja City Mall to Unilag gate, Yaba[\s\S]*location pin[\s\S]*\*Quick Actions\*/, 'greeted back, asked if they want a ride and told how, the button still there');
+  assert.match(last(sent).interactive.body.text, /^Hi Test, where are you headed\?\n\nSend your pickup and destination[\s\S]*From Ikeja City Mall to Unilag gate, Yaba[\s\S]*share your location[\s\S]*\*Quick Actions\*/, 'greeted back, asked if they want a ride and told how, the button still there');
   assert.doesNotMatch(last(sent).interactive.body.text, /Wallet|₦/);
   delete process.env.SUPPORT_CONTACT;
   await say(deps, who, 'menu');
@@ -2117,7 +2118,7 @@ test('the RECEIPT carries Repeat / Reverse; a rating is still a typed 1–5; a g
   await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'ride-1');
   const receipt = sent[0].interactive;
   assert.equal(receipt.type, 'button');
-  assert.match(receipt.body.text, /Trip complete![\s\S]*Fare: ₦[\s\S]*Balance: ₦7,600[\s\S]*Reply \*1–5\* to rate/);
+  assert.match(receipt.body.text, /You've arrived[\s\S]*₦[\d,]+ paid from your wallet[\s\S]*Wallet balance ₦7,600[\s\S]*Reply \*1\* to \*5\* to rate/);
   assert.deepEqual(receipt.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['qa_again:ride-1', 'Repeat this ride'], ['qa_back:ride-1', 'Reverse this ride']]);
 
   await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'seat-1');
@@ -2135,7 +2136,7 @@ test('mid-search the menu offers "Your current trip" instead of Book, and Repeat
   assert.match(textOf(last(sent)), /1 driver found|offers \*₦2,400\*|Accept ₦2,400/, 'the offers on the table, again');
 
   await tap(deps, who, 'qa_repeat', 'Repeat last ride');
-  assert.match(textOf(last(sent)), /already have a ride going/);
+  assert.match(textOf(last(sent)), /already have a ride in progress/);
   assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'the live search was not touched');
 });
 
@@ -2167,11 +2168,11 @@ test('a reply the bot cannot use is ONE message with Quick Actions, and the seco
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions', 'the ways out are in Quick Actions');
   assert.match(textOf(last(sent)), /tap \*Quick Actions\*/);
   assert.doesNotMatch(textOf(last(sent)), /Or reply \*change pickup\*/, 'no words to type');
-  assert.doesNotMatch(textOf(last(sent)), /not getting anywhere/, 'the first miss just asks again');
+  assert.doesNotMatch(textOf(last(sent)), /not getting this one/, 'the first miss just asks again');
 
   await say(deps, who, 'i no understand');
   assert.equal(last(sent).interactive?.action?.button, 'Quick Actions');
-  assert.match(textOf(last(sent)), /not getting anywhere/, 'the second owns up to being stuck');
+  assert.match(textOf(last(sent)), /not getting this one/, 'the second owns up to being stuck');
 
   // Typing it still works, for riders who do.
   await say(deps, who, 'Change destination');
@@ -2198,7 +2199,7 @@ test('with the model down, the buttons and the plainest words still get the ride
   await say(deps, who, 'Osaro Isokpan street');
 
   await say(deps, who, 'Start again');
-  assert.match(textOf(last(sent)), /start fresh/);
+  assert.match(textOf(last(sent)), /start again/);
   assert.equal(await bidState.getBookingStage(redis, user.id), null);
 });
 
@@ -2258,10 +2259,10 @@ test('QUICK ACTIONS FORM · the menu is ONE message whose button opens the form 
   assert.equal(message.action.parameters.flow_cta, 'Quick Actions');
   assert.equal(message.action.parameters.flow_id, 'flow-quick-actions-1');
   assert.equal(verifyFlowToken(message.action.parameters.flow_token, at.deps.jwtSecret), `menu:${at.user.id}`);
-  assert.match(message.body.text, /everything I can do/);
+  assert.match(message.body.text, /what I can do for you/);
   await say(at.deps, at.who, 'hello');
   assert.equal(last(at.sent).interactive.type, 'flow');
-  assert.match(last(at.sent).interactive.body.text, /^Hey Test! Good to see you/);
+  assert.match(last(at.sent).interactive.body.text, /^Hi Test, where are you headed\?/);
 
   // Refused → the list picker, as before.
   const send = global.fetch;
@@ -2402,7 +2403,7 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is a screen whose butt
   const opened = await form('INIT');
   assert.deepEqual(opened.data.choices.map((c) => c.id), ['current', 'deposit'], 'no Book, Repeat or Withdraw with a ride going');
   assert.match(opened.data.choices[0].description, /Still looking/);
-  assert.match((await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU')).data.error, /already have a ride going/);
+  assert.match((await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU')).data.error, /already have a ride in progress/);
 
   const status = await form('data_exchange', { action: 'menu_choice', choice: 'current' }, 'MENU');
   assert.equal(status.screen, 'STATUS');
@@ -2671,7 +2672,7 @@ test('a LONE place while a trip is pending asks which end it is — tapping New 
   const route = await bidState.getPendingRoute(at.redis, at.user.id);
   assert.match(route.pickupAddress, /Ilemere/, `the lone place became the PICKUP, as they said — last said: ${textOf(last(at.sent))}`);
   assert.equal(route.destAddress, YABA.address, 'and the destination they never mentioned is untouched');
-  assert.match(textOf(last(at.sent)), /Pickup updated!/);
+  assert.match(textOf(last(at.sent)), /Pickup changed/);
 });
 
 test('a lone place that names its end ("from Ilemere") or refines the destination ("no, Osaro street") is applied without a question', async () => {
@@ -2691,7 +2692,7 @@ test('a price under the floor is a NUDGE with one button that offers the floor �
   await say(at.deps, at.who, '100');
   const nudge = last(at.sent).interactive;
   assert.equal(nudge?.type, 'button');
-  assert.match(nudge.body.text, new RegExp(`₦100 is under the lowest price for this trip, ₦${floor.toLocaleString()}`));
+  assert.match(nudge.body.text, new RegExp(`₦100 is below the lowest price for this trip, \\*₦${floor.toLocaleString()}\\*`));
   assert.deepEqual(nudge.action.buttons.map((b) => [b.reply.id, b.reply.title]), [[`offer_floor:${floor}`, `Offer ₦${floor.toLocaleString()}`]]);
   assert.equal(at.published.filter((p) => p.event?.eventType === 'RIDE_REQUESTED').length, 0, 'nothing published on a too-low price');
 
@@ -2837,13 +2838,13 @@ test('a pickup matched to a namesake in another city is the one questioned, and 
 
   const question = last(sent);
   assert.equal(question.interactive?.action?.button, 'Quick Actions', 'one message, Quick Actions under it');
-  assert.match(textOf(question), /Your pickup was matched to a place about \*\d{3} km\* from \*Yaba College of Technology/);
+  assert.match(textOf(question), /Your pickup is about \*\d{3} km\* from \*Yaba College of Technology/);
   assert.match(textOf(question), /probably the wrong pickup[\s\S]*Tap \*Quick Actions\*, then \*Change pickup\*/);
 
   // "No it's in Lagos" is an answer, not a place to look up.
   await say(deps, who, "No it's in Lagos");
-  assert.doesNotMatch(textOf(last(sent)), /Could not find/);
-  assert.match(textOf(last(sent)), /where should we pick you up/i);
+  assert.doesNotMatch(textOf(last(sent)), /couldn't find/);
+  assert.match(textOf(last(sent)), /where should your driver pick you up/i);
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
 
   // The new pickup, and the destination they already gave is kept: straight to the trip check.

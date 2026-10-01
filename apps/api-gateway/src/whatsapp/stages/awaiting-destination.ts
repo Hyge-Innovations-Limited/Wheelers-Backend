@@ -4,9 +4,10 @@ import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/c
 import { replyAndLog, sendMetaReply } from '../../whatsapp/send';
 import { BookingIntentResult, classifyBookingIntent, mightNotBeAnAddress } from '../../LLM/booking-intent';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, replyWithWayOut, sendPlaceChoices } from '../../whatsapp/places';
-import { ROUTE_PLAN_FAILED_REPLY, buildGroupSuggestionLine, planRouteSafe, sendQuoteWithPriceButton, startBookingOver } from '../../whatsapp/trip';
+import { ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, planRouteSafe, sendQuoteWithPriceButton, startBookingOver } from '../../whatsapp/trip';
 import { findPlaceOptions, geocodeMissLine, isInHomeArea } from '../../LLM/geocoding';
 import type { StageContext } from '../stage-context';
+import { priceCheckLines } from '../../whatsapp-flows/trip-text';
 
 /** The awaitingDestination stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
@@ -70,7 +71,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
         await setPendingAreaHint(deps.redisClient, user.id, { kind: 'pickup', area: '', counterpartAddress: keepDestination }).catch(() => undefined);
       }
       if (!destinationStepIntent.address) {
-        await replyAndLog(deps, phone, incomingMessage, 'Sure — where should we pick you up? Type the address with the area (e.g. *"92 Murtala Muhammed Way, Yaba"*) or share a location pin');
+        await replyAndLog(deps, phone, incomingMessage, 'Sure. Where should your driver pick you up? Type the address with the area, e.g. *92 Murtala Muhammed Way, Yaba*. Or share your location.');
         return true;
       }
       // They named the new pickup in the same breath: answer the pickup step with it.
@@ -80,7 +81,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
     }
     if (destinationStepIntent.intent === 'change_destination') {
       await clearPendingFarPlace(deps.redisClient, user.id).catch(() => undefined);
-      await replyAndLog(deps, phone, incomingMessage, 'Sure — where are you going? Type the destination with the area (e.g. *"Yaba College of Technology, Yaba"*) or share a location pin');
+      await replyAndLog(deps, phone, incomingMessage, 'Sure. Where are you going? Type the address with the area, e.g. *Yaba College of Technology, Yaba*. Or share the location.');
       return true;
     }
     // 'other' (a question, chatter) carries on below, where small talk is
@@ -88,7 +89,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
     if (destinationStepIntent.intent === 'help' || destinationStepIntent.intent === 'confirm') {
       await replyWithWayOut(deps, user, phone, incomingMessage, {
         wantsHelp: destinationStepIntent.intent === 'help',
-        prompt: 'Where are you going? Type the destination or share a location pin',
+        prompt: 'Where are you going? Type the address or share the location.',
       });
       return true;
     }
@@ -96,7 +97,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
     const pendingPickup = await getPendingLocation(deps.redisClient, user.id);
     if (!pendingPickup) {
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'Session expired. Type your pickup and destination like:\n\n*"From [pickup] to [destination]"*\n\nOr share a location pin';
+      const reply = TIMED_OUT_REPLY;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -119,7 +120,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
     const confirmedDestination = isAffirmative && !confirmedFarPlace ? pendingPickup.suggestedDestination?.trim() : undefined;
 
     if (isAffirmative && !confirmedDestination && !confirmedFarPlace) {
-      const reply = `Where are you going? Type the destination or share a pin`;
+      const reply = `Where are you going?`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -189,7 +190,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
 
     if (!destGeo) {
       await replyWithWayOut(deps, user, phone, incomingMessage, {
-        prompt: `${geocodeMissLine(typedDestination)}\n\nPlease type a more specific destination — add the area or a landmark — or share a location pin`,
+        prompt: `${geocodeMissLine(typedDestination)} Add the area or a landmark, or share the location.`,
       });
       return true;
     }
@@ -247,12 +248,7 @@ export async function awaitingDestination(ctx: StageContext): Promise<boolean> {
       ``,
       `Destination: *${destination.address}*`,
       ``,
-      `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-      `Minimum fare: ₦${minFare.toLocaleString()}`,
-      `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-      ``,
-      `Negotiate your price and we'll find you a driver!`,
-      `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+      ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
     ].join('\n') + groupSuggestion;
 
     await appendWhatsappConversation(deps.redisClient, phone, [

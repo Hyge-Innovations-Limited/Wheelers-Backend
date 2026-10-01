@@ -79,7 +79,7 @@ test('the rider is told their money is back and another driver is being found', 
   } finally { global.fetch = realFetch; }
   assert.equal(sent.length, 1);
   assert.match(sent[0], /Your driver had to cancel/);
-  assert.match(sent[0], /Your ₦3,000 is back in your wallet — balance: ₦5,000\./);
+  assert.match(sent[0], /Your ₦3,000 is back in your wallet \(balance ₦5,000\)\./);
   assert.match(sent[0], /finding you another driver/);
   assert.doesNotMatch(sent[0], /Book another ride/);
 });

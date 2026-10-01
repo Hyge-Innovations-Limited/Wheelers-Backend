@@ -93,7 +93,7 @@ export function outsideServiceAreaMatch(query: string): string | null {
 }
 
 export const OUTSIDE_SERVICE_AREA_LINE =
-  `Wheelers runs in ${SERVICE_COUNTRY_NAME} only for now`;
+  `Wheelers only runs in ${SERVICE_COUNTRY_NAME} for now.`;
 
 /**
  * The first line of a "we could not use that address" reply. Says why: a
@@ -104,7 +104,7 @@ export function geocodeMissLine(query: string): string {
   if (abroad) {
     return `"${query}" is outside ${SERVICE_COUNTRY_NAME} (${abroad}). ${OUTSIDE_SERVICE_AREA_LINE}`;
   }
-  return `Could not find "${query}" on the map.`;
+  return `I couldn't find "${query}" on the map.`;
 }
 
 /**

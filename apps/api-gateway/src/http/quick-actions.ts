@@ -93,21 +93,21 @@ export function quickActionsBody(greeting: boolean, firstName?: string | null): 
   // "wallet", and a rider saying hello does not need to be told their money.
   // A greeting is answered with one, then the ask: want a ride? — and how. The button is under it regardless.
   return greeting
-    ? `Hey${firstName ? ` ${firstName}` : ''}! Good to see you.\n\nWant to book a ride? Send your *pickup* and your *destination*, e.g. *From Ikeja City Mall to Unilag gate, Yaba* — or share your pickup location pin first.\n\nOr tap *Quick Actions* for your recent rides and more.`
-    : `Here is everything I can do.`;
+    ? `Hi${firstName ? ` ${firstName}` : ''}, where are you headed?\n\nSend your pickup and destination, e.g. *From Ikeja City Mall to Unilag gate, Yaba*. Or share your location first.\n\nTap *Quick Actions* to repeat a recent ride, add money and more.`
+    : `Here's what I can do for you.`;
 }
 
 /** The quick-actions message, as WhatsApp wants it. */
 export function buildQuickActions(input: MenuInput): Record<string, unknown> {
   const ride = input.busy
-    ? [{ id: QUICK_ACTION_IDS.currentTrip, title: 'Your current trip', description: 'Where things are with your ride right now' }]
+    ? [{ id: QUICK_ACTION_IDS.currentTrip, title: 'Your current trip', description: 'See where your ride is' }]
     : [
-        { id: QUICK_ACTION_IDS.book, title: 'Book a ride', description: 'Tell me where you are going' },
+        { id: QUICK_ACTION_IDS.book, title: 'Book a ride', description: 'Pickup, destination and your price' },
         ...(input.lastTrip ? [
           { id: QUICK_ACTION_IDS.repeat, title: 'Repeat last ride', description: clip(`${shortPlace(input.lastTrip.pickup.address)} → ${shortPlace(input.lastTrip.destination.address)}`, 72) },
           { id: QUICK_ACTION_IDS.reverse, title: 'Reverse last ride', description: clip(`${shortPlace(input.lastTrip.destination.address)} → ${shortPlace(input.lastTrip.pickup.address)}`, 72) },
         ] : []),
-        { id: QUICK_ACTION_IDS.history, title: 'Ride history', description: 'Places you have been — book any of them again' },
+        { id: QUICK_ACTION_IDS.history, title: 'Ride history', description: 'Book a past trip again' },
       ];
 
   return {
@@ -119,11 +119,11 @@ export function buildQuickActions(input: MenuInput): Record<string, unknown> {
         { title: 'Ride', rows: ride },
         // Mid-ride the menu is two things: the trip, and money for it. Withdraw waits (the fare is held).
         { title: 'Wallet', rows: [
-          { id: QUICK_ACTION_IDS.addMoney, title: 'Add money', description: 'Get your account number to transfer to' },
-          ...(input.busy ? [] : [{ id: QUICK_ACTION_IDS.withdraw, title: 'Withdraw', description: 'Send money from your wallet to your bank' }]),
+          { id: QUICK_ACTION_IDS.addMoney, title: 'Add money', description: 'Your account number for transfers' },
+          ...(input.busy ? [] : [{ id: QUICK_ACTION_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' }]),
         ] },
         ...(input.supportContact && !input.busy ? [{ title: 'Help', rows: [
-          { id: QUICK_ACTION_IDS.support, title: 'Contact support', description: 'Talk to a person at Wheelers' },
+          { id: QUICK_ACTION_IDS.support, title: 'Contact support', description: 'Talk to a person' },
         ] }] : []),
       ],
     },

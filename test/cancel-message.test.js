@@ -29,18 +29,18 @@ test('cancelled in the chat with a reason: one message, the reason and the refun
   }));
   assert.equal(sent.length, 1);
   assert.equal(sent[0], [
-    'Ride cancelled.',
+    '*Ride cancelled*',
     'Reason: Long waiting time',
     '',
-    'Your ₦2,500 is back in your wallet — balance: ₦2,582.59.',
+    'Your ₦2,500 is back in your wallet (balance ₦2,582.59).',
     '',
-    'Book another ride anytime — just send your route.',
+    'Need another ride? Send your trip anytime.',
   ].join('\n'));
 });
 
-test('cancelled elsewhere (the app, the driver): the message is as before', async () => {
+test('cancelled by the driver: their own opening line, and no rider reason', async () => {
   const [byDriver] = await capture(() => sendRideCancelledNotification(meta, '+2348000000000', { cancelledBy: 'driver', refundedNgn: 1000, balanceNgn: 5000 }));
-  assert.match(byDriver, /^Your driver had to cancel the trip/);
+  assert.match(byDriver, /^\*Your driver had to cancel\.\* Sorry about that\./);
   assert.doesNotMatch(byDriver, /Reason:/);
 });
 

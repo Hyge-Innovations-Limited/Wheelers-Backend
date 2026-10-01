@@ -3,10 +3,11 @@ import { sendMetaReply } from '../../whatsapp/send';
 import { OUTSIDE_SERVICE_AREA_LINE, isPinInsideServiceArea, reverseGeocode } from '../../LLM/geocoding';
 import { applyGroupLocation } from '../../whatsapp/group';
 import { cleanupRideKeys, clearActiveRide, clearBookingStage, clearPendingAccept, clearPendingAreaHint, clearPendingLocation, getPendingAreaHint, getPendingLocation, getPendingRoute, setBookingStage, setPendingLocation, storePendingRoute } from '../../whatsapp-flows/bid-state';
-import { ROUTE_PLAN_FAILED_REPLY, addStopToTrip, buildGroupSuggestionLine, planRouteSafe, sendQuoteWithPriceButton } from '../../whatsapp/trip';
+import { BUSY_REPLY, ROUTE_PLAN_FAILED_REPLY, addStopToTrip, buildGroupSuggestionLine, planRouteSafe, sendQuoteWithPriceButton } from '../../whatsapp/trip';
 import { rideClient } from '@wheleers/db';
 import { RideCancelledEvent } from '@wheleers/kafka-schemas';
 import type { StageContext } from '../stage-context';
+import { priceCheckLines } from '../../whatsapp-flows/trip-text';
 
 /** The locationPin stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function locationPin(ctx: StageContext): Promise<boolean> {
@@ -17,7 +18,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
 
     // Block location pins during active ride (unless editing)
     if (activeRideId && bookingStage !== 'editing_pickup' && bookingStage !== 'editing_destination') {
-      const reply = 'You have an active ride. Reply *edit from* or *edit to* to change your route, or *cancel* to start fresh.';
+      const reply = 'You have a ride in progress. Reply *edit from* or *edit to* to change it, or *cancel* to start again.';
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: '[Shared location pin]' },
         { role: 'assistant', content: reply },
@@ -30,7 +31,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
     const address = reverseGeo?.formattedAddress ?? `${locationLat.toFixed(4)}, ${locationLng.toFixed(4)}`;
 
     if (!isPinInsideServiceArea(locationLat, locationLng, reverseGeo)) {
-      const reply = `That pin is outside Nigeria (${address}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+      const reply = `That location is outside Nigeria (${address}). ${OUTSIDE_SERVICE_AREA_LINE}`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: '[Shared location pin]' },
         { role: 'assistant', content: reply },
@@ -65,7 +66,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
       if (!pendingRoute) {
         await clearBookingStage(deps.redisClient, user.id);
         const label = bookingStage === 'editing_pickup' ? 'edit from' : 'edit to';
-        const reply = `That edit timed out. Reply *${label}* again and then share the pin.`;
+        const reply = `That change timed out. Reply *${label}* again, then share the location.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: `[Shared location: ${address}]` },
           { role: 'assistant', content: reply },
@@ -130,7 +131,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
         });
         await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
 
-        const editedLabel = bookingStage === 'editing_pickup' ? 'Pickup updated!' : 'Destination updated!';
+        const editedLabel = bookingStage === 'editing_pickup' ? 'Pickup changed' : 'Destination changed';
         const reply = [
           `*${editedLabel}*`,
           ``,
@@ -138,11 +139,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
           ``,
           `Destination: *${destination.address}*`,
           ``,
-          `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-          `Minimum fare: ₦${minFare.toLocaleString()}`,
-          `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-          ``,
-          `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+          ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
         ].join('\n');
 
         await appendWhatsappConversation(deps.redisClient, phone, [
@@ -162,7 +159,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
 
     if (!pendingPickup) {
       if (activeRideId) {
-        const reply = 'You have an active ride. Reply *edit from* or *edit to* to change your route, or *cancel* to start fresh.';
+        const reply = 'You have a ride in progress. Reply *edit from* or *edit to* to change it, or *cancel* to start again.';
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: `[Shared location: ${address}]` },
           { role: 'assistant', content: reply },
@@ -192,7 +189,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
         return true;
       }
 
-      const reply = `Pickup: *${address}*\n\nNow share your *destination* location pin!`;
+      const reply = `Pickup: *${address}*\n\nWhere are you going? Type it or share the location.`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: `[Shared pickup location: ${address}]` },
         { role: 'assistant', content: reply },
@@ -210,7 +207,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
     if (activeRideId) {
       await clearPendingLocation(deps.redisClient, user.id);
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'You already have an active ride. Say *cancel* first to book a new one.';
+      const reply = BUSY_REPLY;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: `[Shared destination location: ${address}]` },
         { role: 'assistant', content: reply },
@@ -261,12 +258,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
       ``,
       `Destination: *${destination.address}*`,
       ``,
-      `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-      `Minimum fare: ₦${minFare.toLocaleString()}`,
-      `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-      ``,
-      `Negotiate your price and we'll find you a driver!`,
-      `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+      ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
     ].join('\n') + groupSuggestion;
 
     await appendWhatsappConversation(deps.redisClient, phone, [

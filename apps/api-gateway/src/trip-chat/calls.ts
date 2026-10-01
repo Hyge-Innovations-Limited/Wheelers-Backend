@@ -94,7 +94,7 @@ export function createCallService(deps: TripChatDeps) {
       // 📞 on the ride card instead of a new message; the message only when there is no card.
       if (await deps.whatsapp.setCardStatus(call.rideId, 'call')) return;
       const url = deps.whatsapp.pageUrl(call.calleeId, call.rideId, call.callId);
-      const body = `*${call.callerName}, your ${roleWord(call.callerRole)}, is calling you on Wheelers.*\n\nTap *Answer call* to talk. It stops ringing in ${Math.round(ringMs.whatsapp / 1000)} seconds.`;
+      const body = `*${call.callerName}, your ${roleWord(call.callerRole)}, is calling.*\n\nTap *Answer call* to talk. It rings for ${Math.round(ringMs.whatsapp / 1000)} seconds.`;
       await deps.whatsapp.send(info.rider.phone, body, url ? { text: 'Answer call', url } : undefined)
         .catch((error) => console.warn('[live-call] WhatsApp ring failed', { callId: call.callId, error: error instanceof Error ? error.message : String(error) }));
       return;

@@ -12,6 +12,7 @@ import { RideCancelledEvent, RideOfferAcceptedEvent } from '@wheleers/kafka-sche
 import { offerKey } from '../../rides/whatsapp-ride.service';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { StageContext } from '../stage-context';
+import { priceCheckLines } from '../../whatsapp-flows/trip-text';
 
 /** The inRide stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function inRide(ctx: StageContext): Promise<boolean> {
@@ -35,8 +36,8 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
       const accepted = await getAcceptedBid(deps.redisClient, activeRideId).catch(() => null);
       const driverName = accepted?.driverName ?? 'Your driver';
       const reply = rideState === 'in_progress'
-        ? `*${driverName}* is driving you now.\n\nYour ride card is above — tap *Track live trip* on it. Reply *cancel* if you need to.`
-        : `*${driverName}* is on the way.\n\nYour ride card is above — tap *Track live trip* on it. Reply *cancel* if you need to.`;
+        ? `*${driverName}* is driving you now.\n\nTap *Track live trip* on your ride card above to follow along.`
+        : `*${driverName}* is on the way.\n\nTap *Track live trip* on your ride card above to follow them, or reply *cancel* to cancel.`;
       await sendQuickActions(deps, user, phone, activeRideId, incomingMessage, false, reply);
       return true;
     }
@@ -130,7 +131,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
           });
           await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
 
-          const editedLabel = isPickup ? 'Pickup updated!' : 'Destination updated!';
+          const editedLabel = isPickup ? 'Pickup changed' : 'Destination changed';
           const reply = [
             `*${editedLabel}*`,
             ``,
@@ -138,11 +139,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
             ``,
             `Destination: *${destination.address}*`,
             ``,
-            `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-            `Minimum fare: ₦${minFare.toLocaleString()}`,
-            `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-            ``,
-            `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+            ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
           ].join('\n');
 
           await appendWhatsappConversation(deps.redisClient, phone, [
@@ -209,7 +206,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
       const lastBatch = await getLastBatch(deps.redisClient, activeRideId);
 
       if (lastBatch.length === 0) {
-        const reply = 'No drivers have bid yet. Hold tight — we\'ll notify you when drivers respond!';
+        const reply = "No offers yet. I'll let you know as soon as a driver answers.";
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -226,12 +223,12 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
         const options = lastBatch
           .map(
             (bid, index) =>
-              `${index + 1}. ${bid.driverName} — ₦${bid.counterOfferNgn} (${Math.ceil(
+              `${index + 1}. ${bid.driverName} — ₦${bid.counterOfferNgn.toLocaleString()} (${Math.ceil(
                 bid.etaSeconds / 60,
               )} min away)`,
           )
           .join('\n');
-        const reply = `You have ${lastBatch.length} drivers to choose from:\n\n${options}\n\nJust reply with the number — 1 to ${lastBatch.length}.`;
+        const reply = `${lastBatch.length} drivers have made offers:\n\n${options}\n\nReply with the number of the one you want.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -244,7 +241,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
       const selectedBid = lastBatch[bidIndex];
 
       if (!selectedBid) {
-        const reply = `Invalid driver number. Reply with a number from 1 to ${lastBatch.length}.`;
+        const reply = `Reply with a number from 1 to ${lastBatch.length} to pick a driver.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -345,7 +342,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
             minOfferNgn: validation.minOfferNgn,
             suggestedFareNgn: meta.suggestedFareNgn,
           });
-          const reply = `Your offer ₦${counterOffer.toLocaleString()} is below the minimum fare of ₦${validation.minOfferNgn.toLocaleString()}.\n\nPlease send a higher amount.`;
+          const reply = `₦${counterOffer.toLocaleString()} is below the lowest price for this trip, *₦${validation.minOfferNgn.toLocaleString()}*. Send a higher price.`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -366,7 +363,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
           timestamp: new Date().toISOString(),
         });
 
-        const reply = `Bid updated to ₦${counterOffer.toLocaleString()}. Drivers will see your new offer.`;
+        const reply = `Price updated to *₦${counterOffer.toLocaleString()}*. Every driver looking at your trip can see it.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },

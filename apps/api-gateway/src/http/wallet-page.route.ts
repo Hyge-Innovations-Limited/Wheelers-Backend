@@ -52,12 +52,12 @@ class PageError extends Error {
 
 function authenticate(req: IncomingMessage, deps: WalletPageRouteDeps, needs?: WalletPageScope) {
   const token = extractBearerToken(req.headers.authorization);
-  if (!token) throw new PageError('This link is not valid. Ask the Wheelers bot for a new one.', 401, 'LINK_INVALID');
+  if (!token) throw new PageError('This link is not valid. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_INVALID');
   let session;
   try {
     session = verifyWalletPageToken(token, deps.jwtSecret);
   } catch {
-    throw new PageError('This link has expired. Ask the Wheelers bot for a new one.', 401, 'LINK_EXPIRED');
+    throw new PageError('This link has expired. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_EXPIRED');
   }
   // A Trip chat link is shared around a trip (and lives for hours): it never opens the wallet.
   if ((needs && session.scope !== needs) || session.scope === 'trip') {

@@ -10,7 +10,7 @@ import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { sendOffersPageMessage } from '../whatsapp-flows/offers-page-message';
-import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
+import { PRICE_ASK_START, priceCheckLines, tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import { MetaWhatsappRouteDeps } from './deps';
 import { CANCELLATION_REASON_PROMPT } from './parse';
 import { askIfFarPlaceIsMeant, sendPlaceChoices } from './places';
@@ -45,7 +45,7 @@ export function samePlacePair(
 
 /** "Your pickup and destination are the same place" — with what to do about it. */
 export function samePlaceReply(pair: [string, string], address: string): string {
-  return `Your ${pair[0]} and your ${pair[1]} are the same place: *${address}*.\n\nSend a different ${pair[1]}, or say which one to change — e.g. *change pickup to Ikeja City Mall*.`;
+  return `Your ${pair[0]} and ${pair[1]} are the same place: *${address}*.\n\nSend a different ${pair[1]}, or tell me which to change, e.g. *change pickup to Ikeja City Mall*.`;
 }
 
 export async function planRouteSafe(
@@ -73,7 +73,7 @@ export async function planRouteSafe(
 }
 
 export const ROUTE_PLAN_FAILED_REPLY =
-  'I could not find a driving route between those points.\n\nCheck the addresses, or share a location pin.';
+  "I couldn't find a road between those places. Check the addresses, or share your location.";
 
 /**
  * Every normal booking is a potential group ride. Appended to the fare quote
@@ -125,7 +125,7 @@ export async function sendQuoteWithPriceButton(
     return quote;
   }
   await sendMetaLinkButton(deps, phone,
-    quote.replace('Send your offer (e.g.', 'Tap *Set your price* — or just type your offer (e.g.'),
+    quote.replace(PRICE_ASK_START, 'Tap *Set your price*, or type it, e.g.'),
     'Set your price', url);
   return quote;
 }
@@ -162,13 +162,13 @@ export async function sendSearchStarted(
   }
   const url = ridePageUrl(deps, user.id);
   const lines = [
-    `*Finding you a driver!*`,
+    `*Finding you a driver*`,
     ``,
     ...sharedTripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: (trip.stopAddresses ?? []).map((address) => ({ address })) }),
     ``,
-    `Your offer: ₦${trip.offerNgn.toLocaleString()}`,
+    `Your price: *₦${trip.offerNgn.toLocaleString()}*`,
     ``,
-    `Drivers' offers will land right here in this chat — tap the one you want.`,
+    `Drivers' offers come in right here. Tap the one you want.`,
   ];
   const text = lines.join('\n');
   // The button is only for changing the price; offers are never on that page.
@@ -178,7 +178,13 @@ export async function sendSearchStarted(
 }
 
 export const BOOKING_START_PROMPT =
-  'Send your *pickup* and your *destination*, e.g.\n*From Ikeja City Mall to Unilag gate, Yaba*\n\nOr share your pickup location pin first, then type the destination.';
+  "Send your pickup and destination in one message, e.g. *From Ikeja City Mall to Unilag gate, Yaba*.\n\nOr share your location first, then type where you're going.";
+
+/** Any booking step that waited too long: one message, not eight. */
+export const TIMED_OUT_REPLY = `That booking timed out.\n\n${BOOKING_START_PROMPT}`;
+
+/** Starting a booking while a ride is live: one message, not six. */
+export const BUSY_REPLY = 'You already have a ride in progress. To book a new one, reply *cancel* first.';
 
 /** Throw the half-made booking away and begin again. */
 export async function startBookingOver(
@@ -196,7 +202,7 @@ export async function startBookingOver(
     clearBookingMisses(deps.redisClient, user.id),
     clearBookingStage(deps.redisClient, user.id),
   ].map((step) => step.catch(() => undefined)));
-  await replyAndLog(deps, phone, incomingMessage, `No problem — let's start fresh.\n\n${BOOKING_START_PROMPT}`);
+  await replyAndLog(deps, phone, incomingMessage, `No wahala, let's start again.\n\n${BOOKING_START_PROMPT}`);
 }
 
 /**
@@ -283,17 +289,13 @@ export async function replanPendingRoute(
   await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
 
   await quoteAndLog(deps, user, phone, incomingMessage, [
-    `*${isPickup ? 'Pickup updated!' : 'Destination updated!'}*`,
+    `*${isPickup ? 'Pickup changed' : 'Destination changed'}*`,
     ``,
     `Pickup: *${pickup.address}*`,
     ``,
     `Destination: *${destination.address}*`,
     ``,
-    `${plannedRoute.distanceKm.toFixed(1)} km · ~${Math.ceil(plannedRoute.durationSeconds / 60)} min`,
-    `Minimum fare: ₦${minFare.toLocaleString()}`,
-    `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-    ``,
-    `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+    ...priceCheckLines({ distanceKm: plannedRoute.distanceKm, durationMin: Math.ceil(plannedRoute.durationSeconds / 60), suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
   ].join('\n'));
 }
 
@@ -413,11 +415,11 @@ export async function sendTripConfirmation(
       ``,
       ...tripLines(trip),
       ``,
-      `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min · suggested fare ₦${trip.suggestedFareNgn.toLocaleString()}`,
+      `${trip.distanceKm.toFixed(1)} km · about ${Math.ceil(trip.durationSeconds / 60)} min · suggested ₦${trip.suggestedFareNgn.toLocaleString()}`,
       ``,
-      `Tap *${TRIP_FORM_CTA}* — confirm it as it is, change the pickup or destination, or add a stop. All in one place.`,
+      `Tap *${TRIP_FORM_CTA}* to confirm it, change a place or add a stop.`,
       ``,
-      `_Form not opening? Reply_ *yes* _to confirm, or just type the change, e.g._ add a stop at Yaba market`,
+      `_Form not opening? Reply_ *yes* _to confirm, or type the change, e.g._ add a stop at Yaba market`,
     ].join('\n');
     if (await sendTripForm(deps, user.id, phone, formCard, TRIP_FORM_CTA)) return formCard;
   }
@@ -525,11 +527,7 @@ export async function confirmTripAndQuote(
     ``,
     ...tripLines(trip),
     ``,
-    `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min`,
-    `Minimum fare: ₦${trip.minOfferNgn.toLocaleString()}`,
-    `Suggested fare: ₦${trip.suggestedFareNgn.toLocaleString()}`,
-    ``,
-    `Send your offer (e.g. *${trip.suggestedFareNgn.toLocaleString()}* or *${Math.round(trip.suggestedFareNgn * 0.85).toLocaleString()}*)`,
+    ...priceCheckLines({ distanceKm: trip.distanceKm, durationMin: Math.ceil(trip.durationSeconds / 60), suggestedFareNgn: trip.suggestedFareNgn, minOfferNgn: trip.minOfferNgn }),
   ].join('\n'));
 }
 
@@ -571,11 +569,11 @@ export async function replanWithStops(
   ]);
 }
 
-export const ADD_STOP_PROMPT = 'Where do you want to stop?\n\nType the place — e.g. *"Yaba market"* or *"Shoprite Ikeja"* — or share a location pin\n\nReply *back* to leave the trip as it is.';
+export const ADD_STOP_PROMPT = 'Where do you want to stop on the way?\n\nType the place, e.g. *Yaba market*, or share the location. Reply *back* to keep your trip as it is.';
 
 export async function askForStop(deps: MetaWhatsappRouteDeps, user: { id: string }, phone: string, incomingMessage: string, trip: PendingRouteData): Promise<void> {
   if ((trip.stops?.length ?? 0) >= MAX_CHAT_STOPS) {
-    await replyAndLog(deps, phone, incomingMessage, `A trip can have up to ${MAX_CHAT_STOPS} stops, and yours has ${MAX_CHAT_STOPS}. Remove one first — tap *Edit trip*.`);
+    await replyAndLog(deps, phone, incomingMessage, `You can add up to ${MAX_CHAT_STOPS} stops. To add another, remove one first: tap *Edit trip*.`);
     return;
   }
   await setBookingStage(deps.redisClient, user.id, 'adding_stop');
@@ -687,13 +685,13 @@ export async function handleTripTap(
   hasActiveRide: boolean,
 ): Promise<void> {
   if (hasActiveRide) {
-    await replyAndLog(deps, phone, incomingMessage, 'Drivers are already looking at this trip. To change it, reply *cancel* and send the new trip.');
+    await replyAndLog(deps, phone, incomingMessage, 'Drivers are already looking at this trip. To change it, reply *cancel*, then send the new trip.');
     return;
   }
   const trip = await getPendingRoute(deps.redisClient, user.id);
   if (!trip) {
     await clearBookingStage(deps.redisClient, user.id);
-    await replyAndLog(deps, phone, incomingMessage, `That trip has expired.\n\n${BOOKING_START_PROMPT}`);
+    await replyAndLog(deps, phone, incomingMessage, TIMED_OUT_REPLY);
     return;
   }
   await clearPendingGeoChoices(deps.redisClient, user.id).catch(() => undefined);

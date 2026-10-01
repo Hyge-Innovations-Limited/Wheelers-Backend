@@ -288,7 +288,7 @@
       if (!account) return;
       W.copy(account.accountNumber).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
     };
-    W.$('pay-note').textContent = 'The moment it lands, ' + first + ' is confirmed. No need to tap anything again.';
+    W.$('pay-note').textContent = first + ' is booked the moment it lands. You don’t need to tap anything again.';
     openSheet('sheet-pay');
   }
 

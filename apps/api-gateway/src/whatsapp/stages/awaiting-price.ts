@@ -1,7 +1,7 @@
 import { clearBookingMisses, clearBookingStage, clearPendingFarPlace, clearPendingRoute, getPendingFarPlace, getPendingRoute, setBookingStage } from '../../whatsapp-flows/bid-state';
 import { startGroupRideFlow } from '../../whatsapp/group';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isAffirmativeReply, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, parseCounterOffer } from '../../whatsapp/parse';
-import { addStopToTrip, askForStop, changeEndOrAsk, removeStopFromTrip, replanPendingRoute, sendSearchStarted, startBookingOver } from '../../whatsapp/trip';
+import { TIMED_OUT_REPLY, addStopToTrip, askForStop, changeEndOrAsk, removeStopFromTrip, replanPendingRoute, sendSearchStarted, startBookingOver } from '../../whatsapp/trip';
 import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/conversation-store';
 import { replyAndLog, sendFloorNudge, sendMetaReply } from '../../whatsapp/send';
 import { bookingIntentGroq, replyWithWayOut, takePickedPlace } from '../../whatsapp/places';
@@ -136,12 +136,12 @@ export async function awaitingPrice(ctx: StageContext): Promise<boolean> {
           return true;
         }
 
-        const pricePrompt = `Minimum: ₦${pendingRoute.minOfferNgn.toLocaleString()}\nSuggested: ₦${pendingRoute.suggestedFareNgn.toLocaleString()}`;
+        const pricePrompt = `Suggested ₦${pendingRoute.suggestedFareNgn.toLocaleString()} · lowest ₦${pendingRoute.minOfferNgn.toLocaleString()}`;
 
         if (wanted.intent === 'confirm') {
           // Never turn a bare "ok" into a fare — they name the number.
           await replyAndLog(deps, phone, incomingMessage,
-            `Almost there — just tell me your price.\n\n${pricePrompt}\n\nSend *${pendingRoute.suggestedFareNgn.toLocaleString()}* to go with the suggested fare, or name your own.`);
+            `Almost there. What's your price?\n\n${pricePrompt}\n\nReply *${pendingRoute.suggestedFareNgn.toLocaleString()}* to go with the suggested price.`);
           return true;
         }
 
@@ -149,13 +149,13 @@ export async function awaitingPrice(ctx: StageContext): Promise<boolean> {
           // The model heard a price we could not read as a number ("two
           // thousand five hundred"). We do not guess amounts.
           await replyAndLog(deps, phone, incomingMessage,
-            `I couldn't read that as an amount — please send it in figures, like *${pendingRoute.suggestedFareNgn.toLocaleString()}*.\n\n${pricePrompt}`);
+            `Send your price in numbers, e.g. *${pendingRoute.suggestedFareNgn.toLocaleString()}*.\n\n${pricePrompt}`);
           return true;
         }
 
         await replyWithWayOut(deps, user, phone, incomingMessage, {
           wantsHelp: wanted.intent === 'help',
-          prompt: `Please send a price for your ride.\n\n${pricePrompt}\n\nExample: *${pendingRoute.suggestedFareNgn.toLocaleString()}*`,
+          prompt: `What's your price for this ride? Send it in numbers, e.g. *${pendingRoute.suggestedFareNgn.toLocaleString()}*.\n\n${pricePrompt}`,
         });
         return true;
       }
@@ -173,8 +173,8 @@ export async function awaitingPrice(ctx: StageContext): Promise<boolean> {
       if (!published.ok) {
         if (published.code === 'ALREADY_PUBLISHING') return true;
         const reply = published.code === 'BELOW_MINIMUM'
-          ? `The lowest price for this trip is ₦${published.minOfferNgn.toLocaleString()}. Send that, or a higher amount.`
-          : 'Could not start the search just now. Send your price again to retry.';
+          ? `The lowest price for this trip is *₦${published.minOfferNgn.toLocaleString()}*. Offer that or more.`
+          : "I couldn't start the search just now. Send your price again.";
         await replyAndLog(deps, phone, incomingMessage, reply);
         return true;
       }
@@ -194,7 +194,7 @@ export async function awaitingPrice(ctx: StageContext): Promise<boolean> {
       // The quote expired (10 minutes) but the stage lingered — the price
       // used to fall through to the chatbot, which answered "3000" as chat.
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'That quote expired — send your pickup and destination again and we\'ll re-check the price.';
+      const reply = TIMED_OUT_REPLY;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },

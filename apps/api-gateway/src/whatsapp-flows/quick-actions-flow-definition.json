@@ -124,12 +124,12 @@
             {
               "id": "history",
               "title": "Ride history",
-              "description": "Places you have been — book any of them again"
+              "description": "Book a past trip again"
             },
             {
               "id": "deposit",
               "title": "Add money",
-              "description": "Your account number to transfer to"
+              "description": "Your account number for transfers"
             }
           ]
         },

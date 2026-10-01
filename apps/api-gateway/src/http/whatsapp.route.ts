@@ -33,12 +33,13 @@ import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
 import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
 import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
-import { ROUTE_PLAN_FAILED_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
+import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
 import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
 import { handleQuickAction, sendQuickActions } from '../whatsapp/menu';
 import { sendWalletPageButton } from '../whatsapp/wallet';
 import { requirePrivacyConsent } from '../whatsapp/consent';
 import { cancelGroupRide, convertGroupToNormalRide, handleGroupSelfie, handleGroupStageText, sendGroupStatus, startGroupRideFlow } from '../whatsapp/group';
+import { priceCheckLines } from '../whatsapp-flows/trip-text';
 export { placeChoiceRows } from '../whatsapp/places';
 export { createRidePageChatNotifier, createOffersFormChatHooks, createWhatsappDepositFinisher } from '../whatsapp/ride-card';
 export { createQuickActionsChatHooks } from '../whatsapp/menu';
@@ -224,7 +225,7 @@ async function handleIncomingMetaMessage(
     if (!activeRideId && (tappedOffer || msgInfo.replyId === CHANGE_PRICE_REPLY_ID)) {
       await clearPendingAccept(deps.redisClient, user.id);
       await replyAndLog(deps, phone, incomingMessage,
-        'That search has ended — nothing was charged. Send your trip again, or reply *search again* for the same route.');
+        'That search has ended. Nothing was charged.\n\nReply *search again* for the same trip, or send a new one.');
       return;
     }
     // They said "cancel", then took an offer instead of giving a reason: the tap wins.
@@ -243,7 +244,7 @@ async function handleIncomingMetaMessage(
         await clearPendingGeoChoices(deps.redisClient, user.id);
         const field = offered.context === 'pickup' || offered.context === 'group_pickup' ? 'pickup' : offered.context === 'stop' ? 'stop' : 'destination';
         await replyAndLog(deps, phone, incomingMessage,
-          `No problem. Type the ${field} again with the area or a nearby landmark — e.g. *"Admiralty Way, Lekki Phase 1"* — or share a location pin`);
+          `No problem. Type the ${field} again with the area, e.g. *Admiralty Way, Lekki Phase 1*. Or share your location.`);
         return;
       }
     }
@@ -358,7 +359,7 @@ async function handleIncomingMetaMessage(
         ]);
         return;
       }
-      const reply = ['Booking cancelled.', `Reason: ${reason}`].join('\n');
+      const reply = ['Booking cancelled. Nothing was charged.', `Reason: ${reason}`].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -443,7 +444,7 @@ async function handleIncomingMetaMessage(
       await walletSecurityClient.freezeWithdrawals(user.id, new Date('2099-12-31T00:00:00Z'), 'user_freeze');
       logActivity({ userId: user.id, eventType: 'withdrawals_frozen_by_user', source: 'whatsapp', metadata: {} });
       await sendWhatsappText(deps, phone, incomingMessage,
-        'Withdrawals are now locked on your account. Nothing can leave your wallet.\n\nDeposits and rides still work. Contact Wheelers support to unlock it once your phone is safe.');
+        'Withdrawals are now paused. No money can leave your wallet.\n\nDeposits and rides still work. When your phone is safe, contact Wheelers support to switch withdrawals back on.');
       return;
     }
 
@@ -475,17 +476,19 @@ async function handleIncomingMetaMessage(
     if (isWithdrawalStatusCommand(incomingMessage) && !isLocation) {
       const latest = (await withdrawalClient.listByUser(user.id, 1).catch(() => []))[0];
       if (!latest) {
-        await sendWhatsappText(deps, phone, incomingMessage, 'You have no withdrawal requests yet. Reply *withdraw* to start one.');
+        await sendWhatsappText(deps, phone, incomingMessage, "You haven't made a withdrawal yet. Reply *withdraw* to start one.");
         return;
       }
 
       const accountLast4 = latest.bankAccountNumber.slice(-4);
       const failure = latest.failureReason ? `\nReason: ${latest.failureReason}` : '';
+      // Words a person uses, not the system's status names.
+      const statusWord = latest.status === 'SETTLED' ? 'Sent'
+        : latest.status === 'FAILED' || latest.status === 'EXPIRED' || latest.status === 'CANCELLED' ? 'Not sent (money back in your wallet)'
+          : 'Processing';
       const reply = [
-        `Withdrawal: ₦${Number(latest.requestedAmountNgn).toLocaleString()}`,
-        `Status: *${latest.status}*`,
-        `Bank account: ••••${accountLast4}`,
-        `Requested: ${latest.createdAt.toLocaleString()}`,
+        `Your ₦${Number(latest.requestedAmountNgn).toLocaleString()} withdrawal to ••••${accountLast4}: *${statusWord}*`,
+        `Requested ${latest.createdAt.toLocaleString('en-NG', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
         failure,
       ].filter(Boolean).join('\n');
       await sendWhatsappText(deps, phone, incomingMessage, `${reply}\n\nReply *withdraw status* to check again.`);
@@ -552,7 +555,7 @@ async function handleIncomingMetaMessage(
       const pendingRoute = await getPendingRoute(deps.redisClient, user.id);
       if (!pendingRoute) {
         await clearBookingStage(deps.redisClient, user.id);
-        const reply = 'Session expired. Share a location pin to start a new booking';
+        const reply = TIMED_OUT_REPLY;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -598,7 +601,7 @@ async function handleIncomingMetaMessage(
           // "ok leave it" / "never mind the change": back to the quote as it was.
           await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
           await replyAndLog(deps, phone, incomingMessage,
-            `No change made. Your trip is still:\n\nPickup: *${pendingRoute.pickupAddress}*\nDestination: *${pendingRoute.destAddress}*\n\nSend your price (suggested ₦${pendingRoute.suggestedFareNgn.toLocaleString()}), or reply *change pickup*, *change destination* or *cancel*.`);
+            `No change made. Your trip is still:\n\nPickup: *${pendingRoute.pickupAddress}*\n\nDestination: *${pendingRoute.destAddress}*\n\nName your price (suggested ₦${pendingRoute.suggestedFareNgn.toLocaleString()}), or reply *change pickup*, *change destination* or *cancel*.`);
           return;
         }
       }
@@ -640,7 +643,7 @@ async function handleIncomingMetaMessage(
       await clearBookingStage(deps.redisClient, user.id);
       await clearPendingRoute(deps.redisClient, user.id);
 
-      const reply = 'Nothing to cancel. Share your location to book a ride!';
+      const reply = 'You have nothing to cancel.\n\nNeed a ride? Send your pickup and destination.';
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -666,7 +669,7 @@ async function handleIncomingMetaMessage(
     if (/^\s*(search again|keep searching|try again|retry|find (me )?(a )?driver)\b/i.test(incomingMessage)) {
       const lastRoute = await getLastRoute(deps.redisClient, user.id);
       if (!lastRoute) {
-        const reply = 'Tell me the route first — like *"From 102 Opebi Rd to Yaba"* — and I\'ll find you a driver.';
+        const reply = BOOKING_START_PROMPT;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -718,12 +721,12 @@ async function handleIncomingMetaMessage(
       await setBookingStage(deps.redisClient, user.id, 'searching');
 
       const reply = [
-        `*Searching again!*`,
+        `*Searching again*`,
         ``,
         `${lastRoute.pickupAddress} → ${lastRoute.destAddress}`,
-        `Your offer: ₦${lastRoute.offerNgn.toLocaleString()}`,
+        `Your price: *₦${lastRoute.offerNgn.toLocaleString()}*`,
         ``,
-        `Asking drivers nearby — offers land here as they come. Sending a higher number any time raises your offer.`,
+        `Offers come in as drivers answer. A higher price gets drivers moving faster: just send the number.`,
       ].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
@@ -749,7 +752,7 @@ async function handleIncomingMetaMessage(
 
     if (rideIntent && (rideIntent.intent === 'ride_request' || rideIntent.intent === 'group_ride_request') && rideIntent.outsideNigeria) {
       const place = rideIntent.destination?.address || rideIntent.pickup?.address || 'that place';
-      const reply = `${place} is outside Nigeria. ${OUTSIDE_SERVICE_AREA_LINE}\n\nAnywhere in Nigeria I can take you?`;
+      const reply = `${place} is outside Nigeria, and Wheelers only runs in Nigeria for now.\n\nWhere in Nigeria can I take you?`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -771,7 +774,7 @@ async function handleIncomingMetaMessage(
 
     // ── Edit pickup/destination with no pending route → tell user to start fresh ──
     if (rideIntent?.intent === 'edit_pickup' || rideIntent?.intent === 'edit_destination') {
-      const reply = 'No ride in progress to edit. Start a new ride by typing:\n\n*"From [pickup] to [destination]"*\n\nOr share a location pin';
+      const reply = `You don't have a ride to edit yet.\n\n${BOOKING_START_PROMPT}`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -846,7 +849,7 @@ async function handleIncomingMetaMessage(
         const destGeo = destOptions[0] ?? null;
 
         if (!pickupGeo) {
-          const reply = `${geocodeMissLine(rideIntent.pickup!.address)}\n\nPlease try a more specific pickup address, or share a location pin`;
+          const reply = `${geocodeMissLine(rideIntent.pickup!.address)} Add the area or a landmark, e.g. *Shoprite, Ikeja*. Or share your location.`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -865,7 +868,7 @@ async function handleIncomingMetaMessage(
           });
           await setBookingStage(deps.redisClient, user.id, 'awaiting_destination');
 
-          const reply = `Pickup: *${pickupGeo.formattedAddress}*\n\n${geocodeMissLine(rideIntent.destination!.address)}\n\nPlease type a more specific destination or share a destination location pin`;
+          const reply = `Pickup: *${pickupGeo.formattedAddress}*\n\n${geocodeMissLine(rideIntent.destination!.address)} Add the area or a landmark, or share the destination's location.`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -980,12 +983,7 @@ async function handleIncomingMetaMessage(
           ``,
           `Destination: *${destination.address}*`,
           ``,
-          `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-          `Minimum fare: ₦${minFare.toLocaleString()}`,
-          `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
-          ``,
-          `Negotiate your price and we'll find you a driver!`,
-          `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+          ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
         ].join('\n') + groupSuggestion;
 
         await appendWhatsappConversation(deps.redisClient, phone, [
@@ -1034,15 +1032,15 @@ async function handleIncomingMetaMessage(
               await sendPlaceChoices(deps, user, phone, incomingMessage, {
                 context: 'destination', field: 'destination', typed: destinationArea, candidates: spots,
                 intro: `Pickup: *${pickupGeo.formattedAddress}*`,
-                question: `Whereabouts in *${destinationArea}* are you headed?\n\nTap *Choose* for well-known spots — or type a landmark or street, or share a location pin`,
+                question: `Where in *${destinationArea}* are you going?\n\nTap *Choose* to pick a spot, or type a street or landmark.`,
               });
               return;
             }
           }
 
           const reply = destinationArea
-            ? `Pickup: *${pickupGeo.formattedAddress}*\n\nWhereabouts in *${destinationArea}* are you headed? A landmark, street or building works — or share a location pin`
-            : `Pickup: *${pickupGeo.formattedAddress}*\n\nNow send your *destination* — type the address or share a location pin`;
+            ? `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere in *${destinationArea}* are you going? Type a street or landmark, or share the location.`
+            : `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going?`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -1052,7 +1050,7 @@ async function handleIncomingMetaMessage(
         }
         // The pickup they named will not geocode. Say so — falling through
         // used to ask "whereabouts are you headed?" and then expire.
-        const reply = `${geocodeMissLine(rideIntent.pickup!.address)}\n\nTry a nearby landmark or street for the pickup, or share a location pin`;
+        const reply = `${geocodeMissLine(rideIntent.pickup!.address)} Try a nearby landmark or street, or share your location.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -1086,14 +1084,14 @@ async function handleIncomingMetaMessage(
         if (pickupSpots.length >= 2) {
           await sendPlaceChoices(deps, user, phone, incomingMessage, {
             context: 'pickup', field: 'pickup', typed: areaName, candidates: pickupSpots,
-            question: `Whereabouts in *${areaName}* should the driver pick you up?\n\nTap *Choose* for well-known spots — or type a landmark or street, or share a location pin`,
+            question: `Where in *${areaName}* should your driver pick you up?\n\nTap *Choose* to pick a spot, or type a street or landmark.`,
           });
           return;
         }
 
         const reply =
-          `Whereabouts in *${areaName}* should the driver pick you up?\n\n` +
-          `Tell me a landmark, street or bus stop — e.g. "${areaName} roundabout" — or share a location pin`;
+          `Where in *${areaName}* should your driver pick you up?\n\n` +
+          `Type a street, landmark or bus stop, e.g. *${areaName} roundabout*. Or share your location.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -1112,12 +1110,12 @@ async function handleIncomingMetaMessage(
         await setBookingStage(deps.redisClient, user.id, 'awaiting_pickup');
         const goingTo = (rideIntent.destination?.area?.trim() && !rideIntent.destination?.specific ? rideIntent.destination.area : knownDestination).split(',')[0];
         await replyAndLog(deps, phone, incomingMessage,
-          `Heading to *${goingTo}* — got it.\n\nWhere should we pick you up? Type the address or a landmark, or share a location pin`);
+          `Going to *${goingTo}*. Got it.\n\nWhere should your driver pick you up?`);
         return;
       }
 
       // ── Nothing usable named at all → explain the format ──
-      const reply = 'To book a ride, type your pickup and destination like:\n\n*"From [pickup address] to [destination]"*\n\nOr share your pickup location pin';
+      const reply = BOOKING_START_PROMPT;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -1153,8 +1151,8 @@ async function handleIncomingMetaMessage(
         }));
         await clearLastCompletedRide(deps.redisClient, user.id);
         const reply = rating >= 4
-          ? `Thanks! Your ${rating}-star rating was sent${lastCompleted.driverName ? ` to ${lastCompleted.driverName}` : ''}. Book another ride anytime — just send your route.`
-          : `Thanks for the honest ${rating}-star rating. Sorry that trip wasn't great — tell us what went wrong and we'll look into it.`;
+          ? `Thanks! ${lastCompleted.driverName ? `${lastCompleted.driverName} got` : 'Your driver got'} your ${rating} stars.\n\nNeed another ride? Send your trip anytime.`
+          : `Thanks for being honest. Sorry it wasn't a great trip.\n\nTell us what went wrong and we'll look into it.`;
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
           { role: 'assistant', content: reply },
@@ -1174,8 +1172,8 @@ async function handleIncomingMetaMessage(
       const balance = wallet ? Number(wallet.balanceNgn) : 0;
       const locked = wallet ? Number(wallet.lockedNgn) : 0;
       const reply = locked > 0
-        ? `Your wallet balance is ₦${balance.toLocaleString()} (plus ₦${locked.toLocaleString()} held for your current ride).`
-        : `Your wallet balance is ₦${balance.toLocaleString()}.`;
+        ? `Your wallet balance is *₦${balance.toLocaleString()}*.\n\n₦${locked.toLocaleString()} is held for your current ride.`
+        : `Your wallet balance is *₦${balance.toLocaleString()}*.`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },

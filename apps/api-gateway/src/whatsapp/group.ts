@@ -11,6 +11,7 @@ import { isCancelCommand, isGroupCancelCommand, parseCounterOffer, stripDirectio
 import { sendPlaceChoices } from './places';
 import { replyAndLog } from './send';
 import { ROUTE_PLAN_FAILED_REPLY, planRouteSafe, quoteAndLog } from './trip';
+import { priceCheckLines } from '../whatsapp-flows/trip-text';
 
 export const GROUP_SELFIE_PROMPT = [
   'Quick safety check',
@@ -587,15 +588,13 @@ export async function convertGroupToNormalRide(
   await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
 
   await quoteAndLog(deps, user, phone, incomingMessage, [
-    `*Switched to a normal ride.*`,
+    `*Switched to a normal ride*`,
     ``,
     `Pickup: *${pickup.address}*`,
-    `Destination: *${destination.address}*`,
-    `${distanceKm.toFixed(1)} km · ~${durationMin} min`,
-    `Minimum fare: ₦${minFare.toLocaleString()}`,
-    `Suggested fare: ₦${suggestedFare.toLocaleString()}`,
     ``,
-    `Send your offer (e.g. *${suggestedFare.toLocaleString()}* or *${Math.round(suggestedFare * 0.85).toLocaleString()}*)`,
+    `Destination: *${destination.address}*`,
+    ``,
+    ...priceCheckLines({ distanceKm, durationMin, suggestedFareNgn: suggestedFare, minOfferNgn: minFare }),
   ].join('\n'));
 }
 

@@ -288,18 +288,18 @@ export function withQuickActions(text: string): Record<string, unknown> {
       button: QUICK_ACTIONS_BUTTON,
       sections: [
         { title: 'Ride', rows: [
-          { id: 'qa_book', title: 'Book a ride', description: 'Tell me where you are going' },
-          { id: 'qa_repeat', title: 'Repeat last ride', description: 'Same trip as last time' },
-          { id: 'qa_reverse', title: 'Reverse last ride', description: 'Last trip, back the other way' },
-          { id: 'qa_history', title: 'Ride history', description: 'Places you have been — book any again' },
-          { id: 'qa_current', title: 'Your current trip', description: 'Where things are with a ride in progress' },
+          { id: 'qa_book', title: 'Book a ride', description: 'Pickup, destination and your price' },
+          { id: 'qa_repeat', title: 'Repeat last ride', description: 'Your last trip again' },
+          { id: 'qa_reverse', title: 'Reverse last ride', description: 'Your last trip, back the other way' },
+          { id: 'qa_history', title: 'Ride history', description: 'Book a past trip again' },
+          { id: 'qa_current', title: 'Your current trip', description: 'See where your ride is' },
         ] },
         { title: 'Wallet', rows: [
-          { id: 'qa_deposit', title: 'Add money', description: 'Get your account number to transfer to' },
-          { id: 'qa_withdraw', title: 'Withdraw', description: 'Send money from your wallet to your bank' },
+          { id: 'qa_deposit', title: 'Add money', description: 'Your account number for transfers' },
+          { id: 'qa_withdraw', title: 'Withdraw', description: 'Send money to your bank' },
         ] },
         { title: 'Help', rows: [
-          { id: 'qa_support', title: 'Contact support', description: 'Talk to a person at Wheelers' },
+          { id: 'qa_support', title: 'Contact support', description: 'Talk to a person' },
         ] },
       ],
     },
@@ -584,12 +584,12 @@ export async function sendDriverArrivedNotification(
   // Chat messages can't be edited, so each one stands alone: the rider must
   // never scroll back through the auction to learn which car to look for.
   const car = details?.vehicleModel
-    ? ` — look for the *${details.vehicleModel}*${details.vehiclePlate ? ` (${details.vehiclePlate})` : ''}`
+    ? ` Look for the *${details.vehicleModel}*${details.vehiclePlate ? `, plate *${details.vehiclePlate}*` : ''}.`
     : '';
   const call = formatTappablePhone(details?.driverPhone);
   const text = [
-    `*${details?.driverName ?? 'Your driver'} has arrived*${car}.`,
-    ...(call ? [``, `Can't see them? Call: ${call}`] : []),
+    `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
+    ...(call ? [``, `Can't find them? Call ${call}`] : []),
   ].join('\n');
 
   // ONE message: the car, with all of that as its caption. A photo Meta refuses
@@ -631,7 +631,7 @@ export async function sendRideStartedNotification(
     // No trip ID in the chat: riders never need it (admin and the Excel keep it).
     `*Trip started*`,
     ``,
-    `Sit back and stay safe. We'll send your receipt when you arrive.`,
+    `Sit back and enjoy the ride. Your receipt comes here when you arrive.`,
   ].join('\n'));
 }
 
@@ -649,13 +649,12 @@ async function sendRideCompletedNotification(
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
-    `*Trip complete!*`,
+    `*You've arrived*`,
     ``,
-    `Distance: ${distanceKm.toFixed(1)} km`,
-    `Fare: ₦${fees.totalNgn.toLocaleString()} — paid from your wallet`,
-    ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),
+    `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
+    ...(balanceNgn !== undefined ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
-    `How was your driver? Reply *1–5* to rate them`,
+    `How was your driver? Reply *1* to *5* to rate them.`,
   ].join('\n');
 
   // The rating stays a typed digit: a message has three buttons at most, and
@@ -704,24 +703,24 @@ export async function sendRideCancelledNotification(
   // no refund line reads like a scam.
   const who =
     details.cancelledBy === 'driver' || details.reason === 'driver_cancelled' || details.reason === 'rider_no_show'
-      ? 'Your driver had to cancel the trip. Sorry about that!'
+      ? '*Your driver had to cancel.* Sorry about that.'
       : details.cancelledBy === 'system'
-        ? 'This ride was cancelled.'
-        : 'Your ride has been cancelled.';
+        ? '*This ride was cancelled.*'
+        : '*Your ride was cancelled.*';
 
-  const lines = details.riderReason ? ['Ride cancelled.', `Reason: ${details.riderReason}`] : [`${who}`];
+  const lines = details.riderReason ? ['*Ride cancelled*', `Reason: ${details.riderReason}`] : [`${who}`];
   if (details.refundedNgn && details.refundedNgn > 0) {
     lines.push(
       '',
       `Your ₦${details.refundedNgn.toLocaleString()} is back in your wallet` +
         (details.balanceNgn !== undefined
-          ? ` — balance: ₦${details.balanceNgn.toLocaleString()}.`
+          ? ` (balance ₦${details.balanceNgn.toLocaleString()}).`
           : '.'),
     );
   }
   lines.push('', details.searchingAgain
-    ? "We're finding you another driver. New offers will show up here."
-    : 'Book another ride anytime — just send your route.');
+    ? "We're finding you another driver. Tap *See driver offers* on your bid message to watch the offers come in."
+    : 'Need another ride? Send your trip anytime.');
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 
@@ -735,9 +734,9 @@ export async function sendOfferWithdrawnNotification(
   const who = driverName ? `*${driverName}*` : 'One driver';
   const next = remaining > 0
     ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table`
-    : 'Other offers will land here as drivers respond.';
+    : 'New offers will come in as drivers answer.';
   await sendMetaWhatsappMessage(deps, phone, [
-    `${who} is no longer available — their offer has been removed.`,
+    `${who} isn't available any more, so their offer is gone.`,
     ``,
     next,
   ].join('\n'));
@@ -752,14 +751,12 @@ export async function sendBidTimeoutNotification(
   // forward, in order of what actually works.
   const lines = [
     offerNgn
-      ? `No driver took ₦${offerNgn.toLocaleString()} this time.`
-      : 'No driver accepted this request.',
+      ? `No driver took ₦${offerNgn.toLocaleString()} this time. Nothing was charged.`
+      : 'No driver took this trip this time. Nothing was charged.',
     '',
-    'Two ways forward:',
-    `• Reply *search again* — same route, fresh search`,
     offerNgn
-      ? `• Send a higher offer (e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*) — usually gets drivers moving`
-      : '• Send a higher offer — usually gets drivers moving',
+      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*.`
+      : 'Reply *search again* to try again, or send a higher price.',
   ];
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
@@ -775,9 +772,7 @@ export async function sendRiderPaidNotification(
     [
       `*Payment received*`,
       ``,
-      `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
-      ``,
-      `Your driver has been told — they are on the way.`,
+      `Wallet balance ₦${newBalanceNgn.toLocaleString()}. Your driver knows, and they're on the way.`,
     ].join('\n'),
   );
 }
@@ -789,12 +784,9 @@ export async function sendDepositConfirmation(
   newBalanceNgn: number,
 ): Promise<void> {
   const msg = [
-    `*Deposit received*`,
+    `*₦${amountNgn.toLocaleString()} received*`,
     ``,
-    `Amount: ₦${amountNgn.toLocaleString()}`,
-    `Wallet balance: ₦${newBalanceNgn.toLocaleString()}`,
-    ``,
-    `Your wallet is ready — book a ride anytime.`,
+    `Your wallet balance is ₦${newBalanceNgn.toLocaleString()}. You're ready to ride.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);

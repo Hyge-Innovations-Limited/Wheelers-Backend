@@ -3,7 +3,7 @@ import { isCancelCommand, isEditDestinationCommand, isEditPickupCommand, parseCo
 import { appendWhatsappConversation } from '../../LLM/conversation-store';
 import { sendMetaReply } from '../../whatsapp/send';
 import { geocodeAddress } from '../../LLM/geocoding';
-import { planRouteSafe } from '../../whatsapp/trip';
+import { TIMED_OUT_REPLY, planRouteSafe } from '../../whatsapp/trip';
 import { randomUUID } from 'crypto';
 import { RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { StageContext } from '../stage-context';
@@ -18,7 +18,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
     if (isCancelCommand(answer)) {
       await clearPendingRoute(deps.redisClient, user.id);
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'No problem — nothing booked. Message me when you need a ride.';
+      const reply = 'Okay, nothing booked. Message me whenever you need a ride.';
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -29,7 +29,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
 
     if (!pendingRoute || pendingRoute.offerNgn === undefined) {
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'That took too long — send your pickup and destination again and we\'ll re-check the price.';
+      const reply = TIMED_OUT_REPLY;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -45,7 +45,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
       const newOffer = parseCounterOffer(answer);
       if (newOffer !== null) {
         if (newOffer < pendingRoute.minOfferNgn) {
-          const reply = `₦${newOffer.toLocaleString()} is below the minimum fare of ₦${pendingRoute.minOfferNgn.toLocaleString()} for this trip. Send a higher amount, or *yes* to book at ₦${pendingRoute.offerNgn.toLocaleString()}.`;
+          const reply = `₦${newOffer.toLocaleString()} is below the lowest price for this trip, *₦${pendingRoute.minOfferNgn.toLocaleString()}*.\n\nSend a higher price, or reply *yes* to keep ₦${pendingRoute.offerNgn.toLocaleString()}.`;
           await appendWhatsappConversation(deps.redisClient, phone, [
             { role: 'user', content: incomingMessage },
             { role: 'assistant', content: reply },
@@ -56,12 +56,13 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
         await storePendingRoute(deps.redisClient, user.id, { ...pendingRoute, offerNgn: newOffer });
         await setBookingStage(deps.redisClient, user.id, 'awaiting_route_confirmation');
         const reply = [
-          `Offer updated to ₦${newOffer.toLocaleString()}`,
+          `Price updated to *₦${newOffer.toLocaleString()}*`,
           ``,
           `Pickup: *${pendingRoute.pickupAddress}*`,
+          ``,
           `Destination: *${pendingRoute.destAddress}*`,
           ``,
-          `Reply *yes* to find drivers, or *edit pickup <address>* / *edit destination <address>* to fix the route.`,
+          `Reply *yes* to find drivers, or *edit pickup <address>* / *edit destination <address>* to change a place.`,
         ].join('\n');
         await appendWhatsappConversation(deps.redisClient, phone, [
           { role: 'user', content: incomingMessage },
@@ -117,9 +118,9 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
         }
       }
       const reply = [
-        `Got it — nothing booked yet.`,
+        `Got it. Nothing booked yet.`,
         ``,
-        `Send a *price* to search with, or "edit pickup <address>" / "edit destination <address>" to fix the route.`,
+        `Send your *price* to start the search, or *edit pickup <address>* / *edit destination <address>* to change a place.`,
       ].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
@@ -175,7 +176,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
         error: publishError instanceof Error ? publishError.message : String(publishError),
       });
       await deps.redisClient.del(`whatsapp:user:${user.id}:publishing`).catch(() => {});
-      const reply = 'Could not start the search just now. Reply *yes* to try again.';
+      const reply = "I couldn't start the search just now. Reply *yes* to try again.";
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -220,14 +221,15 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
     });
 
     const reply = [
-      `*Finding you a driver!*`,
+      `*Finding you a driver*`,
       ``,
       `Pickup: *${pickup.address}*`,
-      `Destination: *${destination.address}*`,
-      `${pendingRoute.distanceKm.toFixed(1)} km · ~${Math.ceil(pendingRoute.durationSeconds / 60)} min`,
-      `Your offer: ₦${offerNgn.toLocaleString()}`,
       ``,
-      `We'll send you all available drivers!`,
+      `Destination: *${destination.address}*`,
+      ``,
+      `Your price: *₦${offerNgn.toLocaleString()}*`,
+      ``,
+      `Drivers near you can see it now. Their offers come in here.`,
     ].join('\n');
 
     await appendWhatsappConversation(deps.redisClient, phone, [

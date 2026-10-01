@@ -1,6 +1,6 @@
 import { clearBookingStage, clearPendingGeoChoices, getPendingRoute } from '../../whatsapp-flows/bid-state';
 import { replyAndLog } from '../../whatsapp/send';
-import { BOOKING_START_PROMPT, addStopToTrip, sendTripConfirmation } from '../../whatsapp/trip';
+import { TIMED_OUT_REPLY, addStopToTrip, sendTripConfirmation } from '../../whatsapp/trip';
 import { appendWhatsappConversation } from '../../LLM/conversation-store';
 import { takePickedPlace } from '../../whatsapp/places';
 import { stripDirectionPrefix } from '../../whatsapp/parse';
@@ -13,7 +13,7 @@ export async function addingStop(ctx: StageContext): Promise<boolean> {
     const trip = await getPendingRoute(deps.redisClient, user.id);
     if (!trip) {
       await clearBookingStage(deps.redisClient, user.id);
-      await replyAndLog(deps, phone, incomingMessage, `That trip has expired.\n\n${BOOKING_START_PROMPT}`);
+      await replyAndLog(deps, phone, incomingMessage, TIMED_OUT_REPLY);
       return true;
     }
     if (/^(back|no|nothing|never\s*mind|nevermind|leave it|cancel)[\s!.]*$/i.test(incomingMessage.trim())) {

@@ -27,6 +27,9 @@ export interface ConfirmedRideForChat {
   tripCode?: string | null;
 }
 
+/** An old offer tapped, or a payment for a search that is over: one message for all of them. */
+export const SEARCH_ENDED_REPLY = 'That search has ended. Nothing was charged.\n\nReply *search again* for the same trip, or send a new one.';
+
 export const SOS_REPLY_ID = 'ride_sos';
 
 export const SOS_CANCEL_REPLY_ID = 'ride_sos_cancel';
@@ -57,32 +60,31 @@ export async function driverPhotoUrl(deps: MetaWhatsappRouteDeps, driverId: stri
 /** Everything about the ride, as one tidy list — the text under the driver's photo. */
 export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'chat' | 'chat_and_call' } = {}): string {
   return [
-    `*Ride confirmed & paid*`,
+    // "Booked", not "confirmed & paid": the fare is held, and paid when they arrive.
+    `*Your ride is booked*`,
     ``,
     `*YOUR DRIVER*`,
-    `Name: ${ride.driverName}`,
-    `Rating: ${ride.driverRating.toFixed(1)} · ${ride.totalRides.toLocaleString()} rides`,
-    ...(ride.driverPhone ? [`Phone: ${ride.driverPhone}`] : []),
+    `${ride.driverName} · ★${ride.driverRating.toFixed(1)} · ${ride.totalRides.toLocaleString()} rides`,
+    // No phone number: calls and messages go through Wheelers (Chat or call driver).
     ``,
     `*THE CAR*`,
-    `Car: ${ride.vehicleModel}`,
-    `Plate: *${ride.vehiclePlate}* — check it before you get in`,
+    `${ride.vehicleModel} · plate *${ride.vehiclePlate}*`,
+    `Check the plate before you get in.`,
     ``,
-    ...(ride.tripCode ? [`*TRIP CODE: ${ride.tripCode}*`, `Give it to your driver when you get in. They cannot start the trip without it.`, ``] : []),
+    ...(ride.tripCode ? [`*TRIP CODE: ${ride.tripCode}*`, `Give this to your driver when you get in. They can't start the trip without it.`, ``] : []),
     // No trip ID in the chat: riders never need it (admin and the Excel keep it).
     `*YOUR TRIP*`,
     ...(ride.pickupAddress && ride.destAddress
       ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
       : []),
     ``,
-    `Fare: ₦${ride.fareNgn.toLocaleString()} — held in your wallet, paid when the trip ends`,
-    `Arrives in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
+    `Fare ₦${ride.fareNgn.toLocaleString()} · held in your wallet, paid when you arrive`,
+    `Arriving in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
     ``,
-    `*Track live trip* — watch your driver on the map.`,
     ...(options.chat === 'chat_and_call'
-      ? [`*Chat or call driver* — message or call ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`]
-      : options.chat === 'chat' ? [`*Chat with driver* — message ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`] : []),
-    `*SOS* — feel unsafe at any point? One tap and Wheelers' safety team has your trip and location.`,
+      ? [`*Chat or call driver*: reach ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`]
+      : options.chat === 'chat' ? [`*Chat with driver*: message ${ride.driverName.split(' ')[0] || 'your driver'} through Wheelers.`] : []),
+    `*SOS*: feel unsafe? One tap alerts our safety team with your trip and location.`,
   ].join('\n').slice(0, 1024);   // WhatsApp's limit for a button message's body
 }
 
@@ -158,7 +160,7 @@ export async function sendRideConfirmation(
 export async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
   if (replyId === TRACK_REPLY_ID) {
     const url = ridePageUrl(deps, userId);
-    if (url) await sendMetaLinkButton(deps, phone, 'Your driver, live on the map.', 'Open live map', url);
+    if (url) await sendMetaLinkButton(deps, phone, 'Follow your driver live.', 'Open live map', url);
     return;
   }
   if (replyId === CHAT_REPLY_ID) {
@@ -167,12 +169,12 @@ export async function handleRideCardTap(deps: MetaWhatsappRouteDeps, userId: str
   }
   if (replyId === SOS_CANCEL_REPLY_ID) {
     const withdrawn = await cancelRiderSos(userId);
-    await sendMetaReply(deps, phone, withdrawn ? 'Glad you are safe — the alert has been withdrawn.' : 'You have no open alert. Tap *SOS* on your ride card if you ever need us.');
+    await sendMetaReply(deps, phone, withdrawn ? "Glad you're safe. We've closed the alert." : "You don't have an open alert. Tap *SOS* on your ride card if you ever need us.");
     return;
   }
   const { alreadyOpen } = await raiseRiderSos(userId);
   logActivity({ userId, eventType: 'safety_alert_raised', source: 'whatsapp', metadata: { alreadyOpen } });
-  const text = `*${alreadyOpen ? 'We already have your alert' : 'SOS received'}.* Wheelers' safety team has your trip, your driver and your location.\n\nIn immediate danger? Call *112*.`;
+  const text = `*${alreadyOpen ? 'We already have your SOS' : "We've got your SOS"}.* Our safety team can see your trip, your driver and where you are.\n\nIn immediate danger? Call *112*.`;
   const sent = await sendInteractive(deps, phone, {
     type: 'button',
     body: { text },
@@ -193,9 +195,9 @@ async function lightTrip(deps: MetaWhatsappRouteDeps, rideId: string, phone: str
 /** The chat message's text: who to reach, and what the light on it means. */
 export function tripChatLinkText(driverFirstName: string, liveCall: boolean): string {
   return [
-    `${liveCall ? 'Message or call' : 'Message'} *${driverFirstName}*, your driver, through Wheelers.`,
+    `${liveCall ? 'Chat or call' : 'Chat with'} *${driverFirstName}*, your driver, through Wheelers.`,
     ``,
-    `On this message: 🟢 trip on · 💬 new message${liveCall ? ' · 📞 calling' : ''}.`,
+    `This message shows your trip: 🟢 on the way · 💬 new message${liveCall ? ' · 📞 calling' : ''}.`,
   ].join('\n');
 }
 
@@ -211,12 +213,12 @@ export async function sendTripChatLink(deps: MetaWhatsappRouteDeps, userId: stri
   const info = latest ? await loadTripChat(latest.id).catch(() => null) : null;
   if (!info || !info.driver || !deps.appBaseUrl) {
     if (rideId) return null;   // sent with the card: the card then carries the light, no "no trip" message
-    await sendMetaReply(deps, phone, 'You have no trip with a driver right now. Once a driver accepts your ride, you can chat or call them here.');
+    await sendMetaReply(deps, phone, "You don't have a driver right now. Once a driver accepts your ride, you can chat or call them here.");
     return null;
   }
   if (!info.open) {
     if (rideId) return null;
-    await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} has ended: it closes when the trip ends.
+    await sendMetaReply(deps, phone, `Your chat with ${info.driver.firstName} closed when the trip ended.
 
 Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
     return null;
@@ -291,7 +293,7 @@ export async function sendCurrentOffers(
 ): Promise<string> {
   const bids = sortOffers(await getBids(deps.redisClient, rideId));
   if (bids.length === 0) {
-    const text = `${news ? `${news}\n\n` : ''}Still asking drivers near you — I'll message you the moment one responds.\n\nType a new price (e.g. *3000*) to change your offer, or *cancel* to stop.`;
+    const text = `${news ? `${news}\n\n` : ''}Still asking drivers near you. I'll let you know as soon as one answers.\n\nSend a new price (e.g. *3000*) to change it, or reply *cancel* to stop.`;
     await sendMetaReply(deps, phone, text);
     return text;
   }
@@ -333,10 +335,10 @@ export async function sendRideTopupButton(
     ...(news ? [news, ''] : []),
     `*Add money to ride with ${driver}*`,
     ``,
-    `Fare: ₦${short.fareNgn.toLocaleString()} · your wallet: ₦${short.balanceNgn.toLocaleString()}`,
+    `Fare ₦${short.fareNgn.toLocaleString()} · your wallet ₦${short.balanceNgn.toLocaleString()}`,
     `Send *₦${short.sendNgn.toLocaleString()}* and ₦${short.shortNgn.toLocaleString()} lands in your wallet.`,
     ``,
-    `The moment it lands, ${driver} is confirmed — no need to come back and tap anything.`,
+    `${driver} is booked the moment it lands. You don't need to tap anything again.`,
   ];
 
   if (deps.appBaseUrl) {
@@ -402,13 +404,13 @@ export async function acceptOfferInChat(
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) {
     await clearPendingAccept(deps.redisClient, user.id);
-    await log(await sendCurrentOffers(deps, phone, rideId, 'That offer is no longer on the table — nothing was charged.'));
+    await log(await sendCurrentOffers(deps, phone, rideId, "That offer isn't available any more. Nothing was charged."));
     return;
   }
   if (shownPriceNgn !== null && bid.counterOfferNgn !== shownPriceNgn) {
     await clearPendingAccept(deps.redisClient, user.id);
     await log(await sendCurrentOffers(deps, phone, rideId,
-      `${bid.driverName} changed their price to ₦${bid.counterOfferNgn.toLocaleString()} (it was ₦${shownPriceNgn.toLocaleString()}) — nothing was charged.`));
+      `${bid.driverName} changed their price to ₦${bid.counterOfferNgn.toLocaleString()} (was ₦${shownPriceNgn.toLocaleString()}). Nothing was charged.`));
     return;
   }
 
@@ -427,14 +429,14 @@ export async function acceptOfferInChat(
       return;
     case 'DRIVER_UNAVAILABLE':
       await clearPendingAccept(deps.redisClient, user.id);
-      await log(await sendCurrentOffers(deps, phone, rideId, `${bid.driverName} can't be reached right now — your money has not moved.`));
+      await log(await sendCurrentOffers(deps, phone, rideId, `${bid.driverName} can't be reached right now. Nothing was charged. Pick another driver.`));
       return;
     case 'DRIVER_TAKEN':
       await clearPendingAccept(deps.redisClient, user.id);
-      await log(await sendCurrentOffers(deps, phone, rideId, `Another rider is confirming ${bid.driverName} right now — your money has not moved.`));
+      await log(await sendCurrentOffers(deps, phone, rideId, `Another rider is booking ${bid.driverName} right now. Nothing was charged. Pick another driver.`));
       return;
     case 'ALREADY_CONFIRMING': {
-      const reply = `One moment — ${driver} is being confirmed.`;
+      const reply = `One moment, booking ${driver}…`;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return;
@@ -443,8 +445,8 @@ export async function acceptOfferInChat(
     case 'CONFIRM_FAILED': {
       await rememberChosenOffer(deps, user.id, rideId, bid);
       const reply = result.code === 'HOLD_FAILED'
-        ? `Could not hold the fare in your wallet just now — nothing was charged. Reply *pay* to try ${driver} again.`
-        : `Could not confirm the ride just now — your money is locked safely. Reply *pay* to try ${driver} again.`;
+        ? `I couldn't hold the fare in your wallet. Nothing was charged.\n\nReply *pay* to try ${driver} again.`
+        : `I couldn't confirm the ride. Your money is held safely in your wallet.\n\nReply *pay* to try ${driver} again.`;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return;
@@ -452,7 +454,7 @@ export async function acceptOfferInChat(
     default: {
       await clearPendingAccept(deps.redisClient, user.id);
       await clearActiveRide(deps.redisClient, user.id);
-      const reply = 'This search has ended — nothing was charged. Reply *search again* for a fresh one.';
+      const reply = SEARCH_ENDED_REPLY;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
     }
@@ -504,7 +506,7 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
     const phone = (await userClient.findById(deposit.userId).catch(() => null))?.phone;
     if (!phone) return false;
 
-    const received = `₦${deposit.amountNgn.toLocaleString()} received — your wallet has ₦${deposit.newBalanceNgn.toLocaleString()}.`;
+    const received = `₦${deposit.amountNgn.toLocaleString()} received. Your wallet balance is ₦${deposit.newBalanceNgn.toLocaleString()}.`;
     const log = (reply: string) => appendWhatsappConversation(deps.redisClient, phone, [
       { role: 'user', content: `[deposit of ₦${deposit.amountNgn.toLocaleString()} landed]` },
       { role: 'assistant', content: reply },
@@ -515,7 +517,7 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
       // The search they were paying for is over. The money is theirs, in the wallet.
       await clearPendingAccept(deps.redisClient, deposit.userId);
       if (activeRideId) return false;
-      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* was not booked. Your money is safe in your wallet — reply *search again* to find a driver.`;
+      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return true;
@@ -546,19 +548,19 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
     if (result.code === 'WALLET_SHORT') {
       await rememberChosenOffer(deps, deposit.userId, pending.rideId, bid);   // keep the choice alive for the next transfer
       await log(await sendRideTopupButton(deps, deposit.userId, phone, { driverName: bid.driverName, ...result },
-        `${received} That is not quite enough for this ride yet.`));
+        `${received} That's not quite enough for this ride yet.`));
       return true;
     }
     if (result.code === 'ALREADY_CONFIRMING') return true;   // their own tap got there first and is speaking
     if (result.code === 'HOLD_FAILED' || result.code === 'CONFIRM_FAILED') {
-      const reply = `${received}\n\nI could not confirm *${pending.driverName}* just now. Reply *pay* to try again.`;
+      const reply = `${received}\n\nI couldn't book *${pending.driverName}* just now. Reply *pay* to try again.`;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return true;
     }
     await clearPendingAccept(deps.redisClient, deposit.userId);
     if (result.code === 'RIDE_GONE') {
-      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* was not booked. Your money is safe in your wallet — reply *search again* to find a driver.`;
+      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`;
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return true;

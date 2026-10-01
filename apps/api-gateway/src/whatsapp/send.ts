@@ -123,7 +123,7 @@ export async function sendMetaReply(
  * trip, with one button that offers exactly that. Typing a higher amount still works.
  */
 export async function sendFloorNudge(deps: MetaWhatsappRouteDeps, phone: string, incomingMessage: string, offeredNgn: number, floorNgn: number): Promise<void> {
-  const body = `₦${offeredNgn.toLocaleString()} is under the lowest price for this trip, ₦${floorNgn.toLocaleString()}.\n\nTap below to offer ₦${floorNgn.toLocaleString()}, or type a higher amount.`;
+  const body = `₦${offeredNgn.toLocaleString()} is below the lowest price for this trip, *₦${floorNgn.toLocaleString()}*.\n\nTap below to offer ₦${floorNgn.toLocaleString()}, or send a higher price.`;
   await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: incomingMessage }, { role: 'assistant', content: body }]);
   const sent = await sendInteractive(deps, phone, { type: 'button', body: { text: body }, action: { buttons: [{ type: 'reply', reply: { id: `offer_floor:${floorNgn}`, title: `Offer ₦${floorNgn.toLocaleString()}` } }] } });
   if (!sent) await sendMetaReply(deps, phone, body);

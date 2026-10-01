@@ -15,7 +15,7 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
     if (isCancelCommand(incomingMessage)) {
       await clearPendingAreaHint(deps.redisClient, user.id);
       await clearBookingStage(deps.redisClient, user.id);
-      const reply = 'No problem — ride cancelled. Message me whenever you need one.';
+      const reply = 'Okay, nothing booked. Message me whenever you need a ride.';
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },
         { role: 'assistant', content: reply },
@@ -35,7 +35,7 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
         await clearPendingAreaHint(deps.redisClient, user.id);
         await clearBookingStage(deps.redisClient, user.id);
         await clearBookingMisses(deps.redisClient, user.id).catch(() => undefined);
-        await replyAndLog(deps, phone, incomingMessage, 'No problem — ride cancelled. Message me whenever you need one.');
+        await replyAndLog(deps, phone, incomingMessage, 'Okay, nothing booked. Message me whenever you need a ride.');
         return true;
       }
       if (pickupStepIntent.intent === 'restart') {
@@ -45,7 +45,7 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
       if (pickupStepIntent.intent === 'help') {
         await replyWithWayOut(deps, user, phone, incomingMessage, {
           wantsHelp: true,
-          prompt: 'Where should we pick you up? Type the address or a nearby landmark, or share a location pin',
+          prompt: 'Where should your driver pick you up? Type the address or a landmark, or share your location.',
         });
         return true;
       }
@@ -114,9 +114,9 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
     if (!pickupGeo) {
       const missLine = outsideServiceAreaMatch(answer)
         ? geocodeMissLine(answer)
-        : `Could not find "${answer}"${hint?.area ? ` in ${hint.area}` : ''} on the map.`;
+        : `I couldn't find "${answer}"${hint?.area ? ` in ${hint.area}` : ''} on the map.`;
       await replyWithWayOut(deps, user, phone, incomingMessage, {
-        prompt: `${missLine}\n\nTry a nearby landmark or street name, or share a location pin`,
+        prompt: `${missLine} Try a nearby landmark or street, or share your location.`,
       });
       return true;
     }
@@ -147,8 +147,8 @@ export async function awaitingPickup(ctx: StageContext): Promise<boolean> {
 
     // If they already told us where they were going, don't ask again.
     const reply = hint?.counterpartAddress
-      ? `Pickup: *${pickupGeo.formattedAddress}*\n\nAnd your destination is *${hint.counterpartAddress}* — type "yes" to confirm, or send a different destination.`
-      : `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going? Type the destination or share a pin`;
+      ? `Pickup: *${pickupGeo.formattedAddress}*\n\nStill going to *${hint.counterpartAddress}*? Reply *yes*, or send a different destination.`
+      : `Pickup: *${pickupGeo.formattedAddress}*\n\nWhere are you going?`;
     await appendWhatsappConversation(deps.redisClient, phone, [
       { role: 'user', content: incomingMessage },
       { role: 'assistant', content: reply },

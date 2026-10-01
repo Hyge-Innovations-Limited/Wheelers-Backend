@@ -219,7 +219,7 @@ export async function setPrice(data: Record<string, unknown>, userId: string, tr
   const phone = (await userClient.findById(userId).catch(() => null))?.phone ?? '';
   const result = await publishWhatsappRide({ redisClient: deps.redisClient, publisher: deps.publisher }, { id: userId, phone }, { ...trip, confirmed: true }, amount);
   if (!result.ok) {
-    if (result.code === 'BELOW_MINIMUM') return priceScreen(trip, `₦${amount.toLocaleString()} is under the lowest price for this trip, ₦${result.minOfferNgn.toLocaleString()}. It is in the box now — tap Find drivers to offer it, or type more.`, result.minOfferNgn);
+    if (result.code === 'BELOW_MINIMUM') return priceScreen(trip, `₦${amount.toLocaleString()} is below the lowest price for this trip, ₦${result.minOfferNgn.toLocaleString()}. It's in the box now: tap Find drivers to offer it, or type a higher price.`, result.minOfferNgn);
     if (result.code === 'PUBLISH_FAILED') return priceScreen(trip, 'Could not start the search just now. Tap Find drivers again.');
     // ALREADY_PUBLISHING: a double tap — the first one is out.
   } else {

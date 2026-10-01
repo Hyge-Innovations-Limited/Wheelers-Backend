@@ -34,7 +34,7 @@ function authenticate(req: IncomingMessage, deps: TripChatPageRouteDeps): { user
   try {
     session = verifyWalletPageToken(token, deps.jwtSecret);
   } catch {
-    throw new LinkError('This link has expired. Tap Chat or call driver on your ride message for a new one.', 401, 'LINK_EXPIRED');
+    throw new LinkError('This link has expired. In WhatsApp, tap Chat or call driver on your ride card for a new one.', 401, 'LINK_EXPIRED');
   }
   if (session.scope !== 'trip' || !session.rideId) throw new LinkError('This link cannot be used for that.', 403, 'LINK_WRONG_SCOPE');
   return { userId: session.userId, rideId: session.rideId };

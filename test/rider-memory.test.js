@@ -56,7 +56,7 @@ test('Nigeria bounding box', () => {
   assert.equal(geo.isPinInsideServiceArea(48.85, 2.35, { lat: 48.85, lng: 2.35, formattedAddress: 'Paris', countryCode: 'FR' }), false);
 });
 
-test('a miss reads as "could not find" unless the place was abroad', () => {
-  assert.equal(geo.geocodeMissLine('Eiffel Tower'), 'Could not find "Eiffel Tower" on the map.');
+test('a miss reads as "couldn\'t find" unless the place was abroad', () => {
+  assert.equal(geo.geocodeMissLine('Eiffel Tower'), 'I couldn\'t find "Eiffel Tower" on the map.');
   assert.equal(geo.outsideServiceAreaMatch('Eiffel Tower'), null);
 });

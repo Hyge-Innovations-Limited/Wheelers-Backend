@@ -42,10 +42,10 @@ function buildFallbackReply(context: WhatsappBotUserContext): string {
   const name = firstName(context.name, context.phone);
 
   if (context.isNewUser) {
-    return `Hi ${name}! Welcome to Wheelers\n\nNeed help booking a ride?`;
+    return `Hi ${name}, welcome to Wheelers. Need a ride? Send your pickup and destination.`;
   }
 
-  return `Hi ${name}! Need a ride? Where are you headed?`;
+  return `Hi ${name}, need a ride? Send your pickup and destination.`;
 }
 
 function buildContextMessage(context: WhatsappBotUserContext): string {

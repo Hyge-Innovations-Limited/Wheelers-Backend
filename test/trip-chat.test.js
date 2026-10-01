@@ -138,7 +138,7 @@ test('the status light lives on the chat message: a fresh link takes it over, th
   } finally {
     global.fetch = realFetch;
   }
-  assert.match(tripChatLinkText('Oke', true), /Message or call \*Oke\*.*\n\nOn this message: 🟢 trip on · 💬 new message · 📞 calling\./s);
+  assert.match(tripChatLinkText('Oke', true), /Chat or call \*Oke\*, your driver, through Wheelers\.\n\nThis message shows your trip: 🟢 on the way · 💬 new message · 📞 calling\./);
   assert.doesNotMatch(tripChatLinkText('Oke', false), /📞/);
 });
 
@@ -496,7 +496,7 @@ test('two gateways', { concurrency: false }, async (t) => {
     const started = await next(driver, 'call:start:accepted');
     assert.equal(started.calleeChannel, 'whatsapp');
     await until(() => captured.whatsapp.length === 1);
-    assert.match(captured.whatsapp[0].body, /Tunde, your driver, is calling you/);
+    assert.match(captured.whatsapp[0].body, /Tunde, your driver, is calling\./);
     assert.equal(captured.whatsapp[0].button.text, 'Answer call');
     assert.match(captured.whatsapp[0].button.url, new RegExp(`call=${started.callId}`));
 

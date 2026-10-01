@@ -121,9 +121,9 @@ export async function sendPlaceChoices(
   await storePendingGeoChoices(deps.redisClient, user.id, { context: input.context, options });
 
   const rows = placeChoiceRows(shown.map((c) => ({ address: c.formattedAddress, name: c.name, distanceKm: c.distanceKm })));
-  const body = `${input.intro ? `${input.intro}\n\n` : ''}${input.question ?? `I found ${options.length} places matching "${clip(input.typed.split(',')[0] ?? input.typed, 60)}".\n\nTap *Choose* and pick the right ${input.field}.`}`;
+  const body = `${input.intro ? `${input.intro}\n\n` : ''}${input.question ?? `I found ${options.length} places called "${clip(input.typed.split(',')[0] ?? input.typed, 60)}". Tap *Choose* and pick your ${input.field}.`}`;
   const asText = [
-    `Found a few places matching "${input.typed}" — which one did you mean?`,
+    `Which "${input.typed}" do you mean?`,
     ``,
     ...options.map((option, index) => `*${index + 1}.* ${option.address}`),
     ``,
@@ -156,7 +156,7 @@ export async function sendPlaceChoices(
             title: input.field === 'pickup' ? 'Pick the right pickup' : input.field === 'stop' ? 'Pick the stop' : 'Pick the destination',
             rows: [
               ...rows,
-              { id: 'place_choice_none', title: NONE_OF_THESE, description: 'Type the address again with the area or a landmark' },
+              { id: 'place_choice_none', title: NONE_OF_THESE, description: 'Type it again with the area' },
             ],
           }],
         },
@@ -199,12 +199,12 @@ export async function replyWithWayOut(
   // cancel) are in Quick Actions, whose button rides under every plain reply.
   const body = [
     ...(misses >= 2 || options.wantsHelp
-      ? [options.wantsHelp ? 'No wahala — here is what you can do from here:' : 'Looks like we are not getting anywhere — my bad.', '']
+      ? [options.wantsHelp ? "No wahala. Here's what you can do:" : "Sorry, I'm not getting this one.", '']
       : []),
     options.prompt,
     '',
-    'To change the pickup or destination, start again or cancel, tap *Quick Actions*.',
-    ...(support && (misses >= 2 || options.wantsHelp) ? ['', `Need a person? Reach Wheelers support: ${support}`] : []),
+    'To change a place, start again or cancel, tap *Quick Actions*.',
+    ...(support && (misses >= 2 || options.wantsHelp) ? ['', `Need a person? ${support}`] : []),
   ].join('\n');
   if (options.wantsHelp) console.info('[whatsapp] rider asked for help mid-booking', { userId: user.id });
   await replyAndLog(deps, phone, incomingMessage, body);
@@ -238,21 +238,21 @@ export async function askIfFarPlaceIsMeant(
   const otherLooksWrong = isInHomeArea(place) && !isInHomeArea(otherEnd);
   if (otherLooksWrong) {
     await replyAndLog(deps, phone, incomingMessage, [
-      `Your ${other} was matched to a place about *${distanceKm.toLocaleString()} km* from *${place.address}*, in another city.`,
+      `Your ${other} is about *${distanceKm.toLocaleString()} km* from *${place.address}*, in another city.`,
       '',
-      `That is probably the wrong ${other}. Tap *Quick Actions*, then *Change ${other}*, and send it again with the area — e.g. *"92 Murtala Muhammed Way, Yaba"*.`,
+      `That's probably the wrong ${other}. Tap *Quick Actions*, then *Change ${other}*, and send it again with the area, e.g. *92 Murtala Muhammed Way, Yaba*.`,
       '',
-      `Reply *yes* if you really are going that far.`,
+      `Really going that far? Reply *yes*.`,
     ].join('\n'));
     return true;
   }
 
   await replyAndLog(deps, phone, incomingMessage, [
-    `I found *${place.address}* — but that is about *${distanceKm.toLocaleString()} km* from your ${other}, in another city.`,
+    `*${place.address}* is about *${distanceKm.toLocaleString()} km* from your ${other}, in another city.`,
     '',
-    `If you meant somewhere closer, send the ${field} again with the area or city — e.g. *"7 Osaro Isokpan, Yaba"*.`,
+    `Meant somewhere closer? Send it again with the area, e.g. *7 Osaro Isokpan, Yaba*.`,
     '',
-    `Reply *yes* if you really are going that far.`,
+    `Really going that far? Reply *yes*.`,
   ].join('\n'));
   return true;
 }

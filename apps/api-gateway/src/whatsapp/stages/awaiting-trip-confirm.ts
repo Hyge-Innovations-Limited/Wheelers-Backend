@@ -1,6 +1,6 @@
 import { clearBookingStage, clearPendingFarPlace, getPendingFarPlace, getPendingRoute, setBookingStage, storePendingRoute } from '../../whatsapp-flows/bid-state';
 import { replyAndLog } from '../../whatsapp/send';
-import { BOOKING_START_PROMPT, addStopToTrip, askForNewEnd, askForStop, changeEndOrAsk, confirmTripAndQuote, removeStopFromTrip, replanPendingRoute, sendEditTripForm, sendTripConfirmation, sendTripEditMenu, startBookingOver } from '../../whatsapp/trip';
+import { BOOKING_START_PROMPT, TIMED_OUT_REPLY, addStopToTrip, askForNewEnd, askForStop, changeEndOrAsk, confirmTripAndQuote, removeStopFromTrip, replanPendingRoute, sendEditTripForm, sendTripConfirmation, sendTripEditMenu, startBookingOver } from '../../whatsapp/trip';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isAffirmativeReply, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { bookingIntentGroq, takePickedPlace } from '../../whatsapp/places';
 import { appendWhatsappConversation, getWhatsappConversation } from '../../LLM/conversation-store';
@@ -14,7 +14,7 @@ export async function awaitingTripConfirm(ctx: StageContext): Promise<boolean> {
     const trip = await getPendingRoute(deps.redisClient, user.id);
     if (!trip) {
       await clearBookingStage(deps.redisClient, user.id);
-      await replyAndLog(deps, phone, incomingMessage, `That trip has expired.\n\n${BOOKING_START_PROMPT}`);
+      await replyAndLog(deps, phone, incomingMessage, TIMED_OUT_REPLY);
       return true;
     }
 
