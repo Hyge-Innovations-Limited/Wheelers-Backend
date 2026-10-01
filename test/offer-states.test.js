@@ -68,7 +68,7 @@ test('decline all: the open bids become DECLINED and each of those drivers is to
 
   const again = await declineAllOffers({ redisClient: redis, publisher }, riderId, rideId);
   assert.equal(again.declined, 0);
-  assert.equal(published.length, 1, 'nothing to tell the second time');
+  assert.deepEqual(published[1].driverUserIds, [], 'no driver to tell the second time (the count on the message still resets)');
 });
 
 test('the rider accepts one driver: every OTHER driver who got the request is listed to be told it is taken', async () => {

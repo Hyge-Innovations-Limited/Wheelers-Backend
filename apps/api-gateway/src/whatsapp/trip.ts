@@ -9,6 +9,7 @@ import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
+import { sendOffersPageMessage } from '../whatsapp-flows/offers-page-message';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import { MetaWhatsappRouteDeps } from './deps';
 import { CANCELLATION_REASON_PROMPT } from './parse';
@@ -141,6 +142,17 @@ export async function sendSearchStarted(
   trip: { pickupAddress: string; destAddress: string; offerNgn: number; stopAddresses?: string[] },
 ): Promise<string> {
   if (deps.metaAccessToken && deps.metaPhoneNumberId) {
+    // The offers page (web): "Your bid is in", its button opens the live offers,
+    // and the number of offers shows on the message. No offers message follows.
+    const pageUrl = ridePageUrl(deps, user.id);
+    const searchId = pageUrl ? await getActiveRide(deps.redisClient, user.id).catch(() => null) : null;
+    if (pageUrl && searchId) {
+      const meta = { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId };
+      if (await sendOffersPageMessage({ redis: deps.redisClient, meta }, phone, searchId, pageUrl, trip)) {
+        await markOffersMessageSent(deps.redisClient, searchId).catch(() => undefined);
+        return '[your bid is in — sent the See driver offers button (offers page)]';
+      }
+    }
     const notifier = { metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId, offersFormFlowId: deps.whatsappOffersFormFlowId, flowTokenSecret: deps.jwtSecret };
     if (await sendBidPlacedMessage(notifier, phone, user.id, trip)) {
       const rideId = await getActiveRide(deps.redisClient, user.id).catch(() => null);

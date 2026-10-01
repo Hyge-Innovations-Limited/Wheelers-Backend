@@ -178,15 +178,15 @@ export async function declineAllOffers(deps: RideServiceDeps, riderId: string, r
   await clearPendingAccept(deps.redisClient, riderId).catch(() => undefined);
   await setRideState(deps.redisClient, rideId, 'searching').catch(() => undefined);
   const declined = await driverBidClient.declineOpen(rideId).catch(() => []);
-  if (declined.length > 0) {
-    await deps.publisher.publishRideEvent({
-      eventType: 'RIDE_BIDS_DECLINED',
-      rideId,
-      riderId,
-      driverUserIds: declined.map((bid) => bid.driverUserId),
-      timestamp: new Date().toISOString(),
-    });
-  }
+  // Always: the drivers declined (maybe none) are told, and the offer count
+  // on the rider's "Your bid is in" message goes back to nothing.
+  await deps.publisher.publishRideEvent({
+    eventType: 'RIDE_BIDS_DECLINED',
+    rideId,
+    riderId,
+    driverUserIds: declined.map((bid) => bid.driverUserId),
+    timestamp: new Date().toISOString(),
+  });
   return { declined: declined.length };
 }
 

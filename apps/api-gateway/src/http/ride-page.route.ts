@@ -16,22 +16,26 @@ import {
   cancelWhatsappRide,
   changeRiderOffer,
   confirmRideWithOffer,
+  declineAllOffers,
   offerKey,
   publishWhatsappRide,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
+import { rememberChosenOffer } from '../whatsapp/ride-card';
 
 /**
- * The page a WhatsApp rider opens from the chat — to NAME A PRICE, and later to
- * track the trip. Offers are not shown here: they go to the chat, where a phone
- * buzzes, and are taken there with a tap (see acceptOfferInChat). /accept and
- * /topup still answer, but the page no longer calls them.
+ * The page a WhatsApp rider opens from the chat ("See driver offers"): name a
+ * price, see every driver's offer as it comes, accept one (paying right here
+ * when the wallet is short), decline them all, change the price or cancel —
+ * then track the trip. The chat gets one message per search ("Your bid is
+ * in") with the number of offers shown on it.
  *
- *   GET  /ride-page/state     where the booking is, and how many offers are waiting in the chat
- *   POST /ride-page/find      { amountNgn }  name a price → drivers are asked
- *   POST /ride-page/offer     { amountNgn }  change the bid
- *   POST /ride-page/accept    { key }        take one driver's offer (holds the fare)
- *   POST /ride-page/cancel                   stop the search
+ *   GET  /ride-page/state        where the booking is, and the offers on the table
+ *   POST /ride-page/find         { amountNgn }  name a price → drivers are asked
+ *   POST /ride-page/offer        { amountNgn }  change the bid
+ *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
+ *   POST /ride-page/decline-all                 decline every offer; the search goes on
+ *   POST /ride-page/cancel                      stop the search
  *   GET  /ride-page/topup?amount=            what to send for ₦amount to land
  *
  * The page polls /state every few seconds, and that poll is also how we know
@@ -270,7 +274,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
   }
 
   // No quote and no live search: it expired, was cancelled, or the trip ended.
-  return { phase: 'idle' as const, balanceNgn };
+  return { phase: 'idle' as const, balanceNgn, chatUrl: CHAT_URL };
 }
 
 async function handleState(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -363,7 +367,11 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   const result = await confirmRideWithOffer(deps, userId, rideId, key);
   if (!result.ok) {
     if (result.code === 'WALLET_SHORT') {
-      // Not an error to apologise for — the page turns this into "Send ₦X".
+      // Not an error to apologise for — the page turns this into "Send ₦X",
+      // and the driver is remembered: the deposit landing confirms them, with
+      // no further tap (the same as from the chat).
+      const chosen = (await getBids(deps.redisClient, rideId)).find((bid) => offerKey(bid) === key);
+      if (chosen) await rememberChosenOffer(deps, userId, rideId, chosen).catch(() => undefined);
       const account = await depositAccountFor(deps, userId);
       throw new PageError(`Add ₦${result.shortNgn.toLocaleString()} to take this ride.`, 402, 'WALLET_SHORT', {
         balanceNgn: result.balanceNgn, fareNgn: result.fareNgn, shortNgn: result.shortNgn, sendNgn: result.sendNgn, account,
@@ -377,6 +385,20 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   const user = await userClient.findById(userId);
   await deps.notifyChat?.({ kind: 'ride_confirmed', userId, phone: user?.phone ?? '', ride: result.ride })
     .catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/* ── POST /ride-page/decline-all ──────────────────────────────────────── */
+
+async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+  const state = await getRideState(deps.redisClient, rideId);
+  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
+  const { declined } = await declineAllOffers(deps, userId, rideId);
+  logActivity({ userId, eventType: 'ride_offers_declined', source: 'ride_page', rideId, metadata: { declined } });
   sendJson(res, 200, await buildState(deps, userId));
 }
 
@@ -436,6 +458,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/find': { method: 'POST', run: handleFind },
   '/ride-page/offer': { method: 'POST', run: handleOffer },
   '/ride-page/accept': { method: 'POST', run: handleAccept },
+  '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
   '/ride-page/topup': { method: 'GET', run: handleTopup },
 };

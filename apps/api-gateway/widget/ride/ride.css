@@ -248,3 +248,29 @@ h2 { font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
 /* the car glides between fixes instead of jumping */
 .leaflet-marker-icon.car-marker { transition: transform 1.2s linear; }
 .leaflet-zoom-anim .leaflet-marker-icon.car-marker { transition: none; }
+
+/* the offers: white while open, green while paying / accepted, red when declined */
+.offer-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.offer { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; background: var(--bg); transition: background .2s ease, border-color .2s ease, opacity .4s ease; }
+.offer-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.offer .who strong { display: block; font-size: 16px; font-weight: 600; }
+.offer .who span { font-size: 13.5px; color: var(--muted); }
+.offer .price { font-size: 20px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.offer-meta { margin: 6px 0 12px; font-size: 13.5px; color: var(--muted); }
+.offer .btn { margin-top: 0; }
+.offer-status { font-size: 14.5px; font-weight: 600; }
+.offer.paying { background: var(--good-soft); border-color: var(--good); }
+.offer.paying .offer-status { color: var(--good); }
+.offer.declined { background: var(--bad-soft); border-color: var(--bad); }
+.offer.declined .offer-status { color: var(--bad); }
+.offer.muted { opacity: .45; }
+.offer.leaving { opacity: 0; }
+.btn.decline { background: transparent; border-color: var(--bad); color: var(--bad); }
+
+/* paying on the page */
+.card.pay { display: flex; flex-direction: column; gap: 10px; }
+.card.pay .big { margin-bottom: 4px; }
+.acct { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.acct .label { flex: 0 0 100%; }
+.acct strong { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.acct .btn.small { margin-left: auto; }

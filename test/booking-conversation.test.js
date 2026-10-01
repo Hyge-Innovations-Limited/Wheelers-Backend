@@ -60,7 +60,9 @@ function installWorld(world) {
         return { ok: false, status: 400, json: async () => ({}), text: async () => 'list rejected' };
       }
       if (body.type === 'text' || body.type === 'interactive') sent.push(body);
-      return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+      if (body.type === 'reaction') (sent.reactions ??= []).push(body.reaction);
+      // Like WhatsApp: every message sent comes back with its id.
+      return { ok: true, status: 200, json: async () => ({ messages: [{ id: `wamid.${sent.length}` }] }), text: async () => '' };
     }
     if (href.includes('/maps/api/geocode/')) {
       const params = new URL(href).searchParams;
@@ -916,7 +918,7 @@ test('never turn "ok" into a fare; never guess an amount from words', async () =
 
 /* ── the bidding page, from the chat's side ─────────────────────────────── */
 
-test('the quote comes with a "Set your price" button; typing a price still works, and the search message says offers come to the chat', async () => {
+test('the quote comes with a "Set your price" button; typing a price still works, and the bid message opens the offers page', async () => {
   const redis = memoryRedis();
   const { deps, published } = makeDeps(redis);
   deps.appBaseUrl = 'https://app.wheelersng.com';
@@ -939,9 +941,12 @@ test('the quote comes with a "Set your price" button; typing a price still works
 
   await say(deps, who, '2,000');
   const searching = last(sent);
-  assert.equal(searching.interactive.action.parameters.display_text, 'Change my price', 'the page is for the price — offers are not on it');
-  assert.match(textOf(searching), /Finding you a driver/);
-  assert.match(textOf(searching), /offers will land right here in this chat/);
+  assert.equal(searching.interactive.type, 'cta_url');
+  assert.equal(searching.interactive.action.parameters.display_text, 'See driver offers', 'offers are seen, and taken, on the page');
+  assert.match(searching.interactive.action.parameters.url, /^https:\/\/app\.wheelersng\.com\/widget\/ride\/ride\.html#t=/);
+  assert.match(textOf(searching), /^\*Your bid is in\*/);
+  assert.doesNotMatch(textOf(searching), /₦/, 'no amount on it');
+  assert.match(textOf(searching), /Tap \*See driver offers\*/);
   assert.ok(published.some((p) => p.event?.eventType === 'RIDE_REQUESTED' && p.event.riderOfferNgn === 2000));
 });
 
@@ -1258,7 +1263,7 @@ test('ADD A STOP: tap, type the place, pick it from the Places list — the trip
   await say(deps, who, '3,000');
   const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED').event;
   assert.deepEqual(request.stops, [{ lat: TEJUOSHO.lat, lng: TEJUOSHO.lng, address: TEJUOSHO.address }], 'drivers see the stop');
-  assert.match(textOf(last(sent)), /Finding you a driver[\s\S]*Stop 1: \*Tejuosho Market/);
+  assert.match(textOf(last(sent)), /Your bid is in[\s\S]*Stop 1: \*Tejuosho Market/);
 });
 
 test('just TYPING it works: "add a stop at sabo market" / "remove the stop" — and "back" leaves the trip alone', async () => {
@@ -1851,39 +1856,31 @@ test('with the offers form published, offers are ONE message that says only HOW 
   assert.equal(await offersNotifier.sendOffersInChat({ metaAccessToken: 't', metaPhoneNumberId: '1' }, '+234', one, 17000, undefined, 'rider-1'), 'buttons');
 });
 
-test('ONE offers message per search, ever: the first offer sends it when nothing was sent, and no offer after that sends anything — the form has its own Check for more offers', async () => {
+test('ONE message per search, ever: offers never send another — the number on "Your bid is in" changes instead (1️⃣ 2️⃣ 3️⃣), and the offers are on the page', async () => {
   const { announceOffers } = require('../apps/api-gateway/dist/kafka/consumer.js');
   const { redis, sent, user, rideId, form } = await riderWithOffersForm(10_000);
   const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: 'test-secret-that-is-at-least-32-characters-long' };
   const consumerDeps = { redisClient: redis, whatsappNotifier: notifier };
+  const bidMessage = sent.find((m) => m.interactive?.type === 'cta_url' && m.interactive.action.parameters.display_text === 'See driver offers');
+  assert.ok(bidMessage, 'the search started with "Your bid is in" and its See driver offers button');
+  const messagesBefore = sent.length;
   const first = offerFrom(await onlineDriver(), 2400);
   const second = offerFrom(await onlineDriver('Aisha Bello'), 2200);
-  const offersMessages = () => sent.filter((m) => m.interactive?.type === 'flow' && m.interactive.action.parameters.flow_cta === 'See driver offers').length;
+  const third = offerFrom(await onlineDriver('Tunde Ade'), 2100);
 
   await bidState.addBid(redis, rideId, first);
   await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first], 2000);
-  assert.equal(offersMessages(), 1);
-
-  // A cheaper driver answers: no second message — the form opens on the live list.
   await bidState.addBid(redis, rideId, second);
   await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first, second], 2000, ['Aisha Bello joined at ₦2,200']);
-  assert.equal(offersMessages(), 1);
-
-  // They open the form: both drivers are there, cheapest first. A third answers after they looked: still nothing.
-  const opened = await form('INIT');
-  assert.deepEqual(opened.data.choices.slice(0, 2).map((c) => c.title), ['₦2,200 · Aisha Bello', '₦2,400 · Chinedu Okafor']);
-  const third = offerFrom(await onlineDriver('Tunde Ade'), 2100);
   await bidState.addBid(redis, rideId, third);
   await announceOffers(consumerDeps, '+2348030000001', rideId, user.id, [first, second, third], 2000);
-  assert.equal(offersMessages(), 1, 'the search is watched from the form, not buzzed into the chat');
 
-  // Check for more offers: the list again, with the newcomer — no message, no wait when there IS something new.
-  const started = Date.now();
-  const refreshed = await form('data_exchange', { action: 'offers_choice', choice: 'refresh' });
-  assert.equal(refreshed.screen, 'OFFERS');
-  assert.deepEqual(refreshed.data.choices.slice(0, 3).map((c) => c.title), ['₦2,100 · Tunde Ade', '₦2,200 · Aisha Bello', '₦2,400 · Chinedu Okafor']);
-  assert.ok(Date.now() - started < 1500, 'nothing to wait for');
-  assert.equal(offersMessages(), 1);
+  assert.equal(sent.length, messagesBefore, 'no message for any offer');
+  assert.deepEqual((sent.reactions ?? []).map((r) => r.emoji), ['1️⃣', '2️⃣', '3️⃣'], 'the count, on the bid message');
+
+  // Quick Actions' offers screens still list them, cheapest first.
+  const opened = await form('INIT');
+  assert.deepEqual(opened.data.choices.slice(0, 3).map((c) => c.title), ['₦2,100 · Tunde Ade', '₦2,200 · Aisha Bello', '₦2,400 · Chinedu Okafor']);
 });
 
 test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told, and the chat gets NOTHING', async () => {
@@ -2381,7 +2378,7 @@ test('QUICK ACTIONS FORM · Book a ride is screens: where to → the places foun
   assert.ok(await bidState.getActiveRide(at.redis, at.user.id), 'the search is live');
   await settle();
   assert.equal(sent.length, 1, 'ONE chat message for the whole booking');
-  assert.equal(last(sent).interactive.action.parameters.flow_cta, 'See driver offers');
+  assert.equal(last(sent).interactive.action.parameters.display_text, 'See driver offers');
 });
 
 test('QUICK ACTIONS FORM · Book a ride starts CLEAN: a Repeat they walked away from is forgotten, so "from Ilemere" is a new pickup, not an edit that keeps the old destination', async () => {
@@ -2522,14 +2519,15 @@ test('BID IS IN · with the offers form, a bid placed in the trip form sends the
   await settle();
   assert.equal(at.sent.length, before + 1, 'one message');
   const message = last(at.sent).interactive;
-  assert.equal(message.type, 'flow');
-  assert.equal(message.action.parameters.flow_cta, 'See driver offers');
-  assert.equal(verifyFlowToken(message.action.parameters.flow_token, at.deps.jwtSecret), `bids:${at.user.id}`);
-  assert.match(message.body.text, /\*Your bid of ₦2,500 is in\*[\s\S]*Pickup: \*31 Emily[\s\S]*\n\nDestination: \*7 Osaro[\s\S]*offers as they come in/);
+  assert.equal(message.type, 'cta_url', 'its button opens the offers page');
+  assert.equal(message.action.parameters.display_text, 'See driver offers');
+  assert.match(message.action.parameters.url, /\/widget\/ride\/ride\.html#t=/);
+  assert.match(message.body.text, /^\*Your bid is in\*[\s\S]*Pickup: \*31 Emily[\s\S]*\n\nDestination: \*7 Osaro[\s\S]*Tap \*See driver offers\*/);
+  assert.doesNotMatch(message.body.text, /₦/, 'no amount on it');
   const rideId = await bidState.getActiveRide(at.redis, at.user.id);
   assert.ok(rideId);
 
-  // Drivers answer: nothing more is sent. The form is where they watch.
+  // Drivers answer: nothing more is sent. The count on the message changes instead.
   const notifier = { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890', offersFormFlowId: 'flow-offers-form-1', flowTokenSecret: at.deps.jwtSecret };
   const first = offerFrom(await onlineDriver(), 2400);
   await bidState.addBid(at.redis, rideId, first);
@@ -2537,16 +2535,16 @@ test('BID IS IN · with the offers form, a bid placed in the trip form sends the
   assert.equal(at.sent.length, before + 1, 'no "1 driver found"');
 });
 
-test('BID IS IN · a price TYPED in the chat gets the same one message with the button; without the form, "Finding you a driver" as before', async () => {
+test('BID IS IN · a price TYPED in the chat gets the same one message with the See driver offers button', async () => {
   const at = await riderAtTripCard({}, (deps) => { deps.whatsappOffersFormFlowId = 'flow-offers-form-1'; });
   await tapButton(at.deps, at.who, 'trip_confirm', 'Confirm trip');
   const before = at.sent.length;
   await say(at.deps, at.who, '2,500');
   assert.equal(at.sent.length, before + 1);
   const message = last(at.sent).interactive;
-  assert.equal(message.type, 'flow');
-  assert.equal(message.action.parameters.flow_cta, 'See driver offers');
-  assert.match(message.body.text, /Your bid of ₦2,500 is in/);
+  assert.equal(message.type, 'cta_url');
+  assert.equal(message.action.parameters.display_text, 'See driver offers');
+  assert.match(message.body.text, /^\*Your bid is in\*/);
   assert.ok(await bidState.hasOffersMessage(at.redis, await bidState.getActiveRide(at.redis, at.user.id)), 'marked: the consumer will not send another');
 });
 

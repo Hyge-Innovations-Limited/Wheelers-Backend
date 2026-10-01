@@ -70,6 +70,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import { clearOfferCount, hasOffersPageMessage, showOfferCount } from '../whatsapp-flows/offers-page-message';
 import { loadTripChat } from '../trip-chat/access';
 import { setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
@@ -292,6 +293,11 @@ export async function announceOffers(
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
+  // The offers page: the number of offers on "Your bid is in", changing in place.
+  if (!groupSeat && await hasOffersPageMessage(deps.redisClient, rideId)) {
+    await showOfferCount(offerCountDeps(deps)!, rideId, bids.length);
+    return;
+  }
   if (!groupSeat) {
     // The offers form: ONE message per search, ever — sent when the bid went in, or
     // by the first offer if that was missed. It opens on the live list and has its
@@ -606,6 +612,7 @@ export async function handleRideEvent(
       }
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
+      await endOfferCount(deps, event.rideId);
       await cleanupRideKeys(deps.redisClient, event.rideId);
     } else {
       await registry.sendToUser(event.riderId, 'ride:bid_timeout', {
@@ -617,6 +624,8 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_BIDS_DECLINED') {
+    const countDeps = offerCountDeps(deps);
+    if (countDeps) await showOfferCount(countDeps, event.rideId, 0).catch(() => false);
     // The rider declined every offer: each driver's card turns to "Declined".
     for (const userId of new Set(event.driverUserIds)) {
       void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
@@ -631,6 +640,7 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
+    await endOfferCount(deps, event.rideId);
     rideParticipants.set(event.rideId, {
       riderId: event.riderId,
       driverUserId: event.driverUserId,
@@ -935,6 +945,7 @@ export async function handleRideEvent(
     });
 
     // Clean up WhatsApp Redis state
+    await endOfferCount(deps, event.rideId);
     await cleanupRideKeys(deps.redisClient, event.rideId);
 
     await announceTripChatClosed(deps, event.rideId, await participantsFor(event.rideId, rideParticipants));
@@ -1057,6 +1068,7 @@ export async function handleRideEvent(
 
     if (!driverBailed) {
       // Clean up WhatsApp Redis state for this ride
+      await endOfferCount(deps, event.rideId);
       await cleanupRideKeys(deps.redisClient, event.rideId);
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => {});
     }
@@ -1503,6 +1515,18 @@ async function participantsFor(
  * A bid that is gone on the app side must be gone on the WhatsApp side too,
  * or the rider can still "pay" for a driver who withdrew.
  */
+/** What the offer count on "Your bid is in" needs: Redis and the WhatsApp sender. */
+function offerCountDeps(deps: StartGatewayConsumerDeps) {
+  if (!deps.whatsappNotifier) return null;
+  return { redis: deps.redisClient, meta: { metaAccessToken: deps.whatsappNotifier.metaAccessToken, metaPhoneNumberId: deps.whatsappNotifier.metaPhoneNumberId } };
+}
+
+/** The search is over: the number on "Your bid is in" goes. */
+async function endOfferCount(deps: StartGatewayConsumerDeps, rideId: string): Promise<void> {
+  const countDeps = offerCountDeps(deps);
+  if (countDeps) await clearOfferCount(countDeps, rideId).catch(() => undefined);
+}
+
 async function dropBidFromWhatsappRide(
   deps: StartGatewayConsumerDeps,
   rideId: string,
@@ -1515,6 +1539,10 @@ async function dropBidFromWhatsappRide(
   const remaining = await removeBid(deps.redisClient, rideId, driverId).catch(() => bids);
   await storeLastBatch(deps.redisClient, rideId, remaining).catch(() => {});
   if (!deps.whatsappNotifier) return;
+  if (await hasOffersPageMessage(deps.redisClient, rideId)) {
+    await showOfferCount(offerCountDeps(deps)!, rideId, remaining.length);
+    return;
+  }
   const isWa = await isWhatsappRider(deps.redisClient, riderId);
   if (!isWa) return;
   const phone = await lookupPhoneByUserId(deps.redisClient, riderId);

@@ -29,10 +29,11 @@
 
   <section data-view="idle" hidden>
     <div class="card note">
-      <h1>Nothing to price</h1>
+      <h1 id="idle-title">Nothing to price</h1>
       <p id="idle-text">This booking has ended. Send your trip to the Wheelers bot to start a new one.</p>
     </div>
-    <p class="foot">Close this page to go back to the chat.</p>
+    <a class="btn primary" id="idle-back" href="#" hidden>Back to WhatsApp <span aria-hidden="true">→</span></a>
+    <p class="foot">In the chat, tap <strong>Quick Actions</strong> to book again, see your trips or add money.</p>
   </section>
 
   <!-- 1 · name your price -->
@@ -52,13 +53,13 @@
     <div class="notice bad" id="price-err" hidden></div>
 
     <button class="btn primary" type="button" id="find" disabled>Find drivers <span aria-hidden="true">→</span></button>
-    <p class="foot">Drivers see your price and reply with their own. Their offers come to your WhatsApp chat — you pick one there.</p>
+    <p class="foot">Drivers see your price and reply with their own. Their offers show up here — you pick one.</p>
   </section>
 
-  <!-- 2 · the price is out — offers arrive in the chat, not here -->
+  <!-- 2 · the price is out — drivers' offers, live -->
   <section data-view="offers" hidden>
     <p class="eyebrow ok">Your price is out</p>
-    <h1>Now check your <em>chat</em></h1>
+    <h1>Driver <em>offers</em></h1>
 
     <div class="card trip compact">
       <div class="stop"><span class="dot from"></span><span class="where" data-route="pickup"></span></div>
@@ -72,11 +73,14 @@
 
     <div class="searching" id="searching">
       <span class="pulse"></span>
-      <div><strong id="sent-title">Asking drivers near you…</strong><span id="sent-text">Each offer arrives as a WhatsApp message. Tap the one you want, right there in the chat.</span></div>
+      <div><strong id="sent-title">Asking drivers near you…</strong><span id="sent-text">Offers show up here as drivers answer.</span></div>
     </div>
 
-    <a class="btn primary" id="back-to-chat" href="#" hidden>Back to WhatsApp <span aria-hidden="true">→</span></a>
-    <p class="foot" id="close-hint">You can close this page now — WhatsApp will buzz you when a driver responds.</p>
+    <div class="offer-list" id="offer-list" aria-live="polite"></div>
+    <button class="btn decline" type="button" id="decline-all" hidden>Decline all offers</button>
+
+    <a class="btn" id="back-to-chat" href="#" hidden>Back to WhatsApp</a>
+    <p class="foot" id="close-hint">You can leave this page. The number on your “Your bid is in” message in WhatsApp shows how many offers are waiting.</p>
     <button class="btn quiet" type="button" id="cancel-search">Cancel search</button>
   </section>
 
@@ -117,6 +121,24 @@
   <div class="notice bad" id="offer-err" hidden></div>
   <button class="btn primary" type="button" id="offer-save">Update offer</button>
   <button class="btn quiet" type="button" data-close>Keep my offer</button>
+</div>
+
+<div class="sheet" id="sheet-pay" hidden role="dialog" aria-modal="true" aria-labelledby="pay-title">
+  <h2 id="pay-title">Add money to ride</h2>
+  <p class="sub" id="pay-sub"></p>
+  <div class="card pay">
+    <span class="label">Send exactly</span>
+    <strong class="big" id="pay-amount"></strong>
+    <div class="acct"><span class="label">Bank</span><strong id="pay-bank"></strong></div>
+    <div class="acct"><span class="label">Account number</span><strong id="pay-number"></strong><button class="btn small" type="button" id="pay-copy">Copy</button></div>
+    <div class="acct"><span class="label">Account name</span><strong id="pay-name"></strong></div>
+    <p class="hint" id="pay-wait-account" hidden>Your account number is being set up — one moment.</p>
+  </div>
+  <div class="searching slim">
+    <span class="pulse"></span>
+    <div><strong>Waiting for your transfer…</strong><span id="pay-note">The moment it lands, your driver is confirmed. No need to tap anything again.</span></div>
+  </div>
+  <button class="btn quiet" type="button" data-close>Choose another driver</button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>

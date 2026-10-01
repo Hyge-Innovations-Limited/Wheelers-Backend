@@ -1,9 +1,8 @@
-/* The Wheelers price page. No dependencies, no build step.
+/* The Wheelers ride page. No dependencies, no build step.
  *
- * ONE job before a driver is found: name a price (and change it). Drivers'
- * offers are NOT shown here — they arrive in the WhatsApp chat, where a phone
- * buzzes, and are taken there with a tap. Money is not handled here either:
- * a short wallet is dealt with on the deposit page, from the chat. Once a
+ * Name a price, then see every driver's offer as it comes: accept one (paying
+ * right here when the wallet is short — the driver is confirmed the moment
+ * the money lands), decline them all, change the price or cancel. Once a
  * driver is confirmed this same link becomes the live trip map.
  *
  * It holds no booking state of its own: every few seconds it asks the server
@@ -16,7 +15,10 @@
   var TRACK_MS = 5000;       // while tracking: a car does not move far in five seconds
 
   var state = null;          // the last thing the server told us
-  var seenOffers = null;     // how many offers the chat had at the last look — null until the first
+  var seenOffers = null;     // how many offers there were at the last look — null until the first
+  var paying = null;         // the offer being paid for: { key, driverName } — its card stays green
+  var declined = null;       // { offers, until }: the offers just declined, shown red for a moment
+  var declinedOnce = false;  // this search had its offers declined: say the search goes on
   var polling = null;
   var busy = false;
 
@@ -118,11 +120,12 @@
   }
   function closeSheets() {
     W.show(W.$('sheet-offer'), false);
+    W.show(W.$('sheet-pay'), false);
     W.show(W.$('overlay'), false);
   }
-  W.$('overlay').addEventListener('click', closeSheets);
+  W.$('overlay').addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (button) {
-    button.addEventListener('click', closeSheets);
+    button.addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
   });
 
   /* ── 1 · name your price ──────────────────────────────────────────────── */
@@ -168,7 +171,7 @@
     W.api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
       seenOffers = null;
       apply(next);
-      say('Your price is out. Watch your WhatsApp chat.', 'good');
+      say('Your price is out. Offers will show up here.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
       W.$('price-err').textContent = error.message;
@@ -180,7 +183,7 @@
     });
   });
 
-  /* ── 2 · the price is out — offers arrive in the chat ───────────────────── */
+  /* ── 2 · the price is out — drivers' offers, live ─────────────────────── */
 
   function drawSent(s) {
     drawRoute(s.route);
@@ -195,23 +198,117 @@
       mine.parentNode.parentNode.className = 'mine flash';
     }
 
-    // Never who or how much — only that the chat has something for them.
-    var count = Number(s.offerCount) || 0;
-    W.$('sent-title').textContent = count === 0 ? 'Asking drivers near you…'
-      : count === 1 ? '1 offer is waiting in your chat' : count + ' offers are waiting in your chat';
-    W.$('sent-text').textContent = count === 0
-      ? 'Each offer arrives as a WhatsApp message. Tap the one you want, right there in the chat.'
-      : 'Go back to WhatsApp and tap the driver you want.';
-    if (seenOffers !== null && count > seenOffers) say('New offer — it’s in your WhatsApp chat', 'good');
+    var offers = s.offers || [];
+    var showingDeclined = declined && Date.now() < declined.until;
+    if (!showingDeclined) declined = null;
+    var list = showingDeclined ? declined.offers : offers;
+
+    var count = offers.length;
+    W.show(W.$('searching'), list.length === 0);
+    W.$('sent-title').textContent = 'Asking drivers near you…';
+    W.$('sent-text').textContent = declinedOnce
+      ? 'Offers declined. New offers will show up here — raising your price usually gets drivers moving.'
+      : 'Offers show up here as drivers answer.';
+    if (seenOffers !== null && count > seenOffers && !paying) say(count - seenOffers === 1 ? 'New offer' : (count - seenOffers) + ' new offers', 'good');
     seenOffers = count;
+
+    drawOffers(list, showingDeclined);
+    W.show(W.$('decline-all'), count > 0 && !paying && !showingDeclined);
 
     var back = W.$('back-to-chat');
     W.show(back, Boolean(s.chatUrl));
     if (s.chatUrl) back.setAttribute('href', s.chatUrl);
-    W.$('close-hint').textContent = s.chatUrl
-      ? 'WhatsApp will buzz you when a driver responds — you don’t need to keep this page open.'
-      : 'You can close this page now — WhatsApp will buzz you when a driver responds.';
   }
+
+  /** One card per offer: white while open, green while paying, red once declined. */
+  function drawOffers(offers, asDeclined) {
+    var holder = W.$('offer-list');
+    holder.innerHTML = '';
+    offers.forEach(function (offer) {
+      var isPaying = paying && paying.key === offer.key;
+      var card = el('div', 'offer' + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
+      var top = el('div', 'offer-top');
+      var who = el('div', 'who');
+      who.appendChild(el('strong', '', offer.driverName || 'Driver'));
+      who.appendChild(el('span', '', [
+        offer.rating ? '★ ' + Number(offer.rating).toFixed(1) : '',
+        offer.vehicle || '',
+        offer.plate || ''
+      ].filter(Boolean).join(' · ')));
+      top.appendChild(who);
+      top.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
+      card.appendChild(top);
+      card.appendChild(el('div', 'offer-meta', minutes(offer.etaMin) + ' away' + (offer.distanceKm ? ' · ' + Number(offer.distanceKm).toFixed(1) + ' km' : '')));
+
+      if (asDeclined) {
+        card.appendChild(el('div', 'offer-status', 'Declined'));
+      } else if (isPaying) {
+        card.appendChild(el('div', 'offer-status', 'Making payment…'));
+      } else {
+        var accept = el('button', 'btn primary', 'Accept ' + W.naira(offer.priceNgn));
+        accept.type = 'button';
+        accept.disabled = Boolean(paying) || busy;
+        accept.addEventListener('click', function () { acceptOffer(offer); });
+        card.appendChild(accept);
+      }
+      holder.appendChild(card);
+    });
+  }
+
+  /* accept: "Making payment…" — then confirmed, or pay right here */
+
+  function acceptOffer(offer) {
+    if (busy || paying) return;
+    busy = true;
+    paying = { key: offer.key, driverName: offer.driverName || 'your driver' };
+    if (state) drawSent(state);
+    W.api('POST', '/ride-page/accept', { key: offer.key }).then(function (next) {
+      paying = null;
+      apply(next);
+    }).catch(function (error) {
+      if (error.status === 401) return W.fatal(error.message);
+      if (error.code === 'WALLET_SHORT') return openPay(offer, error.body);
+      paying = null;
+      say(error.message, 'bad');
+      if (state) drawSent(state);
+    }).then(function () { busy = false; });
+  }
+
+  function openPay(offer, info) {
+    var first = (offer.driverName || 'your driver').split(' ')[0];
+    W.$('pay-title').textContent = 'Add money to ride with ' + first;
+    W.$('pay-sub').textContent = 'Fare ' + W.naira(info.fareNgn) + ' · your wallet ' + W.naira(info.balanceNgn);
+    W.$('pay-amount').textContent = W.naira(info.sendNgn);
+    var account = info.account;
+    W.show(W.$('pay-wait-account'), !account);
+    W.$('pay-bank').textContent = account ? account.bankName : '—';
+    W.$('pay-number').textContent = account ? account.accountNumber : '—';
+    W.$('pay-name').textContent = account ? account.accountName : '—';
+    W.$('pay-copy').onclick = function () {
+      if (!account) return;
+      W.copy(account.accountNumber).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
+    };
+    W.$('pay-note').textContent = 'The moment it lands, ' + first + ' is confirmed. No need to tap anything again.';
+    openSheet('sheet-pay');
+  }
+
+  /* decline all: every card turns red, then the list clears — the search goes on */
+
+  W.$('decline-all').addEventListener('click', function () {
+    if (busy || !state || state.phase !== 'offers') return;
+    if (!window.confirm('Decline every offer? The search goes on, and new offers can still come in.')) return;
+    busy = true;
+    var shownOffers = (state.offers || []).slice();
+    W.api('POST', '/ride-page/decline-all').then(function (next) {
+      declined = { offers: shownOffers, until: Date.now() + 1800 };
+      declinedOnce = true;
+      apply(next);
+      setTimeout(function () { if (state) drawSent(state); }, 1900);
+    }).catch(function (error) {
+      if (error.status === 401) return W.fatal(error.message);
+      say(error.message, 'bad');
+    }).then(function () { busy = false; });
+  });
 
   /* change the bid */
 
@@ -255,7 +352,8 @@
     busy = true;
     W.api('POST', '/ride-page/cancel').then(function (next) {
       apply(next);
-      W.$('idle-text').textContent = 'Search cancelled — nothing was charged. Send your trip to the Wheelers bot whenever you need a ride.';
+      W.$('idle-title').textContent = 'Search cancelled';
+      W.$('idle-text').textContent = 'Nothing was charged. Message Wheelers whenever you need a ride.';
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
       say(error.message, 'bad');
@@ -282,8 +380,7 @@
 
   function drawTrip(trip) {
     var copy = TRIP_COPY[trip.status] || TRIP_COPY.DRIVER_ASSIGNED;
-    // The trip ID beside the status: what a rider quotes to support.
-    W.$('trip-eyebrow').textContent = copy[0] + (trip.tripId ? ' · ' + trip.tripId : '');
+    W.$('trip-eyebrow').textContent = copy[0];
     var title = W.$('trip-title');
     title.innerHTML = '';
     title.appendChild(document.createTextNode(copy[1]));
@@ -365,21 +462,28 @@
   function apply(next) {
     var before = state && state.phase;
     state = next;
-    if (next.phase !== 'offers') seenOffers = null;
+    if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; declinedOnce = false; }
 
     // Switch the view FIRST: the map measures its box when it is created, and a
     // hidden box measures zero.
     if (before !== next.phase) {
       if (next.phase !== 'offers') closeSheets();
       if (before === 'offers' && next.phase === 'idle') {
+        W.$('idle-title').textContent = 'Search ended';
         W.$('idle-text').textContent = 'This search has ended. Send your trip to the Wheelers bot to look again — you can name a higher price this time.';
       }
       if (before === 'confirmed' && next.phase === 'idle') {
-        W.$('idle-text').textContent = 'This trip has ended. Thanks for riding with Wheelers! Your receipt is in the chat.';
+        W.$('idle-title').textContent = 'Trip ended';
+        W.$('idle-text').textContent = 'Thanks for riding with Wheelers! Your receipt is in the chat.';
       }
       W.showOnly(next.phase);
     }
 
+    if (next.phase === 'idle') {
+      var idleBack = W.$('idle-back');
+      W.show(idleBack, Boolean(next.chatUrl));
+      if (next.chatUrl) idleBack.setAttribute('href', next.chatUrl);
+    }
     if (next.phase === 'price') drawPrice(next);
     else if (next.phase === 'offers') drawSent(next);
     else if (next.phase === 'confirmed') drawConfirmed(next);

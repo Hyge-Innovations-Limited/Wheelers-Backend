@@ -257,7 +257,8 @@ export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
     }
 
     if (event.kind === 'search_cancelled') {
-      const text = 'Search cancelled — nothing was charged. Message me whenever you need a ride.';
+      // Quick Actions (the button on this message) has everything next: book again, trips, add money.
+      const text = 'Search cancelled — nothing was charged.\n\nTap *Quick Actions* to book again, or just send your next trip.';
       await appendWhatsappConversation(deps.redisClient, event.phone, [
         { role: 'user', content: '[cancelled the search on the offers page]' },
         { role: 'assistant', content: text },
@@ -357,7 +358,7 @@ export async function sendRideTopupButton(
 }
 
 /** Remember who they chose, so a deposit (or a typed *pay*) can finish the job. */
-export async function rememberChosenOffer(deps: MetaWhatsappRouteDeps, userId: string, rideId: string, bid: WhatsappBid): Promise<void> {
+export async function rememberChosenOffer(deps: Pick<MetaWhatsappRouteDeps, 'redisClient'>, userId: string, rideId: string, bid: WhatsappBid): Promise<void> {
   const driver = await driverClient.findById(bid.driverId).catch(() => null);
   await storePendingAccept(deps.redisClient, userId, {
     rideId,

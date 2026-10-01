@@ -233,6 +233,37 @@ test('accept with a short wallet: no hold, no ride — one figure to send, and n
 
   const quote = await call(deps, rider, 'GET', '/ride-page/topup?amount=5200');
   assert.deepEqual([quote.body.walletGetsNgn, quote.body.sendNgn], [5200, 5283]);
+
+  // The choice is remembered: the deposit landing confirms this driver, no second tap.
+  const remembered = await bidState.getPendingAccept(redis, rider);
+  assert.deepEqual([remembered?.rideId, remembered?.driverId, remembered?.fareNgn], [body.rideId, bid.driverId, 6400]);
+  assert.ok(events.some((e) => e.eventType === 'RIDE_RIDER_PAYING' && e.driverUserId === bid.driverUserId), 'and the driver sees "Rider is paying…"');
+});
+
+test('decline all: the offers go, the search goes on, the drivers are told', async () => {
+  const { deps, redis, events } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const { body } = await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+  await bidState.addBid(redis, body.rideId, bidFrom(await makeDriver(), 6400));
+  await bidState.addBid(redis, body.rideId, bidFrom(await makeDriver(), 7000));
+  assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.offers.length, 2);
+
+  const declined = await call(deps, rider, 'POST', '/ride-page/decline-all');
+  assert.equal(declined.status, 200);
+  assert.equal(declined.body.phase, 'offers', 'still searching');
+  assert.deepEqual(declined.body.offers, []);
+  assert.equal(events.at(-1).eventType, 'RIDE_BIDS_DECLINED');
+});
+
+test('after cancelling, the page offers the way back to the chat', async () => {
+  const { deps, redis } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+  const cancelled = await call(deps, rider, 'POST', '/ride-page/cancel');
+  assert.equal(cancelled.body.phase, 'idle');
+  assert.ok('chatUrl' in cancelled.body);
 });
 
 test('accept: the fare is held BEFORE the ride is confirmed, the chat is told, the driver\'s details appear', async () => {
