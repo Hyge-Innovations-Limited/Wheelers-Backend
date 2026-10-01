@@ -272,12 +272,23 @@
   }
 
   /** One card per offer: white while open, green while paying, red once declined. */
+  // The page asks the server every few seconds. Redrawing identical cards made
+  // them flash (and replay their slide-in) each time: draw only when something
+  // changed, and slide in only the offers not seen before.
+  var drawnOffers = null;
+  var shownKeys = {};
+
   function drawOffers(offers, asDeclined, yoursNgn) {
     var holder = W.$('offer-list');
+    var signature = JSON.stringify([offers, asDeclined, yoursNgn, paying && paying.key, busy]);
+    if (signature === drawnOffers) return;
+    drawnOffers = signature;
     holder.innerHTML = '';
     offers.forEach(function (offer) {
       var isPaying = paying && paying.key === offer.key;
-      var card = el('div', 'offer' + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
+      var isNew = !shownKeys[offer.key];
+      shownKeys[offer.key] = true;
+      var card = el('div', 'offer' + (isNew ? ' in' : '') + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
       var top = el('div', 'offer-top');
       var name = offer.driverName || 'Driver';
       top.appendChild(el('div', 'avatar', name.trim().charAt(0).toUpperCase()));
