@@ -23,6 +23,7 @@ import {
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
 import { rememberChosenOffer } from '../whatsapp/ride-card';
+import type { XlmPayer } from '../rides/whatsapp-ride.service';
 
 /**
  * The page a WhatsApp rider opens from the chat ("See driver offers"): name a
@@ -58,6 +59,18 @@ export interface RidePageRouteDeps {
   paymentsClient: PaymentsClient;
   /** Tells the chat what happened on the page (search started, ride confirmed). Absent in tests. */
   notifyChat?: (event: RidePageChatEvent) => Promise<void>;
+  /** Stellar (testnet): paying with XLM. Absent when Stellar is off — the page then offers naira only. */
+  stellar?: (XlmPayer & {
+    walletSummary(userId: string): Promise<{ balanceXlm: number; spendableXlm: number; rate: { ngnPerXlm: number; at: string } | null } | null>;
+  }) | null;
+}
+
+/** What the page needs to offer "Pay with XLM": the spendable balance and the rate (refreshed every 30 minutes). */
+async function xlmFor(deps: RidePageRouteDeps, userId: string) {
+  if (!deps.stellar) return null;
+  const summary = await deps.stellar.walletSummary(userId).catch(() => null);
+  if (!summary?.rate) return null;
+  return { balanceXlm: summary.balanceXlm, spendableXlm: summary.spendableXlm, ngnPerXlm: summary.rate.ngnPerXlm, rateAt: summary.rate.at };
 }
 
 export type RidePageChatEvent =
@@ -181,6 +194,10 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
     const beforeStart = trip.status !== 'IN_PROGRESS';
     const groupSeat = beforeStart ? await getGroupSeat(deps.redisClient, trip.rideId).catch(() => null) : null;
     const tripCode = beforeStart && !groupSeat ? await tripCodeClient.ensure(trip.rideId).catch(() => null) : null;
+    const payment = await rideClient.findById(trip.rideId).catch(() => null);
+    const paidWithXlm = payment?.paymentMethod === 'XLM' && payment.fareXlm != null
+      ? { amountXlm: String(Number(payment.fareXlm)), ngnPerXlm: Number(payment.xlmRateNgn ?? 0) }
+      : null;
     return {
       phase: 'confirmed' as const, rideId: trip.rideId, balanceNgn, route: trip.route, offerNgn: trip.fareNgn,
       driver: {
@@ -188,6 +205,7 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
       },
       tripCode,
+      paidWithXlm,
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
       trip: {
@@ -241,6 +259,8 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
 
       return {
         phase: 'offers' as const, rideId, balanceNgn, route, offerNgn: meta.offerNgn,
+        // Paying with XLM, when the rider has a Stellar account and there is a price.
+        xlm: await xlmFor(deps, userId),
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
         // All the page says about offers: how many are waiting in the chat, and the way back to it.
         offerCount: bids.length,
@@ -356,6 +376,7 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
   HOLD_FAILED: { status: 503, message: 'Could not hold the fare in your wallet. Please try again.' },
   CONFIRM_FAILED: { status: 503, message: 'Could not confirm just now — your money is held safely. Tap Accept again.' },
   ALREADY_CONFIRMING: { status: 409, message: 'Your driver is being confirmed — one moment.' },
+  XLM_UNAVAILABLE: { status: 409, message: "Paying with XLM isn't available right now. Pay in naira instead — your XLM has not moved." },
 };
 
 async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -374,8 +395,15 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   const current = await getRideState(deps.redisClient, rideId);
   if (current === 'confirmed' || current === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
 
-  const result = await confirmRideWithOffer(deps, userId, rideId, key);
+  const method = isRecord(body) && body.method === 'xlm' ? 'XLM' as const : 'NGN' as const;
+  const result = await confirmRideWithOffer(deps, userId, rideId, key, { method, xlm: deps.stellar ?? null });
   if (!result.ok) {
+    if (result.code === 'XLM_SHORT') {
+      throw new PageError(
+        `This ride is ${result.amountXlm} XLM and you can spend ${result.spendableXlm} XLM. Pay in naira instead — your XLM has not moved.`,
+        402, 'XLM_SHORT', { amountXlm: result.amountXlm, spendableXlm: result.spendableXlm },
+      );
+    }
     if (result.code === 'WALLET_SHORT') {
       // Not an error to apologise for — the page turns this into "Send ₦X",
       // and the driver is remembered: the deposit landing confirms them, with

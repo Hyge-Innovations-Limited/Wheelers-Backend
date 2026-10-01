@@ -930,6 +930,9 @@ export async function handleRideEvent(
 
   if (event.eventType === 'RIDE_COMPLETED') {
     const settledReferralUsages = await referralClient.settleRideCashback(event.rideId);
+    // An XLM ride: the XLM and the rate it was accepted at, for the receipt and the payment on Stellar.
+    const xlmRide = event.paymentMethod === 'XLM' ? await rideClient.findById(event.rideId).catch(() => null) : null;
+    const paidXlm = xlmRide?.fareXlm != null ? String(Number(xlmRide.fareXlm)) : null;
 
     // Notify rider
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
@@ -941,6 +944,7 @@ export async function handleRideEvent(
           riderWallet ? Number(riderWallet.balanceNgn) : undefined,
           event.rideId,
           formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null)),
+          paidXlm,
         ).catch(() => {});
         // Arm the rating reply: a bare 1–5 in the next day rates this driver.
         const completedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
@@ -997,6 +1001,8 @@ export async function handleRideEvent(
       await deps.stellar.settleRide({
         rideId: event.rideId, tripId, riderId: event.riderId, driverUserId: event.driverUserId,
         fareNgn: event.fareNgn, commissionNgn: fees.platformTotalNgn,
+        // An XLM ride is PAID this way, at the rate the rider accepted; a naira ride is mirrored at the live rate.
+        rateNgnPerXlm: xlmRide?.xlmRateNgn != null ? Number(xlmRide.xlmRateNgn) : null,
       }).catch((error) => console.warn('[stellar] trip settlement not queued', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
     }
     rideParticipants.delete(event.rideId);

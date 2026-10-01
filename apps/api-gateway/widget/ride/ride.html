@@ -154,6 +154,26 @@
   <button class="btn quiet" type="button" data-close>Keep my price</button>
 </div>
 
+<div class="sheet" id="sheet-paywith" hidden role="dialog" aria-modal="true" aria-labelledby="pw-title">
+  <h2 id="pw-title">How do you want to pay?</h2>
+  <p class="sub" id="pw-sub"></p>
+  <div class="pay-options" role="radiogroup" aria-labelledby="pw-title">
+    <button class="pay-option on" type="button" id="pw-ngn" role="radio" aria-checked="true">
+      <span class="pay-icon naira" aria-hidden="true">₦</span>
+      <span class="pay-text"><strong>Naira wallet</strong><span id="pw-ngn-balance"></span></span>
+      <span class="pay-figure" id="pw-ngn-amount"></span>
+    </button>
+    <button class="pay-option" type="button" id="pw-xlm" role="radio" aria-checked="false">
+      <span class="pay-icon xlm" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 15.5l16-7M4 9.5c2-4 6-6 10-5M20 14.5c-2 4-6 6-10 5"/></svg></span>
+      <span class="pay-text"><strong>Stellar wallet <span class="tag">Testnet</span></strong><span id="pw-xlm-balance"></span></span>
+      <span class="pay-figure" id="pw-xlm-amount"></span>
+    </button>
+  </div>
+  <p class="hint" id="pw-rate"></p>
+  <button class="btn primary" type="button" id="pw-pay">Pay</button>
+  <button class="btn quiet" type="button" data-close>Choose another driver</button>
+</div>
+
 <div class="sheet" id="sheet-pay" hidden role="dialog" aria-modal="true" aria-labelledby="pay-title">
   <h2 id="pay-title">Add money to ride</h2>
   <p class="sub" id="pay-sub"></p>

@@ -25,6 +25,8 @@ export interface ConfirmedRideForChat {
   tripId?: string | null;
   /** The 4 digits the rider gives the driver to start the trip. */
   tripCode?: string | null;
+  /** Paid from the rider's Stellar (testnet) balance, not their naira wallet. */
+  paidWithXlm?: { amountXlm: string; ngnPerXlm: number };
 }
 
 /** An old offer tapped, or a payment for a search that is over: one message for all of them. */
@@ -78,7 +80,9 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
       ? sharedTripLines({ pickupAddress: ride.pickupAddress, destAddress: ride.destAddress, stops: (ride.stopAddresses ?? []).map((address) => ({ address })) })
       : []),
     ``,
-    `Fare ₦${ride.fareNgn.toLocaleString()} · held in your wallet, paid when you arrive`,
+    ride.paidWithXlm
+      ? `Fare ₦${ride.fareNgn.toLocaleString()} · *${ride.paidWithXlm.amountXlm} XLM* from your Stellar wallet, paid when you arrive`
+      : `Fare ₦${ride.fareNgn.toLocaleString()} · held in your wallet, paid when you arrive`,
     `Arriving in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
     ``,
     ...(options.chat === 'chat_and_call'

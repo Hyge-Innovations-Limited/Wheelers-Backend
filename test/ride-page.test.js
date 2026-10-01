@@ -355,6 +355,70 @@ test('a driver who stepped away with their bid still held: not refused for good 
   assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: rider } })).lockedNgn), 0);
 });
 
+/* ── paying with XLM (Stellar testnet) ────────────────────────────────── */
+
+function fakeStellar(spendableXlm, ngnPerXlm = 2000) {
+  return {
+    quoteRidePayment: async (_userId, fareNgn) => {
+      const amountXlm = String(Math.floor((fareNgn / ngnPerXlm) * 1e7) / 1e7);
+      return { rate: { ngnPerXlm }, amountXlm, balanceXlm: spendableXlm + 1.5, spendableXlm, enough: Number(amountXlm) <= spendableXlm };
+    },
+    walletSummary: async () => ({ balanceXlm: spendableXlm + 1.5, spendableXlm, rate: { ngnPerXlm, at: new Date().toISOString() } }),
+  };
+}
+
+async function searchWithOffer(deps, redis, rider, priceNgn) {
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const { body } = await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+  await prisma.ride.create({ data: { id: body.rideId, riderId: rider, status: 'MATCHING', pickupLat: QUOTE.pickupLat, pickupLng: QUOTE.pickupLng, pickupAddress: QUOTE.pickupAddress, destLat: QUOTE.destLat, destLng: QUOTE.destLng, destAddress: QUOTE.destAddress } });
+  const bid = bidFrom(await makeDriver(), priceNgn);
+  await bidState.addBid(redis, body.rideId, bid);
+  return { rideId: body.rideId, bid };
+}
+
+test('pay with XLM: no naira needed or held; the ride records XLM, the rate and the fare in XLM', async () => {
+  const { deps, redis, events, chat } = world();
+  deps.stellar = fakeStellar(100);
+  const rider = await makeRider(0);   // not a naira to their name
+  const { rideId, bid } = await searchWithOffer(deps, redis, rider, 6200);
+
+  const offers = await call(deps, rider, 'GET', '/ride-page/state');
+  assert.deepEqual([offers.body.xlm.spendableXlm, offers.body.xlm.ngnPerXlm], [100, 2000], 'the page can offer XLM');
+
+  const accepted = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId, method: 'xlm' });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.equal(accepted.body.phase, 'confirmed');
+  assert.equal(events.find((e) => e.eventType === 'RIDE_OFFER_ACCEPTED').paymentMethod, 'XLM');
+  const row = await prisma.ride.findUnique({ where: { id: rideId } });
+  assert.deepEqual([row.paymentMethod, Number(row.fareXlm), Number(row.xlmRateNgn)], ['XLM', 3.1, 2000]);
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: rider } })).lockedNgn), 0, 'no naira held');
+  assert.equal(await prisma.rideHold.count({ where: { rideId } }), 0);
+  assert.deepEqual(chat.at(-1).ride.paidWithXlm, { amountXlm: '3.1', ngnPerXlm: 2000 }, 'the chat says XLM, not "held in your wallet"');
+});
+
+test('pay with XLM, not enough of it: refused before anything moves, the rider can pay in naira', async () => {
+  const { deps, redis, events } = world();
+  deps.stellar = fakeStellar(1);
+  const rider = await makeRider(0);
+  const { rideId, bid } = await searchWithOffer(deps, redis, rider, 6200);
+
+  const refused = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId, method: 'xlm' });
+  assert.equal(refused.status, 402);
+  assert.equal(refused.body.code, 'XLM_SHORT');
+  assert.match(refused.body.error, /This ride is 3\.1 XLM and you can spend 1 XLM/);
+  assert.equal(events.filter((e) => e.eventType === 'RIDE_OFFER_ACCEPTED').length, 0);
+  assert.equal((await prisma.ride.findUnique({ where: { id: rideId } })).paymentMethod, 'WALLET');
+});
+
+test('without Stellar the page offers naira only, and an XLM accept is refused politely', async () => {
+  const { deps, redis } = world();
+  const rider = await makeRider(0);
+  const { bid } = await searchWithOffer(deps, redis, rider, 6200);
+  assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.xlm, null);
+  const refused = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId, method: 'xlm' });
+  assert.equal(refused.body.code, 'XLM_UNAVAILABLE');
+});
+
 test('one rider cannot touch another rider\'s search', async () => {
   const { deps, redis } = world();
   const owner = await makeRider(10_000);

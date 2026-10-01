@@ -222,12 +222,27 @@ export interface ConfirmedRide {
   pickupAddress: string;
   destAddress: string;
   stopAddresses: string[];
+  /** Paid from the rider's XLM balance: the fare in XLM and the rate it was accepted at. */
+  paidWithXlm?: { amountXlm: string; ngnPerXlm: number };
+}
+
+/** How the rider pays: naira from the wallet (held now, paid at the end), or XLM from their Stellar balance. */
+export type PayMethod = 'NGN' | 'XLM';
+
+/** The part of the Stellar service accepting with XLM needs. */
+export interface XlmPayer {
+  quoteRidePayment(userId: string, fareNgn: number): Promise<{
+    rate: { ngnPerXlm: number }; amountXlm: string; balanceXlm: number; spendableXlm: number; enough: boolean;
+  } | null>;
 }
 
 export type ConfirmResult =
   | { ok: true; ride: ConfirmedRide }
   | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' }
-  | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number };
+  | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }
+  /** No Stellar account yet, or no XLM price to be had right now: pay in naira instead. */
+  | { ok: false; code: 'XLM_UNAVAILABLE' }
+  | { ok: false; code: 'XLM_SHORT'; fareNgn: number; amountXlm: string; spendableXlm: number };
 
 /**
  * Accept one driver's offer: hold the fare, then tell everyone.
@@ -243,6 +258,7 @@ export async function confirmRideWithOffer(
   riderId: string,
   rideId: string,
   key: string,
+  options: { method?: PayMethod; xlm?: XlmPayer | null } = {},
 ): Promise<ConfirmResult> {
   // One confirmation at a time per ride. A deposit landing can finish the ride
   // in the same second the rider taps Accept again; without this both would
@@ -251,7 +267,7 @@ export async function confirmRideWithOffer(
   const mine = await deps.redisClient.setIfNotExists(confirmingKey, '1', 20).catch(() => true);
   if (!mine) return { ok: false, code: 'ALREADY_CONFIRMING' };
   try {
-    return await confirmOnce(deps, riderId, rideId, key);
+    return await confirmOnce(deps, riderId, rideId, key, options);
   } finally {
     await deps.redisClient.del(confirmingKey).catch(() => undefined);
   }
@@ -262,6 +278,7 @@ async function confirmOnce(
   riderId: string,
   rideId: string,
   key: string,
+  options: { method?: PayMethod; xlm?: XlmPayer | null } = {},
 ): Promise<ConfirmResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
@@ -269,10 +286,21 @@ async function confirmOnce(
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) return { ok: false, code: 'OFFER_GONE' };
   const fareNgn = bid.counterOfferNgn;
+  const payWithXlm = options.method === 'XLM';
 
-  const wallet = await walletClient.findByUserId(riderId);
+  // XLM: the fare at the current rate (asked for again every 30 minutes) must
+  // fit the rider's spendable XLM. No naira is touched. Checked first, like the
+  // wallet: a rider who cannot pay hears that, not "driver unavailable".
+  let xlmQuote: Awaited<ReturnType<XlmPayer['quoteRidePayment']>> = null;
+  if (payWithXlm) {
+    xlmQuote = options.xlm ? await options.xlm.quoteRidePayment(riderId, fareNgn).catch(() => null) : null;
+    if (!xlmQuote) return { ok: false, code: 'XLM_UNAVAILABLE' };
+    if (!xlmQuote.enough) return { ok: false, code: 'XLM_SHORT', fareNgn, amountXlm: xlmQuote.amountXlm, spendableXlm: xlmQuote.spendableXlm };
+  }
+
+  const wallet = payWithXlm ? null : await walletClient.findByUserId(riderId);
   const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
-  if (!wallet || balanceNgn < fareNgn) {
+  if (!payWithXlm && (!wallet || balanceNgn < fareNgn)) {
     const shortNgn = Math.ceil(fareNgn - balanceNgn);
     // The rider chose this driver and is adding money: their card says "Rider is paying…".
     await deps.publisher.publishRideEvent({
@@ -301,7 +329,7 @@ async function confirmOnce(
   const claimOwner = claimed ? rideId : await deps.redisClient.get(driverClaimKey).catch(() => null);
   if (!claimed && claimOwner !== rideId) return { ok: false, code: 'DRIVER_TAKEN' };
 
-  try {
+  if (wallet) try {
     const hold = await walletClient.createRideHold({
       rideId,
       walletId: wallet.id,
@@ -324,6 +352,10 @@ async function confirmOnce(
   }
 
   try {
+    // How this ride is paid, on the ride itself: settlement and receipts read it.
+    await rideClient.setPayment(rideId, payWithXlm && xlmQuote
+      ? { method: 'XLM', xlmRateNgn: xlmQuote.rate.ngnPerXlm, fareXlm: xlmQuote.amountXlm }
+      : { method: 'WALLET' });
     await deps.publisher.publishRideEvent(RideOfferAcceptedEvent.parse({
       eventType: 'RIDE_OFFER_ACCEPTED',
       rideId,
@@ -332,7 +364,7 @@ async function confirmOnce(
       driverUserId: bid.driverUserId,
       bidId: bid.bidId,
       agreedFareNgn: fareNgn,
-      paymentMethod: 'WALLET',
+      paymentMethod: payWithXlm ? 'XLM' : 'WALLET',
       timestamp: new Date().toISOString(),
     }));
   } catch (error) {
@@ -359,6 +391,7 @@ async function confirmOnce(
     pickupAddress: meta.pickupAddress,
     destAddress: meta.destinationAddress,
     stopAddresses: (meta.stops ?? []).map((stop) => stop.address),
+    ...(payWithXlm && xlmQuote ? { paidWithXlm: { amountXlm: xlmQuote.amountXlm, ngnPerXlm: xlmQuote.rate.ngnPerXlm } } : {}),
   };
   await clearPendingAccept(deps.redisClient, riderId);
   await setRideState(deps.redisClient, rideId, 'confirmed');

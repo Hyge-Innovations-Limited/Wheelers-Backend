@@ -22,9 +22,10 @@ export function createRideEventsConsumer(params: {
       if (!event) return;
 
       if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
-        // Cash rides skip wallet hold — driver collects cash directly
-        if (event.paymentMethod === 'CASH') {
-          console.info(`[${serviceId}][escrow] hold skipped — cash ride`, {
+        // Only wallet rides hold naira: cash is collected by the driver, and an XLM
+        // ride is paid on Stellar from the rider's XLM balance.
+        if (event.paymentMethod !== 'WALLET') {
+          console.info(`[${serviceId}][escrow] hold skipped — ${event.paymentMethod.toLowerCase()} ride`, {
             rideId: event.rideId,
             riderId: event.riderId,
           });
@@ -145,9 +146,9 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_COMPLETED') {
-        // Cash rides skip wallet settlement — driver already collected cash
-        if (event.paymentMethod === 'CASH') {
-          console.info(`[${serviceId}][escrow] settlement skipped — cash ride`, {
+        // Only wallet rides settle in naira: cash was collected, XLM is paid on Stellar.
+        if (event.paymentMethod !== 'WALLET') {
+          console.info(`[${serviceId}][escrow] settlement skipped — ${event.paymentMethod.toLowerCase()} ride`, {
             rideId: event.rideId,
             driverUserId: event.driverUserId,
             fareNgn: event.fareNgn,

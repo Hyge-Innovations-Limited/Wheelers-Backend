@@ -360,6 +360,22 @@ export const rideClient = {
       },
     }),
 
+  /**
+   * How the rider is paying, set when they accept a driver: naira from the
+   * wallet, or XLM from their Stellar balance (with the rate it was accepted at
+   * and the fare in XLM). Accepting again resets it — a driver who bailed means
+   * the next acceptance chooses afresh.
+   */
+  setPayment: (rideId: string, payment: { method: 'WALLET' | 'XLM'; xlmRateNgn?: number | null; fareXlm?: string | null }) =>
+    prisma.ride.update({
+      where: { id: rideId },
+      data: {
+        paymentMethod: payment.method,
+        xlmRateNgn: payment.method === 'XLM' ? payment.xlmRateNgn ?? null : null,
+        fareXlm: payment.method === 'XLM' ? payment.fareXlm ?? null : null,
+      },
+    }),
+
   complete: (rideId: string, data: {
     fareFinalNgn:    number;
     distanceKm:      number;

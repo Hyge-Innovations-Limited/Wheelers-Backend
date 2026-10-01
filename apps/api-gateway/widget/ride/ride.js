@@ -123,6 +123,7 @@
     W.show(W.$(id), true);
   }
   function closeSheets() {
+    W.show(W.$('sheet-paywith'), false);
     W.show(W.$('sheet-offer'), false);
     W.show(W.$('sheet-pay'), false);
     W.show(W.$('sheet-confirm'), false);
@@ -317,14 +318,69 @@
     });
   }
 
+  /**
+   * Accept: with a Stellar wallet and a price for XLM, first ask how to pay —
+   * the naira wallet or XLM. Without one, it is naira, straight away.
+   */
+  function acceptOffer(offer) {
+    if (busy || paying) return;
+    if (state && state.xlm) return openPayWith(offer, state.xlm);
+    payFor(offer, 'ngn');
+  }
+
+  /** XLM for a naira price at the page's rate — what the rider is shown (the server sizes the real payment). */
+  function xlmFor(priceNgn, xlm) { return priceNgn / xlm.ngnPerXlm; }
+  function xlmText(amount) { return (Math.ceil(amount * 100) / 100).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' XLM'; }
+
+  var payWith = null;   // { offer, method }
+
+  function openPayWith(offer, xlm) {
+    var first = (offer.driverName || 'your driver').split(' ')[0];
+    var amountXlm = xlmFor(offer.priceNgn, xlm);
+    var xlmCovers = amountXlm <= xlm.spendableXlm;
+    var ngnCovers = state.balanceNgn + 0.004 >= offer.priceNgn;
+    W.$('pw-sub').textContent = 'Riding with ' + first + ' · fare ' + W.naira(offer.priceNgn);
+    W.$('pw-ngn-balance').textContent = 'Balance ' + W.naira(state.balanceNgn) + (ngnCovers ? '' : ' · you can add money next');
+    W.$('pw-ngn-amount').textContent = W.naira(offer.priceNgn);
+    W.$('pw-xlm-balance').textContent = xlmCovers
+      ? 'Balance ' + xlmText(xlm.balanceXlm)
+      : 'Not enough: you can spend ' + xlmText(xlm.spendableXlm);
+    W.$('pw-xlm-amount').textContent = xlmText(amountXlm);
+    W.$('pw-xlm').disabled = !xlmCovers;
+    W.$('pw-rate').textContent = '1 XLM ≈ ' + W.naira(xlm.ngnPerXlm) + ' · the price is refreshed every 30 minutes. The driver is paid the same either way.';
+    payWith = { offer: offer, method: 'ngn', amountXlm: amountXlm };
+    pickMethod('ngn');
+    openSheet('sheet-paywith');
+  }
+
+  function pickMethod(method) {
+    if (!payWith) return;
+    payWith.method = method;
+    var xlm = method === 'xlm';
+    W.$('pw-ngn').className = 'pay-option' + (xlm ? '' : ' on');
+    W.$('pw-xlm').className = 'pay-option' + (xlm ? ' on' : '');
+    W.$('pw-ngn').setAttribute('aria-checked', String(!xlm));
+    W.$('pw-xlm').setAttribute('aria-checked', String(xlm));
+    W.$('pw-pay').textContent = xlm ? 'Pay ' + xlmText(payWith.amountXlm) : 'Pay ' + W.naira(payWith.offer.priceNgn);
+  }
+  W.$('pw-ngn').addEventListener('click', function () { pickMethod('ngn'); });
+  W.$('pw-xlm').addEventListener('click', function () { if (!this.disabled) pickMethod('xlm'); });
+  W.$('pw-pay').addEventListener('click', function () {
+    if (!payWith) return;
+    var chosen = payWith;
+    payWith = null;
+    closeSheets();
+    payFor(chosen.offer, chosen.method);
+  });
+
   /* accept: "Making payment…" — then confirmed, or pay right here */
 
-  function acceptOffer(offer) {
+  function payFor(offer, method) {
     if (busy || paying) return;
     busy = true;
     paying = { key: offer.key, driverName: offer.driverName || 'your driver' };
     if (state) drawSent(state);
-    W.api('POST', '/ride-page/accept', { key: offer.key }).then(function (next) {
+    W.api('POST', '/ride-page/accept', { key: offer.key, method: method }).then(function (next) {
       paying = null;
       apply(next);
     }).catch(function (error) {
@@ -534,6 +590,9 @@
     W.$('d-vehicle').textContent = driver.vehicle || '—';
     W.$('d-plate').textContent = driver.plate || '—';
     W.$('d-eta').textContent = s.trip && s.trip.status === 'ARRIVED' ? 'Here now' : driver.etaMin ? minutes(driver.etaMin) : '—';
+    W.$('d-foot').textContent = s.paidWithXlm
+      ? 'Paying ' + Number(s.paidWithXlm.amountXlm).toLocaleString('en-NG', { maximumFractionDigits: 2 }) + ' XLM from your Stellar wallet (testnet). It goes to your driver when the trip ends.'
+      : 'The fare is held in your wallet and paid when the trip ends.';
     var call = W.$('d-call');
     W.show(call, Boolean(driver.phone));
     if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);

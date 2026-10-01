@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Account, BASE_FEE, Keypair, Memo, Operation, StrKey, TransactionBuilder, Asset, type Transaction } from '@stellar/stellar-sdk';
-import { stellarClient } from '@wheleers/db';
+import { rideClient, stellarClient } from '@wheleers/db';
 import { explorerAccount, explorerTx, type StellarConfig } from './config';
 import { keypairAt } from './keys';
 import { StellarSubmitError, type StellarNetwork } from './network';
@@ -101,14 +101,50 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
   const toXlm = (ngn: number, rate: NgnRate) => xlm(ngn / rate.ngnPerXlm);
   const ngnOf = (amountXlm: number, rate: NgnRate | null) => (rate ? Math.round(amountXlm * rate.ngnPerXlm * 100) / 100 : null);
 
-  /** A finished trip: the fare rider → driver, then the commission driver → operations, both in XLM at the live rate. */
-  async function settleRide(input: { rideId: string; tripId: string | null; riderId: string; driverUserId: string; fareNgn: number; commissionNgn: number }) {
+  /**
+   * A rider paying a fare from their XLM balance: the rate now (refreshed every
+   * 30 minutes), the fare in XLM, and whether their balance covers it (Stellar
+   * keeps RESERVE_XLM in every account). Null when there is no account or no rate.
+   */
+  async function quoteRidePayment(userId: string, fareNgn: number): Promise<{
+    rate: NgnRate; amountXlm: string; balanceXlm: number; spendableXlm: number; enough: boolean;
+  } | null> {
+    const account = await stellarClient.accountForUser(userId);
+    if (!account?.openedAt) return null;
+    const rate = await rates.current().catch(() => null);
+    if (!rate) return null;
+    const balance = await balanceOf(account.publicKey);
+    if (balance === null) return null;
+    const amountXlm = toXlm(fareNgn, rate);
+    const spendableXlm = Math.max(0, Math.floor((balance - RESERVE_XLM) * 1e7) / 1e7);
+    return { rate, amountXlm, balanceXlm: balance, spendableXlm, enough: Number(amountXlm) <= spendableXlm };
+  }
+
+  /** What the page shows next to "Pay with XLM": the balance and today's rate. Null without an open account. */
+  async function walletSummary(userId: string): Promise<{ balanceXlm: number; spendableXlm: number; rate: NgnRate | null } | null> {
+    const account = await stellarClient.accountForUser(userId);
+    if (!account?.openedAt) return null;
+    const balance = await balanceOf(account.publicKey);
+    if (balance === null) return null;
+    const rate = await rates.current().catch(() => null);
+    return { balanceXlm: balance, spendableXlm: Math.max(0, Math.floor((balance - RESERVE_XLM) * 1e7) / 1e7), rate };
+  }
+
+  /**
+   * A finished trip: the fare rider → driver, then the commission driver →
+   * operations, in XLM. A naira trip mirrors at the live rate; an XLM trip IS
+   * paid this way, at the rate the rider accepted (`rateNgnPerXlm`), so it is
+   * exactly the XLM they agreed to.
+   */
+  async function settleRide(input: { rideId: string; tripId: string | null; riderId: string; driverUserId: string; fareNgn: number; commissionNgn: number; rateNgnPerXlm?: number | null }) {
     if (!(input.fareNgn > 0)) return;
     const ops = await ensureOperations();
     const rider = await ensureUserAccount(input.riderId);
     const driver = await ensureUserAccount(input.driverUserId);
     const memo = (input.tripId ?? input.rideId).slice(0, 28);
-    const rate = await rates.current();
+    const rate: NgnRate | null = input.rateNgnPerXlm && input.rateNgnPerXlm > 0
+      ? { ngnPerXlm: input.rateNgnPerXlm, source: 'rate at accept', at: new Date().toISOString() }
+      : await rates.current();
     const fare = await stellarClient.enqueue({
       kind: 'FARE', reference: `fare:${input.rideId}`, rideId: input.rideId, userId: input.riderId,
       fromPublicKey: rider.publicKey, toPublicKey: driver.publicKey,
@@ -157,6 +193,12 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     return account ? Number(account.balanceXlm) : null;
   }
 
+  /** The XLM a rider owes on the ride they are on, when they chose to pay it in XLM (0 otherwise). */
+  async function xlmOwedOnActiveRide(userId: string): Promise<number> {
+    const ride = await rideClient.findActiveByRider(userId).catch(() => null);
+    return ride?.paymentMethod === 'XLM' && ride.fareXlm != null ? Number(ride.fareXlm) : 0;
+  }
+
   /** A driver sends test XLM out to an address of their choosing. */
   async function requestWithdrawal(input: { userId: string; destination: string; amountXlm: number }) {
     const destination = input.destination.trim();
@@ -169,9 +211,13 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     if (!account?.openedAt) throw new StellarUserError('NO_ACCOUNT', 'Your Stellar account is still being opened. Try again in a minute.', 409);
     if (destination === account.publicKey) throw new StellarUserError('SAME_ADDRESS', 'That is your own Wheelers address.');
     const balance = await balanceOf(account.publicKey);
-    const spendable = balance === null ? 0 : balance - RESERVE_XLM;
+    // A ride being paid in XLM keeps its fare here until it is paid to the driver at the end.
+    const owed = await xlmOwedOnActiveRide(input.userId);
+    const spendable = balance === null ? 0 : balance - RESERVE_XLM - owed;
     if (amount > spendable) {
-      throw new StellarUserError('TOO_MUCH', `You can send up to ${xlm(Math.max(0, spendable))} XLM (Stellar keeps ${RESERVE_XLM} XLM in every account).`, 409);
+      throw new StellarUserError('TOO_MUCH', owed > 0
+        ? `You can send up to ${xlm(Math.max(0, spendable))} XLM: ${xlm(owed)} XLM is kept for the ride you're on, and Stellar keeps ${RESERVE_XLM} XLM in every account.`
+        : `You can send up to ${xlm(Math.max(0, spendable))} XLM (Stellar keeps ${RESERVE_XLM} XLM in every account).`, 409);
     }
     const rate = await rates.current().catch(() => null);
     return stellarClient.enqueue({
@@ -399,6 +445,8 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
     openForEveryone,
     resetBalances,
     settleRide,
+    quoteRidePayment,
+    walletSummary,
     requestWithdrawal,
     balanceOf,
     processDue,

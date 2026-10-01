@@ -34,7 +34,8 @@ const RideStopSnapshot = LatLng.extend({
   completedAt: z.string().datetime().optional(),
 });
 
-const PaymentMethod = z.enum(['CASH', 'WALLET']);
+// XLM: paid from the rider's Stellar (testnet) balance — no naira moves, the driver is paid in XLM.
+const PaymentMethod = z.enum(['CASH', 'WALLET', 'XLM']);
 
 // Fired by api-gateway when rider submits a ride request via WebSocket.
 // Consumed by: ride-service (broadcast to nearby drivers for bidding).

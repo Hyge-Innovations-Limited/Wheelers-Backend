@@ -982,6 +982,8 @@ async function bootstrap(): Promise<void> {
         publisher,
         paymentsClient,
         notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
+        // Paying with XLM (testnet): only when Stellar is on.
+        stellar: stellar ?? null,
       }, url);
       if (handled) return;
     }

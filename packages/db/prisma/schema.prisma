@@ -370,6 +370,9 @@ model Ride {
   driverId               String?
   status                 RideStatus        @default(REQUESTED)
   paymentMethod          RidePaymentMethod @default(WALLET)
+  /// An XLM ride: the naira per XLM it was accepted at, and its fare in XLM at that rate.
+  xlmRateNgn             Decimal?          @db.Decimal(18, 2)
+  fareXlm                Decimal?          @db.Decimal(18, 7)
   pickupLat              Float
   pickupLng              Float
   pickupAddress          String
@@ -999,6 +1002,8 @@ enum ChatSenderRole {
 enum RidePaymentMethod {
   CASH
   WALLET
+  /// Paid from the rider's Stellar (testnet) XLM balance; the driver is paid in XLM on Stellar. No naira moves.
+  XLM
 }
 
 /// Where a ride was booked: the Wheelers app, the WhatsApp bot (chat, forms or the ride page), or Claude via the MCP server.

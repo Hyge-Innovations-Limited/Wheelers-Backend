@@ -673,13 +673,17 @@ async function sendRideCompletedNotification(
   /** The trip just finished. With it, the receipt carries Repeat / Reverse buttons — "now take me home" is one tap. */
   rideId?: string,
   tripId?: string | null,
+  /** Paid from the rider's Stellar (testnet) balance: the XLM it cost. Their naira wallet was not touched. */
+  paidXlm?: string | null,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
     `*You've arrived*`,
     ``,
-    `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
-    ...(balanceNgn !== undefined ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
+    paidXlm
+      ? `${distanceKm.toFixed(1)} km · *${paidXlm} XLM* (₦${fees.totalNgn.toLocaleString()}) paid from your Stellar wallet`
+      : `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
+    ...(balanceNgn !== undefined && !paidXlm ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
     `How was your driver? Reply *1* to *5* to rate them.`,
   ].join('\n');

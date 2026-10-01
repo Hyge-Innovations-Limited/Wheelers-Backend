@@ -23,7 +23,8 @@ const PUBLIC_HORIZON = 'https://horizon.stellar.org';
 /** Circle's USDC on the Stellar public network. */
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 const CACHE_KEY = 'stellar:rate:ngn-per-xlm';
-const FRESH_MS = 10 * 60 * 1000;
+/** A price is asked for again after this long: riders paying in XLM see one rate for half an hour. */
+export const FRESH_MS = 30 * 60 * 1000;
 const USABLE_MS = 24 * 60 * 60 * 1000;
 
 type Fetch = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;

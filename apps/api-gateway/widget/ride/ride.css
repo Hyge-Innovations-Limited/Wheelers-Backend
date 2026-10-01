@@ -234,6 +234,25 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 .confirm-mark { width: 56px; height: 56px; border-radius: 50%; background: var(--bad-soft); color: var(--bad); display: flex; align-items: center; justify-content: center; }
 .confirm-mark svg { width: 26px; height: 26px; }
 
+/* naira or XLM */
+.pay-options { display: flex; flex-direction: column; gap: 10px; }
+.pay-option {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; width: 100%;
+  padding: 16px; border: 1px solid #E2E2E2; border-radius: var(--r-lg); background: var(--bg); text-align: left;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.pay-option.on { border: 2px solid var(--ink); padding: 15px; box-shadow: var(--lift); }
+.pay-option:disabled { opacity: 0.5; cursor: not-allowed; }
+.pay-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 700; font-size: 20px; }
+.pay-icon.naira { background: var(--orange-soft); color: var(--orange-ink); }
+.pay-icon.xlm { background: var(--ink); color: #FFFFFF; }
+.pay-icon.xlm svg { width: 22px; height: 22px; }
+.pay-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pay-text strong { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 700; white-space: nowrap; }
+.pay-text > span { font-size: 13px; color: var(--muted); }
+.pay-text .tag { padding: 2px 7px; border-radius: 999px; background: #F1F1F1; color: #555555; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.pay-figure { font-family: var(--display); font-size: 18px; font-weight: 700; letter-spacing: -0.01em; word-spacing: 0.15em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
 /* paying on the page */
 .pay-card { border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
 .pay-amount { padding: 16px; background: var(--soft); }

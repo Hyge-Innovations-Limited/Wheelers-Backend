@@ -61,11 +61,11 @@ test('the live rate: Stellar market × dollar-to-naira first, then CoinGecko, th
   const first = await rates.current();
   assert.deepEqual([first.ngnPerXlm, first.source], [299, 'stellar-dex × er-api'], '0.23 USD × ₦1,300');
 
-  // The market is down: CoinGecko, once the cached rate is 10 minutes old.
+  // The market is down: CoinGecko, once the cached rate is 30 minutes old.
   delete replies['horizon.stellar.org/order_book'];
   replies['api.coingecko.com'] = { stellar: { ngn: 305.5 } };
   assert.equal((await rates.current()).ngnPerXlm, 299, 'fresh enough: no new call');
-  clock += 11 * 60 * 1000;
+  clock += 31 * 60 * 1000;
   assert.deepEqual([(await rates.current()).ngnPerXlm, (await rates.current()).source], [305.5, 'coingecko']);
 
   // Everything down: the last good rate, for a day.
