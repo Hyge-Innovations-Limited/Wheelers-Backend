@@ -72,7 +72,21 @@ const ACTIVE_RIDE_TTL = 3600;        // 1 hour — while still looking for a dri
  * booking flow and the completion message never came.
  */
 export const IN_TRIP_ACTIVE_RIDE_TTL = 3 * 60 * 60;
-const PENDING_LOCATION_TTL = 600;    // 10 minutes
+/**
+ * How long a booking in progress (the trip, a shared pickup, the step it is
+ * at) waits for the rider: an hour, and it starts again every time they do
+ * something with it. Ten minutes lost the trip of anyone who stopped to
+ * answer a call before tapping Confirm.
+ */
+export const BOOKING_TTL = 60 * 60;
+const PENDING_LOCATION_TTL = BOOKING_TTL;
+
+/** Keep a booking key alive while the rider is using it. Best effort: never blocks or throws. */
+function touch(redis: RedisClient, key: string, ttlSeconds: number): void {
+  void Promise.resolve()
+    .then(() => redis.send('EXPIRE', key, String(ttlSeconds)))
+    .catch(() => undefined);
+}
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
 const DEBOUNCE_TTL = 15;             // offers that are not urgent are bundled this long
 const BID_BATCH_TTL = 7200;          // 2 hours — stores last batch sent to rider
@@ -456,6 +470,7 @@ export async function getPendingLocation(
 ): Promise<PendingLocation | null> {
   const raw = await redis.get(pendingLocationKey(userId));
   if (!raw) return null;
+  touch(redis, pendingLocationKey(userId), PENDING_LOCATION_TTL);
   try {
     return JSON.parse(raw) as PendingLocation;
   } catch {
@@ -483,11 +498,10 @@ export async function setBookingStage(
   userId: string,
   stage: BookingStage,
 ): Promise<void> {
-  // Group-ride stages get a longer window: riders answer the pickup and
-  // selfie prompts on their own time, and a 10-minute expiry silently dumped
-  // them into the solo flow mid-conversation.
-  const ttl = stage.startsWith('group_') ? 1800 : PENDING_LOCATION_TTL;
-  await redis.set(bookingStageKey(userId), stage, ttl);
+  // Every stage, solo or group, waits the booking window (an hour, restarted
+  // on use): riders answer on their own time, and a short expiry silently
+  // dropped them out of the step they were in.
+  await redis.set(bookingStageKey(userId), stage, BOOKING_TTL);
 }
 
 export async function getBookingStage(
@@ -495,6 +509,7 @@ export async function getBookingStage(
   userId: string,
 ): Promise<BookingStage | null> {
   const raw = await redis.get(bookingStageKey(userId));
+  if (raw) touch(redis, bookingStageKey(userId), BOOKING_TTL);
   return (raw as BookingStage) ?? null;
 }
 
@@ -576,7 +591,7 @@ export interface PendingRouteData {
   offerNgn?: number;
 }
 
-const PENDING_ROUTE_TTL = 600; // 10 minutes
+const PENDING_ROUTE_TTL = BOOKING_TTL;
 
 function pendingRouteKey(userId: string): string {
   return `whatsapp:user:${userId}:pending_route`;
@@ -596,6 +611,7 @@ export async function getPendingRoute(
 ): Promise<PendingRouteData | null> {
   const raw = await redis.get(pendingRouteKey(userId));
   if (!raw) return null;
+  touch(redis, pendingRouteKey(userId), PENDING_ROUTE_TTL);
   try {
     return JSON.parse(raw) as PendingRouteData;
   } catch {

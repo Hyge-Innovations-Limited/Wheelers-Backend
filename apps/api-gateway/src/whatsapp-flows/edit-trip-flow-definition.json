@@ -105,7 +105,7 @@
               {
                 "type": "TextInput",
                 "name": "stop_1",
-                "label": "Stop 1 (optional)",
+                "label": "Stop 1",
                 "input-type": "text",
                 "required": false,
                 "helper-text": "A place to pass through. Leave empty for none."
@@ -113,14 +113,14 @@
               {
                 "type": "TextInput",
                 "name": "stop_2",
-                "label": "Stop 2 (optional)",
+                "label": "Stop 2",
                 "input-type": "text",
                 "required": false
               },
               {
                 "type": "TextInput",
                 "name": "stop_3",
-                "label": "Stop 3 (optional)",
+                "label": "Stop 3",
                 "input-type": "text",
                 "required": false
               },

@@ -1550,8 +1550,8 @@ test('THE FORM on a dead or running booking: it still OPENS on its first screen 
   await bidState.clearPendingRoute(redis, user.id);
   const expired = await form('INIT');
   assert.equal(expired.screen, 'EDIT_TRIP');
-  assert.match(expired.data.error, /expired/);
-  assert.match((await submit({})).data.headline, /expired/);
+  assert.match(expired.data.error, /This trip timed out\. Close this form and send your trip again in the chat/);
+  assert.match((await submit({})).data.headline, /This trip timed out/);
   assert.equal(sent.length, before);
 });
 

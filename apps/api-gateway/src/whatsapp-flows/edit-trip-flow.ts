@@ -167,7 +167,7 @@ export function doneScreen(headline: string, note: string, rearm = true): FlowSc
   return { screen: 'DONE', data: { headline, note, rearm: rearm ? 'true' : 'false' } };
 }
 
-export const EXPIRED_NOTE = 'This trip has expired. Open Quick Actions in the chat and tap Book a ride to start again.';
+export const EXPIRED_NOTE = 'This trip timed out. Close this form and send your trip again in the chat, or tap Quick Actions there and Book a ride.';
 export const SEARCHING_NOTE = 'Drivers are already looking at a trip of yours. Open Quick Actions in the chat and tap Your current trip to see offers, change your price or cancel it.';
 
 /** The one Continue button on each screen. */
@@ -196,7 +196,7 @@ async function answerEditTrip(body: FlowRequestBody, userId: string, deps: EditT
     return editScreen(Object.fromEntries(FIELDS.map((field) => [field, places[field]?.address ?? ''])), '', trip);
   }
 
-  if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching' : 'This trip has expired', deadEnd ?? EXPIRED_NOTE);
+  if (deadEnd || !trip) return doneScreen(activeRideId ? 'Already searching' : 'This trip timed out', deadEnd ?? EXPIRED_NOTE);
   if (action === 'confirm_trip') return confirm(userId, trip, deps);
   if (action === 'set_price') return setPrice(data, userId, trip, deps);
   if (action === 'pick_places') return pickPlaces(data, userId, trip, deps);
