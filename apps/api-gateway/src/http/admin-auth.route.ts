@@ -4,6 +4,9 @@ import { hashPassword, verifyPassword, createLocalAccessToken, verifyLocalAccess
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 
+/** An admin login lasts two hours; then the dashboard asks for the password again. */
+export const ADMIN_SESSION_SECONDS = 2 * 60 * 60;
+
 interface AdminAuthDeps {
   jwtSecret: string;
   adminApiKey: string;
@@ -46,11 +49,13 @@ export async function handleAdminLoginRoute(
       return;
     }
 
-    const accessToken = createLocalAccessToken(admin.id, deps.jwtSecret);
+    const accessToken = createLocalAccessToken(admin.id, deps.jwtSecret, ADMIN_SESSION_SECONDS);
 
     sendJson(res, 200, {
       accessToken,
       tokenType: 'Bearer',
+      // The dashboard logs out on its own at this moment; the server refuses the token after it anyway.
+      expiresAt: new Date(Date.now() + ADMIN_SESSION_SECONDS * 1000).toISOString(),
       admin: {
         id: admin.id,
         username: admin.username,
@@ -144,6 +149,9 @@ export function extractAdminId(req: IncomingMessage, jwtSecret: string): string 
 
   try {
     const payload = verifyLocalAccessToken(authHeader.slice(7), jwtSecret);
+    // Two hours from login, whatever the token says: admin tokens issued
+    // before sessions were short carry a 30-day expiry.
+    if (Math.floor(Date.now() / 1000) - payload.iat > ADMIN_SESSION_SECONDS) return null;
     return payload.sub;
   } catch {
     return null;

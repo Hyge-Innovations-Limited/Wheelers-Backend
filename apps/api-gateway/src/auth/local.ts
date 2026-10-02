@@ -79,7 +79,7 @@ export async function verifyPassword(password: string, storedHash: string | null
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export function createLocalAccessToken(userId: string, jwtSecret: string | undefined): string {
+export function createLocalAccessToken(userId: string, jwtSecret: string | undefined, ttlSeconds = TOKEN_TTL_SECONDS): string {
   const secret = requireSecret(jwtSecret);
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -87,7 +87,7 @@ export function createLocalAccessToken(userId: string, jwtSecret: string | undef
     sub: userId,
     typ: TOKEN_TYPE,
     iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
+    exp: now + ttlSeconds,
   } satisfies LocalTokenPayload));
   const unsigned = `${header}.${payload}`;
 
