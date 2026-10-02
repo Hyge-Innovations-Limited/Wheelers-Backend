@@ -5,14 +5,13 @@ import { readJsonBody, sendJson } from './utils';
 import { verifyAdminAuth } from './admin-auth.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import { logActivity } from '../analytics/log-activity';
-import { sendEmail } from '../email/resend';
-import { buildDriverApprovedEmail } from '../email/templates';
+import { KYC_FIELDS, fieldReasonsFrom, isKycField, readableRejection, rejectedFieldsFrom } from '../drivers/kyc-fields';
+import { notifyKycDecision, type KycNotifyDeps } from '../drivers/kyc-notify';
 
-interface AdminRouteDeps {
+interface AdminRouteDeps extends KycNotifyDeps {
   adminApiKey: string;
   jwtSecret: string;
   kycStorage: DriverKycStorage;
-  resendApiKey?: string;
 }
 
 /**
@@ -30,7 +29,10 @@ export async function handleAdminListDriversRoute(
     return;
   }
 
-  const submissions = await driverClient.findPendingKycSubmissions();
+  // ?status=REJECTED: drivers sent back to fix something, waiting on them.
+  const wanted = new URL(req.url ?? '/', 'http://admin').searchParams.get('status');
+  const status = wanted === 'REJECTED' ? 'REJECTED' : 'SUBMITTED';
+  const submissions = await driverClient.findKycSubmissionsByStatus(status);
 
   const drivers = submissions.map((submission) => ({
     driverId: submission.driverId,
@@ -43,6 +45,10 @@ export async function handleAdminListDriversRoute(
     vehicleYear: submission.vehicleYear,
     status: submission.status,
     submittedAt: submission.submittedAt,
+    reviewedAt: submission.reviewedAt,
+    // Under review again after a fix: only these were resent.
+    resubmittedFields: submission.status === 'SUBMITTED' ? (submission.rejectedFields ?? []).filter(isKycField) : [],
+    rejectedFields: submission.status === 'REJECTED' ? (submission.rejectedFields ?? []).filter(isKycField) : [],
   }));
 
   sendJson(res, 200, { drivers });
@@ -77,9 +83,14 @@ export async function handleAdminGetDriverRoute(
   }
 
   // Generate signed URLs for documents
+  // A licence can be a PDF (older ones were stored as .jpg): the page needs
+  // to know to show it as a document, and the link to open it as one.
+  const licenceFileType = submission.licenceImageKey ? await deps.kycStorage.fileTypeOf(submission.licenceImageKey) : null;
   const [ninUrl, licenceUrl, selfieUrl] = await Promise.all([
     submission.ninImageKey ? deps.kycStorage.getSignedUrl(submission.ninImageKey) : null,
-    submission.licenceImageKey ? deps.kycStorage.getSignedUrl(submission.licenceImageKey) : null,
+    submission.licenceImageKey
+      ? deps.kycStorage.getSignedUrl(submission.licenceImageKey, 3600, licenceFileType === 'application/pdf' ? 'application/pdf' : undefined)
+      : null,
     submission.selfieKey ? deps.kycStorage.getSignedUrl(submission.selfieKey) : null,
   ]);
 
@@ -108,10 +119,16 @@ export async function handleAdminGetDriverRoute(
       vehicleYear: submission.vehicleYear,
       ninImageUrl: ninUrl,
       licenceImageUrl: licenceUrl,
+      licenceFileType,
       selfieUrl,
       vehicleImageUrls,
       rejectionReason: submission.rejectionReason,
-      rejectedFields: submission.rejectedFields ?? [],
+      rejectedFields: submission.status === 'REJECTED' ? (submission.rejectedFields ?? []) : [],
+      // Under review again after a fix: these were resent, the rest was approved before.
+      resubmittedFields: submission.status === 'SUBMITTED' ? (submission.rejectedFields ?? []).filter(isKycField) : [],
+      previousRejectionReason: submission.status === 'SUBMITTED' && (submission.rejectedFields ?? []).length > 0
+        ? submission.rejectionReason
+        : null,
       fieldStatuses: (submission.fieldStatuses as Record<string, unknown>) ?? {},
     },
   });
@@ -143,11 +160,10 @@ export async function handleAdminFieldReviewRoute(
   const field = getString(rawBody, 'field');
   const status = getString(rawBody, 'status');
   const reason = getString(rawBody, 'reason') ?? '';
-  const validFields = ['nin', 'licence', 'selfie', 'vehicle'];
   const validStatuses = ['approved', 'rejected'];
 
-  if (!field || !validFields.includes(field)) {
-    sendJson(res, 400, { error: 'field must be one of: nin, licence, selfie, vehicle' });
+  if (!field || !isKycField(field)) {
+    sendJson(res, 400, { error: `field must be one of: ${KYC_FIELDS.join(', ')}` });
     return;
   }
 
@@ -173,39 +189,6 @@ export async function handleAdminFieldReviewRoute(
   sendJson(res, 200, { field, status, fieldStatuses: updated });
 }
 
-async function notifyDriverApproved(
-  driverId: string,
-  resendApiKey: string | undefined,
-): Promise<void> {
-  if (!resendApiKey) {
-    console.warn('[admin] driver approved but RESEND_API_KEY is not set — no email sent', {
-      driverId,
-    });
-    return;
-  }
-
-  try {
-    const driver = await driverClient.findById(driverId);
-    const email = driver.user?.email;
-    if (!email) {
-      console.warn('[admin] driver approved but has no email on file — no email sent', {
-        driverId,
-        userId: driver.userId,
-      });
-      return;
-    }
-
-    const template = buildDriverApprovedEmail(driver.user?.name ?? undefined);
-    await sendEmail({ to: email, ...template }, resendApiKey);
-    console.info('[admin] driver approval email sent', { driverId, userId: driver.userId });
-  } catch (error) {
-    console.error('[admin] driver approval email failed', {
-      driverId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
 /**
  * POST /admin/drivers/:driverId/approve
  * Approves the driver's KYC submission.
@@ -222,18 +205,17 @@ export async function handleAdminApproveDriverRoute(
     return;
   }
 
-  const submission = await driverClient.findKycSubmission(driverId);
-  if (!submission || submission.status !== 'SUBMITTED') {
+  // Decided once: only while under review, so a second click (or a second
+  // admin) gets a clear answer instead of deciding again.
+  const decided = await driverClient.approvePendingKyc(driverId, auth.adminName);
+  if (!decided) {
     sendJson(res, 400, { error: 'No pending submission to approve' });
     return;
   }
 
-  await driverClient.approveKycSubmission(driverId, auth.adminName);
-  await driverClient.updateKycStatus(driverId, 'APPROVED');
-
-  // Tell the driver they're cleared to drive. Non-blocking: a mail failure
-  // must never make the approval itself look like it failed.
-  void notifyDriverApproved(driverId, deps.resendApiKey);
+  // Tell the driver they're cleared to drive. Non-blocking: a failed push or
+  // mail must never make the approval itself look like it failed.
+  void notifyKycDecision(deps, driverId, { outcome: 'APPROVED' });
 
   void logAdminDriverAction(driverId, 'admin_driver_approved', { admin: auth.adminName });
 
@@ -262,21 +244,27 @@ export async function handleAdminRejectDriverRoute(
     return;
   }
 
-  const reason = getString(rawBody, 'reason') ?? 'Documents did not pass review';
-  const rawFields = Array.isArray(rawBody.rejectedFields) ? rawBody.rejectedFields : [];
-  const validFields = ['nin', 'licence', 'selfie', 'vehicle'];
-  const rejectedFields = rawFields.filter((f: unknown): f is string => typeof f === 'string' && validFields.includes(f));
-
   const submission = await driverClient.findKycSubmission(driverId);
   if (!submission || submission.status !== 'SUBMITTED') {
     sendJson(res, 400, { error: 'No pending submission to reject' });
     return;
   }
 
-  await driverClient.rejectKycSubmission(driverId, auth.adminName, reason, rejectedFields);
-  await driverClient.updateKycStatus(driverId, 'REJECTED');
+  // What goes back, and why, in words a driver reads ("Driver's licence:
+  // photo is blurry."), from the admin's per-item review. The admin page's
+  // own summary is the fallback.
+  const rawFields = Array.isArray(rawBody.rejectedFields) ? rawBody.rejectedFields : [];
+  const rejectedFields = rejectedFieldsFrom(rawFields, submission.fieldStatuses);
+  const reasons = fieldReasonsFrom(submission.fieldStatuses, rejectedFields);
+  const reason = readableRejection(rejectedFields, reasons, getString(rawBody, 'reason') ?? null);
 
-  // TODO: Send push notification to driver about rejection
+  const decided = await driverClient.rejectPendingKyc(driverId, auth.adminName, reason, rejectedFields);
+  if (!decided) {
+    sendJson(res, 400, { error: 'No pending submission to reject' });
+    return;
+  }
+
+  void notifyKycDecision(deps, driverId, { outcome: 'REJECTED', fields: rejectedFields, reasons });
 
   void logAdminDriverAction(driverId, 'admin_driver_rejected', {
     admin: auth.adminName,

@@ -4,7 +4,8 @@ import { verifyLocalAccessToken } from '../auth/local';
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
-import type { DriverKycStorage } from '../storage/driver-kyc-storage';
+import { sniffKycFileType, type DriverKycStorage } from '../storage/driver-kyc-storage';
+import { KYC_FIELD_LABELS, fieldReasonsFrom, isKycField, KYC_FIELDS, type KycField } from '../drivers/kyc-fields';
 
 interface DriverKycDeps {
   jwtSecret: string;
@@ -23,10 +24,85 @@ function extractUserId(req: IncomingMessage, jwtSecret: string): string | null {
   }
 }
 
+/** One document to storage, named and typed by what its bytes are (a licence can be a PDF). */
+function uploadKycFile(deps: DriverKycDeps, driverId: string, type: string, base64: string): Promise<string> {
+  const bytes = Buffer.from(base64, 'base64');
+  return deps.kycStorage.upload({ driverId, type, imageBuffer: bytes, mimeType: sniffKycFileType(bytes) });
+}
+
+type KycInput = {
+  ninImage?: string;
+  licenceImage?: string;
+  selfieImage?: string;
+  vehicleImages: string[];
+  vehicle?: { vehicleMake: string; vehicleModel: string; vehiclePlate: string; vehicleYear: number };
+  phone?: string;
+};
+
+function readKycInput(body: Record<string, unknown>): KycInput {
+  const vehicleMake = getString(body, 'vehicleMake');
+  const vehicleModel = getString(body, 'vehicleModel');
+  const vehiclePlate = getString(body, 'vehiclePlate');
+  const vehicleYear = typeof body.vehicleYear === 'number' ? body.vehicleYear : undefined;
+  const vehicleImages = Array.isArray(body.vehicleImages)
+    ? body.vehicleImages.filter((img): img is string => typeof img === 'string' && img.length > 0)
+    : [];
+  return {
+    ninImage: getString(body, 'ninImage') ?? undefined,
+    licenceImage: getString(body, 'licenceImage') ?? undefined,
+    selfieImage: getString(body, 'selfieImage') ?? undefined,
+    vehicleImages,
+    vehicle: vehicleMake && vehicleModel && vehiclePlate && vehicleYear
+      ? { vehicleMake, vehicleModel, vehiclePlate, vehicleYear }
+      : undefined,
+    phone: getString(body, 'phone') ?? undefined,
+  };
+}
+
+/** Which of these items the request is missing. */
+function missingFields(input: KycInput, fields: readonly KycField[]): KycField[] {
+  return fields.filter((field) => {
+    switch (field) {
+      case 'nin': return !input.ninImage;
+      case 'licence': return !input.licenceImage;
+      case 'selfie': return !input.selfieImage;
+      case 'vehicle': return !input.vehicle;
+      case 'vehiclePhotos': return input.vehicleImages.length < 7;
+    }
+  });
+}
+
+/** Stores the given items; returns only the keys for what was stored. */
+async function uploadKycFields(deps: DriverKycDeps, driverId: string, input: KycInput, fields: readonly KycField[]) {
+  const has = (f: KycField) => fields.includes(f);
+  const [ninImageKey, licenceImageKey, selfieKey, vehicleImageKeys] = await Promise.all([
+    has('nin') ? uploadKycFile(deps, driverId, 'nin', input.ninImage!) : undefined,
+    has('licence') ? uploadKycFile(deps, driverId, 'licence', input.licenceImage!) : undefined,
+    has('selfie') ? uploadKycFile(deps, driverId, 'selfie', input.selfieImage!) : undefined,
+    has('vehiclePhotos')
+      ? Promise.all(input.vehicleImages.slice(0, 10).map((img, i) => uploadKycFile(deps, driverId, `vehicle-${i}`, img)))
+      : undefined,
+  ]);
+  return {
+    ...(ninImageKey ? { ninImageKey } : {}),
+    ...(licenceImageKey ? { licenceImageKey } : {}),
+    ...(selfieKey ? { selfieKey } : {}),
+    ...(vehicleImageKeys ? { vehicleImageKeys } : {}),
+    ...(has('vehicle') && input.vehicle ? input.vehicle : {}),
+  };
+}
+
+const ALREADY_APPROVED = {
+  error: 'You are already verified. Nothing to send.',
+  code: 'ALREADY_APPROVED',
+} as const;
+
 /**
  * POST /drivers/kyc/submit
- * Accepts base64-encoded images for NIN, licence, and selfie,
- * plus vehicle info. Uploads to S3 and creates/updates the KYC submission.
+ * The whole application: NIN, licence (photo or PDF), selfie, vehicle
+ * details and 7–10 vehicle photos, base64. For a new driver, or an app that
+ * resends everything after a rejection. Refused for an approved driver: it
+ * would put a working driver back under review and off the road.
  */
 export async function handleDriverKycSubmitRoute(
   req: IncomingMessage,
@@ -44,6 +120,10 @@ export async function handleDriverKycSubmitRoute(
     sendJson(res, 404, { error: 'Driver record not found' });
     return;
   }
+  if (driver.kycStatus === 'APPROVED') {
+    sendJson(res, 409, ALREADY_APPROVED);
+    return;
+  }
 
   try {
     const rawBody = await readJsonBody(req);
@@ -52,95 +132,40 @@ export async function handleDriverKycSubmitRoute(
       return;
     }
 
-    const ninImage = getString(rawBody, 'ninImage'); // base64
-    const licenceImage = getString(rawBody, 'licenceImage'); // base64
-    const selfieImage = getString(rawBody, 'selfieImage'); // base64
-    const vehicleImages = Array.isArray(rawBody.vehicleImages) ? rawBody.vehicleImages as string[] : [];
-    const vehicleMake = getString(rawBody, 'vehicleMake');
-    const vehicleModel = getString(rawBody, 'vehicleModel');
-    const vehiclePlate = getString(rawBody, 'vehiclePlate');
-    const vehicleYearRaw = rawBody.vehicleYear;
-    const vehicleYear = typeof vehicleYearRaw === 'number' ? vehicleYearRaw : undefined;
-    const phone = getString(rawBody, 'phone');
+    const input = readKycInput(rawBody);
 
-    if (!ninImage || !licenceImage || !selfieImage) {
+    if (!input.ninImage || !input.licenceImage || !input.selfieImage) {
       sendJson(res, 400, { error: 'ninImage, licenceImage, and selfieImage are required (base64)' });
       return;
     }
 
-    if (!vehicleMake || !vehicleModel || !vehiclePlate || !vehicleYear) {
+    if (!input.vehicle) {
       sendJson(res, 400, { error: 'vehicleMake, vehicleModel, vehiclePlate, and vehicleYear are required' });
       return;
     }
 
-    if (vehicleImages.length < 7) {
+    if (input.vehicleImages.length < 7) {
       sendJson(res, 400, { error: 'At least 7 vehicle photos are required' });
       return;
     }
 
-    // Upload document images to S3
-    const [ninKey, licenceKey, selfieKey] = await Promise.all([
-      deps.kycStorage.upload({
-        driverId: driver.id,
-        type: 'nin',
-        imageBuffer: Buffer.from(ninImage, 'base64'),
-        mimeType: 'image/jpeg',
-      }),
-      deps.kycStorage.upload({
-        driverId: driver.id,
-        type: 'licence',
-        imageBuffer: Buffer.from(licenceImage, 'base64'),
-        mimeType: 'image/jpeg',
-      }),
-      deps.kycStorage.upload({
-        driverId: driver.id,
-        type: 'selfie',
-        imageBuffer: Buffer.from(selfieImage, 'base64'),
-        mimeType: 'image/jpeg',
-      }),
-    ]);
-
-    // Upload vehicle photos
-    const vehicleImageKeys = await Promise.all(
-      vehicleImages.slice(0, 10).map((img, i) =>
-        deps.kycStorage.upload({
-          driverId: driver.id,
-          type: `vehicle-${i}`,
-          imageBuffer: Buffer.from(img as string, 'base64'),
-          mimeType: 'image/jpeg',
-        }),
-      ),
-    );
-
-    // Upsert submission record
-    await driverClient.upsertKycSubmission(driver.id, {
-      ninImageKey: ninKey,
-      licenceImageKey: licenceKey,
-      selfieKey,
-      vehicleImageKeys,
-      vehicleMake,
-      vehicleModel,
-      vehiclePlate,
-      vehicleYear,
+    const stored = await uploadKycFields(deps, driver.id, input, KYC_FIELDS);
+    const accepted = await driverClient.submitFullKyc(driver.id, {
+      ...stored,
+      ...input.vehicle,
+      ninImageKey: stored.ninImageKey!,
+      licenceImageKey: stored.licenceImageKey!,
+      selfieKey: stored.selfieKey!,
+      vehicleImageKeys: stored.vehicleImageKeys!,
     });
+    if (!accepted) {
+      // Approved while the upload ran: nothing was changed.
+      sendJson(res, 409, ALREADY_APPROVED);
+      return;
+    }
 
-    // Mark as submitted
-    await driverClient.submitKyc(driver.id);
-
-    // Update driver's kycStatus
-    await driverClient.updateKycStatus(driver.id, 'SUBMITTED');
-
-    // Also persist vehicle info on the driver record
-    await driverClient.updateVehicle(driver.id, {
-      vehicleMake,
-      vehicleModel,
-      vehiclePlate,
-      vehicleYear,
-    });
-
-    // Save phone number on user record if provided
-    if (phone) {
-      await userClient.updateProfile(userId, { phone });
+    if (input.phone) {
+      await userClient.updateProfile(userId, { phone: input.phone });
     }
 
     logActivity({ userId, eventType: 'driver_kyc_submitted', metadata: {} });
@@ -152,6 +177,83 @@ export async function handleDriverKycSubmitRoute(
       error: error instanceof Error ? error.message : String(error),
     });
     sendJson(res, 500, { error: 'KYC submission failed' });
+  }
+}
+
+/**
+ * POST /drivers/kyc/resubmit
+ * After a rejection, only the items sent back: the same body as submit,
+ * holding just those. Everything already approved is kept. Only for a
+ * rejected driver; any other status gets 409 and nothing changes.
+ */
+export async function handleDriverKycResubmitRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: DriverKycDeps,
+): Promise<void> {
+  const userId = extractUserId(req, deps.jwtSecret);
+  if (!userId) {
+    sendJson(res, 401, { error: 'Unauthorized' });
+    return;
+  }
+
+  const driver = await driverClient.findByUserId(userId);
+  if (!driver) {
+    sendJson(res, 404, { error: 'Driver record not found' });
+    return;
+  }
+  if (driver.kycStatus === 'APPROVED') {
+    sendJson(res, 409, ALREADY_APPROVED);
+    return;
+  }
+
+  const submission = await driverClient.findKycSubmission(driver.id);
+  if (driver.kycStatus !== 'REJECTED' || submission?.status !== 'REJECTED') {
+    sendJson(res, 409, { error: 'There is nothing to fix right now.', code: 'NOT_REJECTED', kycStatus: driver.kycStatus });
+    return;
+  }
+
+  const rejected = (submission.rejectedFields ?? []).filter(isKycField);
+  const fields: KycField[] = rejected.length > 0 ? KYC_FIELDS.filter((f) => rejected.includes(f)) : [...KYC_FIELDS];
+
+  try {
+    const rawBody = await readJsonBody(req);
+    if (!isRecord(rawBody)) {
+      sendJson(res, 400, { error: 'Body must be a JSON object' });
+      return;
+    }
+
+    const input = readKycInput(rawBody);
+    const missing = missingFields(input, fields);
+    if (missing.length > 0) {
+      sendJson(res, 400, {
+        error: `Still needed: ${missing.map((f) => KYC_FIELD_LABELS[f]).join(', ')}.`,
+        code: 'MISSING_FIELDS',
+        missing,
+      });
+      return;
+    }
+
+    const stored = await uploadKycFields(deps, driver.id, input, fields);
+    const accepted = await driverClient.resubmitKycFields(driver.id, fields, stored);
+    if (!accepted) {
+      sendJson(res, 409, { error: 'There is nothing to fix right now.', code: 'NOT_REJECTED' });
+      return;
+    }
+
+    if (input.phone && fields.includes('vehicle')) {
+      await userClient.updateProfile(userId, { phone: input.phone });
+    }
+
+    logActivity({ userId, eventType: 'driver_kyc_resubmitted', metadata: { fields } });
+
+    sendJson(res, 200, { status: 'SUBMITTED', resubmitted: fields });
+  } catch (error) {
+    console.error('[driver-kyc] resubmit failed', {
+      driverId: driver.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    sendJson(res, 500, { error: 'KYC resubmission failed' });
   }
 }
 
@@ -178,14 +280,20 @@ export async function handleDriverKycStatusRoute(
 
   const submission = await driverClient.findKycSubmission(driver.id);
 
+  // What to fix, only while rejected: after a resubmission rejectedFields
+  // names what was resent, which is the reviewer's business, not the driver's.
+  const rejected = submission?.status === 'REJECTED';
+  const rejectedFields = rejected ? (submission.rejectedFields ?? []).filter(isKycField) : [];
+
   sendJson(res, 200, {
     kycStatus: driver.kycStatus,
     submission: submission ? {
       status: submission.status,
       submittedAt: submission.submittedAt,
       reviewedAt: submission.reviewedAt,
-      rejectionReason: submission.rejectionReason,
-      rejectedFields: submission.rejectedFields ?? [],
+      rejectionReason: rejected ? submission.rejectionReason : null,
+      rejectedFields,
+      fieldReasons: rejected ? fieldReasonsFrom(submission.fieldStatuses, rejectedFields) : {},
       vehicleMake: submission.vehicleMake,
       vehicleModel: submission.vehicleModel,
       vehiclePlate: submission.vehiclePlate,

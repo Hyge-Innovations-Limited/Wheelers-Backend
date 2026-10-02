@@ -3,6 +3,18 @@ import Jimp from 'jimp';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+export type KycFileType = 'image/jpeg' | 'image/png' | 'application/pdf';
+
+/**
+ * What a file really is, from its first bytes: the app sends a licence as a
+ * photo or as a PDF, and only the bytes say which.
+ */
+export function sniffKycFileType(bytes: Buffer): KycFileType {
+  if (bytes.subarray(0, 4).toString('latin1') === '%PDF') return 'application/pdf';
+  if (bytes[0] === 0x89 && bytes.subarray(1, 4).toString('latin1') === 'PNG') return 'image/png';
+  return 'image/jpeg';
+}
+
 export class DriverKycStorage {
   private readonly s3: S3Client;
   private readonly bucket: string;
@@ -27,7 +39,7 @@ export class DriverKycStorage {
     imageBuffer: Buffer;
     mimeType: string;
   }): Promise<string> {
-    const ext = params.mimeType === 'image/png' ? 'png' : 'jpg';
+    const ext = params.mimeType === 'application/pdf' ? 'pdf' : params.mimeType === 'image/png' ? 'png' : 'jpg';
     const objectKey = `${this.prefix}/${params.driverId}/${params.type}-${Date.now()}-${randomUUID()}.${ext}`;
 
     await this.s3.send(
@@ -42,13 +54,34 @@ export class DriverKycStorage {
     return objectKey;
   }
 
-  async getSignedUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+  async getSignedUrl(key: string, expiresInSeconds = 3600, contentType?: KycFileType): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
+      // A PDF stored before PDFs were recognised was saved as image/jpeg;
+      // this makes the browser open it as the PDF it is.
+      ...(contentType ? { ResponseContentType: contentType, ResponseContentDisposition: 'inline' } : {}),
     });
 
     return getSignedUrl(this.s3, command, { expiresIn: expiresInSeconds });
+  }
+
+  /**
+   * What a stored file really is. New uploads say so in the key; older ones
+   * were all named .jpg, so their first bytes are read (8 bytes, not the file).
+   */
+  async fileTypeOf(key: string): Promise<KycFileType> {
+    if (key.endsWith('.pdf')) return 'application/pdf';
+    if (key.endsWith('.png')) return 'image/png';
+    try {
+      const response = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: key, Range: 'bytes=0-7' }));
+      if (!response.Body) return 'image/jpeg';
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of response.Body as AsyncIterable<Uint8Array>) chunks.push(chunk);
+      return sniffKycFileType(Buffer.concat(chunks));
+    } catch {
+      return 'image/jpeg';
+    }
   }
 
   /**

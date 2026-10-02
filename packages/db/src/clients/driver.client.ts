@@ -2,7 +2,62 @@ import { prisma }   from '../prisma';
 import { driverLocationClient } from './driver-location.client';
 import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
 import { driverShiftClient, type ShiftEndReason } from './driver-shift.client';
+import { Prisma } from '@prisma/client';
 import type { DriverStatus, KycStatus } from '@prisma/client';
+
+type KycDocumentKeys = {
+  ninImageKey?:      string;
+  licenceImageKey?:  string;
+  selfieKey?:        string;
+  vehicleImageKeys?: string[];
+};
+
+type KycVehicleDetails = {
+  vehicleMake?:  string;
+  vehicleModel?: string;
+  vehiclePlate?: string;
+  vehicleYear?:  number;
+};
+
+class KycStateChanged extends Error {}
+
+function vehicleOf(data: KycVehicleDetails): KycVehicleDetails {
+  const out: KycVehicleDetails = {};
+  if (data.vehicleMake !== undefined) out.vehicleMake = data.vehicleMake;
+  if (data.vehicleModel !== undefined) out.vehicleModel = data.vehicleModel;
+  if (data.vehiclePlate !== undefined) out.vehiclePlate = data.vehiclePlate;
+  if (data.vehicleYear !== undefined) out.vehicleYear = data.vehicleYear;
+  return out;
+}
+
+async function decidePendingKyc(
+  driverId: string,
+  reviewedBy: string,
+  outcome: 'APPROVED' | 'REJECTED',
+  rejection: { rejectionReason?: string; rejectedFields?: string[] },
+): Promise<{ userId: string } | null> {
+  return prisma.$transaction(async (tx) => {
+    const submission = await tx.driverKycSubmission.findUnique({ where: { driverId } });
+    if (!submission || submission.status !== 'SUBMITTED') return null;
+    const reviewedAt = new Date();
+    const decided = await tx.driverKycSubmission.updateMany({
+      where: { driverId, status: 'SUBMITTED' },
+      data:  { status: outcome, reviewedAt, reviewedBy, ...rejection },
+    });
+    if (decided.count === 0) return null;
+    const driver = await tx.driver.update({ where: { id: driverId }, data: { kycStatus: outcome }, select: { userId: true } });
+    await tx.driverKycReview.create({
+      data: {
+        driverId, outcome, reviewedBy, reviewedAt,
+        submittedAt: submission.submittedAt ?? reviewedAt,
+        notes: outcome === 'REJECTED'
+          ? JSON.stringify({ reason: rejection.rejectionReason ?? null, fields: rejection.rejectedFields ?? [] })
+          : null,
+      },
+    });
+    return driver;
+  });
+}
 
 interface NearbyRow {
   id:           string;
@@ -385,6 +440,15 @@ export const driverClient = {
       orderBy: { submittedAt: 'asc' },
     }),
 
+  /** The admin queue by status: SUBMITTED oldest first, REJECTED newest decision first. */
+  findKycSubmissionsByStatus: (status: 'SUBMITTED' | 'REJECTED') =>
+    prisma.driverKycSubmission.findMany({
+      where:   { status },
+      include: { driver: { include: { user: true } } },
+      orderBy: status === 'SUBMITTED' ? { submittedAt: 'asc' } : { reviewedAt: 'desc' },
+      take:    200,
+    }),
+
   approveKycSubmission: (driverId: string, reviewedBy: string) =>
     prisma.driverKycSubmission.update({
       where: { driverId },
@@ -402,6 +466,86 @@ export const driverClient = {
       where: { driverId },
       data: { fieldStatuses },
     }),
+
+  /**
+   * A whole application: a new driver's first, or an app that resends
+   * everything. Starts a clean review (the last one's decisions no longer
+   * describe these documents). Never for an approved driver: the guard is the
+   * first write, so an approved record is left exactly as it was. False when
+   * refused.
+   */
+  submitFullKyc: (driverId: string, data: KycDocumentKeys & KycVehicleDetails & {
+    ninImageKey: string; licenceImageKey: string; selfieKey: string; vehicleImageKeys: string[];
+  }) =>
+    prisma.$transaction(async (tx) => {
+      const vehicle = vehicleOf(data);
+      const moved = await tx.driver.updateMany({
+        where: { id: driverId, kycStatus: { not: 'APPROVED' } },
+        data:  { kycStatus: 'SUBMITTED', ...vehicle },
+      });
+      if (moved.count === 0) return false;
+      const submittedAt = new Date();
+      await tx.driverKycSubmission.upsert({
+        where:  { driverId },
+        create: { driverId, ...data, status: 'SUBMITTED', submittedAt },
+        update: {
+          ...data, status: 'SUBMITTED', submittedAt,
+          reviewedAt: null, reviewedBy: null, rejectionReason: null, rejectedFields: [], fieldStatuses: Prisma.DbNull,
+        },
+      });
+      return true;
+    }),
+
+  /**
+   * A rejected driver sends back only what was rejected. Everything approved
+   * stays as it was, documents and the admin's per-item decisions alike;
+   * `rejectedFields` now names what was resent, so the reviewer knows what to
+   * look at. Only from REJECTED, checked in the same writes: false when the
+   * application is no longer rejected (a double tap, an admin in between).
+   */
+  resubmitKycFields: (driverId: string, fields: string[], data: KycDocumentKeys & KycVehicleDetails) =>
+    prisma.$transaction(async (tx) => {
+      const submission = await tx.driverKycSubmission.findUnique({ where: { driverId } });
+      if (!submission || submission.status !== 'REJECTED') return false;
+
+      const previous = (submission.fieldStatuses && typeof submission.fieldStatuses === 'object' && !Array.isArray(submission.fieldStatuses))
+        ? submission.fieldStatuses as Record<string, Prisma.JsonValue>
+        : {};
+      const kept = Object.fromEntries(Object.entries(previous).filter(([field]) => !fields.includes(field)));
+
+      const moved = await tx.driverKycSubmission.updateMany({
+        where: { driverId, status: 'REJECTED' },
+        data:  {
+          ...data,
+          status: 'SUBMITTED', submittedAt: new Date(), reviewedAt: null, reviewedBy: null,
+          rejectedFields: fields,
+          fieldStatuses: Object.keys(kept).length > 0 ? kept as Prisma.InputJsonObject : Prisma.DbNull,
+        },
+      });
+      if (moved.count === 0) return false;
+
+      const driver = await tx.driver.updateMany({
+        where: { id: driverId, kycStatus: 'REJECTED' },
+        data:  { kycStatus: 'SUBMITTED', ...vehicleOf(data) },
+      });
+      // The driver row says otherwise (approved meanwhile?): undo, change nothing.
+      if (driver.count === 0) throw new KycStateChanged();
+      return true;
+    }).catch((error) => {
+      if (error instanceof KycStateChanged) return false;
+      throw error;
+    }),
+
+  /**
+   * The admin's decisions, each only while the application is under review
+   * (so two admins, or a double click, decide once). Each is kept in the
+   * review history. Null when there was nothing under review.
+   */
+  approvePendingKyc: (driverId: string, reviewedBy: string) =>
+    decidePendingKyc(driverId, reviewedBy, 'APPROVED', {}),
+
+  rejectPendingKyc: (driverId: string, reviewedBy: string, rejectionReason: string, rejectedFields: string[]) =>
+    decidePendingKyc(driverId, reviewedBy, 'REJECTED', { rejectionReason, rejectedFields }),
 
   // ── KYC reviews ────────────────────────────────────────────────────────────
 

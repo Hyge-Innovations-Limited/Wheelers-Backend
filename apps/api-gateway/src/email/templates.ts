@@ -182,6 +182,49 @@ export function buildDriverApprovedEmail(driverName?: string): { subject: string
   };
 }
 
+// ── Driver verification needs a fix ──────────────────────────────────
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Sent when an admin sends items back: what to fix, in the admin's words. */
+export function buildDriverRejectedEmail(
+  driverName: string | undefined,
+  items: { label: string; reason?: string }[],
+): { subject: string; html: string; from: string } {
+  const greeting = driverName ? `Hi ${escapeHtml(driverName)},` : 'Hi there,';
+  const rows = items.map((item) => `
+    <tr><td style="padding:0 0 12px;font-size:14px;color:#0D0D0D;line-height:20px;">
+      <strong>${escapeHtml(item.label)}</strong>${item.reason ? ` &mdash; ${escapeHtml(item.reason)}` : ''}
+    </td></tr>`).join('');
+
+  const html = emailShell(`
+  <h1 style="margin:0 0 16px;font-size:22px;font-weight:800;color:#0D0D0D;line-height:28px;letter-spacing:-0.3px;">
+    ${items.length === 1 ? 'One thing to fix' : 'A few things to fix'}
+  </h1>
+  <p style="margin:0 0 16px;font-size:14px;color:#0D0D0D;line-height:22px;">
+    ${greeting}
+  </p>
+  <p style="margin:0 0 20px;font-size:14px;color:#0D0D0D;line-height:22px;">
+    We checked your documents and need you to send ${items.length === 1 ? 'this' : 'these'} again. Everything else is kept, so you only redo what's listed.
+  </p>
+  <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">${rows}
+  </table>
+  <p style="margin:0;font-size:14px;color:#0D0D0D;line-height:22px;">
+    Open the Wheelers driver app to fix it. We'll look again as soon as you send it.
+  </p>
+  <p style="margin:16px 0 0;font-size:14px;color:#786F68;line-height:22px;">
+    &mdash; The Wheelers Team
+  </p>`);
+
+  return {
+    subject: 'Your Wheelers verification needs a fix',
+    html,
+    from: 'Wheelers <hello@wheelersng.com>',
+  };
+}
+
 // ── Password reset code email ───────────────────────────────────────
 
 export function buildPasswordResetEmail(code: string): { subject: string; html: string; from: string } {

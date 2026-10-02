@@ -67,6 +67,7 @@ import {
 } from "./http/driver.route";
 import {
   handleDriverKycSubmitRoute,
+  handleDriverKycResubmitRoute,
   handleDriverKycStatusRoute,
 } from "./http/driver-kyc.route";
 import {
@@ -1228,6 +1229,24 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname === "/drivers/kyc/resubmit") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      if (!driverKycStorage) {
+        sendJson(res, 503, { error: 'KYC storage not configured' });
+        return;
+      }
+
+      await handleDriverKycResubmitRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        kycStorage: driverKycStorage,
+      });
+      return;
+    }
+
     if (url.pathname === "/drivers/kyc/status") {
       if (req.method !== "GET") {
         sendMethodNotAllowed(res);
@@ -1307,6 +1326,7 @@ async function bootstrap(): Promise<void> {
           jwtSecret: gatewayEnv.JWT_SECRET,
           kycStorage: driverKycStorage,
           resendApiKey: gatewayEnv.RESEND_API_KEY,
+          publisher,
         }, approveMatch[1]!);
         return;
       }
@@ -1347,6 +1367,8 @@ async function bootstrap(): Promise<void> {
           adminApiKey: process.env.ADMIN_API_KEY ?? '',
           jwtSecret: gatewayEnv.JWT_SECRET,
           kycStorage: driverKycStorage,
+          resendApiKey: gatewayEnv.RESEND_API_KEY,
+          publisher,
         }, rejectMatch[1]!);
         return;
       }
