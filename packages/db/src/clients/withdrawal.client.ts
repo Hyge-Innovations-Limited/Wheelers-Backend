@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import { bookPlatformFee, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
+import { takeFromBalance } from './wallet-balance';
 
 /**
  * Our payout reference IS the withdrawal request id, so a webhook or a
@@ -46,13 +47,11 @@ export const withdrawalClient = {
       const withdrawalId = randomUUID();
       const reservationId = randomUUID();
 
-      const updatedWallet = await tx.wallet.update({
-        where: { id: input.walletId },
-        data: {
-          balanceNgn: { decrement: input.amountNgn },
-          lockedNgn: { increment: input.amountNgn },
-        },
-      });
+      // Checked again as it is reserved: two withdrawals in the same instant cannot both pass.
+      const updatedWallet = await takeFromBalance(tx, input.walletId, input.amountNgn, { lock: true });
+      if (!updatedWallet) {
+        throw new Error('You have insufficient balance for this withdrawal.');
+      }
 
       const reservation = await tx.walletReservation.create({
         data: {

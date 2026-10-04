@@ -6,6 +6,7 @@ import {
   RATE_PER_KM_NGN,
   VEHICLE_CLASSES,
   priceForBooking,
+  takeFromBalance,
   minimumOfferNgn,
   type InterstateVehicleType,
 } from '@wheleers/db';
@@ -86,10 +87,11 @@ function walletCharge(userId: string) {
       );
     }
 
-    const updated = await tx.wallet.update({
-      where: { id: wallet.id },
-      data: { balanceNgn: { decrement: amountNgn } },
-    });
+    // Checked again as it is taken: a payment in the same instant may have spent it.
+    const updated = await takeFromBalance(tx, wallet.id, amountNgn);
+    if (!updated) {
+      throw new InterstateError('Insufficient balance. Your wallet changed while booking; check it and try again.', 'INSUFFICIENT_BALANCE', { requiredNgn: amountNgn, balanceNgn: Number(wallet.balanceNgn) });
+    }
     await tx.transaction.create({
       data: {
         walletId: wallet.id,

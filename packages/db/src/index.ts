@@ -18,6 +18,7 @@ export { healthClient }         from './clients/health.client';
 export { onPrismaQuery }        from './query-timing';
 export type { QueryListener }   from './query-timing';
 export { walletClient }         from './clients/wallet.client';
+export { takeFromBalance }      from './clients/wallet-balance';
 export { withdrawalClient, payoutAmountOf } from './clients/withdrawal.client';
 export { virtualAccountClient, ACTIVE_PAYMENT_PROVIDER } from './clients/virtual-account.client';
 export { PLATFORM_USER_ID, ensurePlatformWalletId } from './clients/platform-wallet';

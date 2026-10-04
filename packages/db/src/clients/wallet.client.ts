@@ -3,6 +3,7 @@ import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
 import { calculateRideFees, splitDeposit } from '@wheleers/config';
 import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
+import { takeFromBalance } from './wallet-balance';
 
 // The type of the transactional client Prisma passes into $transaction callbacks
 type TxClient = Prisma.TransactionClient;
@@ -231,10 +232,11 @@ export const walletClient = {
           );
         }
 
-        const wallet = await tx.wallet.update({
-          where: { id: walletId },
-          data:  { balanceNgn: { decrement: amountNgn } },
-        });
+        // Checked again as it is taken: a payment in the same instant may have spent it.
+        const wallet = await takeFromBalance(tx, walletId, amountNgn);
+        if (!wallet) {
+          throw new Error(`Insufficient balance on wallet ${walletId}: needs ${amountNgn} NGN`);
+        }
 
         const txn = await tx.transaction.create({
           data: {
@@ -281,13 +283,11 @@ export const walletClient = {
         );
       }
 
-      return tx.wallet.update({
-        where: { id: walletId },
-        data: {
-          balanceNgn: { decrement: amountNgn },
-          lockedNgn:  { increment: amountNgn },
-        },
-      });
+      const locked = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
+      if (!locked) {
+        throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
+      }
+      return locked;
     }),
 
   unlockFunds: (walletId: string, amountNgn: number) =>
@@ -355,13 +355,10 @@ export const walletClient = {
           );
         }
 
-        const wallet = await tx.wallet.update({
-          where: { id: walletId },
-          data: {
-            balanceNgn: { decrement: amountNgn },
-            lockedNgn: { increment: amountNgn },
-          },
-        });
+        const wallet = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
+        if (!wallet) {
+          throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
+        }
 
         if (rearm) {
           const reclaimed = await tx.rideHold.updateMany({
