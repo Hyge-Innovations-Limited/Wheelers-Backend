@@ -107,6 +107,10 @@ import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { stellarConfigFromEnv } from "./stellar/config";
+import { onPrismaQuery } from "@wheleers/db";
+import { createStatsRecorder } from "./health/stats";
+import { startHealthJobs } from "./health/jobs";
+import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
 import { startHoldSweeper } from "./payments/hold-sweeper";
@@ -633,8 +637,13 @@ async function bootstrap(): Promise<void> {
     legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
   });
 
+  // Every API request and database query, counted per minute for the admin Health page.
+  const healthStats = createStatsRecorder();
+  onPrismaQuery(healthStats.db);
+
   const server = createServer(async (req, res) => {
     const startedAt = Date.now();
+    res.once("finish", () => healthStats.http(Date.now() - startedAt, res.statusCode));
     const url = new URL(req.url ?? "/", "http://localhost");
     attachRequestLog(req, res, getSafePathForLog(url), url.pathname, getClientIp(req), startedAt);
 
@@ -1749,6 +1758,19 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      if (url.pathname === "/admin/health") {
+        if (req.method !== "GET") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminHealthRoute(req, res, {
+          ...adminDeps,
+          redis: redisCommandClient,
+          horizonUrl: stellarConfig?.horizonUrl ?? null,
+        }, url);
+        return;
+      }
+
       if (url.pathname === "/admin/usage/services") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
@@ -2353,6 +2375,14 @@ async function bootstrap(): Promise<void> {
   const referralJobs = startReferralJobs(leader.isLeader);
   const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
   const stopHoldSweeper = startHoldSweeper(leader.isLeader);
+  const stopHealthJobs = startHealthJobs({
+    redis: redisCommandClient,
+    recorder: healthStats,
+    instanceId: registry.instanceId,
+    sockets: () => registry.connectionCount,
+    isLeader: leader.isLeader,
+    horizonUrl: stellarConfig?.horizonUrl ?? null,
+  });
   if (stellar) {
     void stellar.ensureOperations()
       .then((ops) => console.info("[stellar] testnet on; operations account", { publicKey: ops.publicKey }))
@@ -2416,6 +2446,7 @@ async function bootstrap(): Promise<void> {
     tripChat.stop();
     stopStellarJob();
     stopHoldSweeper();
+    stopHealthJobs();
     await leader.release();
     await registry.shutdown();
   });
