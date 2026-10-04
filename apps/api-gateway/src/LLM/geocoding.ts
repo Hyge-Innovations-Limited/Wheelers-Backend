@@ -1,3 +1,5 @@
+import { cachedMaps, mapsKey } from '../maps/shared-cache';
+
 export interface GeocodeResult {
   lat: number;
   lng: number;
@@ -442,6 +444,16 @@ const PLACES_CACHE_TTL_MS = 6 * 60 * 60_000;
 const PLACES_CACHE_MAX = 500;
 const placesCache = new Map<string, { at: number; results: GeocodeResult[] }>();
 
+// …and shared between the gateway processes for as long, through Redis
+// (maps/shared-cache: only real answers are kept, never a failure).
+const SHARED_TTL_SECONDS = 6 * 60 * 60;
+const PLACE_LOCATION_TTL_SECONDS = 24 * 60 * 60;
+const PLACES_CACHE_VERSION = 1;
+const isPoint = (v: unknown): v is GeoPoint =>
+  Boolean(v && typeof (v as GeoPoint).lat === 'number' && typeof (v as GeoPoint).lng === 'number');
+const isResults = (v: unknown): v is GeocodeResult[] => Array.isArray(v) && v.every(isPoint);
+const isResult = (v: unknown): v is GeocodeResult | null => v === null || isPoint(v);
+
 /**
  * Named places matching some words, the way a ride app's search box lists them:
  * "Caleb University" → the main campus, the College of Law, Admissions, the
@@ -467,6 +479,21 @@ export async function textSearchPlaces(
   const cached = placesCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PLACES_CACHE_TTL_MS) return cached.results;
 
+  const results = await cachedMaps(mapsKey('places-text', PLACES_CACHE_VERSION, cacheKey), SHARED_TTL_SECONDS,
+    () => textSearchPlacesFromGoogle(apiKey, text, near, limit, anyMatch),
+    { keep: (r) => r.length > 0, valid: isResults });
+  if (placesCache.size >= PLACES_CACHE_MAX) placesCache.clear();
+  placesCache.set(cacheKey, { at: Date.now(), results });
+  return results;
+}
+
+async function textSearchPlacesFromGoogle(
+  apiKey: string,
+  text: string,
+  near: GeoPoint | undefined,
+  limit: number,
+  anyMatch: boolean,
+): Promise<GeocodeResult[]> {
   try {
     const response = await fetch(PLACES_SEARCH_URL, {
       method: 'POST',
@@ -531,8 +558,6 @@ export async function textSearchPlaces(
       if (distinct.length >= limit) break;
     }
 
-    if (placesCache.size >= PLACES_CACHE_MAX) placesCache.clear();
-    placesCache.set(cacheKey, { at: Date.now(), results: distinct });
     return distinct;
   } catch (error) {
     console.warn('[geocoding] place search failed', { query: text, error: error instanceof Error ? error.message : String(error) });
@@ -567,6 +592,17 @@ const locationCache = new Map<string, GeoPoint>();
 async function placeLocation(apiKey: string, placeId: string): Promise<GeoPoint | null> {
   const cached = locationCache.get(placeId);
   if (cached) return cached;
+  const point = await cachedMaps(mapsKey('place-location', PLACES_CACHE_VERSION, placeId), PLACE_LOCATION_TTL_SECONDS,
+    () => placeLocationFromGoogle(apiKey, placeId),
+    { keep: (p) => p !== null, valid: (v): v is GeoPoint | null => isPoint(v) });
+  if (point) {
+    if (locationCache.size >= PLACES_CACHE_MAX * 4) locationCache.clear();
+    locationCache.set(placeId, point);
+  }
+  return point;
+}
+
+async function placeLocationFromGoogle(apiKey: string, placeId: string): Promise<GeoPoint | null> {
   try {
     const response = await fetch(`${PLACE_DETAILS_URL}/${encodeURIComponent(placeId)}`, {
       headers: { 'x-goog-api-key': apiKey, 'x-goog-fieldmask': 'location' },
@@ -576,8 +612,6 @@ async function placeLocation(apiKey: string, placeId: string): Promise<GeoPoint 
     const lat = data?.location?.latitude;
     const lng = data?.location?.longitude;
     if (lat == null || lng == null) return null;
-    if (locationCache.size >= PLACES_CACHE_MAX * 4) locationCache.clear();
-    locationCache.set(placeId, { lat, lng });
     return { lat, lng };
   } catch {
     return null;
@@ -602,6 +636,15 @@ export async function searchPlaces(apiKey: string, query: string, near?: GeoPoin
   const cached = placesCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PLACES_CACHE_TTL_MS) return cached.results;
 
+  const results = await cachedMaps(mapsKey('places-auto', PLACES_CACHE_VERSION, cacheKey), SHARED_TTL_SECONDS,
+    () => searchPlacesFromGoogle(apiKey, text, near, limit),
+    { keep: (r) => r.length > 0, valid: isResults });
+  if (placesCache.size >= PLACES_CACHE_MAX) placesCache.clear();
+  placesCache.set(cacheKey, { at: Date.now(), results });
+  return results;
+}
+
+async function searchPlacesFromGoogle(apiKey: string, text: string, near: GeoPoint | undefined, limit: number): Promise<GeocodeResult[]> {
   try {
     const centre = near ? { latitude: near.lat, longitude: near.lng } : undefined;
     const response = await fetch(PLACES_AUTOCOMPLETE_URL, {
@@ -659,10 +702,7 @@ export async function searchPlaces(apiKey: string, query: string, near?: GeoPoin
     }
 
     // Autocomplete found nothing usable: a whole-name search still might.
-    const results = distinct.length > 0 ? distinct : await textSearchPlaces(apiKey, text, near, limit);
-    if (placesCache.size >= PLACES_CACHE_MAX) placesCache.clear();
-    placesCache.set(cacheKey, { at: Date.now(), results });
-    return results;
+    return distinct.length > 0 ? distinct : await textSearchPlaces(apiKey, text, near, limit);
   } catch (error) {
     console.warn('[geocoding] place autocomplete failed', { query: text, error: error instanceof Error ? error.message : String(error) });
     return [];
@@ -871,6 +911,17 @@ async function geocodeManyOnce(
 }
 
 async function geocodeOnce(
+  apiKey: string,
+  address: string,
+  extra: Record<string, string>,
+): Promise<GeocodeResult | null> {
+  const extras = Object.keys(extra).sort().map((k) => `${k}=${extra[k]}`).join('&');
+  return cachedMaps(mapsKey('geocode', PLACES_CACHE_VERSION, address.trim().toLowerCase(), extras), SHARED_TTL_SECONDS,
+    () => geocodeOnceFromGoogle(apiKey, address, extra),
+    { keep: (r) => r !== null, valid: (v): v is GeocodeResult | null => isPoint(v) });
+}
+
+async function geocodeOnceFromGoogle(
   apiKey: string,
   address: string,
   extra: Record<string, string>,

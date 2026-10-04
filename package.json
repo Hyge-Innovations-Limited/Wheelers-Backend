@@ -55,6 +55,7 @@
     "test:driver-reonline": "tsc -p test/tsconfig.json && node test/dist/driver-reonline.integration.js",
     "test:ride-rehydrate": "npm -w @wheleers/db run build && npm -w @wheleers/ride-service run build && node --test --test-force-exit test/ride-rehydrate.test.js",
     "test:wallet-race": "npm -w @wheleers/db run build && node scripts/run-with-env.cjs node --test --test-force-exit test/wallet-race.test.js",
+    "test:maps-cache": "npm -w @wheleers/config run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/maps-cache.test.js",
     "test:health": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node scripts/run-with-env.cjs node --test --test-force-exit test/health.test.js",
     "test:driver-kyc": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node scripts/run-with-env.cjs node --test --test-force-exit test/driver-kyc-review.test.js test/driver-kyc-gate.test.js",
     "test:driver-bids": "npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build && node --test --test-force-exit test/driver-bids.test.js",

@@ -110,6 +110,8 @@ import { stellarConfigFromEnv } from "./stellar/config";
 import { onPrismaQuery } from "@wheleers/db";
 import { createStatsRecorder } from "./health/stats";
 import { startHealthJobs } from "./health/jobs";
+import { configureMapsCache } from "./maps/shared-cache";
+import { CachedRoutePlanner } from "./maps/cached-route-planner";
 import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
@@ -472,7 +474,9 @@ async function bootstrap(): Promise<void> {
     timeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
   }));
 
-  const routePlanner = new GoogleMapsRoutePlanner(
+  // Google's routes and places, remembered in Redis for a few hours and shared by every process.
+  configureMapsCache(redisCommandClient);
+  const routePlanner = new CachedRoutePlanner(
     gatewayEnv.GOOGLE_MAPS_BASE_URL,
     gatewayEnv.GOOGLE_MAPS_API_KEY,
   );
