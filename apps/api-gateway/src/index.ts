@@ -115,7 +115,7 @@ import { configureMapsCache } from "./maps/shared-cache";
 import { CachedRoutePlanner } from "./maps/cached-route-planner";
 import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
-import { ownerEmailsFromEnv, recordAdminRequest } from "./admin/activity";
+import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
 import { startHoldSweeper } from "./payments/hold-sweeper";
@@ -643,8 +643,6 @@ async function bootstrap(): Promise<void> {
     whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
     legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
   });
-
-  const ownerAlertEmails = ownerEmailsFromEnv();
 
   // Every API request and database query, counted per minute for the admin Health page.
   const healthStats = createStatsRecorder();
@@ -1681,10 +1679,6 @@ async function bootstrap(): Promise<void> {
       const adminDeps = {
         adminApiKey: process.env.ADMIN_API_KEY ?? '',
         jwtSecret: gatewayEnv.JWT_SECRET,
-        // Owner alerts (staff screenshots, blocked downloads).
-        redis: redisCommandClient,
-        resendApiKey: gatewayEnv.RESEND_API_KEY,
-        ownerEmails: ownerAlertEmails,
       };
 
       // ── Live map + dispatch ──

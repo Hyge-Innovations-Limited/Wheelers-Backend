@@ -2,9 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { readJsonBody, sendJson } from './utils';
 import { verifyAdminAuth } from './admin-auth.route';
 import { recordCapture } from './admin-team.route';
-import type { AdminAlertDeps } from '../admin/activity';
 
-interface Deps extends AdminAlertDeps {
+interface Deps {
   jwtSecret: string;
   adminApiKey: string;
 }
@@ -39,7 +38,7 @@ export async function handleAdminSecurityRoute(req: IncomingMessage, res: Server
   const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 200) : null;
 
   console.warn('[admin-security] screenshot attempt', { admin: admin.adminName, kind, page, ip, userAgent });
-  await recordCapture(deps, admin, page, kind, ip);
+  recordCapture(admin, page, kind, ip);
   sendJson(res, 200, { ok: true });
   return true;
 }

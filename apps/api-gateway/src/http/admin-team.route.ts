@@ -1,13 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { adminActivityClient, adminClient } from '@wheleers/db';
-import {
-  adminMarkCode, alertOwners, clientIp, recordAdminActivity,
-  type AdminAlertDeps,
-} from '../admin/activity';
+import { adminMarkCode, clientIp, recordAdminActivity } from '../admin/activity';
 import { verifyAdminAuth, type AdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
 
-interface TeamDeps extends AdminAlertDeps {
+interface TeamDeps {
   adminApiKey: string;
   jwtSecret: string;
 }
@@ -51,7 +48,7 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
     const page = typeof body.page === 'string' ? body.page.slice(0, 300) : null;
     if (body.kind === 'capture') {
       const key = typeof body.key === 'string' ? body.key.slice(0, 40) : null;
-      await recordCapture(deps, auth, page, key, clientIp(req));
+      recordCapture(auth, page, key, clientIp(req));
     } else if (body.kind === 'page' && page) {
       recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'page', page, ip: clientIp(req) });
     }
@@ -141,10 +138,7 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
   return true;
 }
 
-/** A screenshot shortcut: on the timeline, flagged, and the owners told when it was staff. */
-export async function recordCapture(deps: AdminAlertDeps, auth: AdminAuth, page: string | null, key: string | null, ip: string | null): Promise<void> {
+/** A screenshot shortcut: on the timeline, flagged red for the owners. */
+export function recordCapture(auth: AdminAuth, page: string | null, key: string | null, ip: string | null): void {
   recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'screenshot', page, flagged: true, ip, detail: key ? { key } : null });
-  if (auth.role === 'STAFF') {
-    void alertOwners(deps, { adminId: auth.adminId, adminName: auth.adminName, what: 'pressed screenshot keys', page });
-  }
 }

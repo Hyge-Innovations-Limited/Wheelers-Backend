@@ -5,7 +5,7 @@ import type { AnalyticsFilters, BreakdownBy, Bucket, FeeKind, RideChannelName, T
 import { buildWorkbook } from '../analytics/workbook';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
-import { alertOwners, clientIp, recordAdminActivity, type AdminAlertDeps } from '../admin/activity';
+import { clientIp, recordAdminActivity } from '../admin/activity';
 import { sendJson } from './utils';
 
 /**
@@ -34,7 +34,7 @@ import { sendJson } from './utils';
  *   GET /admin/fees/withdrawals?q=&sort=&dir=&limit=&offset=   every withdrawal requested
  */
 
-interface Deps extends AdminAlertDeps {
+interface Deps {
   adminApiKey: string;
   jwtSecret: string;
 }
@@ -157,7 +157,6 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         // The workbook holds every rider's and driver's details: owners only.
         if (auth.role !== 'OWNER') {
           recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export-blocked', page: path, flagged: true, ip: clientIp(req), detail: { scope, from: f.from, to: f.to } });
-          void alertOwners(deps, { adminId: auth.adminId, adminName: auth.adminName, what: 'tried to download the Excel export', page: path });
           sendJson(res, 403, { error: 'Only owners can download the Excel export.' });
           return true;
         }

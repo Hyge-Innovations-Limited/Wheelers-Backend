@@ -1,8 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { IncomingMessage } from 'http';
 import { adminActivityClient, adminClient, type AdminActivityInput } from '@wheleers/db';
-import type { RedisClient } from '../redis/client';
-import { sendEmail } from '../email/resend';
 
 /**
  * What admins do in the dashboard, recorded for the owners' Team activity
@@ -11,13 +9,6 @@ import { sendEmail } from '../email/resend';
  */
 
 export type AdminRoleName = 'OWNER' | 'STAFF';
-
-export interface AdminAlertDeps {
-  redis?: RedisClient;
-  resendApiKey?: string;
-  /** Who is emailed when staff take a screenshot or try to download: OWNER_ALERT_EMAILS, comma separated. */
-  ownerEmails?: string[];
-}
 
 /**
  * The admin's code in the hidden mark on every dashboard page: six letters
@@ -76,37 +67,4 @@ export async function recordAdminRequest(adminId: string, method: string, url: U
   const described = describeAdminRequest(method, url, status);
   if (!described) return;
   recordAdminActivity({ ...described, adminId, adminName: await adminNameOf(adminId), ip });
-}
-
-const lagosTime = (at = new Date()) => at.toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' });
-
-/**
- * An email to the owners when staff do something they should know about.
- * At most one per admin per 10 minutes, so a burst of key presses is one email.
- */
-export async function alertOwners(deps: AdminAlertDeps, event: { adminId: string | null; adminName: string; what: string; page?: string | null }): Promise<void> {
-  const emails = deps.ownerEmails ?? [];
-  if (!deps.resendApiKey || emails.length === 0) return;
-  if (deps.redis) {
-    const first = await deps.redis.send('SET', `admin:alert:${event.adminId ?? event.adminName}`, '1', 'EX', '600', 'NX').catch(() => 'OK');
-    if (first !== 'OK') return;
-  }
-  const html = `<p><strong>${escapeHtml(event.adminName)}</strong> ${escapeHtml(event.what)}${event.page ? ` on <code>${escapeHtml(event.page)}</code>` : ''}.</p>
-<p>${lagosTime()} (Lagos). The full record is on the Team page of the admin dashboard.</p>`;
-  for (const to of emails) {
-    await sendEmail({
-      to,
-      subject: `Wheelers admin: ${event.adminName} ${event.what}`.slice(0, 120),
-      html,
-      from: 'Wheelers <hello@wheelersng.com>',
-    }, deps.resendApiKey).catch((error) => console.warn('[admin-activity] owner alert not sent', { error: error instanceof Error ? error.message : String(error) }));
-  }
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-export function ownerEmailsFromEnv(raw = process.env['OWNER_ALERT_EMAILS']): string[] {
-  return (raw ?? '').split(',').map((e) => e.trim()).filter((e) => /.+@.+\..+/.test(e));
 }

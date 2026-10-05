@@ -1,8 +1,8 @@
 // Owners and staff in the admin dashboard: staff cannot download the Excel
-// export (and trying is flagged), a staff screenshot is recorded and emailed
-// to the owners at most once per 10 minutes, only owners see the team, the
-// last owner cannot be made staff, and a page's hidden mark names its admin.
-// Local Postgres, real Redis (database 15), email faked.
+// export (and trying is flagged), screenshot keys are recorded and flagged
+// (no emails), only owners see the team, the last owner cannot be made staff,
+// and a page's hidden mark names its admin. Local Postgres; any email the
+// code tried to send would be caught (there must be none).
 //
 //   npm -w @wheleers/db run build && npm -w @wheleers/api-gateway run build
 //   node scripts/run-with-env.cjs node --test --test-force-exit test/admin-team.test.js
@@ -56,7 +56,7 @@ test.before(async () => {
     }
     return realFetch(input, init);
   };
-  deps = { adminApiKey: 'k', jwtSecret: SECRET, redis, resendApiKey: 're_test', ownerEmails: ['timi@example.com', 'ike@example.com'] };
+  deps = { adminApiKey: 'k', jwtSecret: SECRET };
   server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     if (await team.handleAdminTeamRoute(req, res, deps, url)) return;
@@ -77,7 +77,7 @@ test.after(async () => {
   await prisma.$disconnect();
 });
 
-test('staff cannot download the Excel export, and trying is flagged and emailed', async () => {
+test('staff cannot download the Excel export, and trying is flagged', async () => {
   emails.length = 0;
   const staff = await admin('STAFF');
   const r = await call('GET', '/admin/insights/export?scope=overview', staff.token);
@@ -86,8 +86,7 @@ test('staff cannot download the Excel export, and trying is flagged and emailed'
   const rows = await activityOf(staff.id);
   assert.equal(rows[0].kind, 'export-blocked');
   assert.equal(rows[0].flagged, true);
-  assert.equal(emails.length, 2, 'one email to each owner');
-  assert.match(emails[0].subject, /tried to download the Excel export/);
+  assert.equal(emails.length, 0, 'no emails');
 });
 
 test('an owner downloads it, and the download is on the record', async () => {
@@ -101,7 +100,7 @@ test('an owner downloads it, and the download is on the record', async () => {
   assert.equal(rows[0].flagged, false);
 });
 
-test('a staff screenshot is recorded and the owners get one email per 10 minutes', async () => {
+test('screenshot keys are recorded and flagged, every time, with no email', async () => {
   emails.length = 0;
   const staff = await admin('STAFF');
   for (let i = 0; i < 3; i++) assert.equal((await call('POST', '/admin/activity', staff.token, { kind: 'capture', page: '/admin/dashboard/users', key: 'Meta+Shift+4' })).status, 200);
@@ -109,15 +108,6 @@ test('a staff screenshot is recorded and the owners get one email per 10 minutes
   const shots = (await activityOf(staff.id)).filter((r) => r.kind === 'screenshot');
   assert.equal(shots.length, 3);
   assert.ok(shots.every((s) => s.flagged));
-  assert.equal(emails.length, 2, 'two owners, one email each, however many presses');
-});
-
-test("an owner's own screenshot is recorded but emails nobody", async () => {
-  emails.length = 0;
-  const owner = await admin('OWNER');
-  await call('POST', '/admin/activity', owner.token, { kind: 'capture', page: '/admin/dashboard' });
-  await settle();
-  assert.equal((await activityOf(owner.id)).filter((r) => r.kind === 'screenshot').length, 1);
   assert.equal(emails.length, 0);
 });
 
