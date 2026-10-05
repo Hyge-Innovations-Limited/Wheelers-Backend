@@ -58,7 +58,7 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
 
   // Everything below is the owners' view of the team.
   if (auth.role !== 'OWNER') {
-    sendJson(res, 403, { error: 'Only owners can see the team.' });
+    sendJson(res, 404, { error: 'Not found' });
     return true;
   }
 

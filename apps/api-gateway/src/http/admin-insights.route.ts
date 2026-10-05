@@ -157,7 +157,7 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         // The workbook holds every rider's and driver's details: owners only.
         if (auth.role !== 'OWNER') {
           recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export-blocked', page: path, flagged: true, ip: clientIp(req), detail: { scope, from: f.from, to: f.to } });
-          sendJson(res, 403, { error: 'Only owners can download the Excel export.' });
+          sendJson(res, 403, { error: 'This download is not available.' });
           return true;
         }
         recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope, from: f.from, to: f.to, contacts } });

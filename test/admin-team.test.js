@@ -114,8 +114,8 @@ test('screenshot keys are recorded and flagged, every time, with no email', asyn
 test('only owners see the team, its timeline and flags', async () => {
   const staff = await admin('STAFF');
   const owner = await admin('OWNER');
-  assert.equal((await call('GET', '/admin/team', staff.token)).status, 403);
-  assert.equal((await call('GET', '/admin/team/activity', staff.token)).status, 403);
+  assert.equal((await call('GET', '/admin/team', staff.token)).status, 404, 'to staff the team does not exist');
+  assert.equal((await call('GET', '/admin/team/activity', staff.token)).status, 404);
   const list = await call('GET', '/admin/team', owner.token);
   assert.equal(list.status, 200);
   const me = list.body.admins.find((a) => a.id === owner.id);
