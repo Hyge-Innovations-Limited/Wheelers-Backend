@@ -3,6 +3,14 @@ import { adminClient } from '@wheleers/db';
 import { hashPassword, verifyPassword, createLocalAccessToken, verifyLocalAccessToken } from '../auth/local';
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
+import { adminMarkCode, clientIp, recordAdminActivity, type AdminRoleName } from '../admin/activity';
+
+/** Who is asking: their ID (null for the bootstrap key), name and role. */
+export interface AdminAuth {
+  adminId: string | null;
+  adminName: string;
+  role: AdminRoleName;
+}
 
 /** An admin login lasts two hours; then the dashboard asks for the password again. */
 export const ADMIN_SESSION_SECONDS = 2 * 60 * 60;
@@ -38,16 +46,13 @@ export async function handleAdminLoginRoute(
     }
 
     const admin = await adminClient.findByUsername(username);
-    if (!admin || !admin.active) {
+    const valid = admin?.active ? await verifyPassword(password, admin.passwordHash) : false;
+    if (!admin || !admin.active || !valid) {
+      recordAdminActivity({ adminId: admin?.id ?? null, adminName: admin?.name ?? username, kind: 'login-failed', ip: clientIp(req), detail: { username } });
       sendJson(res, 401, { error: 'Invalid username or password' });
       return;
     }
-
-    const valid = await verifyPassword(password, admin.passwordHash);
-    if (!valid) {
-      sendJson(res, 401, { error: 'Invalid username or password' });
-      return;
-    }
+    recordAdminActivity({ adminId: admin.id, adminName: admin.name, kind: 'login', ip: clientIp(req) });
 
     const accessToken = createLocalAccessToken(admin.id, deps.jwtSecret, ADMIN_SESSION_SECONDS);
 
@@ -60,6 +65,8 @@ export async function handleAdminLoginRoute(
         id: admin.id,
         username: admin.username,
         name: admin.name,
+        role: admin.role,
+        markCode: adminMarkCode(admin.id, deps.jwtSecret),
       },
     });
   } catch (error) {
@@ -99,6 +106,8 @@ export async function handleCreateAdminRoute(
     const username = getString(rawBody, 'username')?.trim().toLowerCase();
     const password = getString(rawBody, 'password');
     const name = getString(rawBody, 'name')?.trim();
+    // New admins are staff unless the bootstrap call says otherwise.
+    const role: AdminRoleName = getString(rawBody, 'role') === 'OWNER' ? 'OWNER' : 'STAFF';
 
     if (!username || !password || !name) {
       sendJson(res, 400, { error: 'username, password, and name are required' });
@@ -122,13 +131,14 @@ export async function handleCreateAdminRoute(
     }
 
     const passwordHash = await hashPassword(password);
-    const admin = await adminClient.create({ username, passwordHash, name });
+    const admin = await adminClient.create({ username, passwordHash, name, role });
 
     sendJson(res, 201, {
       admin: {
         id: admin.id,
         username: admin.username,
         name: admin.name,
+        role: admin.role,
       },
     });
   } catch (error) {
@@ -165,20 +175,20 @@ export function extractAdminId(req: IncomingMessage, jwtSecret: string): string 
 export async function verifyAdminAuth(
   req: IncomingMessage,
   deps: AdminAuthDeps,
-): Promise<{ adminName: string } | null> {
+): Promise<AdminAuth | null> {
   // Try JWT first
   const adminId = extractAdminId(req, deps.jwtSecret);
   if (adminId) {
     const admin = await adminClient.findById(adminId);
     if (admin?.active) {
-      return { adminName: admin.name };
+      return { adminId: admin.id, adminName: admin.name, role: admin.role };
     }
   }
 
-  // Fall back to API key (bootstrap)
+  // Fall back to API key (bootstrap): it can do anything an owner can.
   const key = req.headers['x-admin-key'] as string | undefined;
   if (key === deps.adminApiKey && deps.adminApiKey) {
-    return { adminName: 'api-key' };
+    return { adminId: null, adminName: 'api-key', role: 'OWNER' };
   }
 
   return null;

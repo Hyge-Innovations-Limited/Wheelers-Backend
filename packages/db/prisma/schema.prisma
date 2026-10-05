@@ -722,16 +722,44 @@ model NotificationDevice {
   @@index([userId, enabled, updatedAt])
 }
 
+/// Owners (the founders) see everything; staff see the dashboard without the
+/// Excel export or the team pages.
+enum AdminRole {
+  OWNER
+  STAFF
+}
+
 model AdminUser {
-  id           String   @id @default(uuid())
-  username     String   @unique
+  id           String    @id @default(uuid())
+  username     String    @unique
   passwordHash String
   name         String
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         AdminRole @default(STAFF)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([username])
+}
+
+/// What admins did in the dashboard, for the owners' Team activity page:
+/// sign-ins, pages, searches, records opened, decisions, downloads and
+/// screenshot shortcuts (flagged). adminId is null for the bootstrap key and
+/// for a failed sign-in (adminName then holds the username tried).
+model AdminActivity {
+  id        String   @id @default(uuid())
+  adminId   String?
+  adminName String
+  kind      String
+  page      String?
+  detail    Json?
+  flagged   Boolean  @default(false)
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId, createdAt])
+  @@index([flagged, createdAt])
 }
 
 /// A Stellar TESTNET account Wheelers holds for a rider or driver, or for

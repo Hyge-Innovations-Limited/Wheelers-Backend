@@ -5,6 +5,7 @@ import type { AnalyticsFilters, BreakdownBy, Bucket, FeeKind, RideChannelName, T
 import { buildWorkbook } from '../analytics/workbook';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
+import { alertOwners, clientIp, recordAdminActivity, type AdminAlertDeps } from '../admin/activity';
 import { sendJson } from './utils';
 
 /**
@@ -33,7 +34,7 @@ import { sendJson } from './utils';
  *   GET /admin/fees/withdrawals?q=&sort=&dir=&limit=&offset=   every withdrawal requested
  */
 
-interface Deps {
+interface Deps extends AdminAlertDeps {
   adminApiKey: string;
   jwtSecret: string;
 }
@@ -106,7 +107,8 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
     sendJson(res, 405, { error: 'Method not allowed' });
     return true;
   }
-  if (!(await verifyAdminAuth(req, deps))) {
+  const auth = await verifyAdminAuth(req, deps);
+  if (!auth) {
     sendJson(res, 401, { error: 'Unauthorized' });
     return true;
   }
@@ -152,6 +154,14 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         const scope = pick<WorkbookScope>(url, 'scope', ['overview', 'fees'], 'overview');
         const bucket = pick(url, 'bucket', BUCKETS, 'day');
         const contacts = url.searchParams.get('contacts') === '1';
+        // The workbook holds every rider's and driver's details: owners only.
+        if (auth.role !== 'OWNER') {
+          recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export-blocked', page: path, flagged: true, ip: clientIp(req), detail: { scope, from: f.from, to: f.to } });
+          void alertOwners(deps, { adminId: auth.adminId, adminName: auth.adminName, what: 'tried to download the Excel export', page: path });
+          sendJson(res, 403, { error: 'Only owners can download the Excel export.' });
+          return true;
+        }
+        recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope, from: f.from, to: f.to, contacts } });
         const file = await buildWorkbook(scope, f, bucket, contacts);
         const name = `wheelers-${scope}-${f.from}-to-${f.to}.xlsx`;
         res.statusCode = 200;
