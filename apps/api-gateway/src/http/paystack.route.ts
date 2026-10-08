@@ -171,7 +171,7 @@ async function handleDeposit(data: Record<string, unknown>, deps: PaystackWebhoo
   });
 }
 
-async function resolveDepositOwner(
+export async function resolveDepositOwner(
   customerId: string | null,
   accountNumber: string | null,
   customerEmail: string | null,
