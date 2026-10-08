@@ -30,6 +30,7 @@ import {
 } from "./http/social-auth.route";
 import {
   handleLogoutRoute,
+  handleRefreshRoute,
   handleDeleteAccountRoute,
 } from "./http/account.route";
 import {
@@ -813,6 +814,19 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleLogoutRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/refresh") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleRefreshRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
       });
