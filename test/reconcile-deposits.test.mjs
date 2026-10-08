@@ -20,7 +20,7 @@ const userId = randomUUID();
 const accountNumber = `99${Date.now().toString().slice(-8)}`;
 const ref = (name) => `test-recon-${userId.slice(0, 8)}-${name}`;
 const DAY = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
-let server, baseUrl, walletId, platformBefore;
+let server, baseUrl, walletId;
 
 // What Paystack says it received.
 const deposits = {
@@ -34,8 +34,6 @@ test.before(async () => {
   await prisma.user.create({ data: { id: userId, privyDid: `test:recon:${userId}`, role: 'RIDER', name: 'Recon Test' } });
   walletId = (await prisma.wallet.create({ data: { userId } })).id;
   await prisma.virtualAccount.create({ data: { userId, providerCustomerId: `CUS_${userId.slice(0, 8)}`, providerAccountId: `acct-${userId}`, bankName: 'Test Bank', accountNumber, accountName: 'Recon Test' } });
-  const platform = await prisma.wallet.findFirst({ where: { userId: '00000000-0000-0000-0000-000000000001' } });
-  platformBefore = platform ? Number(platform.balanceNgn) : null;
   await walletClient.creditDeposit({ walletId, amountNgn: 5000, providerFeeNgn: 50, referenceId: ref('seen') });
   await walletClient.creditDeposit({ walletId, amountNgn: 2000, providerFeeNgn: 20, referenceId: ref('odd') });
 
@@ -64,8 +62,14 @@ test.before(async () => {
 test.after(async () => {
   server.close();
   const refs = [...Object.keys(deposits), ref('card')];
+  // Undo only what these deposits did to the platform wallet (other tests may be using it right now).
+  const platform = await prisma.wallet.findFirst({ where: { userId: '00000000-0000-0000-0000-000000000001' } });
+  if (platform) {
+    const rows = await prisma.transaction.findMany({ where: { walletId: platform.id, referenceId: { in: refs } } });
+    const net = rows.reduce((sum, r) => sum + (r.direction === 'CREDIT' ? 1 : -1) * Number(r.amountNgn), 0);
+    if (net !== 0) await prisma.wallet.update({ where: { id: platform.id }, data: { balanceNgn: { decrement: net } } });
+  }
   await prisma.transaction.deleteMany({ where: { referenceId: { in: refs } } });
-  if (platformBefore !== null) await prisma.wallet.updateMany({ where: { userId: '00000000-0000-0000-0000-000000000001' }, data: { balanceNgn: platformBefore } });
   await prisma.virtualAccount.deleteMany({ where: { userId } });
   await prisma.wallet.deleteMany({ where: { userId } });
   await prisma.user.deleteMany({ where: { id: userId } });
