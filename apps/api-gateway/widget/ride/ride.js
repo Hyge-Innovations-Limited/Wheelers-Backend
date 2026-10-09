@@ -541,7 +541,11 @@
 
     if (!map) {
       map = L.map('map', { zoomControl: false, attributionControl: true }).setView([trip.pickup.lat, trip.pickup.lng], 14);
-      L.tileLayer(trip.map.tileUrl, { attribution: trip.map.attribution, maxZoom: 19 }).addTo(map);
+      // OpenStreetMap blocks tiles asked for with no Referer ("Access blocked"
+      // on every tile). The page itself sends none (it handles money), so the
+      // tiles alone send the site's origin: no path, and the link token is in
+      // the #fragment, which is never sent.
+      L.tileLayer(trip.map.tileUrl, { attribution: trip.map.attribution, maxZoom: 19, referrerPolicy: 'origin' }).addTo(map);
       L.marker([trip.pickup.lat, trip.pickup.lng], { icon: smallPin('pin-pickup'), keyboard: false }).addTo(map).bindTooltip('Pickup');
       L.marker([trip.destination.lat, trip.destination.lng], { icon: smallPin('pin-dest'), keyboard: false }).addTo(map).bindTooltip('Destination');
       // Once they move the map themselves, stop dragging it back to the car.
