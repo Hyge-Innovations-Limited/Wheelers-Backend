@@ -84,8 +84,10 @@ export type MarketFormula = { baseNgn: number; perKmNgn: number; perMinuteNgn: n
  */
 export type PricingModel = {
   trainedAt: string;
-  /** Agreed trips it was fitted on. */
+  /** Real agreed trips it was fitted on. */
   rows: number;
+  /** True while made-up trips from the simulator still carry part of the fit (fewer than 300 real ones). */
+  seeded: boolean;
   intercept: number;
   coef: { lnKm: number; minPerKm: number; lnDemand: number; rush: number; night: number; weekend: number };
 };
@@ -151,6 +153,7 @@ function modelFrom(value: unknown): PricingModel | null {
   return {
     trainedAt: String(v.trainedAt ?? ''),
     rows: finite(v.rows, 0, 0, 1e9),
+    seeded: v.seeded === true,
     intercept: Number(v.intercept),
     coef: {
       lnKm: finite(c.lnKm, 0, -5, 5), minPerKm: finite(c.minPerKm, 0, -5, 5), lnDemand: finite(c.lnDemand, 0, -5, 5),

@@ -115,6 +115,27 @@ test('bad settings are made safe: numbers in range, a missing model stays off', 
   assert.equal(calculateSuggestedFare(10).suggestedFareNgn, 4400, 'and pricing still works');
 });
 
+test('a seeded model says what was assumed: dearer per km on a slow road, at night and on a short trip, and fades as real trips arrive', async () => {
+  const { seedTrips, fitLinear } = await import('../scripts/train-pricing-model.mjs');
+  const made = seedTrips();
+  const w = fitLinear(made.X, made.y);
+  const rate = (km, minPerKm, night = 0) => Math.exp(w[0] + w[1] * Math.log(km) + w[2] * minPerKm + w[5] * night);
+  assert.ok(rate(16, 1.5) > 340 && rate(16, 1.5) < 420, `a clear road is near the base rate (${Math.round(rate(16, 1.5))})`);
+  assert.ok(rate(16, 4.5) > rate(16, 2.6) && rate(16, 2.6) > rate(16, 1.5), 'slower is dearer');
+  assert.ok(rate(5, 2.6) > rate(16, 2.6), 'a short trip is dearer per km');
+  assert.ok(rate(16, 2.6, 1) > rate(16, 2.6), 'so is the night');
+
+  // 300 real trips all agreed at exactly N500 a km: the made-up ones count for nothing beside them.
+  const realX = Array.from({ length: 300 }, (_, i) => [1, Math.log(5 + (i % 20)), 1.5 + (i % 7) * 0.5, 0, i % 2, 0, i % 3 === 0 ? 1 : 0]);
+  const realY = realX.map(() => Math.log(500));
+  const blended = fitLinear([...realX, ...made.X], [...realY, ...made.y], 1e-3, [...realX.map(() => 1), ...made.X.map(() => 0)]);
+  assert.ok(Math.abs(Math.exp(blended[0] + blended[1] * Math.log(10) + blended[2] * 2.5) - 500) < 5);
+
+  const s = setPricingSettings({ ...FLOOR_ON, model: { trainedAt: 'x', rows: 0, seeded: true, intercept: w[0], coef: { lnKm: w[1], minPerKm: w[2], lnDemand: w[3], rush: w[4], night: w[5], weekend: w[6] } } });
+  assert.equal(s.model.seeded, true, 'and the settings remember it was seeded');
+  assert.equal(calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET }).suggestedFareNgn, 7500, 'saved but off: prices are untouched');
+});
+
 // ── the owners' endpoint ────────────────────────────────────────────────────
 
 const SECRET = 'test-secret-for-the-pricing-settings-page';
