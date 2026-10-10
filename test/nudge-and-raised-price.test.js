@@ -76,14 +76,17 @@ test('an offline driver: the ride is held for them, nothing is sent until they g
   stop(state);
 });
 
-test('a raised price is saved on the ride, and a driver can take it however high; only a typed counter-bid has the typo guard', async () => {
+test('a raised price is saved on the ride, and a driver can take it however high; a counter-bid above it is refused', async () => {
   const { rideId, riderId } = await openRide(2500);
   const { state, send } = service();
   await send({ eventType: 'RIDE_RIDER_COUNTER_OFFER', rideId, riderId, counterOfferNgn: 50000 });
   assert.equal(Number((await prisma.ride.findUnique({ where: { id: rideId } })).riderOfferNgn), 50000, 'saved: the old ₦2,500 is gone');
 
   await assertOfferWithinBand(rideId, 50000, 'driver');   // taking the rider's price: goes through
-  await assertOfferWithinBand(rideId, 60000, 'driver');   // a counter-bid a little above: fine
+  await assertOfferWithinBand(rideId, 40000, 'driver');   // a bid under the rider's price: fine
+  // Already far above the ceiling for the trip (135% of the recommended rate):
+  // a driver may say yes to it, not ask for more.
+  await assert.rejects(assertOfferWithinBand(rideId, 60000, 'driver'), /highest price for this trip/);
   await assert.rejects(assertOfferWithinBand(rideId, 5_000_000, 'driver'), 'a typed bid 100x the price is still caught');
   stop(state);
 });

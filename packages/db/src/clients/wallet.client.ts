@@ -453,7 +453,10 @@ export const walletClient = {
           });
           await tx.rideHold.update({ where: { rideId }, data: { settledAmountNgn: effectiveFareNgn } });
         }
-        const fees = calculateRideFees(effectiveFareNgn);
+        // By the rules the ride was priced under: a ride agreed before the
+        // pricing change still pays its driver what was agreed then.
+        const priced = await tx.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
+        const fees = calculateRideFees(effectiveFareNgn, priced?.pricingVersion === 1 ? 1 : 2);
         const riderTotalNgn = fees.totalNgn;
         const platformFeeNgn = fees.platformTotalNgn;
         const driverPayoutNgn = fees.driverPayoutNgn;
@@ -579,7 +582,8 @@ export const walletClient = {
       const riderTxn = await findExistingTransaction(hold.walletId, 'RIDE_PAYMENT', 'DEBIT', rideId);
       const driverTxn = await findExistingTransaction(driverWallet.id, 'DRIVER_PAYOUT', 'CREDIT', rideId);
 
-      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn));
+      const priced = await prisma.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
+      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn), priced?.pricingVersion === 1 ? 1 : 2);
       return {
         riderWallet,
         driverWallet,

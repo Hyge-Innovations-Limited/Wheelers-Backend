@@ -390,6 +390,12 @@ model Ride {
   serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
   vatNgn                 Decimal?          @db.Decimal(18, 2)
   stateLevyNgn           Decimal?          @db.Decimal(18, 2)
+  /// Which pricing rules this ride was priced under, and settles by. 1: until
+  /// 2026-10-10 (booking fee, then 4% commission and 7.5% VAT from the
+  /// driver). 2: VAT and the booking fee are in the rider's fare; the driver
+  /// gives up 10% commission and the levy. Rides from before the column
+  /// existed are 1; new ones are 2.
+  pricingVersion         Int               @default(2)
   /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
   feeSplitEstimated      Boolean           @default(false)
   /// How the ride was booked.

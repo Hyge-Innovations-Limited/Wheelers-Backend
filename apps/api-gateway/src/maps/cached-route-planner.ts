@@ -1,5 +1,6 @@
 import {
   calculateSuggestedFare,
+  trafficFactorOn,
   GoogleMapsRoutePlanner,
   type PlannedRouteMetrics,
   type RouteWaypoint,
@@ -21,8 +22,12 @@ import { cachedMaps, mapsKey } from './shared-cache';
  */
 const ROUTE_CACHE_VERSION = 1;
 const ROUTE_TTL_SECONDS = 6 * 60 * 60;
+// With the traffic factor on, an answer is about the road right now: its own
+// keys (so a no-traffic answer is never read as a traffic one) and minutes, not hours.
+const TRAFFIC_ROUTE_CACHE_VERSION = 101;
+const TRAFFIC_ROUTE_TTL_SECONDS = 5 * 60;
 
-type CachedRoute = Pick<PlannedRouteMetrics, 'distanceKm' | 'durationSeconds' | 'geometry'>;
+type CachedRoute = Pick<PlannedRouteMetrics, 'distanceKm' | 'durationSeconds' | 'geometry' | 'trafficRatio'>;
 
 const point = (p: RouteWaypoint) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
 
@@ -40,13 +45,14 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     stops?: RouteWaypoint[];
     destination: RouteWaypoint;
   }): Promise<PlannedRouteMetrics> {
-    const key = mapsKey('route', ROUTE_CACHE_VERSION, point(params.origin), (params.stops ?? []).map(point).join(';'), point(params.destination));
-    const route = await cachedMaps<CachedRoute>(key, ROUTE_TTL_SECONDS, async () => {
+    const traffic = trafficFactorOn();
+    const key = mapsKey('route', traffic ? TRAFFIC_ROUTE_CACHE_VERSION : ROUTE_CACHE_VERSION, point(params.origin), (params.stops ?? []).map(point).join(';'), point(params.destination));
+    const route = await cachedMaps<CachedRoute>(key, traffic ? TRAFFIC_ROUTE_TTL_SECONDS : ROUTE_TTL_SECONDS, async () => {
       const fresh = await super.planRoute(params);
-      return { distanceKm: fresh.distanceKm, durationSeconds: fresh.durationSeconds, geometry: fresh.geometry };
+      return { distanceKm: fresh.distanceKm, durationSeconds: fresh.durationSeconds, geometry: fresh.geometry, trafficRatio: fresh.trafficRatio };
     }, { keep: isCachedRoute, valid: isCachedRoute });
 
-    const ridePrice = calculateSuggestedFare(route.distanceKm);
+    const ridePrice = calculateSuggestedFare(route.distanceKm, { trafficRatio: route.trafficRatio });
     return {
       distanceKm: route.distanceKm,
       durationSeconds: route.durationSeconds,
@@ -56,6 +62,7 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
       fareEstimateNgn: ridePrice.suggestedFareNgn,
       ridePrice,
       geometry: route.geometry,
+      ...(route.trafficRatio !== undefined ? { trafficRatio: route.trafficRatio } : {}),
     };
   }
 }

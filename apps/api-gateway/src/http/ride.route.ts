@@ -521,6 +521,7 @@ function serializeRideDetail(ride: RideWithDriver) {
     agreedFareNgn: decimalToNumber(ride.agreedFareNgn),
     fareFinalNgn: decimalToNumber(ride.fareFinalNgn),
     platformFeeNgn: decimalToNumber(ride.platformFeeNgn),
+    pricingVersion: ride.pricingVersion,
     penaltyNgn: decimalToNumber(ride.penaltyNgn),
     distanceKm: ride.distanceKm ?? null,
     durationSeconds: ride.durationSeconds ?? null,

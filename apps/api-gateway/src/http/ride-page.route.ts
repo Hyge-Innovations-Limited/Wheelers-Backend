@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { rideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { BOOKING_FEE_NGN, depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
+import { depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
 import { extractBearerToken } from './authenticate';
@@ -297,7 +297,6 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         suggestedFareNgn: quote.suggestedFareNgn,
       },
       minOfferNgn: quote.minOfferNgn,
-      bookingFeeNgn: BOOKING_FEE_NGN,
       chatUrl: CHAT_URL,
     };
   }

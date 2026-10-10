@@ -577,6 +577,13 @@ export interface TripRow {
    */
   messagesToBook: number | null;
   fareNgn: number | null;
+  /**
+   * What the driver priced: the fare without the booking fee and, since
+   * pricing version 2, without the VAT added on top. Commission is a share of this.
+   */
+  tripFareNgn: number | null;
+  /** 1: 4% commission, VAT from the driver. 2 (since 10 Oct 2026): 10% commission, VAT in the rider's fare. */
+  pricingVersion: 1 | 2;
   commissionNgn: number | null;
   serviceFeeNgn: number | null;
   stateLevyNgn: number | null;
@@ -630,6 +637,7 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
     )
     SELECT f.*, ru.name AS rider_name, ru.phone AS rider_phone, ru."privyDid" AS rider_did,
            du.name AS driver_name, du.phone AS driver_phone,
+           (SELECT pr."pricingVersion" FROM "Ride" pr WHERE pr.id = f.id) AS pricing_version,
            (SELECT count(*) FROM "DriverBid" b WHERE b."rideId" = f.id)::int AS bids,
            extract(epoch FROM f.matched_at - f.created_at) AS negotiate_secs,
            CASE WHEN f.channel = 'WHATSAPP' AND f.created_at >= (SELECT at FROM msg_start) THEN (
@@ -657,6 +665,9 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
     items: result.map((r) => {
       const fare = optNum(r.fare_ngn);
       const platformTotal = optNum(r.platform_total_ngn);
+      const pricingVersion = Number(r.pricing_version) === 1 ? 1 : 2;
+      const serviceFee = optNum(r.service_fee_ngn);
+      const vat = optNum(r.vat_ngn);
       return {
         id: String(r.id),
         tripId: formatTripId(r.trip_number == null ? null : Number(r.trip_number)),
@@ -686,10 +697,12 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
         negotiateSeconds: r.negotiate_secs == null ? null : Math.max(0, Math.round(Number(r.negotiate_secs))),
         messagesToBook: r.messages_to_book == null ? null : Number(r.messages_to_book),
         fareNgn: fare,
+        tripFareNgn: fare != null && serviceFee != null && vat != null ? num(fare - serviceFee - (pricingVersion === 2 ? vat : 0)) : null,
+        pricingVersion,
         commissionNgn: optNum(r.commission_ngn),
-        serviceFeeNgn: optNum(r.service_fee_ngn),
+        serviceFeeNgn: serviceFee,
         stateLevyNgn: optNum(r.state_levy_ngn),
-        vatNgn: optNum(r.vat_ngn),
+        vatNgn: vat,
         platformTotalNgn: platformTotal,
         driverPayoutNgn: fare != null && platformTotal != null ? num(fare - platformTotal) : null,
         feeSplitEstimated: Boolean(r.fee_split_estimated),

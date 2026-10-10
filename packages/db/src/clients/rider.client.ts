@@ -65,6 +65,16 @@ function buildRouteStops(params: {
 export const SEARCH_TIMED_OUT_REASON = 'No driver accepted in time';
 
 export const rideClient = {
+  /**
+   * Which pricing rules a ride settles by (see Ride.pricingVersion). A ride
+   * that cannot be found (a group seat has no Ride row yet) is priced by the
+   * current rules.
+   */
+  pricingVersionOf: async (rideId: string): Promise<1 | 2> => {
+    const row = await prisma.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } }).catch(() => null);
+    return row?.pricingVersion === 1 ? 1 : 2;
+  },
+
   /** The ride's short trip number (shown as WH-01234), or null if there is no such ride. */
   tripNumberOf: (rideId: string): Promise<number | null> =>
     prisma.ride

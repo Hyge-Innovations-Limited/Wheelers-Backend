@@ -56,8 +56,11 @@ export {
   validateRiderOffer,
   validateDriverOffer,
   calculateRideFees, splitPlatformTotal, driverShareNgn, driverRatePerKmNgn,
+  CURRENT_PRICING_VERSION, MIN_OFFER_SHARE, MAX_COUNTER_SHARE, MARKET_RATE_PER_KM_NGN,
+  fareFromRatePerKmNgn, fareFromTripFareNgn, tripFareNgn, offerLimitsNgn, rateLimitsPerKmNgn,
+  recommendedRatePerKmNgn, trafficFactorOn, demandFactorOn,
 } from './pricing';
-export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown } from './pricing';
+export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors } from './pricing';
 export {
   GoogleMapsRoutePlanner,
   RoutePlanningError,

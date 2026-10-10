@@ -5,7 +5,7 @@ import {
   GoogleMapsRoutePlanner,
   RIDE,
   calculateSuggestedFare,
-  validateDriverOffer,
+  validateDriverOffer, fareFromRatePerKmNgn,
   validateRiderOffer,
 } from '@wheleers/config';
 import { driverClient, groupRideClient, referralClient, rideClient, driverBidClient, walletClient } from '@wheleers/db';
@@ -100,9 +100,11 @@ export async function assertOfferWithinBand(
   if (who === 'driver' && riderOfferNgn !== undefined && offerNgn === riderOfferNgn) return;
   // A driver is measured against what the rider is offering, never the suggested fare:
   // any amount is a bid, and accepting a rider's generous price must always go through.
+  // The ceiling (the fare at 135% of the recommended rate) is for a trip with
+  // a known distance. A group seat has none: only a typo is refused there.
   const validation =
     who === 'driver'
-      ? validateDriverOffer(offerNgn, riderOfferNgn ?? suggestedFareNgn)
+      ? validateDriverOffer(offerNgn, riderOfferNgn ?? suggestedFareNgn, distanceKm !== undefined ? suggestedFareNgn : undefined)
       : validateRiderOffer(offerNgn, suggestedFareNgn);
 
   if (!validation.valid) {
@@ -117,6 +119,25 @@ export async function assertOfferWithinBand(
     });
     throw new Error(validation.reason ?? `Offer must be at least ${validation.minOfferNgn} NGN.`);
   }
+}
+
+/**
+ * A driver bids per km: the app sends `ratePerKmNgn`, and the fare the rider
+ * would pay (trip fare + VAT + booking fee, rounded up to ₦50) is worked out
+ * here from the ride's own distance, never trusted from the phone. An older
+ * app that sends only a total keeps working. Returns the fare to use.
+ */
+async function resolveDriverBidFareNgn(rideId: string, payload: Record<string, unknown>, fareKey: string): Promise<number> {
+  const rate = getNumber(payload, 'ratePerKmNgn');
+  if (rate !== undefined && Number.isFinite(rate) && rate > 0) {
+    const context = await resolveFareContext(rideId);
+    if (context?.distanceKm && context.distanceKm > 0) {
+      const fare = fareFromRatePerKmNgn(rate, context.distanceKm);
+      payload[fareKey] = fare;
+      return fare;
+    }
+  }
+  return requireNumber(payload, fareKey);
 }
 
 /**
@@ -406,6 +427,8 @@ export async function handleRideMessage(
 
   if (type === 'ride:counter_offer') {
     const counterRideId = requireString(payload, 'rideId');
+    // A counter sent as a rate per km becomes the fare the rider would pay.
+    await resolveDriverBidFareNgn(counterRideId, payload, 'counterOfferNgn');
     const proximity = await computeBidProximity(
       auth.userId,
       counterRideId,
@@ -845,7 +868,7 @@ export async function handleRideMessage(
     // the fare band (₦500/km ceiling, rider floor). The app's +100/+500
     // chips and "change bid" never checked the cap; the server must.
     await assertRideOpenForBids(acceptRideId);
-    await assertOfferWithinBand(acceptRideId, requireNumber(payload, 'agreedFareNgn'), 'driver');
+    await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn'), 'driver');
 
     const proximity = await computeBidProximity(
       auth.userId,

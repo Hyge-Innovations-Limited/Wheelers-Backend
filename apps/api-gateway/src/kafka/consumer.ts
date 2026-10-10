@@ -10,7 +10,7 @@ import {
   WalletEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, calculateRideFees, formatTripId } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
 import { loadDriverRideSnapshot } from '../websocket/driver-ride-sync';
@@ -103,6 +103,16 @@ export interface StartGatewayConsumerDeps {
 interface RideParticipantState {
   riderId: string;
   driverUserId?: string;
+}
+
+/** The most a driver may ask on a trip, as a fare and as rates per km. Empty when there is nothing to measure against. */
+function driverBidLimits(suggestedFareNgn: number | undefined, distanceKm: number | undefined) {
+  if (!suggestedFareNgn || !(suggestedFareNgn > 0) || !distanceKm || !(distanceKm > 0)) return {};
+  const rates = rateLimitsPerKmNgn(suggestedFareNgn, distanceKm);
+  return {
+    maxOfferNgn: offerLimitsNgn(suggestedFareNgn).maxOfferNgn,
+    ...(rates ? { minRatePerKmNgn: rates.minRateNgn, maxRatePerKmNgn: rates.maxRateNgn } : {}),
+  };
 }
 
 export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps): Promise<void> {
@@ -391,9 +401,13 @@ export async function handleRideEvent(
       // The floor, so the app can say it BEFORE a bid is typed.
       minOfferNgn: event.minOfferNgn,
       ratePerKmNgn: event.ratePerKmNgn,
-      // Wheelers' booking fee: the app shows every price as the driver's share
-      // per km — (price − booking fee) ÷ distance — so it moves with the price.
+      // What a price is made of, so the app can show every price as the
+      // driver's rate per km and what they would receive: the rules in force
+      // (version 2: VAT and the booking fee are in the rider's fare), the
+      // highest fare a driver may ask, and the same limits as rates per km.
       bookingFeeNgn: BOOKING_FEE_NGN,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      ...driverBidLimits(event.suggestedFareNgn ?? event.fareEstimateNgn, event.plannedDistanceKm),
       plannedDistanceKm: event.plannedDistanceKm,
       plannedDurationSeconds: event.plannedDurationSeconds,
       pickupDistanceKm: event.pickupDistanceKm,
@@ -742,7 +756,7 @@ export async function handleRideEvent(
       // the accept itself — the chat tap, the offers form, the page and the deposit finisher
       // all send it. A second "Ride confirmed!" text here was the same news twice.
     } else {
-      const riderMatchFees = calculateRideFees(event.agreedFareNgn);
+      const riderMatchFees = calculateRideFees(event.agreedFareNgn, await rideClient.pricingVersionOf(event.rideId));
 
       // Look up driver phone so rider can call them
       let driverPhone: string | undefined;
@@ -786,7 +800,7 @@ export async function handleRideEvent(
     }
 
     // Notify driver via WebSocket (app) — include fee breakdown
-    const matchFees = calculateRideFees(event.agreedFareNgn);
+    const matchFees = calculateRideFees(event.agreedFareNgn, await rideClient.pricingVersionOf(event.rideId));
 
     // Look up rider phone so driver can call them
     let riderPhone: string | undefined;
@@ -821,6 +835,7 @@ export async function handleRideEvent(
       // The driver's breakdown: booking fee first, then commission and VAT on their share, then the levy.
       bookingFeeNgn: matchFees.bookingFeeNgn,
       driverShareNgn: matchFees.driverShareNgn,
+      pricingVersion: matchFees.pricingVersion,
       commissionNgn: matchFees.commissionNgn,
       vatNgn: matchFees.vatNgn,
       // (Old names, for apps not yet updated: commission, booking fee.)
@@ -957,7 +972,7 @@ export async function handleRideEvent(
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
     } else {
-      const riderFees = calculateRideFees(event.fareNgn);
+      const riderFees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
       await registry.sendToUser(event.riderId, 'ride:completed', {
         rideId: event.rideId,
         fareNgn: riderFees.totalNgn,
@@ -969,12 +984,13 @@ export async function handleRideEvent(
     }
 
     // Notify driver via WebSocket (app) — show earnings breakdown
-    const completionFees = calculateRideFees(event.fareNgn);
+    const completionFees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
     await registry.sendToUser(event.driverUserId, 'ride:completed', {
       rideId: event.rideId,
       fareNgn: event.fareNgn,
       bookingFeeNgn: completionFees.bookingFeeNgn,
       driverShareNgn: completionFees.driverShareNgn,
+      pricingVersion: completionFees.pricingVersion,
       commissionNgn: completionFees.commissionNgn,
       vatNgn: completionFees.vatNgn,
       platformFeeNgn: completionFees.platformFeeNgn,
@@ -996,7 +1012,7 @@ export async function handleRideEvent(
     // On Stellar Testnet, its own ledger: the fare rider → driver, then the commission
     // driver → operations, in XLM at the live rate, memo the trip ID. Not for a group seat.
     if (deps.stellar && event.paymentMethod !== 'CASH' && !(await getGroupSeat(deps.redisClient, event.rideId).catch(() => null))) {
-      const fees = calculateRideFees(event.fareNgn);
+      const fees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
       const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
       await deps.stellar.settleRide({
         rideId: event.rideId, tripId, riderId: event.riderId, driverUserId: event.driverUserId,

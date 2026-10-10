@@ -1,3 +1,4 @@
+import { rideClient } from '@wheleers/db';
 import type { MessageContext } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 import { calculateRideFees } from '@wheleers/config';
@@ -157,7 +158,7 @@ export function createRideEventsConsumer(params: {
         }
 
         try {
-          const completionFees = calculateRideFees(event.fareNgn);
+          const completionFees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
 
           const result = await walletRepository.completeRideHoldWithDriverPayout({
             rideId: event.rideId,

@@ -1,4 +1,3 @@
-import { BOOKING_FEE_NGN } from '@wheleers/config';
 /**
  * The ONE way a trip is written out in the chat: pickup, each stop, destination,
  * a blank line between them, the places bold. Every message that shows a trip
@@ -44,7 +43,7 @@ export function priceCheckLines(p: { distanceKm: number; durationMin: number; su
   return [
     `${p.distanceKm.toFixed(1)} km · about ${Math.max(1, p.durationMin)} min`,
     '',
-    `Suggested price: *₦${suggested}* (includes ₦${BOOKING_FEE_NGN.toLocaleString()} booking fee)`,
+    `Suggested price: *₦${suggested}*`,
     `Lowest you can offer: ₦${p.minOfferNgn.toLocaleString()}`,
     '',
     `${PRICE_ASK_START} *${suggested}*. Drivers reply with their offers.`,
