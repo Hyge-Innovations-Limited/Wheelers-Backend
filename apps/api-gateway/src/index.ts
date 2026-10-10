@@ -116,6 +116,8 @@ import { configureMapsCache } from "./maps/shared-cache";
 import { CachedRoutePlanner } from "./maps/cached-route-planner";
 import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
+import { handleAdminPricingRoute } from "./http/admin-pricing.route";
+import { startBusynessJob } from "./pricing/busyness";
 import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
@@ -213,7 +215,7 @@ import {
 } from "./http/kyc.route";
 import { handleGetRideChatMessagesRoute } from "./http/chat.route";
 import { applyCorsHeaders, sendJson } from "./http/utils";
-import { driverPresence } from "@wheleers/db";
+import { driverPresence, pricingClient } from "@wheleers/db";
 import { createLeaderLock } from "./cluster/leader";
 import { handleAdminInsightsRoute } from "./http/admin-insights.route";
 import { handleAdminSecurityRoute } from "./http/admin-security.route";
@@ -477,6 +479,9 @@ async function bootstrap(): Promise<void> {
     groqModel: gatewayEnv.GROQ_MODEL,
     timeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
   }));
+
+  // The pricing settings owners save in the admin, reloaded every minute.
+  const stopPricingSync = await pricingClient.startSync();
 
   // Google's routes and places, remembered in Redis for a few hours and shared by every process.
   configureMapsCache(redisCommandClient);
@@ -1791,6 +1796,11 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      // Owners: the pricing settings and the weekly check.
+      if (await handleAdminPricingRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
       if (url.pathname === "/admin/health") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
@@ -2408,6 +2418,7 @@ async function bootstrap(): Promise<void> {
   const referralJobs = startReferralJobs(leader.isLeader);
   const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
   const stopHoldSweeper = startHoldSweeper(leader.isLeader);
+  const stopBusynessJob = startBusynessJob(redisCommandClient, leader.isLeader);
   const stopHealthJobs = startHealthJobs({
     redis: redisCommandClient,
     recorder: healthStats,
@@ -2479,6 +2490,8 @@ async function bootstrap(): Promise<void> {
     tripChat.stop();
     stopStellarJob();
     stopHoldSweeper();
+    stopBusynessJob();
+    stopPricingSync();
     stopHealthJobs();
     await leader.release();
     await registry.shutdown();

@@ -20,3 +20,6 @@ kafka-schemas/build/
 apps/whatsapp-gateway/.wwebjs_auth/
 apps/whatsapp-gateway/.wwebjs_cache/
 scripts/sandbox/.sandbox-state.json
+
+# Research papers kept locally, not in the repo
+docs/research/*.pdf

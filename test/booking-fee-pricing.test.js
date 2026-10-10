@@ -1,5 +1,5 @@
 // Pricing since 2026-10-10 (version 2): drivers price per km. The rider's
-// fare is the trip fare (rate × distance) + 7.5% VAT + the ₦375 booking fee,
+// fare is the trip fare (rate × distance) + 7.5% VAT + the ₦350 service charge,
 // rounded up to ₦50 and shown as one number. The driver gives up 10%
 // commission and the ₦30 levy, nothing else. A rider may offer no less than
 // the fare at 90% of the recommended rate; a driver may ask no more than the
@@ -20,10 +20,10 @@ const {
 
 const seeded = { users: [], rides: [] };
 
-test('10 km at ₦350/km: ₦3,500 + ₦262.50 VAT + ₦375 = ₦4,137.50, the rider sees ₦4,150', () => {
-  assert.equal(BOOKING_FEE_NGN, 375);
+test('10 km at ₦350/km: ₦3,500 + ₦262.50 VAT + ₦350 = ₦4,112.50, the rider sees ₦4,150', () => {
+  assert.equal(BOOKING_FEE_NGN, 350);
   assert.equal(fareFromRatePerKmNgn(350, 10), 4150);
-  assert.equal(calculateSuggestedFare(10).suggestedFareNgn, 4450, 'recommended ₦375/km: 3,750 + 281.25 + 375 = 4,406.25 → 4,450');
+  assert.equal(calculateSuggestedFare(10).suggestedFareNgn, 4400, 'recommended ₦375/km: 3,750 + 281.25 + 350 = 4,381.25 → 4,400');
   assert.equal(calculateSuggestedFare(2).suggestedFareNgn, 2500, 'never under the minimum fare');
 });
 
@@ -31,11 +31,11 @@ test('a ₦4,150 fare taken apart: only commission and the levy come off the dri
   const f = calculateRideFees(4150);
   assert.deepEqual(
     { booking: f.bookingFeeNgn, trip: f.tripFareNgn, vat: f.vatNgn, commission: f.commissionNgn, levy: f.stateLevyNgn, paid: f.driverPayoutNgn },
-    { booking: 375, trip: 3511.63, vat: 263.37, commission: 351.16, levy: 30, paid: 3130.47 },
+    { booking: 350, trip: 3534.88, vat: 265.12, commission: 353.49, levy: 30, paid: 3151.39 },
   );
   assert.equal(f.totalNgn, 4150, 'the rider pays the fare, nothing on top');
   assert.equal(f.driverPayoutNgn, Math.round((f.tripFareNgn - f.commissionNgn - f.stateLevyNgn) * 100) / 100, 'no VAT off the driver');
-  assert.equal(driverRatePerKmNgn(4150, 10), 351.2, 'the price as a rate per km');
+  assert.equal(driverRatePerKmNgn(4150, 10), 353.5, 'the price as a rate per km');
 });
 
 test('the books add up to the fare, to the kobo, at every distance and rate', () => {
@@ -53,12 +53,12 @@ test('the books add up to the fare, to the kobo, at every distance and rate', ()
 
 test('limits: a rider no lower than 90% of the recommended rate, a driver no higher than 135%', () => {
   const suggested = calculateSuggestedFare(10).suggestedFareNgn;
-  assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 4050, maxOfferNgn: 5900 });
-  assert.deepEqual(rateLimitsPerKmNgn(suggested, 10), { minRateNgn: 342, maxRateNgn: 511 });
-  assert.equal(validateRiderOffer(4050, suggested).valid, true);
-  assert.equal(validateRiderOffer(4000, suggested).valid, false);
-  assert.equal(validateDriverOffer(5900, 4450, suggested).valid, true);
-  assert.equal(validateDriverOffer(5950, 4450, suggested).valid, false, 'above the ceiling');
+  assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 4000, maxOfferNgn: 5850 });
+  assert.deepEqual(rateLimitsPerKmNgn(suggested, 10), { minRateNgn: 340, maxRateNgn: 508 });
+  assert.equal(validateRiderOffer(4000, suggested).valid, true);
+  assert.equal(validateRiderOffer(3950, suggested).valid, false);
+  assert.equal(validateDriverOffer(5850, 4400, suggested).valid, true);
+  assert.equal(validateDriverOffer(5900, 4400, suggested).valid, false, 'above the ceiling');
   assert.equal(validateDriverOffer(7000, 7000, suggested).valid, true, "taking a generous rider's own price is always allowed");
   assert.equal(validateDriverOffer(9000, 3000).valid, true, 'a group seat has no ceiling, only the typo guard');
 });
@@ -116,12 +116,12 @@ test('a new ride settles by the new rules: the rider pays the fare, the driver t
   const { row, riderLeft, driverGot } = await settledRide(4150);
   assert.equal(row.pricingVersion, 2, 'new rides are version 2 without being told');
   assert.equal(riderLeft, 10_000 - 4150);
-  assert.equal(driverGot, 3130.47);
-  assert.equal(Number(row.serviceFeeNgn), 375, 'booking fee');
-  assert.equal(Number(row.commissionNgn), 351.16);
-  assert.equal(Number(row.vatNgn), 263.37);
+  assert.equal(driverGot, 3151.39);
+  assert.equal(Number(row.serviceFeeNgn), 350, 'service charge');
+  assert.equal(Number(row.commissionNgn), 353.49);
+  assert.equal(Number(row.vatNgn), 265.12);
   assert.equal(Number(row.stateLevyNgn), 30);
-  assert.equal(Number(row.platformFeeNgn), 1019.53);
+  assert.equal(Number(row.platformFeeNgn), 998.61);
 });
 
 test('a ride priced before the change still settles the old way', async () => {

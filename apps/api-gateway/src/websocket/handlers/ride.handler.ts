@@ -680,7 +680,7 @@ export async function handleRideMessage(
         route: plannedRoute?.geometry,
         plannedDistanceKm: event.plannedDistanceKm,
         plannedDurationSeconds: event.plannedDurationSeconds,
-        ...buildRideEstimatePricing(event.plannedDistanceKm),
+        ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds),
       },
     };
   }

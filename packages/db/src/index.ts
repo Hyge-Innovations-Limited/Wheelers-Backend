@@ -38,6 +38,8 @@ export type { TripCallStatus } from './clients/trip-call.client';
 export { riderKycClient }       from './clients/rider-kyc.client';
 export { adminClient }          from './clients/admin.client';
 export { adminActivityClient }  from './clients/admin-activity.client';
+export { pricingClient }        from './clients/pricing.client';
+export type { PricingQuoteInput } from './clients/pricing.client';
 export type { AdminActivityInput } from './clients/admin-activity.client';
 export { analyticsClient }      from './clients/analytics.client';
 export { activityClient }       from './clients/activity.client';

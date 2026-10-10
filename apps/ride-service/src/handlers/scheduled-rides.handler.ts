@@ -134,7 +134,7 @@ async function doDispatch(
   const stops = scheduledRideClient.parseStops(claimed.stops);
 
   const fareEstimateNgn = Number(claimed.fareEstimateNgn ?? 0);
-  const pricing = calculateSuggestedFare(claimed.plannedDistanceKm ?? 0);
+  const pricing = calculateSuggestedFare(claimed.plannedDistanceKm ?? 0, { durationSeconds: claimed.plannedDurationSeconds ?? undefined });
 
   const event: RideRequestedEvent = {
     eventType: 'RIDE_REQUESTED',

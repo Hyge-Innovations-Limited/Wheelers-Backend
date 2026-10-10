@@ -1,0 +1,220 @@
+// The suggested fare is the highest of three numbers: the market floor (what
+// the other app charges for the trip, + the premium), the rules (the base
+// rate lifted by traffic and a busy area) and, once an owner switches it on,
+// the model. Nothing is ever suggested under the floor, a rider can bargain
+// away no more than the premium, and with nothing saved pricing is the plain
+// rate per km. Settings live in the database and are edited by owners only.
+// Against the local Postgres and Redis.
+//
+//   node scripts/run-with-env.cjs node --test --test-force-exit test/pricing-market-floor.test.js
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const { randomUUID } = require('node:crypto');
+const local = require('../apps/api-gateway/dist/auth/local.js');
+const { prisma, pricingClient } = require('@wheleers/db');
+const config = require('../packages/config/dist/index.js');
+const { calculateSuggestedFare, setPricingSettings, DEFAULT_PRICING_SETTINGS, validateRiderOffer, marketFareNgn, isRushHour, calculateRideFees } = config;
+const { handleAdminPricingRoute } = require('../apps/api-gateway/dist/http/admin-pricing.route.js');
+const { measureBusyness, demandFactorAt } = require('../apps/api-gateway/dist/pricing/busyness.js');
+
+const QUIET = new Date('2026-10-14T12:00:00Z'); // Wednesday 13:00 in Lagos
+const RUSH = new Date('2026-10-14T17:00:00Z');  // Wednesday 18:00 in Lagos
+const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, marketFloorOn: true, trafficOn: true, demandOn: true };
+const made = { admins: [], rides: [], users: [] };
+let savedBefore;
+
+test.before(async () => {
+  savedBefore = await prisma.pricingSettings.findUnique({ where: { id: 'current' } });
+});
+
+test.afterEach(() => { setPricingSettings(DEFAULT_PRICING_SETTINGS); });
+
+test('with nothing saved, pricing is the plain rate per km', () => {
+  setPricingSettings(null);
+  const p = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET, trafficRatio: 2, demandFactor: 1.5 });
+  assert.equal(p.suggestedFareNgn, 6800, '375 × 16 + 7.5% + 350');
+  assert.equal(p.setBy, 'rules');
+  assert.equal(p.floorFareNgn, null);
+});
+
+test('16 km, 41 minutes, a quiet hour: the other app is ₦7,190, so the fare is ₦7,500 and no offer goes under ₦7,200', () => {
+  setPricingSettings(FLOOR_ON);
+  assert.equal(marketFareNgn(16, 41 * 60, QUIET), 7190, '500 + 290 × 16 + 50 × 41');
+  const p = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
+  assert.equal(p.suggestedFareNgn, 7500, '7,190 + 300, rounded up to ₦50');
+  assert.equal(p.setBy, 'floor');
+  assert.equal(p.rulesFareNgn, 6800, 'the plain rate would have been cheaper than the other app');
+  assert.equal(p.minOfferNgn, 7200, 'a rider can bargain away the premium, no more');
+  assert.equal(validateRiderOffer(7200, p.suggestedFareNgn).valid, true);
+  assert.equal(validateRiderOffer(7150, p.suggestedFareNgn).valid, false);
+  assert.ok(p.minOfferNgn >= p.marketFareNgn, 'never under the other app');
+  assert.equal(p.ratePerKmNgn, 416, 'what drivers see as the recommended rate');
+});
+
+test('rush hour uses the rush figures, on the live trip time', () => {
+  setPricingSettings(FLOOR_ON);
+  assert.equal(isRushHour(RUSH), true);
+  assert.equal(isRushHour(QUIET), false);
+  assert.equal(isRushHour(new Date('2026-10-17T17:00:00Z')), false, 'a Saturday is not rush hour');
+  const p = calculateSuggestedFare(16, { durationSeconds: 72 * 60, at: RUSH, trafficRatio: 2.4 });
+  assert.equal(p.marketFareNgn, 10520, '600 + 350 × 16 + 60 × 72');
+  assert.equal(p.suggestedFareNgn, 10850);
+});
+
+test('the rules may lift the fare above the floor, never pull it under', () => {
+  setPricingSettings(FLOOR_ON);
+  const lifted = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET, trafficRatio: 1.3 });
+  assert.equal(lifted.setBy, 'rules');
+  assert.equal(lifted.suggestedFareNgn, 7600);
+  assert.ok(lifted.suggestedFareNgn > lifted.floorFareNgn);
+  const clear = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET, trafficRatio: 1 });
+  assert.equal(clear.suggestedFareNgn, clear.floorFareNgn, 'a clear road: the floor stands');
+});
+
+test('however far the other app is undercut, our own rate per km still stands', () => {
+  setPricingSettings({ ...FLOOR_ON, quiet: { baseNgn: 0, perKmNgn: 100, perMinuteNgn: 0 } });
+  const p = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
+  assert.equal(p.suggestedFareNgn, 6800);
+  assert.equal(p.setBy, 'rules');
+});
+
+test('the model only watches until it is switched on; then it may lift the fare, up to the cap', () => {
+  const model = { trainedAt: '2026-10-11T00:00:00Z', rows: 500, intercept: Math.log(520), coef: { lnKm: 0, minPerKm: 0, lnDemand: 0, rush: 0, night: 0, weekend: 0 } };
+  setPricingSettings({ ...FLOOR_ON, model, modelOn: false });
+  const watching = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
+  assert.equal(watching.modelFareNgn, 9300, '520 × 16 + 7.5% + 350, rounded up: recorded');
+  assert.equal(watching.suggestedFareNgn, 7500, 'but the price is still the floor');
+  setPricingSettings({ ...FLOOR_ON, model, modelOn: true });
+  const on = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
+  assert.equal(on.suggestedFareNgn, 9300);
+  assert.equal(on.setBy, 'model');
+  setPricingSettings({ ...FLOOR_ON, model: { ...model, intercept: Math.log(5000) }, modelOn: true });
+  const wild = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
+  assert.equal(wild.suggestedFareNgn, 11250, 'a wild model is held at 1.5 × the floor');
+  setPricingSettings({ ...FLOOR_ON, model: { ...model, intercept: Math.log(200) }, modelOn: true });
+  assert.equal(calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET }).suggestedFareNgn, 7500, 'a low model cannot pull the fare under the floor');
+});
+
+test('the books still add up at a floor fare, and the service charge is ₦350', () => {
+  const f = calculateRideFees(7500);
+  assert.equal(f.bookingFeeNgn, 350);
+  assert.equal(Math.round((f.driverPayoutNgn + f.bookingFeeNgn + f.commissionNgn + f.vatNgn + f.stateLevyNgn) * 100), 750000);
+  assert.equal(f.driverPayoutNgn, 5956.04);
+});
+
+test('bad settings are made safe: numbers in range, a missing model stays off', () => {
+  const s = setPricingSettings({ marketFloorOn: 'yes', premiumNgn: -50, quiet: { baseNgn: 'x', perKmNgn: 1e9 }, liftCap: 99, model: { intercept: 'no' }, modelOn: true });
+  assert.equal(s.marketFloorOn, false, 'only true switches it on');
+  assert.equal(s.premiumNgn, 0);
+  assert.equal(s.quiet.baseNgn, 500);
+  assert.equal(s.quiet.perKmNgn, 5000);
+  assert.equal(s.liftCap, 3);
+  assert.equal(s.model, null);
+  assert.equal(calculateSuggestedFare(10).suggestedFareNgn, 4400, 'and pricing still works');
+});
+
+// ── the owners' endpoint ────────────────────────────────────────────────────
+
+const SECRET = 'test-secret-for-the-pricing-settings-page';
+let server; let base;
+
+async function admin(role) {
+  const row = await prisma.adminUser.create({ data: { username: `price-${role.toLowerCase()}-${randomUUID().slice(0, 8)}`, passwordHash: 'x', name: `Price ${role}`, role } });
+  made.admins.push(row.id);
+  return local.createLocalAccessToken(row.id, SECRET, 3600);
+}
+
+const call = async (token, method = 'GET', body) => {
+  const res = await fetch(`${base}/admin/pricing`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  return { status: res.status, body: await res.json() };
+};
+
+test('owners read and save the settings; staff are told there is nothing there; the model cannot be switched on before it exists', async () => {
+  server = http.createServer((req, res) => {
+    void handleAdminPricingRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET }, new URL(req.url, 'http://x')).then((handled) => {
+      if (!handled) { res.statusCode = 404; res.end('{}'); }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+  const owner = await admin('OWNER'); const staff = await admin('STAFF');
+
+  assert.equal((await call(staff)).status, 404);
+  assert.equal((await call(staff, 'PUT', { premiumNgn: 0 })).status, 404);
+
+  const saved = await call(owner, 'PUT', { ...FLOOR_ON, premiumNgn: 450, quiet: { baseNgn: 550, perKmNgn: 300, perMinuteNgn: 48 } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.settings.premiumNgn, 450);
+  assert.equal(saved.body.fixed.serviceChargeNgn, 350);
+  const sixteen = saved.body.examples.find((e) => e.distanceKm === 16);
+  assert.equal(sixteen.quiet.marketFareNgn, 550 + 300 * 16 + 48 * 41);
+  assert.equal(sixteen.quiet.suggestedFareNgn, Math.ceil((sixteen.quiet.marketFareNgn + 450) / 50) * 50);
+  assert.ok(sixteen.rush.suggestedFareNgn > sixteen.quiet.suggestedFareNgn);
+
+  assert.equal((await pricingClient.loadSettings()).settings.premiumNgn, 450, 'in the database');
+  assert.equal(config.getPricingSettings().premiumNgn, 450, 'and in this process at once');
+
+  const refused = await call(owner, 'PUT', { ...FLOOR_ON, modelOn: true });
+  assert.equal(refused.status, 400);
+  const log = await prisma.adminActivity.findFirst({ where: { adminId: made.admins[0], kind: 'pricing' } });
+  assert.ok(log, 'the change is on the owners\' activity timeline');
+});
+
+// ── how busy a zone is ──────────────────────────────────────────────────────
+
+const fakeRedis = () => {
+  const store = new Map();
+  return { store, get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); } };
+};
+
+test('a zone gets dearer only with a real signal, and only a step at a time', async () => {
+  const redis = fakeRedis();
+  const now = new Date('2026-10-14T12:00:00Z');
+  const rider = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Busy Rider' } });
+  made.users.push(rider.id);
+  const request = async (n, at) => {
+    for (let i = 0; i < n; i++) {
+      const r = await prisma.ride.create({ data: { riderId: rider.id, status: 'REQUESTED', pickupLat: 6.51, pickupLng: 3.38, pickupAddress: 'Yaba', destLat: 6.45, destLng: 3.42, destAddress: 'VI', pickupZone: 'Yaba', createdAt: new Date(at.getTime() - 60_000) } });
+      made.rides.push(r.id);
+    }
+  };
+  // Other tests' rides in the zone must not count: this test owns the last ten minutes of a fixed moment.
+  const yaba = (zones) => zones.find((z) => z.zone === 'Yaba');
+
+  // No history for this hour: whatever happens, the price does not move.
+  await request(4, now);
+  let z = yaba(await measureBusyness(redis, now));
+  assert.equal(z.requests, 4);
+  assert.equal(z.ratio, null, 'nothing usual to compare with yet');
+  assert.equal(z.factor, 1);
+
+  // A usual level of one request per pass at this hour, learned over many passes.
+  redis.store.set('pricing:busyness:usual', JSON.stringify({ 'Yaba:13:wd': { level: 1, n: 40 } }));
+  z = yaba(await measureBusyness(redis, now));
+  assert.equal(z.ratio, 4, 'four times the usual');
+  assert.equal(z.factor, 1.1, 'one step, not the whole way');
+  z = yaba(await measureBusyness(redis, now));
+  assert.equal(z.factor, 1.2);
+
+  // Quiet again (a later window with no requests): it comes back down a step at a time.
+  const later = new Date(now.getTime() + 30 * 60_000);
+  z = yaba(await measureBusyness(redis, later));
+  assert.equal(z.requests, 0);
+  assert.equal(z.factor, 1.1);
+  assert.equal(demandFactorAt(6.51, 3.38), 1.1, 'what a quote from Yaba now uses');
+  assert.equal(demandFactorAt(6.6, 3.3), 1, 'outside the launch zones nothing is added');
+});
+
+test.after(async () => {
+  await new Promise((resolve) => (server ? server.close(resolve) : resolve()));
+  await prisma.ride.deleteMany({ where: { id: { in: made.rides } } });
+  await prisma.user.deleteMany({ where: { id: { in: made.users } } });
+  await prisma.adminActivity.deleteMany({ where: { adminId: { in: made.admins } } });
+  await prisma.adminUser.deleteMany({ where: { id: { in: made.admins } } });
+  // Put the saved settings back exactly as they were.
+  if (savedBefore) await prisma.pricingSettings.update({ where: { id: 'current' }, data: { data: savedBefore.data, updatedBy: savedBefore.updatedBy } });
+  else await prisma.pricingSettings.deleteMany({ where: { id: 'current' } });
+  await prisma.$disconnect();
+});

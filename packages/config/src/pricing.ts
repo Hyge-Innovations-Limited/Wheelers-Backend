@@ -6,7 +6,7 @@
  *
  *   trip fare      = rate per km × distance            ₦350 × 10 km = ₦3,500
  *   + VAT 7.5% of the trip fare                                      ₦262.50
- *   + booking fee (Wheelers')                                        ₦375
+ *   + service charge (Wheelers')                                     ₦350
  *   = the fare, rounded up to ₦50                                    ₦4,150
  *
  * and taken apart the same way when the trip is paid: the booking fee comes
@@ -21,6 +21,11 @@
  *
  * Version 1 (rides requested before the switch) is kept below: those rides
  * settle exactly as they were agreed.
+ *
+ * What a trip is SUGGESTED at is the highest of three numbers (see
+ * calculateSuggestedFare): the market floor (what inDrive would charge, plus
+ * a premium), the rules (the base rate lifted by traffic and a busy area)
+ * and, once switched on, the model. The floor is never undercut.
  */
 export type PricingVersion = 1 | 2;
 export const CURRENT_PRICING_VERSION: PricingVersion = 2;
@@ -32,8 +37,11 @@ export const MIN_OFFER_SHARE = 0.9;
 export const MAX_COUNTER_SHARE = 1.35;
 /** Old name for the driver ceiling as a rate: 135% of the base rate. */
 export const MAX_RATE_PER_KM_NGN = Math.round(RATE_PER_KM_NGN * MAX_COUNTER_SHARE);
-/** Wheelers' flat booking fee, in every fare, charged to the rider. */
-export const BOOKING_FEE_NGN = 375;
+/** Wheelers' flat service charge, in every fare, charged to the rider. (Called the booking fee in older code.) */
+export const BOOKING_FEE_NGN = 350;
+/** Version 1 rides were agreed with a ₦375 booking fee. */
+const V1_BOOKING_FEE_NGN = 375;
+const bookingFeeOf = (version: PricingVersion) => (version === 1 ? V1_BOOKING_FEE_NGN : BOOKING_FEE_NGN);
 /** The booking fee is the platform's part of a suggested fare. (Old name.) */
 export const PLATFORM_FEE_NGN = BOOKING_FEE_NGN;
 /** Old name: how far below the suggested fare a rider may go. */
@@ -59,10 +67,165 @@ const V1_COMMISSION_RATE = 0.04;
 // ── The recommended rate (traffic and demand are switches, off by default) ──
 
 const flag = (name: string) => (process.env[name] ?? '').trim().toLowerCase() === 'on';
-/** PRICING_TRAFFIC_FACTOR=on: the recommended rate rises on slow roads. */
-export const trafficFactorOn = () => flag('PRICING_TRAFFIC_FACTOR');
-/** PRICING_DEMAND_FACTOR=on: the recommended rate follows demand in the area. */
-export const demandFactorOn = () => flag('PRICING_DEMAND_FACTOR');
+/** The recommended rate rises on slow roads: switched on in the admin's pricing settings (or PRICING_TRAFFIC_FACTOR=on). */
+export const trafficFactorOn = () => flag('PRICING_TRAFFIC_FACTOR') || pricingSettings.trafficOn;
+/** The recommended rate follows demand in the area: the admin's pricing settings (or PRICING_DEMAND_FACTOR=on). */
+export const demandFactorOn = () => flag('PRICING_DEMAND_FACTOR') || pricingSettings.demandOn;
+
+// ── Pricing settings (owners edit them in the admin; each service reloads them) ──
+
+/** Another app's fare for a trip, as base + per km + per minute. */
+export type MarketFormula = { baseNgn: number; perKmNgn: number; perMinuteNgn: number };
+
+/**
+ * The model: a small linear fit of ln(rate per km a trip is agreed at), trained
+ * offline from Wheelers' own quotes and bids (scripts/train-pricing-model.mjs).
+ * It is a handful of numbers, scored here in a few multiplications.
+ */
+export type PricingModel = {
+  trainedAt: string;
+  /** Agreed trips it was fitted on. */
+  rows: number;
+  intercept: number;
+  coef: { lnKm: number; minPerKm: number; lnDemand: number; rush: number; night: number; weekend: number };
+};
+
+export type PricingSettings = {
+  /** Never suggest less than the market fare + the premium. */
+  marketFloorOn: boolean;
+  /** How far above the market fare the floor sits, in naira per trip. */
+  premiumNgn: number;
+  /** inDrive's fare outside rush hours, and in them (weekdays 07–10 and 16–20, Lagos time). */
+  quiet: MarketFormula;
+  rush: MarketFormula;
+  trafficOn: boolean;
+  demandOn: boolean;
+  /** Off: the model's number is only recorded beside each quote (shadow). On: it may lift the fare. */
+  modelOn: boolean;
+  model: PricingModel | null;
+  /** The rules and the model may lift a fare to at most this many times the floor. */
+  liftCap: number;
+};
+
+/**
+ * With nothing saved, pricing is the plain rate per km. The figures for the
+ * other app are a starting guess from one real quote (16 km, ₦7,200) and are
+ * meant to be replaced with sampled ones.
+ */
+export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
+  marketFloorOn: false,
+  premiumNgn: 300,
+  quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 },
+  rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 },
+  trafficOn: false,
+  demandOn: false,
+  modelOn: false,
+  model: null,
+  liftCap: 1.5,
+};
+
+let pricingSettings: PricingSettings = DEFAULT_PRICING_SETTINGS;
+
+export function getPricingSettings(): PricingSettings {
+  return pricingSettings;
+}
+
+const finite = (value: unknown, fallback: number, min: number, max: number): number => {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+
+function formulaFrom(value: unknown, fallback: MarketFormula): MarketFormula {
+  const v = (value ?? {}) as Partial<MarketFormula>;
+  return {
+    baseNgn: finite(v.baseNgn, fallback.baseNgn, 0, 20_000),
+    perKmNgn: finite(v.perKmNgn, fallback.perKmNgn, 0, 5_000),
+    perMinuteNgn: finite(v.perMinuteNgn, fallback.perMinuteNgn, 0, 1_000),
+  };
+}
+
+function modelFrom(value: unknown): PricingModel | null {
+  const v = value as PricingModel | null | undefined;
+  if (!v || typeof v !== 'object' || !Number.isFinite(v.intercept) || !v.coef) return null;
+  const c = v.coef as Record<string, unknown>;
+  return {
+    trainedAt: String(v.trainedAt ?? ''),
+    rows: finite(v.rows, 0, 0, 1e9),
+    intercept: Number(v.intercept),
+    coef: {
+      lnKm: finite(c.lnKm, 0, -5, 5), minPerKm: finite(c.minPerKm, 0, -5, 5), lnDemand: finite(c.lnDemand, 0, -5, 5),
+      rush: finite(c.rush, 0, -5, 5), night: finite(c.night, 0, -5, 5), weekend: finite(c.weekend, 0, -5, 5),
+    },
+  };
+}
+
+/** Whatever was saved, made safe to price with: every number in range, anything missing at its default. */
+export function normalizePricingSettings(value: unknown): PricingSettings {
+  const v = (value ?? {}) as Partial<PricingSettings>;
+  const d = DEFAULT_PRICING_SETTINGS;
+  return {
+    marketFloorOn: v.marketFloorOn === true,
+    premiumNgn: finite(v.premiumNgn, d.premiumNgn, 0, 5_000),
+    quiet: formulaFrom(v.quiet, d.quiet),
+    rush: formulaFrom(v.rush, d.rush),
+    trafficOn: v.trafficOn === true,
+    demandOn: v.demandOn === true,
+    modelOn: v.modelOn === true,
+    model: modelFrom(v.model),
+    liftCap: finite(v.liftCap, d.liftCap, 1, 3),
+  };
+}
+
+/** Each service calls this with what the database holds (and again whenever it changes). */
+export function setPricingSettings(value: unknown): PricingSettings {
+  pricingSettings = normalizePricingSettings(value);
+  return pricingSettings;
+}
+
+/** Lagos is UTC+1 all year. */
+function lagosClock(at: Date): { hour: number; weekend: boolean } {
+  const local = new Date(at.getTime() + 60 * 60 * 1000);
+  const day = local.getUTCDay();
+  return { hour: local.getUTCHours(), weekend: day === 0 || day === 6 };
+}
+
+/** Weekdays 07:00–10:00 and 16:00–20:00, Lagos time. */
+export function isRushHour(at: Date = new Date()): boolean {
+  const { hour, weekend } = lagosClock(at);
+  return !weekend && ((hour >= 7 && hour < 10) || (hour >= 16 && hour < 20));
+}
+
+/** With no trip time to hand (a fare rebuilt from distance alone), a Lagos road is taken at 24 km/h. */
+const ASSUMED_MINUTES_PER_KM = 2.5;
+
+/** What the other app would charge for this trip now, as far as its sampled figures say. */
+export function marketFareNgn(distanceKm: number, durationSeconds: number | undefined, at: Date = new Date()): number {
+  const f = isRushHour(at) ? pricingSettings.rush : pricingSettings.quiet;
+  const minutes = durationSeconds !== undefined && Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds / 60
+    : distanceKm * ASSUMED_MINUTES_PER_KM;
+  return round2(f.baseNgn + f.perKmNgn * distanceKm + f.perMinuteNgn * minutes);
+}
+
+/** The model's rate per km for a trip, or null when there is no model (or the trip has no length). */
+export function modelRatePerKmNgn(distanceKm: number, factors: RateFactors = {}): number | null {
+  const model = pricingSettings.model;
+  if (!model || !(distanceKm > 0)) return null;
+  const at = factors.at ?? new Date();
+  const { hour, weekend } = lagosClock(at);
+  const minutes = factors.durationSeconds && factors.durationSeconds > 0 ? factors.durationSeconds / 60 : distanceKm * ASSUMED_MINUTES_PER_KM;
+  const demand = demandFactorOf(factors);
+  const ln = model.intercept
+    + model.coef.lnKm * Math.log(distanceKm)
+    + model.coef.minPerKm * (minutes / distanceKm)
+    + model.coef.lnDemand * Math.log(demand)
+    + model.coef.rush * (isRushHour(at) ? 1 : 0)
+    + model.coef.night * (hour >= 22 || hour < 5 ? 1 : 0)
+    + model.coef.weekend * (weekend ? 1 : 0);
+  const rate = Math.exp(ln);
+  // A model can be wrong; it is never allowed to be absurd.
+  return Number.isFinite(rate) ? Math.round(Math.min(3 * RATE_PER_KM_NGN, Math.max(0.5 * RATE_PER_KM_NGN, rate))) : null;
+}
 
 /** Share of the rate that pays for distance; the rest pays for the driver's time and grows with traffic. */
 const TRAFFIC_DISTANCE_SHARE = 0.6;
@@ -78,7 +241,33 @@ export type RateFactors = {
   trafficRatio?: number;
   /** Requests ÷ drivers online in the pickup area, against the usual for that hour. 1 = normal. */
   demandRatio?: number;
+  /**
+   * The demand multiplier already worked out for the pickup area (1 to 1.8),
+   * moved in small steps by the gateway's busyness job. Used in place of demandRatio.
+   */
+  demandFactor?: number;
+  /** The trip's travel time (Google's, live when traffic is on): the other app charges by the minute. */
+  durationSeconds?: number;
+  /** When the quote is for. Now, unless a test says otherwise. */
+  at?: Date;
 };
+
+/** D: the demand multiplier for a trip, 1 when the switch is off or the area is not busy. */
+function demandFactorOf(factors: RateFactors): number {
+  if (!demandFactorOn()) return 1;
+  if (factors.demandFactor !== undefined && Number.isFinite(factors.demandFactor)) {
+    return Math.min(DEMAND_FACTOR_MAX, Math.max(1, factors.demandFactor));
+  }
+  const demand = factors.demandRatio;
+  return demand !== undefined && Number.isFinite(demand) && demand > 1
+    ? Math.min(1 + DEMAND_SENSITIVITY * Math.log(demand), DEMAND_FACTOR_MAX)
+    : 1;
+}
+
+/** The demand multiplier a requests-to-drivers ratio comes to (1 = normal), whatever the switch says. */
+export function demandFactorForRatio(ratio: number): number {
+  return Number.isFinite(ratio) && ratio > 1 ? Math.min(1 + DEMAND_SENSITIVITY * Math.log(ratio), DEMAND_FACTOR_MAX) : 1;
+}
 
 /**
  * The recommended rate per km for a trip. Flat ₦375 unless a factor is
@@ -96,10 +285,7 @@ export function recommendedRatePerKmNgn(factors: RateFactors = {}): number {
   const T = trafficFactorOn() && ratio !== undefined && Number.isFinite(ratio) && ratio > 1
     ? Math.min(TRAFFIC_DISTANCE_SHARE + (1 - TRAFFIC_DISTANCE_SHARE) * ratio, TRAFFIC_FACTOR_MAX)
     : 1;
-  const demand = factors.demandRatio;
-  const D = demandFactorOn() && demand !== undefined && Number.isFinite(demand) && demand > 1
-    ? Math.min(1 + DEMAND_SENSITIVITY * Math.log(demand), DEMAND_FACTOR_MAX)
-    : 1;
+  const D = demandFactorOf(factors);
   const cap = Math.max(RATE_PER_KM_NGN, MARKET_CAP * MARKET_RATE_PER_KM_NGN * (1 + 0.5 * (T - 1)));
   return Math.round(Math.min(RATE_PER_KM_NGN * T * D, cap));
 }
@@ -109,7 +295,17 @@ export type SuggestedFare = {
   suggestedFareNgn: number;
   minOfferNgn: number;
   maxOfferNgn: number;
+  /** The suggested fare as the driver's rate per km. */
   ratePerKmNgn: number;
+  /** Which of the three numbers set the fare. */
+  setBy: 'floor' | 'rules' | 'model';
+  /** The other app's fare for this trip, and the floor it gives (that + the premium). Null with the floor off. */
+  marketFareNgn: number | null;
+  floorFareNgn: number | null;
+  /** The base rate lifted by traffic and a busy area, as a fare. */
+  rulesFareNgn: number;
+  /** The model's fare. Recorded even when the model is not allowed to set the price. Null with no model. */
+  modelFareNgn: number | null;
 };
 
 export type RidePriceBreakdown = {
@@ -137,7 +333,7 @@ export function fareFromRatePerKmNgn(ratePerKmNgn: number, distanceKm: number): 
  * worked from. (Version 1: the fare after the booking fee, the driver's share.)
  */
 export function tripFareNgn(fareNgn: number, version: PricingVersion = CURRENT_PRICING_VERSION): number {
-  const afterFee = Math.max(0, round2(fareNgn - BOOKING_FEE_NGN));
+  const afterFee = Math.max(0, round2(fareNgn - bookingFeeOf(version)));
   return version === 1 ? afterFee : round2(afterFee / (1 + VAT_RATE));
 }
 
@@ -167,8 +363,34 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     throw new TypeError('distanceKm must be a finite number >= 0');
   }
 
-  const ratePerKmNgn = recommendedRatePerKmNgn(factors);
-  const suggestedFareNgn = fareFromRatePerKmNgn(ratePerKmNgn, distanceKm);
+  const settings = pricingSettings;
+  const rulesFareNgn = fareFromRatePerKmNgn(recommendedRatePerKmNgn(factors), distanceKm);
+  const modelRate = modelRatePerKmNgn(distanceKm, factors);
+  const modelFareNgn = modelRate === null ? null : fareFromRatePerKmNgn(modelRate, distanceKm);
+
+  // The floor: what the other app charges for this trip, plus the premium.
+  // Nothing is ever suggested below it.
+  const marketFare = settings.marketFloorOn && distanceKm > 0
+    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at)
+    : null;
+  const floorFareNgn = marketFare === null
+    ? null
+    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + settings.premiumNgn, FARE_ROUNDING_INCREMENT));
+
+  // The rules and the model may only lift it, and only so far: at most
+  // liftCap × the floor (or × our own plain rate, where that is the higher).
+  const plainFareNgn = fareFromRatePerKmNgn(RATE_PER_KM_NGN, distanceKm);
+  const liftLimit = floorFareNgn === null
+    ? Infinity
+    : roundUpToIncrement(Math.max(floorFareNgn, plainFareNgn) * settings.liftCap, FARE_ROUNDING_INCREMENT);
+  let suggestedFareNgn = floorFareNgn ?? rulesFareNgn;
+  let setBy: SuggestedFare['setBy'] = floorFareNgn === null ? 'rules' : 'floor';
+  const rules = Math.min(rulesFareNgn, liftLimit);
+  if (rules > suggestedFareNgn) { suggestedFareNgn = rules; setBy = 'rules'; }
+  if (settings.modelOn && modelFareNgn !== null) {
+    const model = Math.min(modelFareNgn, liftLimit);
+    if (model > suggestedFareNgn) { suggestedFareNgn = model; setBy = 'model'; }
+  }
   const limits = offerLimitsNgn(suggestedFareNgn);
 
   return {
@@ -176,7 +398,12 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     suggestedFareNgn,
     minOfferNgn: limits.minOfferNgn,
     maxOfferNgn: limits.maxOfferNgn,
-    ratePerKmNgn,
+    ratePerKmNgn: distanceKm > 0 ? Math.round(tripFareNgn(suggestedFareNgn) / distanceKm) : recommendedRatePerKmNgn(factors),
+    setBy,
+    marketFareNgn: marketFare,
+    floorFareNgn,
+    rulesFareNgn,
+    modelFareNgn,
   };
 }
 
@@ -185,11 +412,20 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
  * than the fare at 90% of the recommended rate, and a driver may ask no more
  * than the fare at 135% of it. Worked from the suggested fare's own trip fare,
  * so they move with it (traffic included) and need no distance.
+ *
+ * With the market floor on, a rider may also bargain away no more than the
+ * premium: the suggested fare is never under the other app's fare + the
+ * premium, so an offer of the suggested fare − the premium is never under
+ * the other app's fare.
  */
 export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number; maxOfferNgn: number } {
   const recommendedTripFare = tripFareNgn(suggestedFareNgn);
+  const byShare = fareFromTripFareNgn(recommendedTripFare * MIN_OFFER_SHARE);
+  const byPremium = pricingSettings.marketFloorOn
+    ? roundUpToIncrement(suggestedFareNgn - pricingSettings.premiumNgn, FARE_ROUNDING_INCREMENT)
+    : 0;
   return {
-    minOfferNgn: fareFromTripFareNgn(recommendedTripFare * MIN_OFFER_SHARE),
+    minOfferNgn: Math.min(Math.max(byShare, byPremium, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
     maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
   };
 }
@@ -313,7 +549,7 @@ export type RideFeeBreakdown = {
  */
 export function calculateRideFees(fareNgn: number, version: PricingVersion = CURRENT_PRICING_VERSION): RideFeeBreakdown {
   const fare = round2(fareNgn);
-  const bookingFeeNgn = Math.min(BOOKING_FEE_NGN, Math.max(0, fare));
+  const bookingFeeNgn = Math.min(bookingFeeOf(version), Math.max(0, fare));
   const afterFee = round2(fare - bookingFeeNgn);
 
   let share: number;
@@ -377,7 +613,8 @@ export function calculateRideFees(fareNgn: number, version: PricingVersion = CUR
  */
 export function splitPlatformTotal(
   platformTotalNgn: number,
-  rates: { serviceFeeNgn: number; stateLevyNgn: number } = { serviceFeeNgn: SERVICE_FEE_NGN, stateLevyNgn: LAGOS_STATE_FEE_NGN },
+  // Only rides from before the split was stored need this, and they paid the ₦375 booking fee.
+  rates: { serviceFeeNgn: number; stateLevyNgn: number } = { serviceFeeNgn: V1_BOOKING_FEE_NGN, stateLevyNgn: LAGOS_STATE_FEE_NGN },
 ): { commissionNgn: number; serviceFeeNgn: number; stateLevyNgn: number } {
   const total = Math.max(0, round2(platformTotalNgn));
   const stateLevyNgn = Math.min(rates.stateLevyNgn, total);

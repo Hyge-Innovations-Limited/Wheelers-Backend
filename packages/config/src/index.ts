@@ -59,8 +59,10 @@ export {
   CURRENT_PRICING_VERSION, MIN_OFFER_SHARE, MAX_COUNTER_SHARE, MARKET_RATE_PER_KM_NGN,
   fareFromRatePerKmNgn, fareFromTripFareNgn, tripFareNgn, offerLimitsNgn, rateLimitsPerKmNgn,
   recommendedRatePerKmNgn, trafficFactorOn, demandFactorOn,
+  getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
+  marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
 } from './pricing';
-export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors } from './pricing';
+export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula } from './pricing';
 export {
   GoogleMapsRoutePlanner,
   RoutePlanningError,

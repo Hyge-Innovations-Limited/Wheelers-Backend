@@ -156,7 +156,7 @@ function parseScheduledFor(value: unknown): Date {
 function mapScheduledRideItem(
   ride: Awaited<ReturnType<typeof scheduledRideClient.findByRider>>[number],
 ) {
-  const pricing = buildRideEstimatePricing(ride.plannedDistanceKm ?? null);
+  const pricing = buildRideEstimatePricing(ride.plannedDistanceKm ?? null, ride.plannedDurationSeconds ?? null);
   return {
     id: ride.id,
     status: ride.status,

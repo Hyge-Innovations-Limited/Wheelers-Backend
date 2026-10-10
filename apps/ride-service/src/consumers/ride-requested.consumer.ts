@@ -1,5 +1,5 @@
 import { driverClient, rideClient } from '@wheleers/db';
-import { RIDE, calculateSuggestedFare, zoneFor } from '@wheleers/config';
+import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
 import {
@@ -618,6 +618,9 @@ export function createRideRequestedConsumer(params: {
       .map((stop) => ({ lat: stop.lat, lng: stop.lng, address: stop.address }));
     const distanceKm = ride.distanceKm ?? 0;
     const pricing = calculateSuggestedFare(distanceKm);
+    const quotedFareNgn = ride.fareEstimateNgn !== null && ride.fareEstimateNgn !== undefined
+      ? Number(ride.fareEstimateNgn)
+      : pricing.suggestedFareNgn;
     const riderOfferNgn =
       ride.riderOfferNgn !== null && ride.riderOfferNgn !== undefined
         ? Number(ride.riderOfferNgn)
@@ -635,8 +638,10 @@ export function createRideRequestedConsumer(params: {
           : pricing.suggestedFareNgn,
       paymentMethod: ride.paymentMethod === 'CASH' ? 'CASH' : 'WALLET',
       riderOfferNgn,
-      suggestedFareNgn: pricing.suggestedFareNgn,
-      minOfferNgn: pricing.minOfferNgn,
+      // The fare the ride was quoted at, not one rebuilt from distance: a quote
+      // also follows the trip's time and how busy the area was.
+      suggestedFareNgn: quotedFareNgn,
+      minOfferNgn: offerLimitsNgn(quotedFareNgn).minOfferNgn,
       ratePerKmNgn: pricing.ratePerKmNgn,
       plannedDistanceKm: ride.distanceKm ?? undefined,
       plannedDurationSeconds: ride.durationSeconds ?? undefined,

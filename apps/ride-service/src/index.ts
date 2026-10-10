@@ -16,7 +16,7 @@ import { startScheduledRideDispatcher } from './handlers/scheduled-rides.handler
 import { createTripLifecycleHandler } from './handlers/trip-lifecycle.handler';
 import type { RideRequestedEvent } from '@wheleers/kafka-schemas';
 import IORedis from 'ioredis';
-import { driverPresence } from '@wheleers/db';
+import { driverPresence, pricingClient } from '@wheleers/db';
 
 export type OnlineDriver = {
   driverId: string;
@@ -155,6 +155,9 @@ async function bootstrap(): Promise<void> {
   process.env['KAFKA_BROKERS'] ??= 'localhost:29092';
   process.env['DATABASE_URL'] ??= 'postgresql://postgres:postgres@localhost:5432/wheelers';
   process.env['REDIS_URL'] ??= 'redis://localhost:6379';
+
+  // The pricing settings owners save in the admin: offer limits and fares here follow them, reloaded every minute.
+  await pricingClient.startSync();
 
   validateSharedEnv();
   const rideEnv = validateRideEnv();

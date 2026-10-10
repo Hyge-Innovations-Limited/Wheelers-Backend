@@ -1,4 +1,4 @@
-import { groupRideClient } from '@wheleers/db';
+import { groupRideClient, pricingClient } from '@wheleers/db';
 import {
   buildTopicList,
   createConsumer,
@@ -38,6 +38,9 @@ async function bootstrap(): Promise<void> {
   process.env['KAFKA_BROKERS'] ??= 'localhost:29092';
   process.env['DATABASE_URL'] ??= 'postgresql://postgres:postgres@localhost:5432/wheelers';
   process.env['REDIS_URL'] ??= 'redis://localhost:6379';
+
+  // The pricing settings owners save in the admin: offer limits and fares here follow them, reloaded every minute.
+  await pricingClient.startSync();
 
   validateSharedEnv();
   const groupRideEnv = validateGroupRideEnv();

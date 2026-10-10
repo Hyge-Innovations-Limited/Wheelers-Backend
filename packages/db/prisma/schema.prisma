@@ -1370,3 +1370,42 @@ model DispatchContact {
   @@index([driverId, createdAt])
   @@index([rideId, createdAt])
 }
+
+/// The pricing settings owners edit in the admin: one row ("current"). `data`
+/// is PricingSettings from @wheleers/config (the other app's figures, the
+/// premium, the switches, the model). Every service reloads it each minute.
+model PricingSettings {
+  id        String   @id
+  data      Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+/// Every price shown to a rider, with what it was made from: the other app's
+/// fare, the floor, the rules' fare, the model's (even while it only watches)
+/// and which of them set the price. Matched to rides by place and time, this
+/// is what the model is trained on and what the weekly check reads.
+model PricingQuote {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now())
+  originLat        Float
+  originLng        Float
+  destLat          Float
+  destLng          Float
+  pickupZone       String?
+  distanceKm       Float
+  durationSeconds  Int
+  trafficRatio     Float?
+  demandFactor     Float    @default(1)
+  rush             Boolean  @default(false)
+  marketFareNgn    Decimal? @db.Decimal(12, 2)
+  floorFareNgn     Decimal? @db.Decimal(12, 2)
+  rulesFareNgn     Decimal  @db.Decimal(12, 2)
+  modelFareNgn     Decimal? @db.Decimal(12, 2)
+  suggestedFareNgn Decimal  @db.Decimal(12, 2)
+  minOfferNgn      Decimal  @db.Decimal(12, 2)
+  /// "floor" | "rules" | "model"
+  setBy            String
+
+  @@index([createdAt])
+}

@@ -14,6 +14,8 @@ export type RideEstimatePricingFields = {
 
 export function buildRideEstimatePricing(
   distanceKm: number | null | undefined,
+  /** The trip's planned time: the fare has a per-minute part, so pass it wherever it is known. */
+  durationSeconds?: number | null,
 ): RideEstimatePricingFields {
   if (distanceKm === null || distanceKm === undefined || !Number.isFinite(distanceKm)) {
     return {
@@ -27,7 +29,7 @@ export function buildRideEstimatePricing(
     };
   }
 
-  const pricing = calculateSuggestedFare(distanceKm);
+  const pricing = calculateSuggestedFare(distanceKm, { durationSeconds: durationSeconds ?? undefined });
   const fees = calculateRideFees(pricing.suggestedFareNgn);
 
   return {

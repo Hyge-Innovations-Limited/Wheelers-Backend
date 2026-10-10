@@ -863,7 +863,7 @@ export async function handleRideEvent(
       route: event.route,
       plannedDistanceKm: event.plannedDistanceKm,
       plannedDurationSeconds: event.plannedDurationSeconds,
-      ...buildRideEstimatePricing(event.plannedDistanceKm),
+      ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds),
       updatedBy: event.updatedBy,
     };
 
