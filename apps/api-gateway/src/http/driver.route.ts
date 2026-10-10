@@ -182,6 +182,7 @@ export async function handleGetDriverBidsRoute(
           fareEstimateNgn:
             bid.ride.fareEstimateNgn === null ? null : decimalToNumber(bid.ride.fareEstimateNgn),
           distanceKm: bid.ride.distanceKm ?? null,
+          pricingVersion: bid.ride.pricingVersion,
           matchedAt: bid.ride.matchedAt?.toISOString() ?? null,
           completedAt: bid.ride.completedAt?.toISOString() ?? null,
           cancelledAt: bid.ride.cancelledAt?.toISOString() ?? null,

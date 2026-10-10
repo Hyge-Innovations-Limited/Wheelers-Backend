@@ -26,6 +26,8 @@ export type DriverRideSnapshot = {
   destination: { lat: number; lng: number; address: string };
   stops: Array<{ lat: number; lng: number; address: string }>;
   agreedFareNgn: number;
+  /** Which rules the fare was agreed under: the app works the driver's pay out from it. */
+  pricingVersion: number;
   riderOfferNgn: number | null;
   /** Wallet rides are held before a driver is assigned — the fare is secured. */
   riderPaid: boolean;
@@ -78,6 +80,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
       decimalToNumber(ride.riderOfferNgn) ??
       decimalToNumber(ride.fareEstimateNgn) ??
       0,
+    pricingVersion: ride.pricingVersion,
     riderOfferNgn: decimalToNumber(ride.riderOfferNgn),
     riderPaid: ride.paymentMethod === 'WALLET',
     riderPhone: rider?.phone ?? null,

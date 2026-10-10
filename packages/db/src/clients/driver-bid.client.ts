@@ -118,6 +118,7 @@ export const driverBidClient = {
             fareEstimateNgn: true,
             riderOfferNgn: true,
             agreedFareNgn: true,
+            pricingVersion: true,
             distanceKm: true,
             matchedAt: true,
             completedAt: true,
