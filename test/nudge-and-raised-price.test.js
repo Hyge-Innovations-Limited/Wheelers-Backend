@@ -84,7 +84,7 @@ test('a raised price is saved on the ride, and a driver can take it however high
 
   await assertOfferWithinBand(rideId, 50000, 'driver');   // taking the rider's price: goes through
   await assertOfferWithinBand(rideId, 40000, 'driver');   // a bid under the rider's price: fine
-  // Already far above the ceiling for the trip (135% of the recommended rate):
+  // Already far above the ceiling for the trip (150% of the recommended rate):
   // a driver may say yes to it, not ask for more.
   await assert.rejects(assertOfferWithinBand(rideId, 60000, 'driver'), /highest price for this trip/);
   await assert.rejects(assertOfferWithinBand(rideId, 5_000_000, 'driver'), 'a typed bid 100x the price is still caught');

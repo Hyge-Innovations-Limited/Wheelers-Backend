@@ -100,7 +100,7 @@ export async function assertOfferWithinBand(
   if (who === 'driver' && riderOfferNgn !== undefined && offerNgn === riderOfferNgn) return;
   // A driver is measured against what the rider is offering, never the suggested fare:
   // any amount is a bid, and accepting a rider's generous price must always go through.
-  // The ceiling (the fare at 135% of the recommended rate) is for a trip with
+  // The ceiling (the fare at 150% of the recommended rate) is for a trip with
   // a known distance. A group seat has none: only a typo is refused there.
   const validation =
     who === 'driver'

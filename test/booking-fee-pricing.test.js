@@ -3,7 +3,7 @@
 // rounded up to ₦50 and shown as one number. The driver gives up 10%
 // commission and the ₦30 levy, nothing else. A rider may offer no less than
 // the fare at 90% of the recommended rate; a driver may ask no more than the
-// fare at 135%. Rides priced before the change (version 1) settle as they
+// fare at 150%. Rides priced before the change (version 1) settle as they
 // were agreed. Against the local Postgres.
 //
 //   node scripts/run-with-env.cjs node --test --test-force-exit test/booking-fee-pricing.test.js
@@ -51,14 +51,14 @@ test('the books add up to the fare, to the kobo, at every distance and rate', ()
   }
 });
 
-test('limits: a rider no lower than 90% of the recommended rate, a driver no higher than 135%', () => {
+test('limits: a rider no lower than 90% of the recommended rate, a driver no higher than 150%', () => {
   const suggested = calculateSuggestedFare(10).suggestedFareNgn;
-  assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 4000, maxOfferNgn: 5850 });
-  assert.deepEqual(rateLimitsPerKmNgn(suggested, 10), { minRateNgn: 340, maxRateNgn: 508 });
+  assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 4000, maxOfferNgn: 6450 });
+  assert.deepEqual(rateLimitsPerKmNgn(suggested, 10), { minRateNgn: 340, maxRateNgn: 565 });
   assert.equal(validateRiderOffer(4000, suggested).valid, true);
   assert.equal(validateRiderOffer(3950, suggested).valid, false);
-  assert.equal(validateDriverOffer(5850, 4400, suggested).valid, true);
-  assert.equal(validateDriverOffer(5900, 4400, suggested).valid, false, 'above the ceiling');
+  assert.equal(validateDriverOffer(6450, 4400, suggested).valid, true);
+  assert.equal(validateDriverOffer(6500, 4400, suggested).valid, false, 'above the ceiling');
   assert.equal(validateDriverOffer(7000, 7000, suggested).valid, true, "taking a generous rider's own price is always allowed");
   assert.equal(validateDriverOffer(9000, 3000).valid, true, 'a group seat has no ceiling, only the typo guard');
 });

@@ -34,8 +34,8 @@ export const CURRENT_PRICING_VERSION: PricingVersion = 2;
 export const RATE_PER_KM_NGN = 375;
 /** A rider may offer no less than this share of the recommended rate; a driver may ask no more than MAX_COUNTER_SHARE of it. */
 export const MIN_OFFER_SHARE = 0.9;
-export const MAX_COUNTER_SHARE = 1.35;
-/** Old name for the driver ceiling as a rate: 135% of the base rate. */
+export const MAX_COUNTER_SHARE = 1.5;
+/** Old name for the driver ceiling as a rate: 150% of the base rate. */
 export const MAX_RATE_PER_KM_NGN = Math.round(RATE_PER_KM_NGN * MAX_COUNTER_SHARE);
 /** Wheelers' flat service charge, in every fare, charged to the rider. (Called the booking fee in older code.) */
 export const BOOKING_FEE_NGN = 350;
@@ -410,7 +410,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
 /**
  * The limits on a trip, from its suggested fare: a rider may offer no less
  * than the fare at 90% of the recommended rate, and a driver may ask no more
- * than the fare at 135% of it. Worked from the suggested fare's own trip fare,
+ * than the fare at 150% of it. Worked from the suggested fare's own trip fare,
  * so they move with it (traffic included) and need no distance.
  *
  * With the market floor on, a rider may also bargain away no more than the
@@ -485,7 +485,7 @@ export const DRIVER_BID_TYPO_MULTIPLE = 10;
 
 /**
  * A driver's bid, as the fare the rider would pay. It may be anything up to
- * the fare at 135% of the recommended rate; and taking the rider's own price
+ * the fare at 150% of the recommended rate; and taking the rider's own price
  * is always allowed, however high (a rider may offer more than the ceiling).
  * Without a suggested fare to measure against (a group seat), only a typo is
  * refused.
