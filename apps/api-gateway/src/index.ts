@@ -74,6 +74,7 @@ import {
 import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
 import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
 import { handleDriverPhoneRoute } from "./http/driver-phone.route";
+import { handleSupportChatRoute } from "./http/support-chat.route";
 import { startPaperReminderJob } from "./drivers/paper-notify";
 import {
   handleAdminListDriversRoute,
@@ -1287,6 +1288,16 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         kycStorage: driverKycStorage,
       });
+      return;
+    }
+
+    // Chat with support: the person's side and the admin panel's inbox.
+    if (await handleSupportChatRoute(req, res, {
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      sendToUser: (userId, type, payload) => registry.sendToUser(userId, type, payload),
+      publisher,
+    }, url)) {
       return;
     }
 

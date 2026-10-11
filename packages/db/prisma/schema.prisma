@@ -66,6 +66,7 @@ model User {
   riderKycAttempts           RiderKycAttempt[]
   interstateBookings         InterstateBooking[]
   safetyAlerts               SafetyAlert[]
+  supportConversations       SupportConversation[]
 
   @@index([privyDid])
   @@index([username])
@@ -1478,4 +1479,54 @@ model DriverDocument {
   @@unique([driverId, type])
   @@index([status, uploadedAt])
   @@index([expiresOn])
+}
+
+enum SupportConversationStatus {
+  OPEN
+  RESOLVED
+}
+
+enum SupportSender {
+  USER
+  SUPPORT
+}
+
+/// A rider's or driver's chat with Wheelers support. One is open at a time
+/// per person; a message sent after it was resolved starts a new one.
+model SupportConversation {
+  id                 String                    @id @default(uuid())
+  userId             String
+  /// The trip the person was on, or asked about, when they wrote in.
+  rideId             String?
+  /// What they chose in the help list: "Lost item", "Wrong charge".
+  topic              String?
+  status             SupportConversationStatus @default(OPEN)
+  assignedAdminId    String?
+  assignedAdminName  String?
+  lastMessageAt      DateTime                  @default(now())
+  lastMessagePreview String?
+  /// Messages from the person that support has not opened yet.
+  unreadForSupport   Int                       @default(0)
+  /// Replies from support the person has not opened yet.
+  unreadForUser      Int                       @default(0)
+  createdAt          DateTime                  @default(now())
+  resolvedAt         DateTime?
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages           SupportMessage[]
+
+  @@index([userId, status])
+  @@index([status, lastMessageAt])
+}
+
+model SupportMessage {
+  id             String              @id @default(uuid())
+  conversationId String
+  sender         SupportSender
+  /// The support person's name, shown to the rider: "Ada".
+  senderName     String?
+  content        String
+  createdAt      DateTime            @default(now())
+  conversation   SupportConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
 }
