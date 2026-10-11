@@ -94,6 +94,14 @@ export const rideClient = {
       },
     }),
 
+  /** The offers still open on a search, cheapest first, with who made each. */
+  pendingBids: (rideId: string) =>
+    prisma.driverBid.findMany({
+      where: { rideId, status: 'PENDING' },
+      orderBy: [{ amountNgn: 'asc' }, { etaSeconds: 'asc' }],
+      include: { driver: { select: { rating: true, vehicleMake: true, vehicleModel: true, vehiclePlate: true, user: { select: { name: true } } } } },
+    }),
+
   findWithDriver: async (rideId: string) => {
     const ride = await prisma.ride.findUniqueOrThrow({
       where:   { id: rideId },

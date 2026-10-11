@@ -6,7 +6,7 @@ import {
   rideClient,
   tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner, formatTripId } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -601,7 +601,29 @@ export async function handleActiveRideRoute(
     // route answers the rider about their own ride, never a driver.
     const code = await tripCodeClient.state(active.id).catch(() => null);
     const tripCode = code?.tripCode && !code.tripCodeVerifiedAt && !code.tripCodeUnlockedAt && ride.status !== "IN_PROGRESS" ? code.tripCode : null;
-    sendJson(res, 200, { ride: { ...serializeRideDetail(ride), tripCode } });
+    // A search still open comes back with its offers, so a rider who closed
+    // the app finds the drivers who answered still there. It closes 30 minutes
+    // after the rider last set a price (ride-service restarts the clock then).
+    const searching = ride.status === "REQUESTED" || ride.status === "MATCHING";
+    const search = searching
+      ? {
+          bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
+          offers: (await rideClient.pendingBids(active.id).catch(() => [])).map((bid) => ({
+            bidId: bid.id,
+            driverId: bid.driverId,
+            driverUserId: bid.driverUserId,
+            counterOfferNgn: decimalToNumber(bid.amountNgn) ?? 0,
+            driverName: bid.driver.user.name ?? "Driver",
+            driverRating: bid.driver.rating ?? null,
+            vehiclePlate: bid.driver.vehiclePlate ?? "",
+            vehicleModel: [bid.driver.vehicleMake, bid.driver.vehicleModel].filter(Boolean).join(" "),
+            etaSeconds: bid.etaSeconds,
+            distanceKm: bid.distanceKm,
+            receivedAt: bid.createdAt.toISOString(),
+          })),
+        }
+      : null;
+    sendJson(res, 200, { ride: { ...serializeRideDetail(ride), tripCode, search } });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }
