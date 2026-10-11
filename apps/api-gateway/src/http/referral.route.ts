@@ -4,6 +4,7 @@ import { authenticateHttpUser } from "./authenticate";
 import { readJsonBody, sendJson } from "./utils";
 import { getNumber, getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
+import { referralChatMessage, referralShareLink } from "../whatsapp/referral";
 
 interface ReferralRouteDeps {
   jwtSecret: string;
@@ -85,7 +86,13 @@ export async function handleGetReferralSummaryRoute(
     const user = await authenticateHttpUser(req, deps.jwtSecret);
     const summary = await referralClient.findSummary(user.id);
 
-    sendJson(res, 200, summary);
+    // The link a referral QR code holds: it opens a chat with Wheelers with
+    // the code already typed. Null when the WhatsApp number is not set.
+    sendJson(res, 200, {
+      ...summary,
+      shareLink: summary.code ? referralShareLink(summary.code) : null,
+      shareMessage: summary.code ? referralChatMessage(summary.code) : null,
+    });
   } catch (error) {
     sendJson(res, 400, {
       error:

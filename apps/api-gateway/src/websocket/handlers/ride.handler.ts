@@ -639,6 +639,9 @@ export async function handleRideMessage(
         rideId: event.rideId,
         driverId: event.driverId,
         counterOfferNgn: event.counterOfferNgn,
+        // A rider's new price restarts the search's clock (ride-service
+        // starts the bid timeout again): this is when it now closes.
+        bidsCloseAt: new Date(Date.now() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
       },
     };
   }

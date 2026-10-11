@@ -21,6 +21,7 @@ import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { CHANGE_PRICE_REPLY_ID, parseOfferReplyId } from '../whatsapp-flows/whatsapp-notifier';
 import { readRawBody, sendJson } from './utils';
 import { MetaWhatsappRouteDeps } from '../whatsapp/deps';
+import { applyReferralFromChat, referralCodeIn } from '../whatsapp/referral';
 import type { StageContext } from '../whatsapp/stage-context';
 import { inRide } from '../whatsapp/stages/in-ride';
 import { locationPin } from '../whatsapp/stages/location-pin';
@@ -187,6 +188,13 @@ async function handleIncomingMetaMessage(
     const floorTap = /^offer_floor:(\d+)$/.exec(msgInfo.replyId ?? '');
     if (floorTap) {
       await handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', replyId: undefined, messageBody: floorTap[1]! });
+      return;
+    }
+
+    // ── A referral code, as a referral link or QR code sends it ───────────
+    const referralCode = !msgInfo.replyId && !isLocation ? referralCodeIn(incomingMessage) : null;
+    if (referralCode) {
+      await applyReferralFromChat(deps, user, phone, incomingMessage, referralCode);
       return;
     }
 
