@@ -12,15 +12,26 @@
  * needs no template, so it is the backstop that makes signup reliable.
  *
  * Order is configurable (`OTP_CHANNEL_ORDER`); the default is
- *   meta_whatsapp → twilio_whatsapp → twilio_sms
+ *   meta_whatsapp → twilio_whatsapp → SMS
  * which spends the least money that still reaches the person.
+ *
+ * SMS has two providers, Termii and Twilio. `SMS_PROVIDER` in .env says
+ * which goes first (twilio until told otherwise); the other stays behind it
+ * as the fallback, and one that is not configured is skipped. Switching is
+ * that one line and a restart:
+ *
+ *   SMS_PROVIDER=termii        with TERMII_API_KEY and TERMII_SENDER_ID set
+ *   SMS_PROVIDER=twilio        with TWILIO_FROM_NUMBER a number the account owns
  */
 
 export type OtpChannel =
   | 'meta_whatsapp'
   | 'twilio_whatsapp'
   | 'twilio_sms'
+  | 'termii_sms'
   | 'twilio_verify';
+
+export type SmsProvider = 'twilio' | 'termii';
 
 export interface OtpChannelConfig {
   metaAccessToken?: string;
@@ -37,6 +48,16 @@ export interface OtpChannelConfig {
   twilioWhatsappNumber?: string;
   /** Twilio Verify service — generates and checks the code for us. */
   twilioVerifyServiceSid?: string;
+
+  /** Termii (SMS built for Nigeria): the key, and the sender name the networks approved. Both are needed. */
+  termiiApiKey?: string;
+  termiiSenderId?: string;
+  /** The address Termii's dashboard gives for the account. */
+  termiiBaseUrl?: string;
+  /** "dnd" reaches numbers with Do-Not-Disturb on (what a code needs); "generic" does not. */
+  termiiChannel?: string;
+  /** Which SMS provider goes first. The other is the fallback. */
+  smsProvider?: SmsProvider;
 
   /** Comma-separated channel order. Unknown or unconfigured names are skipped. */
   channelOrder?: string;
@@ -74,14 +95,19 @@ export class OtpDeliveryFailed extends Error {
   ) {
     super(
       attempts.length === 0
-        ? 'No verification channel is configured. Set META_ACCESS_TOKEN + META_PHONE_NUMBER_ID, or TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN.'
+        ? 'No verification channel is configured. Set META_ACCESS_TOKEN + META_PHONE_NUMBER_ID, TERMII_API_KEY + TERMII_SENDER_ID, or TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER.'
         : `Could not deliver the code. Tried: ${attempts.map((a) => `${a.channel} (${a.error})`).join('; ')}`,
     );
     this.name = 'OtpDeliveryFailed';
   }
 }
 
-const DEFAULT_ORDER: OtpChannel[] = ['meta_whatsapp', 'twilio_whatsapp', 'twilio_sms'];
+/** The two SMS channels, the chosen provider first. */
+export function smsChannels(config: OtpChannelConfig): OtpChannel[] {
+  return config.smsProvider === 'termii' ? ['termii_sms', 'twilio_sms'] : ['twilio_sms', 'termii_sms'];
+}
+
+const defaultOrder = (config: OtpChannelConfig): OtpChannel[] => ['meta_whatsapp', 'twilio_whatsapp', ...smsChannels(config)];
 
 function hasMeta(c: OtpChannelConfig): boolean {
   return Boolean(c.metaAccessToken && c.metaPhoneNumberId);
@@ -89,13 +115,21 @@ function hasMeta(c: OtpChannelConfig): boolean {
 function hasTwilio(c: OtpChannelConfig): boolean {
   return Boolean(c.twilioAccountSid && c.twilioAuthToken);
 }
+function hasTermii(c: OtpChannelConfig): boolean {
+  return Boolean(c.termiiApiKey && c.termiiSenderId);
+}
 
-export function availableChannels(config: OtpChannelConfig): OtpChannel[] {
-  const requested = (config.channelOrder ?? '')
+/**
+ * The channels to try, in order. `order` (from a caller that wants its own,
+ * e.g. SMS first for a driver's number) wins over OTP_CHANNEL_ORDER, which
+ * wins over the default.
+ */
+export function availableChannels(config: OtpChannelConfig, wanted?: OtpChannel[]): OtpChannel[] {
+  const requested = wanted ?? ((config.channelOrder ?? '')
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean) as OtpChannel[];
-  const order = requested.length > 0 ? requested : DEFAULT_ORDER;
+    .filter(Boolean) as OtpChannel[]);
+  const order = requested.length > 0 ? requested : defaultOrder(config);
 
   // Verify replaces the plain Twilio channels when it is configured — it does
   // the same job with none of the template problems.
@@ -112,6 +146,8 @@ export function availableChannels(config: OtpChannelConfig): OtpChannel[] {
         return hasTwilio(config) && Boolean(config.twilioWhatsappNumber);
       case 'twilio_sms':
         return hasTwilio(config) && Boolean(config.twilioFromNumber);
+      case 'termii_sms':
+        return hasTermii(config);
       case 'twilio_verify':
         return hasTwilio(config) && Boolean(config.twilioVerifyServiceSid);
       default:
@@ -252,6 +288,52 @@ async function sendViaTwilioMessage(
   };
 }
 
+/* ── Termii ────────────────────────────────────────────────────────────── */
+
+const TERMII_DEFAULT_BASE_URL = 'https://v3.api.termii.com';
+
+function describeTermiiError(status: number, payload: string): string {
+  try {
+    const parsed = JSON.parse(payload) as { message?: string; code?: string | number };
+    return `HTTP ${status}${parsed.code ? ` code ${parsed.code}` : ''}: ${parsed.message ?? payload.slice(0, 160)}`;
+  } catch {
+    return `HTTP ${status}: ${payload.slice(0, 160)}`;
+  }
+}
+
+/**
+ * One SMS through Termii, on the route that reaches Do-Not-Disturb numbers.
+ * Termii wants the number without its plus, and the sender name exactly as
+ * the networks approved it.
+ */
+async function sendViaTermii(config: OtpChannelConfig, phone: string, body: string): Promise<OtpDeliveryResult> {
+  const base = (config.termiiBaseUrl ?? TERMII_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const response = await fetch(`${base}/api/sms/send`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      api_key: config.termiiApiKey,
+      to: phone.replace(/^\+/, ''),
+      from: config.termiiSenderId,
+      sms: body,
+      type: 'plain',
+      channel: config.termiiChannel ?? 'dnd',
+    }),
+  });
+  const payload = await response.text();
+  if (!response.ok) throw new OtpChannelError(describeTermiiError(response.status, payload), 'termii_sms');
+  // Termii can answer 200 with a refusal in the body (an unapproved sender, an empty wallet).
+  let accepted = true;
+  try {
+    const parsed = JSON.parse(payload) as { message_id?: string; code?: string; message?: string };
+    accepted = Boolean(parsed.message_id) || parsed.code === 'ok' || /success/i.test(parsed.message ?? '');
+  } catch {
+    accepted = false;
+  }
+  if (!accepted) throw new OtpChannelError(describeTermiiError(response.status, payload), 'termii_sms');
+  return { channel: 'termii_sms', medium: 'sms', providerManaged: false };
+}
+
 /**
  * Twilio Verify: Twilio generates, sends and later checks the code. Needs no
  * template approval on either side, which is exactly the wall Meta put up.
@@ -322,6 +404,8 @@ export interface DeliverOptions {
   body: string;
   /** Preferred medium for Verify, which can do either. */
   prefer?: 'whatsapp' | 'sms';
+  /** This caller's own order of channels, in place of the configured one (e.g. SMS first for a driver's number). */
+  order?: OtpChannel[];
   log?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -333,7 +417,7 @@ export async function deliverOtp(
   config: OtpChannelConfig,
   options: DeliverOptions,
 ): Promise<OtpDeliveryResult> {
-  const channels = availableChannels(config);
+  const channels = availableChannels(config, options.order);
   const attempts: Array<{ channel: OtpChannel; error: string; windowClosed: boolean }> = [];
   const log = options.log ?? (() => {});
 
@@ -345,6 +429,8 @@ export async function deliverOtp(
         case 'twilio_whatsapp':
         case 'twilio_sms':
           return await sendViaTwilioMessage(config, channel, options.phone, options.body);
+        case 'termii_sms':
+          return await sendViaTermii(config, options.phone, options.body);
         case 'twilio_verify':
           return await startTwilioVerify(config, options.phone, options.prefer ?? 'whatsapp');
       }

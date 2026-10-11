@@ -73,6 +73,7 @@ import {
 } from "./http/driver-kyc.route";
 import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
 import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
+import { handleDriverPhoneRoute } from "./http/driver-phone.route";
 import { startPaperReminderJob } from "./drivers/paper-notify";
 import {
   handleAdminListDriversRoute,
@@ -966,6 +967,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -1002,6 +1008,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -1152,6 +1163,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -1271,6 +1287,28 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         kycStorage: driverKycStorage,
       });
+      return;
+    }
+
+    // A driver proves their phone number with a code sent to it by SMS.
+    if (await handleDriverPhoneRoute(req, res, {
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      redisClient: redisCommandClient,
+      otp: {
+        metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+        metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+        metaOtpTemplateName: gatewayEnv.META_OTP_TEMPLATE_NAME,
+        metaOtpTemplateLanguage: gatewayEnv.META_OTP_TEMPLATE_LANGUAGE,
+        twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
+        twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
+        twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
+      },
+    }, url)) {
       return;
     }
 

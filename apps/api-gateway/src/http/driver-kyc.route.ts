@@ -175,7 +175,8 @@ export async function handleDriverKycSubmitRoute(
       return;
     }
 
-    if (input.phone) {
+    // A number the driver has proved is theirs stays: only an unverified one is taken from the form.
+    if (input.phone && !driver.verifiedPhone) {
       await userClient.updateProfile(userId, { phone: input.phone });
     }
     if (details?.ok) await driverPaperClient.saveDetails(driver.id, details.details);

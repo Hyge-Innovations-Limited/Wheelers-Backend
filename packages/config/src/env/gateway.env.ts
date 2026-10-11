@@ -13,6 +13,16 @@ const GatewayEnvSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
   TWILIO_AUTH_TOKEN:  z.string().min(1).optional(),
   TWILIO_FROM_NUMBER: z.string().min(1).optional(),
+  // SMS has two providers. This says which goes first; the other is the
+  // fallback, and one that is not configured is skipped. Switching is this
+  // one line and a restart.
+  SMS_PROVIDER:       z.enum(['twilio', 'termii']).default('twilio'),
+  // Termii: the API key, the sender name the networks approved (both needed),
+  // and the address its dashboard gives for the account.
+  TERMII_API_KEY:     z.string().optional().transform(v => v?.trim() || undefined),
+  TERMII_SENDER_ID:   z.string().optional().transform(v => v?.trim() || undefined),
+  TERMII_BASE_URL:    z.string().optional().transform(v => v?.trim() || undefined),
+  TERMII_CHANNEL:     z.string().optional().transform(v => v?.trim() || undefined),
   GROQ_API_KEY:       z.string().min(1).optional(),
   // Gemini is the bot's primary model when set; Groq then only answers when
   // Gemini cannot. Unset = Groq only, exactly as before.

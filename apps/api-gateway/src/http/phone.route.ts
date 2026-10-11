@@ -39,6 +39,11 @@ export interface PhoneRouteDeps {
   twilioFromNumber?: string;
   twilioWhatsappNumber?: string;
   twilioVerifyServiceSid?: string;
+  termiiApiKey?: string;
+  termiiSenderId?: string;
+  termiiBaseUrl?: string;
+  termiiChannel?: string;
+  smsProvider?: 'twilio' | 'termii';
   otpChannelOrder?: string;
   phoneOtpTtlSeconds?: number;
 }
@@ -121,6 +126,11 @@ export function otpConfigFrom(deps: PhoneRouteDeps): OtpChannelConfig {
     twilioFromNumber: deps.twilioFromNumber,
     twilioWhatsappNumber: deps.twilioWhatsappNumber,
     twilioVerifyServiceSid: deps.twilioVerifyServiceSid,
+    termiiApiKey: deps.termiiApiKey,
+    termiiSenderId: deps.termiiSenderId,
+    termiiBaseUrl: deps.termiiBaseUrl,
+    termiiChannel: deps.termiiChannel,
+    smsProvider: deps.smsProvider,
     channelOrder: deps.otpChannelOrder,
   };
 }
