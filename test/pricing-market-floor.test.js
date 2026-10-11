@@ -223,6 +223,122 @@ test('owners set how far the model may go: no room means no cut, and a damaged m
   assert.equal(p.minOfferNgn, 6350);
 });
 
+test('trial prices: about one trip in ten sees another price from the same range, never above today\'s, and always the same one for the same trip', () => {
+  const trip = { durationSeconds: 30 * 60, at: QUIET, trafficRatio: 1.2 };
+  setPricingSettings({ ...SAMPLED, modelOn: false });
+  const today = calculateSuggestedFare(15.5, trip).suggestedFareNgn;
+  setPricingSettings({ ...SAMPLED, modelOn: true });
+  const picked = calculateSuggestedFare(15.5, trip);
+  assert.equal(picked.setBy, 'model', 'without a key for the trip there is no trial');
+
+  let trials = 0; const seen = new Set();
+  for (let i = 0; i < 3000; i++) {
+    const p = calculateSuggestedFare(15.5, { ...trip, trialKey: `trip-${i}` });
+    if (p.setBy !== 'trial') { assert.equal(p.suggestedFareNgn, picked.suggestedFareNgn); continue; }
+    trials += 1; seen.add(p.suggestedFareNgn);
+    assert.ok(p.suggestedFareNgn <= today, 'a trial never costs more than the price without the model');
+    assert.ok(p.suggestedFareNgn >= p.marketFareNgn + 150, 'and never goes closer to the other app than the model may');
+    assert.notEqual(p.suggestedFareNgn, picked.suggestedFareNgn);
+    assert.equal(p.modelFareNgn, picked.suggestedFareNgn, 'what the model would have shown is still recorded');
+    assert.ok(p.minOfferNgn >= p.marketFareNgn);
+  }
+  assert.ok(trials > 240 && trials < 360, `about a tenth of trips (${trials} of 3000)`);
+  assert.ok(seen.size >= 5, 'spread over the range, not one other price');
+  const again = (key) => calculateSuggestedFare(15.5, { ...trip, trialKey: key }).suggestedFareNgn;
+  for (let i = 0; i < 50; i++) assert.equal(again(`trip-${i}`), again(`trip-${i}`), 'asked again, the same trip gets the same price');
+
+  setPricingSettings({ ...SAMPLED, modelOn: true, trialShare: 0 });
+  for (let i = 0; i < 200; i++) assert.equal(calculateSuggestedFare(15.5, { ...trip, trialKey: `trip-${i}` }).setBy, 'model', 'switched off: none');
+  setPricingSettings({ ...SAMPLED, modelOn: false });
+  for (let i = 0; i < 200; i++) assert.equal(calculateSuggestedFare(15.5, { ...trip, trialKey: `trip-${i}` }).suggestedFareNgn, today, 'and none while the model is off');
+});
+
+test('a model corrected on real quotes is scored with its correction: sigmoid(a + b x trees + c x ln(price / the other app))', () => {
+  const ml = JSON.parse(JSON.stringify(getPricingMlModel()));
+  const x = ml.checks[0].x;
+  const logit = (p) => Math.log(p / (1 - p));
+  const trees = logit(scoreForest(ml.models.requested, x));
+  ml.models.requested.adjust = { a: -0.4, b: 1.1, c: -0.5 };
+  const expected = 1 / (1 + Math.exp(-(-0.4 + 1.1 * trees - 0.5 * Math.log(x[9]))));
+  assert.ok(Math.abs(scoreForest(ml.models.requested, x) - expected) < 1e-12);
+  const share = scoreForest(ml.models.paid, x);
+  ml.models.paid.adjust = { a: -0.02, b: 1.05 };
+  assert.ok(Math.abs(scoreForest(ml.models.paid, x) - (-0.02 + 1.05 * share)) < 1e-12);
+  setPricingMlModel(ml);
+  setPricingSettings({ ...SAMPLED, modelOn: true });
+  assert.ok(calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 }).suggestedFareNgn >= 5950, 'and it still prices inside its limits');
+});
+
+test('the other app\'s figures are fitted from prices read off it: more prices, more of the figures', async () => {
+  const { fitMarket, typicalMiss } = await import('../scripts/fit-market.mjs');
+  const current = { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 };
+  const truth = (km, minutes) => ({ km, minutes, priceNgn: 400 + 250 * km + 62 * minutes });
+
+  assert.equal(fitMarket([], current).fitted, 'nothing');
+  const one = fitMarket([{ km: 15.511, minutes: 23, priceNgn: 5800 }], current);
+  assert.equal(one.fitted, 'per km');
+  assert.deepEqual(one.figures, { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 }, 'the one real quote we have gives 268 a km');
+
+  const four = fitMarket([truth(5, 14), truth(10, 22), truth(16, 45), truth(25, 50)], current);
+  assert.equal(four.fitted, 'per km and per minute');
+  assert.equal(four.figures.baseNgn, 500, 'the base is not guessed from four trips');
+  assert.ok(four.missAfter < four.missBefore);
+
+  const many = fitMarket([truth(4, 9), truth(6, 20), truth(9, 18), truth(12, 40), truth(16, 33), truth(20, 70), truth(26, 52), truth(33, 95)], current);
+  assert.equal(many.fitted, 'all three');
+  assert.deepEqual(many.figures, { baseNgn: 400, perKmNgn: 250, perMinuteNgn: 62 }, 'eight trips recover all three exactly');
+  assert.equal(many.missAfter, 0);
+  assert.ok(typicalMiss(current, [truth(16, 33)]) > 0);
+
+  // Trips all of one length cannot tell a km from a minute: the fit steps down rather than invent figures.
+  const alike = fitMarket([{ km: 16, minutes: 33, priceNgn: 7200 }, { km: 16, minutes: 33, priceNgn: 7300 }, { km: 16, minutes: 33, priceNgn: 7100 }], current);
+  assert.equal(alike.fitted, 'per km');
+});
+
+test('the export gives one row for each asking of a price, with how it ended, and leaves out what is too fresh to know', async () => {
+  const { realQuoteRows } = await import('../scripts/export-pricing-quotes.mjs');
+  const now = new Date('2031-03-05T12:00:00Z');   // a time no other test writes quotes at
+  const minutesAgo = (m) => new Date(now.getTime() - m * 60_000);
+  const rider = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Export Rider' } });
+  const driverUser = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'DRIVER', name: 'Export Driver' } });
+  made.users.push(rider.id, driverUser.id);
+  const quote = (lat, at, fare, setBy = 'model') => prisma.pricingQuote.create({ data: {
+    createdAt: at, originLat: lat, originLng: 3.38, destLat: 6.45, destLng: 3.42, pickupZone: 'Yaba', distanceKm: 10, durationSeconds: 1500,
+    demandFactor: 1, rush: false, marketFareNgn: 4000, floorFareNgn: 4300, rulesFareNgn: 4400, modelFareNgn: 4200, suggestedFareNgn: fare, minOfferNgn: fare - 150, setBy,
+  } });
+  const ride = async (lat, at, agreed) => {
+    const r = await prisma.ride.create({ data: { riderId: rider.id, status: agreed ? 'DRIVER_ASSIGNED' : 'CANCELLED', pickupLat: lat, pickupLng: 3.38, pickupAddress: 'A', destLat: 6.45, destLng: 3.42, destAddress: 'B', createdAt: at, ...(agreed ? { agreedFareNgn: agreed } : {}) } });
+    made.rides.push(r.id);
+    return r;
+  };
+  const quotes = [];
+  // 1. asked three times in a row, then requested and agreed at N4,150: one row, at the LAST price seen
+  quotes.push(await quote(6.5101, minutesAgo(300), 4400), await quote(6.5101, minutesAgo(296), 4300), await quote(6.5101, minutesAgo(293), 4200));
+  await ride(6.5101, minutesAgo(291), 4150);
+  // 2. saw a trial price and walked away
+  quotes.push(await quote(6.5202, minutesAgo(200), 4350, 'trial'));
+  // 3. requested, no driver ever answered
+  quotes.push(await quote(6.5303, minutesAgo(150), 4200));
+  await ride(6.5303, minutesAgo(149), null);
+  // 4. asked ten minutes ago: too fresh, its ending is not known
+  quotes.push(await quote(6.5404, minutesAgo(10), 4200));
+
+  try {
+    const rows = (await realQuoteRows({ days: 2, now })).filter((r) => r.at >= minutesAgo(400).toISOString());
+    assert.equal(rows.length, 3, 'three askings, not five quotes; the fresh one left out');
+    const [agreed, walked, unanswered] = rows;
+    assert.deepEqual([agreed.fare, agreed.requested, agreed.answered, agreed.ride, agreed.paid], [4200, 1, 1, 1, 4150]);
+    assert.deepEqual([walked.fare, walked.requested, walked.answered, walked.ride, walked.paid, walked.setBy], [4350, 0, 0, 0, '', 'trial']);
+    assert.deepEqual([unanswered.requested, unanswered.answered, unanswered.ride], [1, 0, 0]);
+    assert.equal(agreed.km, 10);
+    assert.equal(agreed.minPerKm, 2.5);
+    assert.equal(agreed.fareOverMarket, 1.05);
+    assert.equal(agreed.hour, 8, 'Lagos time');
+  } finally {
+    await prisma.pricingQuote.deleteMany({ where: { id: { in: quotes.map((q) => q.id) } } });
+  }
+});
+
 // ── the owners' endpoint ────────────────────────────────────────────────────
 
 const SECRET = 'test-secret-for-the-pricing-settings-page';

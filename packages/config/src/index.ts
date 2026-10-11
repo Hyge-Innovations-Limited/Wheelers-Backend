@@ -62,7 +62,7 @@ export {
   getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
   marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
 } from './pricing';
-export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare } from './pricing-ml';
+export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';
 export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula } from './pricing';
 export {

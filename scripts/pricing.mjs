@@ -12,11 +12,20 @@
 //   npm run pricing indrive quiet 500 268 50 the other app's figures: base, per km, per minute
 //   npm run pricing indrive rush 575 308 58
 //   npm run pricing try 15.5 23              price a trip (km, minutes) now, with the model off and on
+//   npm run pricing trials 0.1               the share of trips shown a trial price (0 to switch off)
+//
+// The other app's figures, from prices read off it by hand:
+//   npm run pricing sample 15.5 23 5800       a trip of 15.5 km and 23 minutes cost ₦5,800 just now
+//   npm run pricing sample 16 33 7200 rush    ...taken in rush hours (or "quiet"), when adding it later
+//   npm run pricing samples                   every price collected
+//   npm run pricing fit                       what figures they give, and how far off today's are (saves nothing)
+//   npm run pricing fit save                  use them
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { prisma, pricingClient } = require('@wheleers/db');
 const config = require('../packages/config/dist/index.js');
+const { fitMarket } = await import('./fit-market.mjs');
 
 const [command = 'status', ...rest] = process.argv.slice(2);
 const naira = (v) => (v == null ? '—' : `₦${Math.round(Number(v)).toLocaleString('en-NG')}`);
@@ -54,7 +63,9 @@ async function status() {
   console.log(ml
     ? `  trained on ${ml.rows.toLocaleString('en-NG')} ${ml.source} quotes, ${ml.trainedAt.slice(0, 10)}`
     : '  this build has no trained model (packages/config/models/pricing-ml.json)');
+  if (ml?.realRows) console.log(`  corrected on ${ml.realRows.toLocaleString('en-NG')} real Wheelers quotes`);
   console.log(`  may take off at most ${naira(settings.maxDiscountNgn)} (and a tenth of the fare), and stays ${naira(settings.modelPremiumNgn)} above the other app`);
+  console.log(`  ${settings.trialShare > 0 ? `${Math.round(settings.trialShare * 100)} trips in 100 are shown a trial price (never above today's), so it has something to learn from` : 'no trial prices'}`);
   console.log(`Last saved: ${updatedAt ? updatedAt.toLocaleString('en-NG', { timeZone: 'Africa/Lagos', hour12: false }) : 'never'}${updatedBy ? ` by ${updatedBy}` : ''}\n`);
   await quotes(5);
 }
@@ -99,7 +110,56 @@ async function tryTrip() {
   console.log(`The model would ${on.suggestedFareNgn < off.suggestedFareNgn ? `take ${naira(off.suggestedFareNgn - on.suggestedFareNgn)} off` : on.suggestedFareNgn > off.suggestedFareNgn ? `add ${naira(on.suggestedFareNgn - off.suggestedFareNgn)}` : 'leave it as it is'}. (It is ${settings.modelOn ? 'ON' : 'off'} right now.)`);
 }
 
+async function sample() {
+  const [km, minutes, price, hours] = rest;
+  if (hours && hours !== 'rush' && hours !== 'quiet') throw new Error('The hours are "rush" or "quiet" (or leave them out for now): npm run pricing sample 16 33 7200 rush');
+  const now = new Date();
+  const row = await prisma.marketSample.create({ data: {
+    km: number(km, 'km'), minutes: number(minutes, 'minutes'), priceNgn: number(price, 'the price'),
+    rush: hours ? hours === 'rush' : config.isRushHour(now), takenAt: now, addedBy: 'server',
+  } });
+  const { settings } = await pricingClient.loadSettings();
+  const f = row.rush ? settings.rush : settings.quiet;
+  const ours = f.baseNgn + f.perKmNgn * row.km + f.perMinuteNgn * row.minutes;
+  console.log(`Saved: ${row.km} km in ${row.minutes} minutes cost ${naira(row.priceNgn)} (${row.rush ? 'rush' : 'quiet'} hours).`);
+  console.log(`Our figures would have said ${naira(ours)}: ${naira(Math.abs(ours - Number(row.priceNgn)))} ${ours > Number(row.priceNgn) ? 'too high' : 'too low'}. Run "npm run pricing fit" to see what the prices collected so far give.`);
+}
+
+async function samples() {
+  const rows = await prisma.marketSample.findMany({ orderBy: { takenAt: 'desc' }, take: 60 });
+  if (rows.length === 0) { console.log('No prices collected yet. Add one: npm run pricing sample 15.5 23 5800'); return; }
+  console.table(rows.map((r) => ({
+    taken: r.takenAt.toLocaleString('en-NG', { timeZone: 'Africa/Lagos', hour12: false, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+    hours: r.rush ? 'rush' : 'quiet', km: r.km, min: r.minutes, price: naira(r.priceNgn), perKm: naira(Number(r.priceNgn) / r.km),
+  })));
+}
+
+async function fit() {
+  // Prices go stale: only the last 60 days count.
+  const rows = await prisma.marketSample.findMany({ where: { takenAt: { gte: new Date(Date.now() - 60 * 86400_000) } } });
+  const { settings } = await pricingClient.loadSettings();
+  const change = {};
+  for (const hours of ['quiet', 'rush']) {
+    const mine = rows.filter((r) => r.rush === (hours === 'rush')).map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) }));
+    const result = fitMarket(mine, settings[hours]);
+    const f = result.figures;
+    console.log(`${hours} hours: ${mine.length} price${mine.length === 1 ? '' : 's'} in the last 60 days`);
+    if (result.fitted === 'nothing') { console.log(`  nothing to fit from: figures stay base ${naira(f.baseNgn)}, ${naira(f.perKmNgn)} a km, ${naira(f.perMinuteNgn)} a minute\n`); continue; }
+    console.log(`  fitted ${result.fitted}: base ${naira(f.baseNgn)}, ${naira(f.perKmNgn)} a km, ${naira(f.perMinuteNgn)} a minute`);
+    console.log(`  typically off by ${naira(result.missBefore)} now, ${naira(result.missAfter)} with these\n`);
+    change[hours] = f;
+  }
+  if (rest[0] !== 'save') { console.log('Nothing saved. "npm run pricing fit save" to use these figures.'); return; }
+  if (Object.keys(change).length === 0) { console.log('Nothing to save.'); return; }
+  await pricingClient.saveSettings({ ...settings, ...change }, 'server');
+  console.log('Saved. New prices follow within a minute.');
+}
+
 const commands = {
+  sample,
+  samples,
+  fit,
+  trials: () => save(() => ({ trialShare: number(rest[0], 'the share') }), (s) => (s.trialShare > 0 ? `${Math.round(s.trialShare * 100)} trips in 100 are now shown a trial price.` : 'No more trial prices.')),
   status,
   quotes: () => quotes(15),
   'model-on': () => model(true),
@@ -113,7 +173,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | model-on | model-off | quotes | discount N | closest N | premium N | indrive quiet|rush BASE KM MINUTE | try KM MINUTES]');
+  console.log('Use: npm run pricing [status | model-on | model-off | quotes | try KM MINUTES | discount N | closest N | premium N | trials SHARE | sample KM MINUTES PRICE [rush|quiet] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

@@ -91,6 +91,8 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     const demandFactor = demandFactorAt(params.origin.lat, params.origin.lng);
     const ridePrice = calculateSuggestedFare(route.distanceKm, {
       trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor,
+      // The trip and the half hour: a trial price, when this trip gets one, stays the same through quote, edit and confirm.
+      trialKey: `${point(params.origin)}>${point(params.destination)}@${Math.floor(Date.now() / (30 * 60_000))}`,
     });
     recordQuote(params, route, ridePrice, demandFactor);
     return {

@@ -27,7 +27,7 @@
  * a premium), the rules (the base rate lifted by traffic and a busy area)
  * and, once switched on, the model. The floor is never undercut.
  */
-import { chooseFare, getPricingMlModel } from './pricing-ml';
+import { candidateFares, chooseFare, getPricingMlModel, steadyDraw } from './pricing-ml';
 
 export type PricingVersion = 1 | 2;
 export const CURRENT_PRICING_VERSION: PricingVersion = 2;
@@ -123,6 +123,13 @@ export type PricingSettings = {
   modelPremiumNgn: number;
   /** What a completed ride is worth to Wheelers beyond what it earns on it: the higher, the readier the model is to cut. */
   rideValueNgn: number;
+  /**
+   * With the model on, the share of trips shown a price OTHER than the
+   * model's pick: one of the other prices inside the same limits. Without
+   * these the model only ever sees what happens at its own prices and can
+   * never learn whether another would have done better. 0 switches it off.
+   */
+  trialShare: number;
 };
 
 /** A cut is never more than this share of the fare. */
@@ -148,6 +155,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   maxDiscountNgn: 700,
   modelPremiumNgn: 150,
   rideValueNgn: 500,
+  trialShare: 0.1,
 };
 
 let pricingSettings: PricingSettings = DEFAULT_PRICING_SETTINGS;
@@ -203,6 +211,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     maxDiscountNgn: finite(v.maxDiscountNgn, d.maxDiscountNgn, 0, 3_000),
     modelPremiumNgn: finite(v.modelPremiumNgn, d.modelPremiumNgn, 0, 5_000),
     rideValueNgn: finite(v.rideValueNgn, d.rideValueNgn, 0, 10_000),
+    trialShare: finite(v.trialShare, d.trialShare, 0, 0.5),
   };
 }
 
@@ -285,6 +294,12 @@ export type RateFactors = {
   durationSeconds?: number;
   /** When the quote is for. Now, unless a test says otherwise. */
   at?: Date;
+  /**
+   * Names this trip for a while (its two ends and the half hour): whether it
+   * is shown a trial price, and which, is decided from this alone, so asking
+   * again for the same trip gives the same answer. Without it no trial price is shown.
+   */
+  trialKey?: string;
 };
 
 /** D: the demand multiplier for a trip, 1 when the switch is off or the area is not busy. */
@@ -332,8 +347,8 @@ export type SuggestedFare = {
   maxOfferNgn: number;
   /** The suggested fare as the driver's rate per km. */
   ratePerKmNgn: number;
-  /** Which of the three numbers set the fare. */
-  setBy: 'floor' | 'rules' | 'model';
+  /** What set the fare. "trial": a price near the model's, shown on a small share of trips so there is something to learn from. */
+  setBy: 'floor' | 'rules' | 'model' | 'trial';
   /** The other app's fare for this trip, and the floor it gives (that + the premium). Null with the floor off. */
   marketFareNgn: number | null;
   floorFareNgn: number | null;
@@ -441,18 +456,30 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     const base = suggestedFareNgn;
     const cut = Math.min(settings.maxDiscountNgn, MODEL_MAX_DISCOUNT_SHARE * base);
     const least = roundUpToIncrement(marketEstNgn + settings.modelPremiumNgn, FARE_ROUNDING_INCREMENT);
+    const range = {
+      lowestNgn: Math.min(base, Math.max(least, base - cut, MIN_FARE_NGN)),
+      baseNgn: base,
+      highestNgn: Math.max(base, Math.min(liftLimit, base + cut)),
+    };
     const choice = chooseFare(
       ml,
       { km: distanceKm, minutes, hour, weekend, rush: isRushHour(at), demand: demandFactorOf(factors), marketEstNgn },
-      {
-        lowestNgn: Math.min(base, Math.max(least, base - cut, MIN_FARE_NGN)),
-        baseNgn: base,
-        highestNgn: Math.max(base, Math.min(liftLimit, base + cut)),
-      },
+      range,
       { serviceChargeNgn: BOOKING_FEE_NGN, commissionRate: COMMISSION_RATE, vatRate: VAT_RATE, rideValueNgn: settings.rideValueNgn },
     );
     modelFare = Math.max(MIN_FARE_NGN, choice.fareNgn);
     if (settings.modelOn && modelFare !== suggestedFareNgn) { suggestedFareNgn = modelFare; setBy = 'model'; }
+    // A small share of trips are shown one of the OTHER prices in the same
+    // range, so the model can later learn what a different price would have
+    // done. Decided from the trip's own key: the same trip, asked again, gets the same price.
+    if (settings.modelOn && settings.trialShare > 0 && factors.trialKey && steadyDraw(factors.trialKey) < settings.trialShare) {
+      // Only prices between the lowest allowed and today's: a trial never costs a rider more than they would have paid without the model.
+      const others = [...new Set(candidateFares(ml, range))].filter((fare) => fare >= MIN_FARE_NGN && fare <= base && fare !== modelFare);
+      if (others.length > 0) {
+        suggestedFareNgn = others[Math.floor(steadyDraw(`${factors.trialKey}#which`) * others.length)]!;
+        setBy = 'trial';
+      }
+    }
   } else if (settings.modelOn && modelFareNgn !== null) {
     // No trained model in this build: the small fitted one may lift a fare, never lower it.
     const model = Math.min(modelFareNgn, liftLimit);

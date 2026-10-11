@@ -1409,3 +1409,22 @@ model PricingQuote {
 
   @@index([createdAt])
 }
+
+/// A price someone read off another app by hand, for a trip of a known
+/// length and time: what the other app's figures on the Pricing page are
+/// fitted from (npm run pricing sample / fit).
+model MarketSample {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  /// Which app: "indrive" unless told otherwise.
+  app       String   @default("indrive")
+  km        Float
+  minutes   Float
+  priceNgn  Decimal  @db.Decimal(12, 2)
+  /// Taken in rush hours (weekdays 07-10 and 16-20, Lagos time)?
+  rush      Boolean
+  takenAt   DateTime
+  addedBy   String?
+
+  @@index([takenAt])
+}

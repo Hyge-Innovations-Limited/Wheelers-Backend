@@ -22,7 +22,7 @@ const EXAMPLES = [
 
 function trainedModel() {
   const ml = getPricingMlModel();
-  return ml ? { trainedAt: ml.trainedAt, rows: ml.rows, source: ml.source } : null;
+  return ml ? { trainedAt: ml.trainedAt, rows: ml.rows, source: ml.source, realRows: ml.realRows ?? 0 } : null;
 }
 
 function examples() {

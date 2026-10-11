@@ -18,14 +18,21 @@ import { join } from 'node:path';
  * must stay in step, and the rows in `checks` fail a test when they do not.
  */
 type Tree = { f: number[]; t: number[]; l: number[]; r: number[]; v: number[] };
-type Forest = { kind: 'chance' | 'amount'; base: number; trees: Tree[] };
+/**
+ * `adjust` is the correction fitted on Wheelers' real quotes, when there are
+ * enough: for a chance, sigmoid(a + b × trees + c × ln(price ÷ the other
+ * app's price)); for an amount, a + b × trees. Without it the trees stand.
+ */
+type Forest = { kind: 'chance' | 'amount'; base: number; trees: Tree[]; adjust?: { a: number; b: number; c?: number } };
 
 export type PricingMlModel = {
   version: number;
   trainedAt: string;
-  /** "simulated" until it is trained on Wheelers' own quotes. */
+  /** "simulated" until it has learned from Wheelers' own quotes ("simulated+real"). */
   source: string;
   rows: number;
+  /** Real quotes it has learned from. */
+  realRows?: number;
   features: string[];
   choice: { stepsDown: number; stepsUp: number; nearBest: number };
   models: { requested: Forest; answered: Forest; agreed: Forest; paid: Forest };
@@ -34,6 +41,7 @@ export type PricingMlModel = {
 
 /** The order train.py builds a row in. */
 const FEATURES = ['km', 'minPerKm', 'hour', 'weekend', 'rush', 'night', 'demand', 'marketEst', 'fare', 'fareOverMarket'];
+const FARE_OVER_MARKET = FEATURES.indexOf('fareOverMarket');
 
 let model: PricingMlModel | null | undefined;
 
@@ -73,7 +81,12 @@ export function scoreForest(forest: Forest, x: number[]): number {
     }
     sum += tree.v[node]!;
   }
-  return forest.kind === 'chance' ? 1 / (1 + Math.exp(-sum)) : sum;
+  const adjust = forest.adjust;
+  if (forest.kind === 'chance') {
+    if (adjust) sum = adjust.a + adjust.b * sum + (adjust.c ?? 0) * Math.log(x[FARE_OVER_MARKET]!);
+    return 1 / (1 + Math.exp(-sum));
+  }
+  return adjust ? adjust.a + adjust.b * sum : sum;
 }
 
 export type MlTrip = {
@@ -107,6 +120,30 @@ export function rideChance(m: PricingMlModel, trip: MlTrip, fareNgn: number): { 
 
 const ceil50 = (value: number) => Math.ceil(Math.round(value * 100) / 100 / 50) * 50;
 
+/** The prices looked at for a trip: from the lowest allowed up to today's, then above it to the highest allowed, each rounded up to ₦50. */
+export function candidateFares(m: PricingMlModel, range: { lowestNgn: number; baseNgn: number; highestNgn: number }): number[] {
+  const base = range.baseNgn;
+  const lo = Math.min(base, range.lowestNgn);
+  const hi = Math.max(base, range.highestNgn);
+  const { stepsDown, stepsUp } = m.choice;
+  const fares: number[] = [];
+  for (let i = 0; i < stepsDown; i++) fares.push(ceil50(lo + ((base - lo) * i) / (stepsDown - 1)));
+  for (let i = 1; i <= stepsUp; i++) fares.push(ceil50(base + ((hi - base) * i) / stepsUp));
+  return fares;
+}
+
+/** A number from 0 up to (not including) 1 that is always the same for the same text. */
+export function steadyDraw(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // one more scramble, so texts that differ only at the end do not land side by side
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
 export type FareChoice = {
   fareNgn: number;
   /** The model's chance that a quote at this fare becomes a ride. */
@@ -133,13 +170,9 @@ export function chooseFare(
   range: { lowestNgn: number; baseNgn: number; highestNgn: number },
   money: { serviceChargeNgn: number; commissionRate: number; vatRate: number; rideValueNgn: number },
 ): FareChoice {
+  const { stepsDown, nearBest } = m.choice;
+  const fares = candidateFares(m, range);
   const base = range.baseNgn;
-  const lo = Math.min(base, range.lowestNgn);
-  const hi = Math.max(base, range.highestNgn);
-  const { stepsDown, stepsUp, nearBest } = m.choice;
-  const fares: number[] = [];
-  for (let i = 0; i < stepsDown; i++) fares.push(ceil50(lo + ((base - lo) * i) / (stepsDown - 1)));
-  for (let i = 1; i <= stepsUp; i++) fares.push(ceil50(base + ((hi - base) * i) / stepsUp));
 
   let best = -Infinity;
   const valued = fares.map((fareNgn) => {
