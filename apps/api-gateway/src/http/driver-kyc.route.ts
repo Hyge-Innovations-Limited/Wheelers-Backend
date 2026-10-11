@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverClient, userClient } from '@wheleers/db';
+import { driverClient, driverPaperClient, userClient } from '@wheleers/db';
 import { verifyLocalAccessToken } from '../auth/local';
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
 import { sniffKycFileType, type DriverKycStorage } from '../storage/driver-kyc-storage';
+import { lagosToday, readDriverDetails } from './driver-papers.route';
 import { KYC_FIELD_LABELS, fieldReasonsFrom, isKycField, KYC_FIELDS, type KycField } from '../drivers/kyc-fields';
 
 interface DriverKycDeps {
@@ -149,6 +150,16 @@ export async function handleDriverKycSubmitRoute(
       return;
     }
 
+    // The name as on the licence, its number and expiry: sent with the
+    // application by apps that ask for them (older ones do not), and checked
+    // before anything is uploaded.
+    const sentDetails = rawBody.legalName !== undefined || rawBody.licenceNumber !== undefined || rawBody.licenceExpiresOn !== undefined;
+    const details = sentDetails ? readDriverDetails(rawBody, lagosToday()) : null;
+    if (details && !details.ok) {
+      sendJson(res, 400, { error: details.error, code: details.code });
+      return;
+    }
+
     const stored = await uploadKycFields(deps, driver.id, input, KYC_FIELDS);
     const accepted = await driverClient.submitFullKyc(driver.id, {
       ...stored,
@@ -167,6 +178,7 @@ export async function handleDriverKycSubmitRoute(
     if (input.phone) {
       await userClient.updateProfile(userId, { phone: input.phone });
     }
+    if (details?.ok) await driverPaperClient.saveDetails(driver.id, details.details);
 
     logActivity({ userId, eventType: 'driver_kyc_submitted', metadata: {} });
 

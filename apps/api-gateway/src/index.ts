@@ -71,7 +71,9 @@ import {
   handleDriverKycResubmitRoute,
   handleDriverKycStatusRoute,
 } from "./http/driver-kyc.route";
-import { handleDriverPapersRoute } from "./http/driver-papers.route";
+import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
+import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
+import { startPaperReminderJob } from "./drivers/paper-notify";
 import {
   handleAdminListDriversRoute,
   handleAdminGetDriverRoute,
@@ -1356,6 +1358,16 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    // Drivers' papers: the lists, one driver's papers, and approving or sending one back.
+    if (await handleAdminDriverPapersRoute(req, res, {
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      kycStorage: driverKycStorage,
+      publisher,
+    }, url)) {
+      return;
+    }
+
     if (url.pathname.startsWith("/admin/drivers/")) {
       const approveMatch = url.pathname.match(/^\/admin\/drivers\/([^/]+)\/approve$/);
       if (approveMatch) {
@@ -2425,6 +2437,7 @@ async function bootstrap(): Promise<void> {
   const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
   const stopHoldSweeper = startHoldSweeper(leader.isLeader);
   const stopBusynessJob = startBusynessJob(redisCommandClient, leader.isLeader);
+  const stopPaperReminders = startPaperReminderJob({ publisher }, leader.isLeader, () => lagosToday());
   const stopHealthJobs = startHealthJobs({
     redis: redisCommandClient,
     recorder: healthStats,
@@ -2497,6 +2510,7 @@ async function bootstrap(): Promise<void> {
     stopStellarJob();
     stopHoldSweeper();
     stopBusynessJob();
+    stopPaperReminders();
     stopPricingSync();
     stopHealthJobs();
     await leader.release();

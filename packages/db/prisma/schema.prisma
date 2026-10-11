@@ -112,6 +112,8 @@ model Driver {
   legalName            String?
   licenceNumber        String?
   licenceExpiresOn     DateTime?             @db.Date
+  /// The last expiry reminder sent for the licence: 30, 14, 3 (days before) or 0 (it has expired). Cleared when the date changes.
+  licenceRemindedAt    Int?
   licenceCid           String?
   insuranceCid         String?
   selfieHash           String?
@@ -1463,6 +1465,8 @@ model DriverDocument {
   uploadedAt      DateTime             @default(now())
   reviewedAt      DateTime?
   reviewedBy      String?
+  /// The last expiry reminder sent for this paper: 30, 14, 3 (days before) or 0 (it has expired). Cleared when it is sent again.
+  remindedAt      Int?
   driver          Driver               @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@unique([driverId, type])

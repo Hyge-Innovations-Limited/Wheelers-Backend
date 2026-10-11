@@ -14,11 +14,17 @@ const { randomUUID } = require('node:crypto');
 const { prisma } = require('@wheleers/db');
 const local = require('../apps/api-gateway/dist/auth/local.js');
 const { handleDriverPapersRoute, driverPapersView, parseDay, lagosToday } = require('../apps/api-gateway/dist/http/driver-papers.route.js');
+const { handleAdminDriverPapersRoute } = require('../apps/api-gateway/dist/http/admin-driver-papers.route.js');
+const { handleDriverKycSubmitRoute } = require('../apps/api-gateway/dist/http/driver-kyc.route.js');
+const { reminderDue, sendPaperReminders } = require('../apps/api-gateway/dist/drivers/paper-notify.js');
+const { assertDriverApproved } = require('../apps/api-gateway/dist/rides/driver-kyc-gate.js');
 
 const SECRET = 'test-secret-for-the-driver-papers-screens';
 const stored = [];
-const storage = { upload: async ({ driverId, type, imageBuffer, mimeType }) => { const key = `mem/${driverId}/${type}-${stored.length}`; stored.push({ key, bytes: imageBuffer.length, mimeType }); return key; } };
-const made = { users: [] };
+const told = [];
+const publisher = { publishNotificationEvent: async (event) => { told.push(event); } };
+const storage = { getSignedUrl: async (key) => `https://files.test/${key}`, upload: async ({ driverId, type, imageBuffer, mimeType }) => { const key = `mem/${driverId}/${type}-${stored.length}`; stored.push({ key, bytes: imageBuffer.length, mimeType }); return key; } };
+const made = { users: [], admins: [] };
 let server; let base;
 
 const jpeg = (size = 2000) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(size, 7)]).toString('base64');
@@ -29,7 +35,13 @@ async function driver() {
   const user = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'DRIVER', name: 'Papers Driver' } });
   made.users.push(user.id);
   const row = await prisma.driver.create({ data: { userId: user.id, kycStatus: 'APPROVED' } });
-  return { id: row.id, token: local.createLocalAccessToken(user.id, SECRET, 3600) };
+  return { id: row.id, userId: user.id, token: local.createLocalAccessToken(user.id, SECRET, 3600) };
+}
+
+async function admin(role = 'STAFF') {
+  const row = await prisma.adminUser.create({ data: { username: `papers-${randomUUID().slice(0, 8)}`, passwordHash: 'x', name: 'Ada Reviewer', role } });
+  made.admins.push(row.id);
+  return local.createLocalAccessToken(row.id, SECRET, 3600);
 }
 
 const call = async (token, method, path, body) => {
@@ -41,9 +53,13 @@ const paper = (view, type) => view.needs.flatMap((n) => n.papers).find((p) => p.
 
 test.before(async () => {
   server = http.createServer((req, res) => {
-    void handleDriverPapersRoute(req, res, { jwtSecret: SECRET, kycStorage: storage }, new URL(req.url, 'http://x')).then((handled) => {
-      if (!handled) { res.statusCode = 404; res.end('{}'); }
-    });
+    const url = new URL(req.url, 'http://x');
+    void (async () => {
+      if (url.pathname === '/drivers/kyc/submit') return handleDriverKycSubmitRoute(req, res, { jwtSecret: SECRET, kycStorage: storage });
+      if (await handleDriverPapersRoute(req, res, { jwtSecret: SECRET, kycStorage: storage }, url)) return;
+      if (await handleAdminDriverPapersRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: storage, publisher }, url)) return;
+      res.statusCode = 404; res.end('{}');
+    })();
   });
   await new Promise((resolve) => server.listen(0, resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -62,6 +78,8 @@ test('a driver with nothing sent sees every need, which are required, and six th
   assert.deepEqual(need(body, 'roadworthy').papers.map((p) => p.type), ['roadworthiness', 'vioInspection']);
   assert.equal(body.details.complete, false);
   assert.equal(body.toDo, 6, 'five required papers and the details');
+  assert.equal(body.requiredFrom, null, 'no day is set from which papers are needed');
+  assert.equal(body.blocked, false);
 });
 
 test('the name is taken as it is on the licence, with the licence number and a date that has not passed', async () => {
@@ -78,6 +96,7 @@ test('the name is taken as it is on the licence, with the licence number and a d
 
   const saved = await put(good);
   assert.equal(saved.status, 200);
+  delete saved.body.requiredFrom; delete saved.body.blocked;
   assert.deepEqual(saved.body.details, { legalName: 'Adebayo Tunde Okafor', licenceNumber: 'ABC12345DE67', licenceExpiresOn: inDays(400), licenceExpired: false, complete: true });
   assert.equal(saved.body.toDo, 5);
   const row = await prisma.driver.findUnique({ where: { id: d.id } });
@@ -158,6 +177,171 @@ test('how a paper stands: approved, sent back with the reason, running out soon,
   assert.equal(paper(fixed, 'roadworthiness').document.rejectionReason, null);
 });
 
+// ── the admin ───────────────────────────────────────────────────────────────
+
+test('the admin opens a driver\'s papers, approves one and sends one back with a reason; the driver is told each time', async () => {
+  const d = await driver();
+  const staff = await admin();
+  await call(d.token, 'PUT', '/drivers/papers/details', { legalName: 'Bola Ahmed Musa', licenceNumber: 'LAG1234567', licenceExpiresOn: inDays(500) });
+  await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: pdf(), expiresOn: inDays(200), number: 'POL-9' });
+  await call(d.token, 'POST', '/drivers/papers', { type: 'hackneyPermit', file: jpeg(), expiresOn: inDays(300) });
+
+  assert.equal((await call(null, 'GET', `/admin/drivers/${d.id}/papers`)).status, 401);
+  assert.equal((await call(d.token, 'GET', `/admin/drivers/${d.id}/papers`)).status, 401, 'a driver\'s login is not an admin\'s');
+  const opened = await call(staff, 'GET', `/admin/drivers/${d.id}/papers`);
+  assert.equal(opened.status, 200);
+  assert.equal(opened.body.details.legalName, 'Bola Ahmed Musa');
+  const insurance = paper(opened.body, 'insurance').document;
+  assert.match(insurance.url, /^https:\/\/files\.test\/mem\//, 'a link to open the file');
+  assert.deepEqual([insurance.status, insurance.fileType, insurance.number], ['PENDING', 'application/pdf', 'POL-9']);
+  assert.equal(paper(opened.body, 'vehicleLicence').document, null, 'not sent: nothing to open');
+
+  const review = (type, body) => call(staff, 'POST', `/admin/drivers/${d.id}/papers/${type}/review`, body);
+  assert.equal((await review('vehicleLicence', { decision: 'approve' })).status, 404, 'a paper not sent cannot be reviewed');
+  assert.equal((await review('insurance', { decision: 'maybe' })).status, 400);
+  assert.equal((await review('hackneyPermit', { decision: 'reject' })).body.code, 'REASON_NEEDED');
+  assert.equal((await review('hackneyPermit', { decision: 'reject', reason: 'no' })).body.code, 'REASON_NEEDED');
+
+  told.length = 0;
+  const approved = await review('insurance', { decision: 'approve' });
+  assert.deepEqual([approved.status, approved.body.status], [200, 'APPROVED']);
+  const back = await review('hackneyPermit', { decision: 'reject', reason: 'The stamp is not visible.' });
+  assert.equal(back.body.status, 'REJECTED');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const pushes = told.filter((e) => e.eventType === 'PUSH_SEND' && e.userId === d.userId);
+  assert.deepEqual(pushes.map((e) => e.title), ['Insurance approved', 'Hackney permit: please send it again']);
+  assert.match(pushes[1].body, /The stamp is not visible\. Open Your papers/);
+  assert.equal(told.filter((e) => e.eventType === 'IN_APP_SEND').length, 2);
+
+  // The driver sees both answers, and the reviewer's name stays with the admin.
+  const mine = (await call(d.token, 'GET', '/drivers/papers')).body;
+  assert.equal(paper(mine, 'insurance').document.state, 'approved');
+  assert.deepEqual([paper(mine, 'hackneyPermit').document.state, paper(mine, 'hackneyPermit').document.rejectionReason], ['rejected', 'The stamp is not visible.']);
+  assert.equal(paper(mine, 'insurance').document.reviewedBy, undefined);
+  const row = await prisma.driverDocument.findFirst({ where: { driverId: d.id, type: 'insurance' } });
+  assert.equal(row.reviewedBy, 'Ada Reviewer');
+  const log = await prisma.adminActivity.findMany({ where: { adminId: made.admins.at(-1) } });
+  assert.deepEqual(log.map((l) => l.detail.what).sort(), ['approved a paper', 'sent a paper back']);
+
+  // An expired paper cannot be approved.
+  await prisma.driverDocument.update({ where: { driverId_type: { driverId: d.id, type: 'hackneyPermit' } }, data: { expiresOn: new Date(lagosToday().getTime() - 86_400_000) } });
+  assert.equal((await review('hackneyPermit', { decision: 'approve' })).body.code, 'EXPIRED');
+});
+
+test('the admin\'s lists: waiting to be checked (oldest first), expiring soon, expired, and sent back', async () => {
+  const d = await driver();
+  const staff = await admin();
+  const days = (n) => new Date(lagosToday().getTime() + n * 86_400_000);
+  await prisma.driver.update({ where: { id: d.id }, data: { legalName: 'Queue Test Driver' } });
+  await prisma.driverDocument.createMany({ data: [
+    { driverId: d.id, type: 'insurance', fileKey: 'q1', fileType: 'image/jpeg', expiresOn: days(200), status: 'PENDING', uploadedAt: new Date(Date.now() - 3_600_000) },
+    { driverId: d.id, type: 'vehicleLicence', fileKey: 'q2', fileType: 'image/jpeg', expiresOn: days(9), status: 'APPROVED' },
+    { driverId: d.id, type: 'roadworthiness', fileKey: 'q3', fileType: 'image/jpeg', expiresOn: days(-4), status: 'APPROVED' },
+    { driverId: d.id, type: 'hackneyPermit', fileKey: 'q4', fileType: 'image/jpeg', expiresOn: days(100), status: 'REJECTED', rejectionReason: 'Blurry.', reviewedAt: new Date() },
+  ] });
+  const list = async (filter) => (await call(staff, 'GET', `/admin/driver-papers?filter=${filter}`)).body;
+  const mine = (body) => body.items.filter((i) => i.driverId === d.id);
+
+  const waiting = await list('waiting');
+  assert.deepEqual(mine(waiting).map((i) => [i.label, i.driverName, i.status]), [['Insurance', 'Queue Test Driver', 'PENDING']]);
+  assert.ok(waiting.counts.waiting >= 1 && waiting.counts.expiring >= 1 && waiting.counts.expired >= 1 && waiting.counts.sentBack >= 1);
+  assert.deepEqual(mine(await list('expiring')).map((i) => [i.label, i.daysLeft]), [['Vehicle licence', 9]]);
+  assert.deepEqual(mine(await list('expired')).map((i) => [i.label, i.expired]), [['Roadworthiness certificate', true]]);
+  assert.deepEqual(mine(await list('sentBack')).map((i) => [i.label, i.rejectionReason]), [['Hackney permit', 'Blurry.']]);
+  assert.equal((await list('nonsense')).filter, 'waiting', 'an unknown list is the waiting one');
+});
+
+// ── reminders ───────────────────────────────────────────────────────────────
+
+test('a paper running out is reminded at 30, 14 and 3 days and once it has expired, each once', async () => {
+  const today = lagosToday();
+  const days = (n) => new Date(today.getTime() + n * 86_400_000);
+  assert.equal(reminderDue(days(45), null, today), null, 'too far off');
+  assert.equal(reminderDue(days(30), null, today), 30);
+  assert.equal(reminderDue(days(22), 30, today), null, 'already reminded for this stretch');
+  assert.equal(reminderDue(days(14), 30, today), 14);
+  assert.equal(reminderDue(days(10), null, today), 14, 'first heard of at ten days: the 14-day one');
+  assert.equal(reminderDue(days(3), 14, today), 3);
+  assert.equal(reminderDue(days(0), 3, today), null, 'the last day is inside the 3-day stretch');
+  assert.equal(reminderDue(days(-1), 3, today), 0, 'expired');
+  assert.equal(reminderDue(days(-20), 0, today), null, 'and not again');
+
+  const d = await driver();
+  await prisma.driver.update({ where: { id: d.id }, data: { licenceExpiresOn: days(2) } });
+  await prisma.driverDocument.createMany({ data: [
+    { driverId: d.id, type: 'insurance', fileKey: 'r1', fileType: 'image/jpeg', expiresOn: days(12), status: 'APPROVED' },
+    { driverId: d.id, type: 'hackneyPermit', fileKey: 'r2', fileType: 'image/jpeg', expiresOn: days(200), status: 'APPROVED' },
+    { driverId: d.id, type: 'vehicleLicence', fileKey: 'r3', fileType: 'image/jpeg', expiresOn: days(-2), status: 'APPROVED' },
+  ] });
+  told.length = 0;
+  await sendPaperReminders({ publisher }, today);
+  const mine = () => told.filter((e) => e.eventType === 'PUSH_SEND' && e.userId === d.userId).map((e) => e.title).sort();
+  assert.deepEqual(mine(), ["Driver's licence expires in 2 days", 'Insurance expires in 12 days', 'Vehicle licence has expired']);
+  await sendPaperReminders({ publisher }, today);
+  assert.equal(mine().length, 3, 'a second pass the same day sends nothing new');
+
+  // Sending the renewed paper clears its reminder, so the next one starts from the new date.
+  await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: jpeg(), expiresOn: inDays(20) });
+  assert.equal((await prisma.driverDocument.findFirst({ where: { driverId: d.id, type: 'insurance' } })).remindedAt, null);
+});
+
+// ── the deadline ────────────────────────────────────────────────────────────
+
+test('with no day set papers stop nobody; from the day they are required, a driver with papers missing cannot go online', async () => {
+  const d = await driver();
+  delete process.env.DRIVER_PAPERS_REQUIRED_FROM;
+  await assertDriverApproved(d.userId);
+
+  const late = await driver();
+  process.env.DRIVER_PAPERS_REQUIRED_FROM = inDays(5);
+  try {
+    await assertDriverApproved(late.userId);
+    const soon = (await call(late.token, 'GET', '/drivers/papers')).body;
+    assert.deepEqual([soon.requiredFrom, soon.blocked], [inDays(5), false], 'the day is shown, and has not come');
+
+    process.env.DRIVER_PAPERS_REQUIRED_FROM = inDays(-1);
+    const stopped = await driver();
+    await assert.rejects(assertDriverApproved(stopped.userId), (error) => error.code === 'PAPERS_REQUIRED' && /6 of your papers are missing/.test(error.message));
+    assert.equal((await call(stopped.token, 'GET', '/drivers/papers')).body.blocked, true);
+
+    // Everything sent (still waiting to be checked) is enough: they have done their part.
+    await call(stopped.token, 'PUT', '/drivers/papers/details', { legalName: 'Kemi Ade Bello', licenceNumber: 'KJA7654321', licenceExpiresOn: inDays(300) });
+    for (const type of ['hackneyPermit', 'vehicleLicence', 'roadworthiness', 'insurance']) {
+      await call(stopped.token, 'POST', '/drivers/papers', { type, file: jpeg(), expiresOn: inDays(120) });
+    }
+    await assert.rejects(assertDriverApproved(stopped.userId), (error) => /One of your papers/.test(error.message));
+    await call(stopped.token, 'POST', '/drivers/papers', { type: 'ownerLetter', file: jpeg() });
+    await assertDriverApproved(stopped.userId);
+    assert.equal((await call(stopped.token, 'GET', '/drivers/papers')).body.blocked, false);
+  } finally {
+    delete process.env.DRIVER_PAPERS_REQUIRED_FROM;
+  }
+});
+
+// ── sign-up ─────────────────────────────────────────────────────────────────
+
+test('a new driver\'s name and licence details go in with the application; an older app that sends none is still taken', async () => {
+  const application = { ninImage: jpeg(), licenceImage: jpeg(), selfieImage: jpeg(), vehicleImages: Array.from({ length: 7 }, () => jpeg(600)), vehicleMake: 'Toyota', vehicleModel: 'Corolla', vehiclePlate: 'LAG-123-XY', vehicleYear: 2015 };
+  const fresh = async () => {
+    const d = await driver();
+    await prisma.driver.update({ where: { id: d.id }, data: { kycStatus: 'PENDING' } });
+    return d;
+  };
+
+  const a = await fresh();
+  const bad = await call(a.token, 'POST', '/drivers/kyc/submit', { ...application, legalName: 'Sola', licenceNumber: 'ABC1234567', licenceExpiresOn: inDays(100) });
+  assert.deepEqual([bad.status, bad.body.code], [400, 'BAD_NAME']);
+  assert.equal((await prisma.driver.findUnique({ where: { id: a.id } })).kycStatus, 'PENDING', 'nothing was sent');
+  const good = await call(a.token, 'POST', '/drivers/kyc/submit', { ...application, legalName: 'Sola Grace Adeyemi', licenceNumber: 'abc1234567', licenceExpiresOn: inDays(100) });
+  assert.equal(good.status, 200);
+  const row = await prisma.driver.findUnique({ where: { id: a.id } });
+  assert.deepEqual([row.kycStatus, row.legalName, row.licenceNumber], ['SUBMITTED', 'Sola Grace Adeyemi', 'ABC1234567']);
+
+  const b = await fresh();
+  assert.equal((await call(b.token, 'POST', '/drivers/kyc/submit', application)).status, 200, 'no details sent: the application still goes in');
+  assert.equal((await prisma.driver.findUnique({ where: { id: b.id } })).legalName, null);
+});
+
 test('dates: only a real YYYY-MM-DD is a day, and today is Lagos\'s today', () => {
   assert.equal(parseDay('2027-03-31').toISOString(), '2027-03-31T00:00:00.000Z');
   assert.equal(parseDay('2027-3-31'), null);
@@ -182,6 +366,10 @@ test.after(async () => {
   await new Promise((resolve) => server.close(resolve));
   const drivers = await prisma.driver.findMany({ where: { userId: { in: made.users } }, select: { id: true } });
   await prisma.driverDocument.deleteMany({ where: { driverId: { in: drivers.map((d) => d.id) } } });
+  await prisma.driverKycSubmission.deleteMany({ where: { driverId: { in: drivers.map((d) => d.id) } } });
+  await prisma.driverKycReview.deleteMany({ where: { driverId: { in: drivers.map((d) => d.id) } } });
+  await prisma.adminActivity.deleteMany({ where: { adminId: { in: made.admins } } });
+  await prisma.adminUser.deleteMany({ where: { id: { in: made.admins } } });
   await prisma.userActivityEvent.deleteMany({ where: { userId: { in: made.users } } }).catch(() => {});
   await prisma.driver.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.user.deleteMany({ where: { id: { in: made.users } } });

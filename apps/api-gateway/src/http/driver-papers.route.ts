@@ -47,6 +47,35 @@ export function parseDay(value: unknown): Date | null {
 
 const day = (date: Date | null | undefined) => (date ? date.toISOString().slice(0, 10) : null);
 
+/**
+ * The day from which a driver needs their papers in to go online, when one
+ * has been set (DRIVER_PAPERS_REQUIRED_FROM=2026-11-15 in .env). Not set:
+ * papers are asked for and shown, and block nobody.
+ */
+export function papersRequiredFrom(): Date | null {
+  return parseDay(process.env.DRIVER_PAPERS_REQUIRED_FROM);
+}
+
+export type DriverDetails = { legalName: string; licenceNumber: string; licenceExpiresOn: Date };
+
+/** The name and licence details as typed, cleaned and checked. The error is in the driver's words. */
+export function readDriverDetails(body: Record<string, unknown>, today: Date): { ok: true; details: DriverDetails } | { ok: false; error: string; code: string } {
+  const legalName = (getString(body, 'legalName') ?? '').replace(/\s+/g, ' ').trim();
+  const licenceNumber = (getString(body, 'licenceNumber') ?? '').replace(/\s+/g, '').toUpperCase();
+  const licenceExpiresOn = parseDay(body.licenceExpiresOn);
+  if (legalName.length < 5 || legalName.length > 80 || !legalName.includes(' ') || !/^[\p{L}][\p{L} .'’-]*$/u.test(legalName)) {
+    return { ok: false, error: 'Enter your full name as it is on your licence: first name and surname.', code: 'BAD_NAME' };
+  }
+  if (!/^[A-Z0-9]{6,20}$/.test(licenceNumber)) {
+    return { ok: false, error: 'Enter the licence number as it is on your licence: letters and numbers only.', code: 'BAD_LICENCE_NUMBER' };
+  }
+  if (!licenceExpiresOn) return { ok: false, error: 'Enter the date your licence expires.', code: 'BAD_DATE' };
+  if (licenceExpiresOn.getTime() < today.getTime()) {
+    return { ok: false, error: 'That licence has expired. Renew it, then enter the new date.', code: 'EXPIRED' };
+  }
+  return { ok: true, details: { legalName, licenceNumber, licenceExpiresOn } };
+}
+
 type Stored = Awaited<ReturnType<typeof driverPaperClient.listForDriver>>[number];
 
 function stateOf(paper: DriverPaper, doc: Stored | undefined, today: Date): PaperState {
@@ -94,7 +123,11 @@ export async function driverPapersView(driverId: string, now = new Date()) {
   // What the driver still has to do: a required need with nothing good against it, or the details.
   const toDo = needs.filter((n) => n.required && (n.state === 'missing' || n.state === 'rejected' || n.state === 'expired')).length + (detailsComplete ? 0 : 1);
 
+  const requiredFrom = papersRequiredFrom();
   return {
+    // The day papers start to be needed to go online (null: no such day is set), and whether this driver is stopped by it now.
+    requiredFrom: day(requiredFrom),
+    blocked: Boolean(requiredFrom && today.getTime() >= requiredFrom.getTime() && toDo > 0),
     details: {
       legalName: details?.legalName ?? null,
       licenceNumber: details?.licenceNumber ?? null,
@@ -149,26 +182,12 @@ export async function handleDriverPapersRoute(req: IncomingMessage, res: ServerR
   const today = lagosToday();
 
   if (url.pathname === '/drivers/papers/details' && req.method === 'PUT') {
-    const legalName = (getString(body, 'legalName') ?? '').replace(/\s+/g, ' ').trim();
-    const licenceNumber = (getString(body, 'licenceNumber') ?? '').replace(/\s+/g, '').toUpperCase();
-    const licenceExpiresOn = parseDay(body.licenceExpiresOn);
-    if (legalName.length < 5 || legalName.length > 80 || !legalName.includes(' ') || !/^[\p{L}][\p{L} .'’-]*$/u.test(legalName)) {
-      sendJson(res, 400, { error: 'Enter your full name as it is on your licence: first name and surname.', code: 'BAD_NAME' });
+    const read = readDriverDetails(body, today);
+    if (!read.ok) {
+      sendJson(res, 400, { error: read.error, code: read.code });
       return true;
     }
-    if (!/^[A-Z0-9]{6,20}$/.test(licenceNumber)) {
-      sendJson(res, 400, { error: 'Enter the licence number as it is on your licence: letters and numbers only.', code: 'BAD_LICENCE_NUMBER' });
-      return true;
-    }
-    if (!licenceExpiresOn) {
-      sendJson(res, 400, { error: 'Enter the date your licence expires.', code: 'BAD_DATE' });
-      return true;
-    }
-    if (licenceExpiresOn.getTime() < today.getTime()) {
-      sendJson(res, 400, { error: 'That licence has expired. Renew it, then enter the new date.', code: 'EXPIRED' });
-      return true;
-    }
-    await driverPaperClient.saveDetails(driver.id, { legalName, licenceNumber, licenceExpiresOn });
+    await driverPaperClient.saveDetails(driver.id, read.details);
     logActivity({ userId, eventType: 'driver_details_saved', metadata: {} });
     sendJson(res, 200, await driverPapersView(driver.id));
     return true;

@@ -126,6 +126,8 @@ const GatewayEnvSchema = z.object({
   GOOGLE_CLIENT_ID:   z.string().optional().transform(v => v?.trim() || undefined),
   // Resend Email
   RESEND_API_KEY:     z.string().optional().transform(v => v?.trim() || undefined),
+  // The day from which a driver needs their papers in to go online (YYYY-MM-DD). Not set: papers block nobody.
+  DRIVER_PAPERS_REQUIRED_FROM: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   // Cloudflare R2 Storage
   R2_ACCOUNT_ID:      z.string().optional().transform(v => v?.trim() || undefined),
   R2_ACCESS_KEY_ID:   z.string().optional().transform(v => v?.trim() || undefined),
