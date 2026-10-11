@@ -65,19 +65,19 @@ test.before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-test('a driver with nothing sent sees every need, which are required, and six things to do', async () => {
+test('a driver with nothing sent sees every need, all of them required, and seven things to do', async () => {
   const d = await driver();
   assert.equal((await call(null, 'GET', '/drivers/papers')).status, 401);
   const { status, body } = await call(d.token, 'GET', '/drivers/papers');
   assert.equal(status, 200);
   assert.deepEqual(body.needs.map((n) => [n.key, n.required, n.state]), [
     ['hackney', true, 'missing'], ['vehicleLicence', true, 'missing'], ['roadworthy', true, 'missing'],
-    ['insurance', true, 'missing'], ['ownership', true, 'missing'], ['lagos', false, 'missing'],
+    ['insurance', true, 'missing'], ['ownership', true, 'missing'], ['lagos', true, 'missing'],
   ]);
   assert.deepEqual(need(body, 'ownership').papers.map((p) => p.type), ['proofOfOwnership', 'purchaseReceipt', 'ownerLetter'], 'three ways to show whose car it is');
   assert.deepEqual(need(body, 'roadworthy').papers.map((p) => p.type), ['roadworthiness', 'vioInspection']);
   assert.equal(body.details.complete, false);
-  assert.equal(body.toDo, 6, 'five required papers and the details');
+  assert.equal(body.toDo, 7, 'six required papers and the details');
   assert.equal(body.requiredFrom, null, 'no day is set from which papers are needed');
   assert.equal(body.blocked, false);
 });
@@ -98,7 +98,7 @@ test('the name is taken as it is on the licence, with the licence number and a d
   assert.equal(saved.status, 200);
   delete saved.body.requiredFrom; delete saved.body.blocked;
   assert.deepEqual(saved.body.details, { legalName: 'Adebayo Tunde Okafor', licenceNumber: 'ABC12345DE67', licenceExpiresOn: inDays(400), licenceExpired: false, complete: true });
-  assert.equal(saved.body.toDo, 5);
+  assert.equal(saved.body.toDo, 6);
   const row = await prisma.driver.findUnique({ where: { id: d.id } });
   assert.equal(row.legalName, 'Adebayo Tunde Okafor');
   assert.equal(row.kycStatus, 'APPROVED', 'verification itself is untouched');
@@ -126,7 +126,7 @@ test('a paper is a photo or a PDF; one that runs out needs its date, and an expi
   const insurance = paper(sent.body, 'insurance');
   assert.deepEqual([insurance.document.state, insurance.document.number, insurance.document.expiresOn, insurance.document.expiringSoon], ['waiting', 'POL/2026/00123', inDays(200), false]);
   assert.equal(need(sent.body, 'insurance').state, 'waiting');
-  assert.equal(sent.body.toDo, 5, 'four papers and the details left');
+  assert.equal(sent.body.toDo, 6, 'five papers and the details left');
 
   // A paper that does not run out needs no date; a number is kept only where the paper has one.
   const owned = await send({ type: 'proofOfOwnership', file: jpeg(), number: 'ignored' });
@@ -142,7 +142,7 @@ test('any one of the papers for a need meets it: a driver who does not own the c
   assert.equal(paper(view, 'proofOfOwnership').document, null, 'the other two are not asked for');
   const vio = (await call(d.token, 'POST', '/drivers/papers', { type: 'vioInspection', file: jpeg(), expiresOn: inDays(90) })).body;
   assert.equal(need(vio, 'roadworthy').state, 'waiting', 'the VIO report stands in for the roadworthiness certificate');
-  assert.equal(vio.toDo, 4);
+  assert.equal(vio.toDo, 5);
 });
 
 test('how a paper stands: approved, sent back with the reason, running out soon, and expired; sending it again starts it over', async () => {
@@ -163,7 +163,7 @@ test('how a paper stands: approved, sent back with the reason, running out soon,
   assert.equal(need(view, 'insurance').state, 'expired', 'approved once, but past its date: a new one is needed');
   assert.equal(paper(view, 'roadworthiness').document.rejectionReason, 'The photo is cut off at the top.');
   assert.equal(need(view, 'roadworthy').state, 'approved', 'the approved VIO report carries the need although the certificate was sent back');
-  assert.equal(view.toDo, 3, 'insurance, whose car it is, and the details');
+  assert.equal(view.toDo, 4, 'insurance, whose car it is, the Lagos State paper, and the details');
 
   // The new insurance replaces the expired one and waits for review again.
   const again = (await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: jpeg(), expiresOn: inDays(365) })).body;
@@ -301,7 +301,7 @@ test('with no day set papers stop nobody; from the day they are required, a driv
 
     process.env.DRIVER_PAPERS_REQUIRED_FROM = inDays(-1);
     const stopped = await driver();
-    await assert.rejects(assertDriverApproved(stopped.userId), (error) => error.code === 'PAPERS_REQUIRED' && /6 of your papers are missing/.test(error.message));
+    await assert.rejects(assertDriverApproved(stopped.userId), (error) => error.code === 'PAPERS_REQUIRED' && /7 of your papers are missing/.test(error.message));
     assert.equal((await call(stopped.token, 'GET', '/drivers/papers')).body.blocked, true);
 
     // Everything sent (still waiting to be checked) is enough: they have done their part.
@@ -309,6 +309,7 @@ test('with no day set papers stop nobody; from the day they are required, a driv
     for (const type of ['hackneyPermit', 'vehicleLicence', 'roadworthiness', 'insurance']) {
       await call(stopped.token, 'POST', '/drivers/papers', { type, file: jpeg(), expiresOn: inDays(120) });
     }
+    await call(stopped.token, 'POST', '/drivers/papers', { type: 'lagosVehicle', file: jpeg() });
     await assert.rejects(assertDriverApproved(stopped.userId), (error) => /One of your papers/.test(error.message));
     await call(stopped.token, 'POST', '/drivers/papers', { type: 'ownerLetter', file: jpeg() });
     await assertDriverApproved(stopped.userId);
@@ -348,6 +349,32 @@ test('dates: only a real YYYY-MM-DD is a day, and today is Lagos\'s today', () =
   assert.equal(parseDay('2027-13-01'), null);
   assert.equal(parseDay(20270331), null);
   assert.equal(lagosToday(new Date('2026-10-13T23:30:00Z')).toISOString(), '2026-10-14T00:00:00.000Z', 'half past midnight in Lagos is already tomorrow');
+});
+
+test('what a driver is told when something goes wrong is something they can act on, with a code the app can read', async () => {
+  const d = await driver();
+  const raw = (body) => fetch(base + '/drivers/papers', { method: 'POST', headers: { authorization: `Bearer ${d.token}`, 'content-type': 'application/json' }, body });
+  const broken = await raw('{"type": "insurance", "file": "abc');
+  assert.equal(broken.status, 400);
+  assert.deepEqual(await broken.json(), { error: 'That did not arrive in one piece. Check your connection and send it again.', code: 'BAD_UPLOAD' });
+  const list = await raw('[1, 2, 3]');
+  assert.equal((await list.json()).code, 'BAD_UPLOAD');
+
+  // Every refusal is a full sentence, not a status word, and names what to do.
+  const refusals = [
+    await call(d.token, 'POST', '/drivers/papers', { type: 'nope', file: jpeg() }),
+    await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: 'x' }),
+    await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: jpeg() }),
+    await call(d.token, 'POST', '/drivers/papers', { type: 'insurance', file: jpeg(), expiresOn: inDays(-1) }),
+    await call(d.token, 'PUT', '/drivers/papers/details', { legalName: 'X', licenceNumber: 'ABC1234567', licenceExpiresOn: inDays(10) }),
+    await call(d.token, 'PUT', '/drivers/papers/details', { legalName: 'Good Name Here', licenceNumber: '!!', licenceExpiresOn: inDays(10) }),
+  ];
+  for (const r of refusals) {
+    assert.equal(r.status, 400);
+    assert.ok(typeof r.body.code === 'string' && r.body.code.length > 2, 'a code');
+    assert.ok(r.body.error.length > 20 && /[.]$/.test(r.body.error), `a sentence: "${r.body.error}"`);
+    assert.doesNotMatch(r.body.error, /json|payload|invalid|required field|undefined|null/i, 'no developer words');
+  }
 });
 
 test('with storage switched off papers can be read, not sent', async () => {

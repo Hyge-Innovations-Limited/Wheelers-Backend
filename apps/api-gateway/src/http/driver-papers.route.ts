@@ -174,9 +174,19 @@ export async function handleDriverPapersRoute(req: IncomingMessage, res: ServerR
     return true;
   }
 
-  const body = await readJsonBody(req).catch(() => null);
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    // Too big to read at all, or cut off on the way: said in words a driver can act on.
+    const tooBig = error instanceof Error && /too large/i.test(error.message);
+    sendJson(res, tooBig ? 413 : 400, tooBig
+      ? { error: 'That file is too big. Send one under 10 MB.', code: 'FILE_TOO_BIG' }
+      : { error: 'That did not arrive in one piece. Check your connection and send it again.', code: 'BAD_UPLOAD' });
+    return true;
+  }
   if (!isRecord(body)) {
-    sendJson(res, 400, { error: 'Body must be a JSON object' });
+    sendJson(res, 400, { error: 'That did not arrive in one piece. Check your connection and send it again.', code: 'BAD_UPLOAD' });
     return true;
   }
   const today = lagosToday();

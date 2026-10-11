@@ -51,7 +51,7 @@ export const DRIVER_PAPERS: readonly DriverPaper[] = [
   { type: 'proofOfOwnership', label: 'Proof of ownership', hint: 'The proof of ownership certificate, in your name', expires: false, numbered: false },
   { type: 'purchaseReceipt', label: 'Receipt of the car', hint: 'The receipt from when the car was bought', expires: false, numbered: false },
   { type: 'ownerLetter', label: "Owner's letter", hint: 'If the car is not yours: a signed letter from the owner letting you drive it', expires: false, numbered: false },
-  { type: 'lagosVehicle', label: 'Lagos State vehicle paper', hint: 'The Lagos State paper for the car, if you have one', expires: false, numbered: false },
+  { type: 'lagosVehicle', label: 'Lagos State vehicle paper', hint: 'The Lagos State paper for the car', expires: false, numbered: false },
 ];
 
 export const DRIVER_PAPER_NEEDS: readonly DriverPaperNeed[] = [
@@ -60,7 +60,7 @@ export const DRIVER_PAPER_NEEDS: readonly DriverPaperNeed[] = [
   { key: 'roadworthy', label: 'Roadworthiness or VIO inspection', required: true, anyOf: ['roadworthiness', 'vioInspection'] },
   { key: 'insurance', label: 'Insurance', required: true, anyOf: ['insurance'] },
   { key: 'ownership', label: 'Whose car it is', required: true, anyOf: ['proofOfOwnership', 'purchaseReceipt', 'ownerLetter'] },
-  { key: 'lagos', label: 'Lagos State vehicle paper', required: false, anyOf: ['lagosVehicle'] },
+  { key: 'lagos', label: 'Lagos State vehicle paper', required: true, anyOf: ['lagosVehicle'] },
 ];
 
 export function driverPaper(type: string): DriverPaper | null {
