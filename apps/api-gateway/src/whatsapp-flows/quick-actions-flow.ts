@@ -65,6 +65,7 @@ export interface QuickActionsFlowDeps {
   supportContact?: () => string | null;
   onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
   onWalletShort?: OffersFormDeps['onWalletShort'];
+  onSearchCancelled?: OffersFormDeps['onSearchCancelled'];
   /** Withdraw needs the PIN and a bank: send the chat the Withdraw button. */
   onWithdraw?: (userId: string) => Promise<void>;
   /** No account number yet: open one now. Null when it is still on its way. */
@@ -179,7 +180,7 @@ const editDeps = (deps: QuickActionsFlowDeps): EditTripFlowDeps => ({
   redisClient: deps.redisClient, googleMapsApiKey: deps.googleMapsApiKey, routePlanner: deps.routePlanner, publisher: deps.publisher, onBidPlaced: deps.onBidPlaced,
 });
 const offersDeps = (deps: QuickActionsFlowDeps): OffersFormDeps => ({
-  redisClient: deps.redisClient, publisher: deps.publisher, onRideConfirmed: deps.onRideConfirmed, onWalletShort: deps.onWalletShort,
+  redisClient: deps.redisClient, publisher: deps.publisher, onRideConfirmed: deps.onRideConfirmed, onWalletShort: deps.onWalletShort, onSearchCancelled: deps.onSearchCancelled,
 });
 
 // ── MENU ─────────────────────────────────────────────────────────────────

@@ -247,6 +247,9 @@ Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
  * rider acts; the chat is the record — and where the driver's details need to
  * be when the page is closed and the car is outside.
  */
+/** Said when a search is cancelled from the page or a form. Sent as a plain reply, so Quick Actions is on it. */
+export const SEARCH_CANCELLED_REPLY = 'Search cancelled — nothing was charged.\n\nTap *Quick Actions* to book again, or just send your next trip.';
+
 export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
   return async (event: RidePageChatEvent): Promise<void> => {
     if (!event.phone) return;
@@ -262,7 +265,7 @@ export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
 
     if (event.kind === 'search_cancelled') {
       // Quick Actions (the button on this message) has everything next: book again, trips, add money.
-      const text = 'Search cancelled — nothing was charged.\n\nTap *Quick Actions* to book again, or just send your next trip.';
+      const text = SEARCH_CANCELLED_REPLY;
       await appendWhatsappConversation(deps.redisClient, event.phone, [
         { role: 'user', content: '[cancelled the search on the offers page]' },
         { role: 'assistant', content: text },
@@ -470,6 +473,16 @@ export async function acceptOfferInChat(
 export function createOffersFormChatHooks(deps: MetaWhatsappRouteDeps) {
   const phoneOf = async (userId: string) => (await userClient.findById(userId).catch(() => null))?.phone ?? null;
   return {
+    // A plain reply always carries the Quick Actions button: book again, trips, add money.
+    onSearchCancelled: async (userId: string): Promise<void> => {
+      const phone = await phoneOf(userId);
+      if (!phone) return;
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: '[cancelled the search in the offers form]' },
+        { role: 'assistant', content: SEARCH_CANCELLED_REPLY },
+      ]);
+      await sendMetaReply(deps, phone, SEARCH_CANCELLED_REPLY);
+    },
     onRideConfirmed: async (userId: string, ride: ConfirmedRideForChat): Promise<void> => {
       const phone = await phoneOf(userId);
       if (!phone) return;

@@ -68,6 +68,7 @@ export interface WhatsappFlowEndpointDeps {
   /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
   onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
   onWalletShort?: OffersFormDeps['onWalletShort'];
+  onSearchCancelled?: OffersFormDeps['onSearchCancelled'];
   /** Quick Actions form: where support points, the Withdraw button, opening an account number. */
   supportContact?: QuickActionsFlowDeps['supportContact'];
   onWithdraw?: QuickActionsFlowDeps['onWithdraw'];
@@ -219,6 +220,7 @@ async function handleFlowAction(
       publisher: deps.publisher,
       onRideConfirmed: deps.onRideConfirmed,
       onWalletShort: deps.onWalletShort,
+      onSearchCancelled: deps.onSearchCancelled,
     });
   }
 
@@ -232,6 +234,7 @@ async function handleFlowAction(
       supportContact: deps.supportContact,
       onRideConfirmed: deps.onRideConfirmed,
       onWalletShort: deps.onWalletShort,
+      onSearchCancelled: deps.onSearchCancelled,
       onWithdraw: deps.onWithdraw,
       ensureDepositAccount: deps.ensureDepositAccount,
       onBookInChat: deps.onBookInChat,

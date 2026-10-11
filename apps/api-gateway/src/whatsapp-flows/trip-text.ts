@@ -37,7 +37,8 @@ export const PRICE_ASK_START = 'Name your price, e.g.';
  * The price check under a trip, the ONE version everywhere (the first quote,
  * "Trip confirmed", "Pickup changed", a group ride switched to a normal one).
  * It was written out six times and had drifted. The lowest offer is not
- * advertised: a rider who goes under it is told then, with the amount.
+ * in the chat message: it is shown in the price forms, where the price is
+ * typed, and a rider who goes under it is told the amount.
  */
 export function priceCheckLines(p: { distanceKm: number; durationMin: number; suggestedFareNgn: number; minOfferNgn: number }): string[] {
   const suggested = p.suggestedFareNgn.toLocaleString();

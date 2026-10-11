@@ -1430,7 +1430,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
   const before = sent.length;
   const price = await submit({});
   assert.equal(price.screen, 'SET_PRICE');
-  assert.match(price.data.limits_line, /^Suggested ₦[\d,]+$/);
+  assert.match(price.data.limits_line, /Lowest for this trip: ₦[\d,]+ · suggested ₦[\d,]+/);
   assert.equal(price.data.suggested_price, String((await bidState.getPendingRoute(redis, user.id)).suggestedFareNgn), 'the box opens on the suggested fare');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
 
@@ -1912,7 +1912,7 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
   assert.equal(sent.length, before, 'not one chat message');
 });
 
-test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why inside the form — neither sends a chat message', async () => {
+test('OFFERS FORM · Decline all keeps the search going and sends nothing; Cancel search asks why inside the form, then says so once in the chat with Quick Actions', async () => {
   const { redis, sent, user, rideId, form, events } = await riderWithOffersForm(10_000);
   await bidState.addBid(redis, rideId, offerFrom(await onlineDriver(), 2400));
   const before = sent.length;
@@ -1925,6 +1925,7 @@ test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why 
   assert.equal(await bidState.getActiveRide(redis, user.id), rideId, 'still searching');
   assert.equal(events('RIDE_CANCELLED').length, 0);
   assert.deepEqual((await form('INIT')).data.choices.map((c) => c.id), ['refresh', 'change_price', 'cancel_search'], 'nothing to decline once nothing is on the table');
+  assert.equal(sent.length, before, 'declining sends no chat message');
 
   const why = await form('data_exchange', { action: 'offers_choice', choice: 'cancel_search' });
   assert.equal(why.screen, 'CANCEL_SEARCH');
@@ -1934,7 +1935,11 @@ test('OFFERS FORM · Decline all keeps the search going; Cancel search asks why 
   assert.match(cancelled.data.headline, /Search cancelled/);
   assert.deepEqual(events('RIDE_CANCELLED').map((e) => [e.rideId, e.reason, e.cancelledBy]), [[rideId, 'Accidental request', 'rider']]);
   assert.equal(await bidState.getActiveRide(redis, user.id), null);
-  assert.equal(sent.length, before, 'not one chat message for either');
+  // The offers message the form hung from is dead now: the chat gets one line, with the way to book again on it.
+  assert.equal(sent.length, before + 1, 'one chat message for the cancel');
+  assert.match(last(sent).interactive.body.text, /Search cancelled — nothing was charged/);
+  assert.equal(last(sent).interactive.action.button, 'Quick Actions');
+  assert.match(cancelled.data.note ?? cancelled.data.body ?? JSON.stringify(cancelled.data), /Quick Actions/);
 
   // The form can only OPEN on its first screen — a finished search says so there.
   const over = await form('INIT');

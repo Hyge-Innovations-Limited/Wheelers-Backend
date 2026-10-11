@@ -33,7 +33,7 @@ import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier
  *     a driver       → the fare is held, the ride confirmed        → DONE
  *     Change price   → CHANGE_PRICE → "Bid updated"             → DONE   (no chat message)
  *     Decline all    → offers dropped, the search carries on       → DONE   (no chat message)
- *     Cancel search  → CANCEL_SEARCH (why?) → cancelled            → DONE   (no chat message)
+ *     Cancel search  → CANCEL_SEARCH (why?) → cancelled            → DONE   (one chat message, with Quick Actions)
  *
  * Accepting IS confirmRideWithOffer — the same function the chat's tap and the
  * page used — so the wallet-first / driver-still-there / hold-before-confirm
@@ -54,6 +54,8 @@ export interface OffersFormDeps {
   publisher: GatewayPublisher;
   /** Ride confirmed in the form: send the driver's details to the chat. */
   onRideConfirmed?: (userId: string, ride: ConfirmedRide) => Promise<void>;
+  /** Search cancelled in the form: say so in the chat, on a message that carries Quick Actions. */
+  onSearchCancelled?: (userId: string) => Promise<void>;
   /** Wallet short for the chosen driver: remember the choice and send the Add money button. */
   onWalletShort?: (userId: string, rideId: string, bid: WhatsappBid, short: { balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }) => Promise<void>;
 }
@@ -140,12 +142,13 @@ async function priceScreen(deps: OffersFormDeps, rideId: string, error = '', pre
 }
 
 function priceBox(trip: { offerNgn: number; suggestedFareNgn: number }, error = ''): FlowScreen {
+  const floor = validateRiderOffer(0, trip.suggestedFareNgn).minOfferNgn;
   return {
     screen: 'CHANGE_PRICE',
     data: {
       current_price: String(trip.offerNgn),
       offer_line: `Your price now: ${naira(trip.offerNgn)}`,
-      limits_line: `Suggested ${naira(trip.suggestedFareNgn)}`,
+      limits_line: `Lowest for this trip: ${naira(floor)} · suggested ${naira(trip.suggestedFareNgn)}`,
       error,
       has_error: error.length > 0,
     },
@@ -265,7 +268,10 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     const reason = CANCEL_REASONS[String(data['reason'] ?? '')];
     if (!reason) return cancelScreen('Pick a reason to continue.');
     await cancelWhatsappRide(service, userId, rideId, reason);
-    return done('Search cancelled', 'Nothing was charged. Message Wheelers whenever you need a ride.', false);
+    // The offers message this form hung from is dead now, so the chat would be
+    // left with no button at all: one line, with Quick Actions on it.
+    await deps.onSearchCancelled?.(userId).catch((error) => console.warn('[offers-form] cancel not said in the chat', { userId, error: error instanceof Error ? error.message : String(error) }));
+    return done('Search cancelled', 'Nothing was charged. Quick Actions is in the chat when you want to book again.', false);
   }
 
   const choice = String(data['choice'] ?? '');
