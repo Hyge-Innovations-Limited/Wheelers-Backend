@@ -71,6 +71,7 @@ import {
   handleDriverKycResubmitRoute,
   handleDriverKycStatusRoute,
 } from "./http/driver-kyc.route";
+import { handleDriverPapersRoute } from "./http/driver-papers.route";
 import {
   handleAdminListDriversRoute,
   handleAdminGetDriverRoute,
@@ -1268,6 +1269,11 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         kycStorage: driverKycStorage,
       });
+      return;
+    }
+
+    // The papers a driver keeps for their car, and their name as on the licence.
+    if (await handleDriverPapersRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, kycStorage: driverKycStorage }, url)) {
       return;
     }
 

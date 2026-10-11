@@ -106,6 +106,12 @@ model Driver {
   vehicleModel         String?
   vehiclePlate         String?
   vehicleYear          Int?
+  /// The driver's name as it is on their licence, typed by them (the User's
+  /// name is whatever they signed up as). With the licence's own number and
+  /// the day it runs out.
+  legalName            String?
+  licenceNumber        String?
+  licenceExpiresOn     DateTime?             @db.Date
   licenceCid           String?
   insuranceCid         String?
   selfieHash           String?
@@ -116,6 +122,7 @@ model Driver {
   user                 User                  @relation(fields: [userId], references: [id])
   kycSubmission        DriverKycSubmission?
   kycReviews           DriverKycReview[]
+  documents            DriverDocument[]
   rides                Ride[]                @relation("DriverRides")
   bids                 DriverBid[]           @relation("DriverBids")
   interstateDepartures InterstateDeparture[] @relation("DriverInterstateDepartures")
@@ -1427,4 +1434,38 @@ model MarketSample {
   addedBy   String?
 
   @@index([takenAt])
+}
+
+enum DriverDocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// One of the papers a driver keeps for their car (hackney permit, insurance,
+/// roadworthiness...): the types are DRIVER_PAPERS in @wheleers/config. One
+/// row for each type a driver has sent; sending it again replaces the file and
+/// puts it back to PENDING for review.
+model DriverDocument {
+  id              String               @id @default(uuid())
+  driverId        String
+  /// A DriverPaperType.
+  type            String
+  fileKey         String
+  /// "image/jpeg" | "image/png" | "application/pdf"
+  fileType        String
+  /// The number on it, where it has one worth keeping.
+  number          String?
+  /// The day it runs out, for papers that do.
+  expiresOn       DateTime?            @db.Date
+  status          DriverDocumentStatus @default(PENDING)
+  rejectionReason String?
+  uploadedAt      DateTime             @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  driver          Driver               @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, type])
+  @@index([status, uploadedAt])
+  @@index([expiresOn])
 }

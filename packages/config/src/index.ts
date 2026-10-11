@@ -21,6 +21,8 @@ export type { McpEnv }          from './env/mcp.env';
 
 // Launch zones (analytics)
 export { LAUNCH_ZONES, OUTSIDE_ZONES_LABEL, zoneFor } from './zones';
+export { DRIVER_PAPERS, DRIVER_PAPER_NEEDS, DRIVER_PAPER_SOON_DAYS, driverPaper } from './driver-papers';
+export type { DriverPaper, DriverPaperNeed, DriverPaperType } from './driver-papers';
 export type { LaunchZone } from './zones';
 
 // Constants
