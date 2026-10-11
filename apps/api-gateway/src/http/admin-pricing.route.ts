@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { calculateSuggestedFare, calculateRideFees, normalizePricingSettings, BOOKING_FEE_NGN, COMMISSION_RATE, VAT_RATE, LAGOS_STATE_FEE_NGN, RATE_PER_KM_NGN } from '@wheleers/config';
+import { calculateSuggestedFare, calculateRideFees, getPricingMlModel, normalizePricingSettings, BOOKING_FEE_NGN, COMMISSION_RATE, VAT_RATE, LAGOS_STATE_FEE_NGN, RATE_PER_KM_NGN } from '@wheleers/config';
 import { pricingClient } from '@wheleers/db';
 import { clientIp, recordAdminActivity } from '../admin/activity';
 import { busynessNow } from '../pricing/busyness';
@@ -15,9 +15,15 @@ interface PricingDeps {
 const EXAMPLES = [
   { label: '5 km, 14 min', distanceKm: 5, minutes: 14 },
   { label: '10 km, 26 min', distanceKm: 10, minutes: 26 },
+  { label: '15.5 km, 23 min', distanceKm: 15.5, minutes: 23 },
   { label: '16 km, 41 min', distanceKm: 16, minutes: 41 },
   { label: '25 km, 60 min', distanceKm: 25, minutes: 60 },
 ];
+
+function trainedModel() {
+  const ml = getPricingMlModel();
+  return ml ? { trainedAt: ml.trainedAt, rows: ml.rows, source: ml.source } : null;
+}
 
 function examples() {
   const quiet = new Date('2026-10-14T12:00:00Z');  // a Wednesday, 13:00 in Lagos
@@ -61,7 +67,7 @@ export async function handleAdminPricingRoute(req: IncomingMessage, res: ServerR
     const before = (await pricingClient.loadSettings()).settings;
     // The model is the training script's to write: a save from the page keeps the one there is.
     const next = normalizePricingSettings({ ...body, model: before.model });
-    if (next.modelOn && !next.model) {
+    if (next.modelOn && !next.model && !getPricingMlModel()) {
       sendJson(res, 400, { error: 'There is no trained model yet, so it cannot be switched on.' });
       return true;
     }
@@ -83,6 +89,8 @@ export async function handleAdminPricingRoute(req: IncomingMessage, res: ServerR
     settings: saved.settings,
     updatedAt: saved.updatedAt?.toISOString() ?? null,
     updatedBy: saved.updatedBy,
+    // The model this build prices with (trained offline, shipped with the code). Null when there is none.
+    trainedModel: trainedModel(),
     fixed: { serviceChargeNgn: BOOKING_FEE_NGN, commissionRate: COMMISSION_RATE, vatRate: VAT_RATE, stateLevyNgn: LAGOS_STATE_FEE_NGN, baseRatePerKmNgn: RATE_PER_KM_NGN },
     examples: examples(),
     busyness: busynessNow(),

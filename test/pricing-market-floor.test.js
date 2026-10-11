@@ -15,13 +15,14 @@ const { randomUUID } = require('node:crypto');
 const local = require('../apps/api-gateway/dist/auth/local.js');
 const { prisma, pricingClient } = require('@wheleers/db');
 const config = require('../packages/config/dist/index.js');
-const { calculateSuggestedFare, setPricingSettings, DEFAULT_PRICING_SETTINGS, validateRiderOffer, marketFareNgn, isRushHour, calculateRideFees } = config;
+const { calculateSuggestedFare, setPricingSettings, DEFAULT_PRICING_SETTINGS, validateRiderOffer, marketFareNgn, isRushHour, calculateRideFees, getPricingMlModel, setPricingMlModel, scoreForest } = config;
 const { handleAdminPricingRoute } = require('../apps/api-gateway/dist/http/admin-pricing.route.js');
 const { measureBusyness, demandFactorAt } = require('../apps/api-gateway/dist/pricing/busyness.js');
 
 const QUIET = new Date('2026-10-14T12:00:00Z'); // Wednesday 13:00 in Lagos
 const RUSH = new Date('2026-10-14T17:00:00Z');  // Wednesday 18:00 in Lagos
-const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, marketFloorOn: true, trafficOn: true, demandOn: true };
+// Round figures for the other app, so the sums below can be done by hand.
+const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, marketFloorOn: true, trafficOn: true, demandOn: true, quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 }, rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 } };
 const made = { admins: [], rides: [], users: [] };
 let savedBefore;
 
@@ -29,7 +30,7 @@ test.before(async () => {
   savedBefore = await prisma.pricingSettings.findUnique({ where: { id: 'current' } });
 });
 
-test.afterEach(() => { setPricingSettings(DEFAULT_PRICING_SETTINGS); });
+test.afterEach(() => { setPricingSettings(DEFAULT_PRICING_SETTINGS); setPricingMlModel(undefined); });
 
 test('with nothing saved, pricing is the plain rate per km', () => {
   setPricingSettings(null);
@@ -80,7 +81,8 @@ test('however far the other app is undercut, our own rate per km still stands', 
   assert.equal(p.setBy, 'rules');
 });
 
-test('the model only watches until it is switched on; then it may lift the fare, up to the cap', () => {
+test('in a build with no trained model, the small fitted one only watches until it is switched on; then it may lift the fare, up to the cap', () => {
+  setPricingMlModel(null);
   const model = { trainedAt: '2026-10-11T00:00:00Z', rows: 500, intercept: Math.log(520), coef: { lnKm: 0, minPerKm: 0, lnDemand: 0, rush: 0, night: 0, weekend: 0 } };
   setPricingSettings({ ...FLOOR_ON, model, modelOn: false });
   const watching = calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET });
@@ -131,9 +133,94 @@ test('a seeded model says what was assumed: dearer per km on a slow road, at nig
   const blended = fitLinear([...realX, ...made.X], [...realY, ...made.y], 1e-3, [...realX.map(() => 1), ...made.X.map(() => 0)]);
   assert.ok(Math.abs(Math.exp(blended[0] + blended[1] * Math.log(10) + blended[2] * 2.5) - 500) < 5);
 
+  setPricingMlModel(null);
   const s = setPricingSettings({ ...FLOOR_ON, model: { trainedAt: 'x', rows: 0, seeded: true, intercept: w[0], coef: { lnKm: w[1], minPerKm: w[2], lnDemand: w[3], rush: w[4], night: w[5], weekend: w[6] } } });
   assert.equal(s.model.seeded, true, 'and the settings remember it was seeded');
   assert.equal(calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET }).suggestedFareNgn, 7500, 'saved but off: prices are untouched');
+});
+
+// ── the trained model (packages/config/models/pricing-ml.json) ─────────────
+
+// The other app's figures as the model was trained with them: the two real quotes we have.
+const SAMPLED = { ...FLOOR_ON, quiet: { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 }, rush: { baseNgn: 575, perKmNgn: 308, perMinuteNgn: 58 } };
+const SUNDAY = new Date('2026-10-11T12:00:00Z');
+
+test('the trained model is in this build and the gateway scores it exactly as the trainer did', () => {
+  const ml = getPricingMlModel();
+  assert.ok(ml, 'packages/config/models/pricing-ml.json is there and readable');
+  assert.ok(ml.rows >= 1_000_000, `trained on ${ml.rows} quotes`);
+  assert.ok(ml.checks.length >= 20);
+  for (const check of ml.checks) {
+    for (const name of ['requested', 'answered', 'agreed', 'paid']) {
+      assert.ok(Math.abs(scoreForest(ml.models[name], check.x) - check[name]) < 1e-9, `${name} matches the trainer`);
+    }
+  }
+});
+
+test('the real trip (15.5 km, 23 min, a Sunday, the other app at N5,800): off, the model only watches; on, N6,650 becomes N6,000', () => {
+  setPricingSettings({ ...SAMPLED, modelOn: false });
+  const watching = calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 });
+  assert.equal(watching.suggestedFareNgn, 6650, 'the price shown is today\'s');
+  assert.equal(watching.setBy, 'rules');
+  assert.equal(watching.modelFareNgn, 6000, 'what the model would show is recorded beside it');
+  assert.equal(watching.minOfferNgn, 6350, 'and a rider may still bargain the whole premium away');
+
+  setPricingSettings({ ...SAMPLED, modelOn: true });
+  const on = calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 });
+  assert.equal(on.suggestedFareNgn, 6000, 'N650 less');
+  assert.equal(on.setBy, 'model');
+  assert.ok(on.suggestedFareNgn >= Math.round(on.marketFareNgn) + 150, 'still at least N150 above the other app');
+  assert.equal(on.minOfferNgn, 5850, 'a rider can bargain N150 off, no more');
+  assert.ok(on.minOfferNgn >= on.marketFareNgn, 'so no offer goes under the other app');
+  assert.equal(validateRiderOffer(5800, on.suggestedFareNgn).valid, false);
+  assert.equal(on.ratePerKmNgn, 339, 'the rate drivers are shown follows the fare');
+});
+
+test('a cut is a few hundred naira, never one fixed amount, and always inside its limits', () => {
+  const cuts = new Map();
+  let seen = 0;
+  for (const at of [SUNDAY, QUIET, RUSH, new Date('2026-10-14T23:30:00Z')]) {
+    for (let km = 2; km <= 45; km += 1.7) {
+      for (const minPerKm of [1.5, 2.2, 3.0, 4.2]) {
+        const factors = { durationSeconds: km * minPerKm * 60, at, trafficRatio: Math.max(1, minPerKm / 1.6) };
+        setPricingSettings({ ...SAMPLED, modelOn: false });
+        const today = calculateSuggestedFare(km, factors);
+        setPricingSettings({ ...SAMPLED, modelOn: true });
+        const model = calculateSuggestedFare(km, factors);
+        const cut = today.suggestedFareNgn - model.suggestedFareNgn;
+        seen += 1;
+        cuts.set(cut, (cuts.get(cut) ?? 0) + 1);
+        const where = `${km.toFixed(1)} km at ${minPerKm} min/km`;
+        assert.ok(cut <= 700, `${where}: never more than N700 off (${cut})`);
+        assert.ok(cut <= 0.1 * today.suggestedFareNgn + 50, `${where}: never more than a tenth of the fare`);
+        assert.ok(model.suggestedFareNgn >= 2500, `${where}: never under the minimum fare`);
+        assert.ok(model.suggestedFareNgn % 50 === 0);
+        if (cut > 0) assert.ok(model.suggestedFareNgn >= model.marketFareNgn + 150, `${where}: a cut stops N150 above the other app`);
+        assert.ok(model.suggestedFareNgn <= Math.ceil((Math.max(today.floorFareNgn, 375 * km * 1.075 + 350) * 1.5) / 50) * 50 + 50, `${where}: never above the lift limit`);
+        assert.ok(model.minOfferNgn >= Math.min(model.marketFareNgn, model.suggestedFareNgn), `${where}: no offer under the other app`);
+      }
+    }
+  }
+  const sizes = [...cuts.keys()].filter((c) => c > 0);
+  assert.ok(sizes.length >= 8, `cuts come in many sizes (${sizes.sort((a, b) => a - b).join(', ')})`);
+  const most = Math.max(...[...cuts.entries()].filter(([c]) => c > 0).map(([, n]) => n));
+  assert.ok(most < 0.5 * seen, 'no single amount is taken off most trips');
+});
+
+test('owners set how far the model may go: no room means no cut, and a damaged model file never stops a quote', () => {
+  setPricingSettings({ ...SAMPLED, modelOn: true, maxDiscountNgn: 0 });
+  assert.equal(calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 }).suggestedFareNgn, 6650);
+  setPricingSettings({ ...SAMPLED, modelOn: true, maxDiscountNgn: 300 });
+  assert.equal(calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 }).suggestedFareNgn, 6350);
+  setPricingSettings({ ...SAMPLED, modelOn: true, modelPremiumNgn: 500 });
+  assert.equal(calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 }).suggestedFareNgn, 6350, 'never closer to the other app than asked');
+
+  setPricingMlModel({ version: 1, features: ['nonsense'], models: {} });
+  assert.equal(getPricingMlModel(), null);
+  setPricingSettings({ ...SAMPLED, modelOn: true });
+  const p = calculateSuggestedFare(15.511, { durationSeconds: 23 * 60, at: SUNDAY, trafficRatio: 1 });
+  assert.equal(p.suggestedFareNgn, 6650, 'priced by the floor and the rules, as if there were no model');
+  assert.equal(p.minOfferNgn, 6350);
 });
 
 // ── the owners' endpoint ────────────────────────────────────────────────────
@@ -177,8 +264,13 @@ test('owners read and save the settings; staff are told there is nothing there; 
   assert.equal((await pricingClient.loadSettings()).settings.premiumNgn, 450, 'in the database');
   assert.equal(config.getPricingSettings().premiumNgn, 450, 'and in this process at once');
 
+  assert.ok(saved.body.trainedModel.rows >= 1_000_000, 'the page is told which model this build prices with');
+  const on = await call(owner, 'PUT', { ...FLOOR_ON, modelOn: true });
+  assert.equal(on.status, 200, 'there is a trained model, so it can be switched on');
+  assert.equal(on.body.settings.modelOn, true);
+  setPricingMlModel(null);
   const refused = await call(owner, 'PUT', { ...FLOOR_ON, modelOn: true });
-  assert.equal(refused.status, 400);
+  assert.equal(refused.status, 400, 'with no model of any kind there is nothing to switch on');
   const log = await prisma.adminActivity.findFirst({ where: { adminId: made.admins[0], kind: 'pricing' } });
   assert.ok(log, 'the change is on the owners\' activity timeline');
 });

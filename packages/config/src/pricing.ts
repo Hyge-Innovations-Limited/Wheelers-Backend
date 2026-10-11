@@ -27,6 +27,8 @@
  * a premium), the rules (the base rate lifted by traffic and a busy area)
  * and, once switched on, the model. The floor is never undercut.
  */
+import { chooseFare, getPricingMlModel } from './pricing-ml';
+
 export type PricingVersion = 1 | 2;
 export const CURRENT_PRICING_VERSION: PricingVersion = 2;
 
@@ -107,23 +109,45 @@ export type PricingSettings = {
   model: PricingModel | null;
   /** The rules and the model may lift a fare to at most this many times the floor. */
   liftCap: number;
+  /**
+   * With the model on, the most it may take off today's price for a trip, in
+   * naira. (Never more than a tenth of the fare either, so a short trip is
+   * not cut by as much as a long one.)
+   */
+  maxDiscountNgn: number;
+  /**
+   * With the model on, the least a price may sit above the other app's fare:
+   * a cut stops here. It is also the most a rider may then bargain away, so
+   * an offer never goes under the other app.
+   */
+  modelPremiumNgn: number;
+  /** What a completed ride is worth to Wheelers beyond what it earns on it: the higher, the readier the model is to cut. */
+  rideValueNgn: number;
 };
+
+/** A cut is never more than this share of the fare. */
+const MODEL_MAX_DISCOUNT_SHARE = 0.1;
 
 /**
  * With nothing saved, pricing is the plain rate per km. The figures for the
- * other app are a starting guess from one real quote (16 km, ₦7,200) and are
- * meant to be replaced with sampled ones.
+ * other app come from two real quotes (15.5 km in 23 min on a clear road,
+ * ₦5,800; 16 km in 33 min, ₦7,200), which is thin: they are meant to be
+ * replaced with regularly sampled ones. The pricing model was trained with
+ * these (ml/pricing/world.py).
  */
 export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   marketFloorOn: false,
   premiumNgn: 300,
-  quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 },
-  rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 },
+  quiet: { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 },
+  rush: { baseNgn: 575, perKmNgn: 308, perMinuteNgn: 58 },
   trafficOn: false,
   demandOn: false,
   modelOn: false,
   model: null,
   liftCap: 1.5,
+  maxDiscountNgn: 700,
+  modelPremiumNgn: 150,
+  rideValueNgn: 500,
 };
 
 let pricingSettings: PricingSettings = DEFAULT_PRICING_SETTINGS;
@@ -176,7 +200,15 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     modelOn: v.modelOn === true,
     model: modelFrom(v.model),
     liftCap: finite(v.liftCap, d.liftCap, 1, 3),
+    maxDiscountNgn: finite(v.maxDiscountNgn, d.maxDiscountNgn, 0, 3_000),
+    modelPremiumNgn: finite(v.modelPremiumNgn, d.modelPremiumNgn, 0, 5_000),
+    rideValueNgn: finite(v.rideValueNgn, d.rideValueNgn, 0, 10_000),
   };
+}
+
+/** The trained tree model can set prices: there is one in this build and an owner has switched the model on. */
+function mlPricingOn(): boolean {
+  return pricingSettings.modelOn && pricingSettings.marketFloorOn && getPricingMlModel() !== null;
 }
 
 /** Each service calls this with what the database holds (and again whenever it changes). */
@@ -390,7 +422,39 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   let setBy: SuggestedFare['setBy'] = floorFareNgn === null ? 'rules' : 'floor';
   const rules = Math.min(rulesFareNgn, liftLimit);
   if (rules > suggestedFareNgn) { suggestedFareNgn = rules; setBy = 'rules'; }
-  if (settings.modelOn && modelFareNgn !== null) {
+
+  // The trained model, when this build has one and the floor is on (it reads
+  // a price against the other app's). It looks at prices a little either
+  // side of today's: at most maxDiscountNgn and a tenth of the fare away,
+  // never closer to the other app than modelPremiumNgn and never past the
+  // lift limit, and names the one worth most. Its price is always recorded;
+  // it is only SHOWN once an owner has switched the model on.
+  const ml = getPricingMlModel();
+  let modelFare = modelFareNgn;
+  if (ml && distanceKm > 0 && floorFareNgn !== null && marketFare !== null) {
+    const at = factors.at ?? new Date();
+    const { hour, weekend } = lagosClock(at);
+    const minutes = factors.durationSeconds !== undefined && Number.isFinite(factors.durationSeconds) && factors.durationSeconds > 0
+      ? factors.durationSeconds / 60
+      : distanceKm * ASSUMED_MINUTES_PER_KM;
+    const marketEstNgn = marketFare;
+    const base = suggestedFareNgn;
+    const cut = Math.min(settings.maxDiscountNgn, MODEL_MAX_DISCOUNT_SHARE * base);
+    const least = roundUpToIncrement(marketEstNgn + settings.modelPremiumNgn, FARE_ROUNDING_INCREMENT);
+    const choice = chooseFare(
+      ml,
+      { km: distanceKm, minutes, hour, weekend, rush: isRushHour(at), demand: demandFactorOf(factors), marketEstNgn },
+      {
+        lowestNgn: Math.min(base, Math.max(least, base - cut, MIN_FARE_NGN)),
+        baseNgn: base,
+        highestNgn: Math.max(base, Math.min(liftLimit, base + cut)),
+      },
+      { serviceChargeNgn: BOOKING_FEE_NGN, commissionRate: COMMISSION_RATE, vatRate: VAT_RATE, rideValueNgn: settings.rideValueNgn },
+    );
+    modelFare = Math.max(MIN_FARE_NGN, choice.fareNgn);
+    if (settings.modelOn && modelFare !== suggestedFareNgn) { suggestedFareNgn = modelFare; setBy = 'model'; }
+  } else if (settings.modelOn && modelFareNgn !== null) {
+    // No trained model in this build: the small fitted one may lift a fare, never lower it.
     const model = Math.min(modelFareNgn, liftLimit);
     if (model > suggestedFareNgn) { suggestedFareNgn = model; setBy = 'model'; }
   }
@@ -406,7 +470,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     marketFareNgn: marketFare,
     floorFareNgn,
     rulesFareNgn,
-    modelFareNgn,
+    modelFareNgn: modelFare,
   };
 }
 
@@ -424,8 +488,11 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
 export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number; maxOfferNgn: number } {
   const recommendedTripFare = tripFareNgn(suggestedFareNgn);
   const byShare = fareFromTripFareNgn(recommendedTripFare * MIN_OFFER_SHARE);
+  // With the trained model on, a price may already be as close to the other
+  // app as modelPremiumNgn, so that is all a rider may then bargain away.
+  const room = mlPricingOn() ? Math.min(pricingSettings.premiumNgn, pricingSettings.modelPremiumNgn) : pricingSettings.premiumNgn;
   const byPremium = pricingSettings.marketFloorOn
-    ? roundUpToIncrement(suggestedFareNgn - pricingSettings.premiumNgn, FARE_ROUNDING_INCREMENT)
+    ? roundUpToIncrement(suggestedFareNgn - room, FARE_ROUNDING_INCREMENT)
     : 0;
   return {
     minOfferNgn: Math.min(Math.max(byShare, byPremium, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),

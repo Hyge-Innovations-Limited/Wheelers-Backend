@@ -23,3 +23,7 @@ scripts/sandbox/.sandbox-state.json
 
 # Research papers kept locally, not in the repo
 docs/research/*.pdf
+
+# Python byte-code from the pricing trainer
+__pycache__/
+*.pyc
