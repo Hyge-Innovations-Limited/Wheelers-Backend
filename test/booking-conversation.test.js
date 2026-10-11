@@ -1220,7 +1220,8 @@ test('after the destination comes "Check your trip" — Confirm / Add a stop / E
   await tapButton(deps, who, 'trip_confirm', 'Confirm trip');
   const quote = last(sent).interactive;
   assert.equal(quote.action.parameters.display_text, 'Set your price');
-  assert.match(quote.body.text, /Trip confirmed[\s\S]*Suggested price: \*₦[\s\S]*Lowest you can offer: ₦/);
+  assert.match(quote.body.text, /Trip confirmed[\s\S]*Suggested price: \*₦/);
+  assert.doesNotMatch(quote.body.text, /Lowest|lowest|Minimum/, 'the lowest offer is not advertised');
   assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_price');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
 });
@@ -1429,7 +1430,7 @@ test('THE FORM: opens filled in; Confirm trip → the PRICE screen; Find drivers
   const before = sent.length;
   const price = await submit({});
   assert.equal(price.screen, 'SET_PRICE');
-  assert.match(price.data.limits_line, /Lowest for this trip: ₦[\d,]+ · suggested ₦[\d,]+/);
+  assert.match(price.data.limits_line, /^Suggested ₦[\d,]+$/);
   assert.equal(price.data.suggested_price, String((await bidState.getPendingRoute(redis, user.id)).suggestedFareNgn), 'the box opens on the suggested fare');
   assert.equal((await bidState.getPendingRoute(redis, user.id)).confirmed, true);
 

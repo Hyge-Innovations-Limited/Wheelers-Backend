@@ -36,7 +36,8 @@ export const PRICE_ASK_START = 'Name your price, e.g.';
 /**
  * The price check under a trip, the ONE version everywhere (the first quote,
  * "Trip confirmed", "Pickup changed", a group ride switched to a normal one).
- * It was written out six times and had drifted.
+ * It was written out six times and had drifted. The lowest offer is not
+ * advertised: a rider who goes under it is told then, with the amount.
  */
 export function priceCheckLines(p: { distanceKm: number; durationMin: number; suggestedFareNgn: number; minOfferNgn: number }): string[] {
   const suggested = p.suggestedFareNgn.toLocaleString();
@@ -44,7 +45,6 @@ export function priceCheckLines(p: { distanceKm: number; durationMin: number; su
     `${p.distanceKm.toFixed(1)} km · about ${Math.max(1, p.durationMin)} min`,
     '',
     `Suggested price: *₦${suggested}*`,
-    `Lowest you can offer: ₦${p.minOfferNgn.toLocaleString()}`,
     '',
     `${PRICE_ASK_START} *${suggested}*. Drivers reply with their offers.`,
   ];

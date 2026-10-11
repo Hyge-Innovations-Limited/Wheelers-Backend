@@ -140,13 +140,12 @@ async function priceScreen(deps: OffersFormDeps, rideId: string, error = '', pre
 }
 
 function priceBox(trip: { offerNgn: number; suggestedFareNgn: number }, error = ''): FlowScreen {
-  const floor = validateRiderOffer(0, trip.suggestedFareNgn).minOfferNgn;
   return {
     screen: 'CHANGE_PRICE',
     data: {
       current_price: String(trip.offerNgn),
       offer_line: `Your price now: ${naira(trip.offerNgn)}`,
-      limits_line: `Lowest for this trip: ${naira(floor)} · suggested ${naira(trip.suggestedFareNgn)}`,
+      limits_line: `Suggested ${naira(trip.suggestedFareNgn)}`,
       error,
       has_error: error.length > 0,
     },

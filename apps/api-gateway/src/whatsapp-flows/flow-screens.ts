@@ -156,10 +156,9 @@ export function buildFareConfirmData(params: {
     trip_line: tripLine,
     has_trip_line: tripLine.length > 0,
     suggested_fare_line: `Suggested fare: ₦${params.suggestedFareNgn.toLocaleString()}`,
-    min_fare_line: params.minOfferNgn
-      ? `Minimum offer: ₦${params.minOfferNgn.toLocaleString()}`
-      : '',
-    has_min_fare_line: !!params.minOfferNgn,
+    // The lowest offer is not shown up front; an offer under it is refused with the amount.
+    min_fare_line: '',
+    has_min_fare_line: false,
     suggested_fare_value: String(params.suggestedFareNgn),
     pickup_address: params.pickupAddress,
     destination_address: params.destinationAddress,

@@ -155,7 +155,7 @@ export function priceScreen(trip: PendingRouteData, error = '', prefillNgn?: num
       // After a too-low price the box holds the floor, so Find drivers works on the next tap.
       suggested_price: String(prefillNgn ?? trip.suggestedFareNgn),
       trip_line: `${trip.distanceKm.toFixed(1)} km · ~${Math.ceil(trip.durationSeconds / 60)} min`,
-      limits_line: `Lowest for this trip: ₦${trip.minOfferNgn.toLocaleString()} · suggested ₦${trip.suggestedFareNgn.toLocaleString()}`,
+      limits_line: `Suggested ₦${trip.suggestedFareNgn.toLocaleString()}`,
       error,
       has_error: error.length > 0,
     },
