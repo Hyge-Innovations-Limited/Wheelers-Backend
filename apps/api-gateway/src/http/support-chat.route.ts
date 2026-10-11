@@ -17,6 +17,7 @@ import { readJsonBody, sendJson } from './utils';
  *
  * For the admin panel's support inbox:
  *   GET  /admin/support/conversations?status=open|resolved   the inbox, with how many are open and waiting
+ *   GET  /admin/support/conversations?countsOnly=1           just those two numbers
  *   GET  /admin/support/conversations/:id                    one conversation, its messages and the trip it is about
  *   POST /admin/support/conversations/:id/messages  { content }   reply
  *   POST /admin/support/conversations/:id/assign                  take it
@@ -136,6 +137,11 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
 
   if (url.pathname === '/admin/support/conversations') {
     if (req.method !== 'GET') { sendJson(res, 405, { error: 'Method not allowed' }); return; }
+    // The sidebar's badge: how many are waiting, without the list.
+    if (url.searchParams.get('countsOnly')) {
+      sendJson(res, 200, { counts: await supportClient.counts() });
+      return;
+    }
     const status = url.searchParams.get('status') === 'resolved' ? 'RESOLVED' : 'OPEN';
     const [rows, counts] = await Promise.all([supportClient.list(status), supportClient.counts()]);
     const live = await supportClient.liveRideIds(rows.flatMap((row) => (row.rideId ? [row.rideId] : [])));

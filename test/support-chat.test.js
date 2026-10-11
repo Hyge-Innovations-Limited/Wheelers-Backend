@@ -122,6 +122,9 @@ test('a rider on a trip writes in: the inbox shows it, marked as a live trip, wi
   assert.equal(row.topic, 'Report a driver');
   assert.equal(row.lastMessagePreview, 'Driver is not moving');
   assert.ok(inbox.body.counts.open >= 1 && inbox.body.counts.waiting >= 1);
+  const badge = await call(boss, 'GET', '/admin/support/conversations?countsOnly=1');
+  assert.deepEqual(Object.keys(badge.body), ['counts'], 'the sidebar asks for the numbers alone');
+  assert.ok(badge.body.counts.waiting >= 1);
 
   const one = await call(boss, 'GET', `/admin/support/conversations/${row.id}`);
   assert.equal(one.status, 200);
