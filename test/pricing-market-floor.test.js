@@ -22,7 +22,8 @@ const { measureBusyness, demandFactorAt } = require('../apps/api-gateway/dist/pr
 const QUIET = new Date('2026-10-14T12:00:00Z'); // Wednesday 13:00 in Lagos
 const RUSH = new Date('2026-10-14T17:00:00Z');  // Wednesday 18:00 in Lagos
 // Round figures for the other app, so the sums below can be done by hand.
-const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, marketFloorOn: true, trafficOn: true, demandOn: true, quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 }, rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 } };
+// minOfferGapNgn 0: these tests are about the older minimum (a tenth off, no more than the premium).
+const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 0, marketFloorOn: true, trafficOn: true, demandOn: true, quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 }, rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 } };
 const made = { admins: [], rides: [], users: [] };
 let savedBefore;
 
@@ -446,4 +447,37 @@ test.after(async () => {
   if (savedBefore) await prisma.pricingSettings.update({ where: { id: 'current' }, data: { data: savedBefore.data, updatedBy: savedBefore.updatedBy } });
   else await prisma.pricingSettings.deleteMany({ where: { id: 'current' } });
   await prisma.$disconnect();
+});
+
+test('the minimum offer sits a set amount under the suggested price: N850 unless an owner changes it', () => {
+  const { offerLimitsNgn } = config;
+  setPricingSettings({ ...DEFAULT_PRICING_SETTINGS });
+  assert.equal(DEFAULT_PRICING_SETTINGS.minOfferGapNgn, 850);
+  assert.equal(offerLimitsNgn(6000).minOfferNgn, 5150);
+  assert.equal(offerLimitsNgn(7500).minOfferNgn, 6650);
+  assert.equal(offerLimitsNgn(12000).minOfferNgn, 11150, 'the same room on a long trip as on a short one');
+  assert.equal(validateRiderOffer(5150, 6000).valid, true);
+  assert.equal(validateRiderOffer(5100, 6000).valid, false);
+  assert.match(validateRiderOffer(5100, 6000).reason, /5,150/);
+
+  // With the floor and the model on it is still the gap, not the premium.
+  setPricingSettings({ ...SAMPLED, minOfferGapNgn: 850, modelOn: true });
+  assert.equal(offerLimitsNgn(6000).minOfferNgn, 5150);
+
+  setPricingSettings({ ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 900 });
+  assert.equal(offerLimitsNgn(6000).minOfferNgn, 5100);
+  setPricingSettings({ ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 825 });
+  assert.equal(offerLimitsNgn(6000).minOfferNgn, 5200, 'rounded up to the next N50');
+});
+
+test('a short trip never goes under the minimum fare, and the driver ceiling does not move with the gap', () => {
+  const { offerLimitsNgn } = config;
+  setPricingSettings({ ...DEFAULT_PRICING_SETTINGS });
+  assert.equal(offerLimitsNgn(2500).minOfferNgn, 2500, 'already at the minimum fare: nothing to bargain away');
+  assert.equal(offerLimitsNgn(3000).minOfferNgn, 2500);
+  assert.equal(offerLimitsNgn(3400).minOfferNgn, 2550);
+  const withGap = offerLimitsNgn(6000).maxOfferNgn;
+  setPricingSettings({ ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 0 });
+  assert.equal(offerLimitsNgn(6000).maxOfferNgn, withGap);
+  assert.equal(offerLimitsNgn(6000).minOfferNgn, 5450, 'gap 0 is the older rule: a tenth off the trip fare');
 });

@@ -2288,7 +2288,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   const opened = await form('INIT');
   assert.equal(opened.screen, 'MENU');
   assert.match(opened.data.greeting_line, /^Hi Test\./);
-  assert.deepEqual(opened.data.choices.map((c) => c.id), ['book', 'repeat', 'reverse', 'history', 'deposit', 'withdraw', 'support']);
+  assert.deepEqual(opened.data.choices.map((c) => c.id), ['book', 'repeat', 'reverse', 'history', 'referral', 'deposit', 'withdraw', 'support']);
   assert.ok(opened.data.choices.every((c) => c.title.length <= 30 && c.description.length <= 300), "WhatsApp's radio limits");
   assert.match(opened.data.choices[1].description, /31 Emily Akinola St → 7 Osaro Isokpan St/, 'Repeat names the LAST trip');
   const before = at.sent.length;
@@ -2470,7 +2470,16 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
 });
 
 test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it carries the trip and offers screens unchanged', () => {
-  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE']);
+  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'NEXT', 'REFERRAL', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE']);
+  // Forward-only, as Meta demands: every route goes to a screen later in the list, and none has more than ten.
+  const order = QUICK_ACTIONS_FLOW.screens.map((s) => s.id);
+  for (const [from, targets] of Object.entries(QUICK_ACTIONS_FLOW.routing_model)) {
+    assert.ok(targets.length <= 10, `${from} has at most ten routes`);
+    for (const to of targets) assert.ok(order.indexOf(to) > order.indexOf(from), `${from} -> ${to} goes forward`);
+  }
+  assert.deepEqual(QUICK_ACTIONS_FLOW.routing_model.CANCEL_SEARCH, ['NEXT', 'NOTE', 'DONE'], 'a cancelled search can stay in the form');
+  assert.deepEqual(qa.footer('NEXT')['on-click-action'].payload, { action: 'next_choice', choice: '${form.choice}' });
+  assert.deepEqual(qa.footer('REFERRAL')['on-click-action'].payload, { action: 'apply_referral', code: '${form.code}' });
   assert.deepEqual(qa.footer('BOOK_WHERE')['on-click-action'].payload, { action: 'where_to', pickup: '${form.pickup}', destination: '${form.destination}' });
   assert.deepEqual(qa.footer('BOOK_TRIP')['on-click-action'].payload, { action: 'book_trip', stop_1: '${form.stop_1}', stop_2: '${form.stop_2}', stop_3: '${form.stop_3}' });
   assert.deepEqual(qa.footer('BOOK_REVIEW')['on-click-action'].payload, { action: 'confirm_trip' });
@@ -2896,8 +2905,9 @@ test('QUICK ACTIONS FORM mid-booking: the booking\'s own choices, each doing wha
 
   // Pickup set, destination not yet: the rows from the drawing.
   let menu = await form('INIT');
-  assert.deepEqual(menu.data.choices.map((c) => c.title), ['Change pickup', 'Change destination', 'Start again', 'Cancel booking', 'Add money']);
-  assert.match(menu.data.choices[0].description, /Now: 31 Emily Akinola St/);
+  assert.deepEqual(menu.data.choices.map((c) => c.title), ['Continue your booking', 'Change pickup', 'Change destination', 'Start again', 'Cancel booking', 'Add money']);
+  assert.match(menu.data.choices[0].description, /From 31 Emily Akinola St — add where you are going/);
+  assert.match(menu.data.choices[1].description, /Now: 31 Emily Akinola St/);
 
   // Change pickup: the chat now waits for a pickup, and says so on the form.
   let note = await form('data_exchange', { action: 'menu_choice', choice: 'change_pickup' }, 'MENU');
@@ -2929,4 +2939,115 @@ test('QUICK ACTIONS FORM mid-booking: the booking\'s own choices, each doing wha
   await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
   assert.equal((await form('data_exchange', { action: 'menu_choice', choice: 'start_again' }, 'MENU')).screen, 'BOOK_WHERE');
   assert.equal(await bidState.getPendingLocation(redis, user.id), null);
+});
+
+/* ── The form remembers: a shared pin is the pickup, what was typed stays, a cancelled search stays in the form, a referral code has its own box ── */
+
+test('QUICK ACTIONS FORM · a shared location pin is already in the Pickup box: Continue your booking opens the boxes with it, and the pin itself is used, not a fresh lookup of its address', async () => {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  // Every lookup answers Yaba: if the pickup were looked up again it would come back as Yaba, not the pin.
+  installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const who = rider();
+  const user = await riderWithPickup(deps, redis, who);
+  const form = menuForm({ deps, user, redis });
+
+  const menu = await form('INIT');
+  assert.equal(menu.data.choices[0].id, 'book_from_pin');
+  const boxes = await form('data_exchange', { action: 'menu_choice', choice: 'book_from_pin' }, 'MENU');
+  assert.equal(boxes.screen, 'BOOK_WHERE');
+  assert.equal(boxes.data.pickup, AKOKA.address, 'the pin is in the Pickup box');
+  assert.equal(boxes.data.destination, '');
+
+  const places = await form('data_exchange', { action: 'where_to', pickup: AKOKA.address, destination: 'Osaro Isokpan' }, 'BOOK_WHERE');
+  assert.equal(places.screen, 'BOOK_PLACES');
+  assert.deepEqual(places.data.pickup_options.map((o) => o.title), ['31 Emily Akinola St', 'None of these'], 'the pickup offered is the pin');
+  assert.match(places.data.destination_options[0].title, /7 Osaro Isokpan St/);
+
+  // They close the form and come back: both boxes are as they left them.
+  const again = await form('data_exchange', { action: 'menu_choice', choice: 'book_from_pin' }, 'MENU');
+  assert.equal(again.data.pickup, AKOKA.address);
+  assert.equal(again.data.destination, 'Osaro Isokpan');
+
+  // A pickup they retype is looked up like any other.
+  const retyped = await form('data_exchange', { action: 'where_to', pickup: 'Somewhere else', destination: 'Osaro Isokpan' }, 'BOOK_WHERE');
+  assert.match(retyped.data.pickup_options[0].title, /7 Osaro Isokpan St/, 'looked up, so the world\'s answer');
+});
+
+test('QUICK ACTIONS FORM · what was typed is still in the boxes after going back or closing the form; Start again empties them, and so does a search that starts', async () => {
+  const at = await riderWithHistory();
+  const form = menuForm(at);
+  assert.deepEqual((await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU')).data, { pickup: '', destination: '', error: '', has_error: false });
+
+  // One box short: the error, and both boxes keep what was typed.
+  const short = await form('data_exchange', { action: 'where_to', pickup: 'Akoka', destination: 'A' }, 'BOOK_WHERE');
+  assert.match(short.data.error, /needs a pickup and a destination/);
+  const back = await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal(back.data.pickup, 'Akoka');
+  assert.equal(back.data.destination, 'A');
+
+  // Further in, then out to the menu and back: still there.
+  await form('data_exchange', { action: 'where_to', pickup: 'Akoka', destination: 'Yaba' }, 'BOOK_WHERE');
+  const later = await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal(later.data.pickup, 'Akoka');
+  assert.equal(later.data.destination, 'Yaba');
+
+  // Start again means empty boxes.
+  await bidState.setBookingStage(at.redis, at.user.id, 'awaiting_destination');
+  const fresh = await form('data_exchange', { action: 'menu_choice', choice: 'start_again' }, 'MENU');
+  assert.equal(fresh.screen, 'BOOK_WHERE');
+  assert.equal(fresh.data.pickup, '');
+  assert.equal(fresh.data.destination, '');
+});
+
+test('QUICK ACTIONS FORM · a search cancelled in the form stays in the form: the list comes back with what can be done next, and Book a ride opens from it', async () => {
+  const at = await searchingRider(5000);
+  const form = menuForm(at);
+  const cancelled = await form('data_exchange', { action: 'cancel_search', reason: '1' }, 'CANCEL_SEARCH');
+  assert.equal(cancelled.screen, 'NEXT', 'not a note to swipe away');
+  assert.match(cancelled.data.greeting_line, /Search cancelled\. Nothing was charged\./);
+  assert.equal(await bidState.getActiveRide(at.redis, at.user.id), null, 'the search really is cancelled');
+  const ids = cancelled.data.choices.map((c) => c.id);
+  assert.ok(ids.includes('book') && ids.includes('deposit'), 'booking and money are on it');
+  assert.ok(!ids.includes('current') && !ids.includes('referral') && !ids.includes('search_again'), 'only rows this screen can open');
+
+  // A row that is not on the list is refused here, not on a screen the form cannot go back to.
+  const wrong = await form('data_exchange', { action: 'next_choice', choice: 'current' }, 'NEXT');
+  assert.equal(wrong.screen, 'NEXT');
+  assert.match(wrong.data.error, /Pick one/);
+
+  const boxes = await form('data_exchange', { action: 'next_choice', choice: 'book' }, 'NEXT');
+  assert.equal(boxes.screen, 'BOOK_WHERE');
+  const money = await form('data_exchange', { action: 'next_choice', choice: 'deposit' }, 'NEXT');
+  assert.ok(money.screen === 'ADD_MONEY' || money.screen === 'NOTE', 'the account number, or a note that it is on its way');
+});
+
+test('QUICK ACTIONS FORM · a referral code is typed in its own box, not sent as a chat message: found, it is added and the row goes; wrong, the box says why', async () => {
+  const at = await riderWithHistory();
+  const form = menuForm(at);
+  const friend = await prisma.user.create({ data: { privyDid: `did:test:${require('node:crypto').randomUUID()}`, role: 'DRIVER', name: 'Tunde Ade' } });
+  const { referralClient } = require('@wheleers/db');
+  const friendCode = (await referralClient.ensureCodeForUser(friend.id)).code;
+  const ownCode = (await referralClient.ensureCodeForUser(at.user.id)).code;
+  const before = at.sent.length;
+
+  const box = await form('data_exchange', { action: 'menu_choice', choice: 'referral' }, 'MENU');
+  assert.equal(box.screen, 'REFERRAL');
+  assert.equal((await form('data_exchange', { action: 'apply_referral', code: '  ' }, 'REFERRAL')).data.error, 'Type the referral code to continue.');
+  const missing = await form('data_exchange', { action: 'apply_referral', code: 'WHLZZZZZZ' }, 'REFERRAL');
+  assert.equal(missing.screen, 'REFERRAL');
+  assert.match(missing.data.error, /was not found/);
+  assert.equal(missing.data.code, 'WHLZZZZZZ', 'what they typed is still in the box');
+  assert.match((await form('data_exchange', { action: 'apply_referral', code: ownCode }, 'REFERRAL')).data.error, /your own code/);
+
+  const added = await form('data_exchange', { action: 'apply_referral', code: ` ${friendCode.toLowerCase()} ` }, 'REFERRAL');
+  assert.equal(added.screen, 'NOTE');
+  assert.equal(added.data.headline, 'Referral code added');
+  assert.equal((await prisma.referral.findUnique({ where: { referredUserId: at.user.id } })).referrerId, friend.id);
+  assert.equal(at.sent.length, before, 'nothing was sent to the chat');
+  assert.ok(!(await form('INIT')).data.choices.some((c) => c.id === 'referral'), 'one code per person: the row is gone');
+
+  await prisma.referral.deleteMany({ where: { referredUserId: at.user.id } });
+  await prisma.referralCode.deleteMany({ where: { userId: { in: [friend.id, at.user.id] } } });
+  await prisma.user.delete({ where: { id: friend.id } });
 });

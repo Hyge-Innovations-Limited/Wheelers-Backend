@@ -51,8 +51,10 @@ test('the books add up to the fare, to the kobo, at every distance and rate', ()
   }
 });
 
-test('limits: a rider no lower than 90% of the recommended rate, a driver no higher than 150%', () => {
+test('limits: a rider no lower than N850 under the recommended fare (90% of the rate under the older rule), a driver no higher than 150%', () => {
   const suggested = calculateSuggestedFare(10).suggestedFareNgn;
+  assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 3550, maxOfferNgn: 6450 }, 'N4,400 less N850');
+  config.setPricingSettings({ ...config.DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 0 });
   assert.deepEqual(offerLimitsNgn(suggested), { minOfferNgn: 4000, maxOfferNgn: 6450 });
   assert.deepEqual(rateLimitsPerKmNgn(suggested, 10), { minRateNgn: 340, maxRateNgn: 565 });
   assert.equal(validateRiderOffer(4000, suggested).valid, true);
@@ -61,6 +63,7 @@ test('limits: a rider no lower than 90% of the recommended rate, a driver no hig
   assert.equal(validateDriverOffer(6500, 4400, suggested).valid, false, 'above the ceiling');
   assert.equal(validateDriverOffer(7000, 7000, suggested).valid, true, "taking a generous rider's own price is always allowed");
   assert.equal(validateDriverOffer(9000, 3000).valid, true, 'a group seat has no ceiling, only the typo guard');
+  config.setPricingSettings(config.DEFAULT_PRICING_SETTINGS);
 });
 
 test('traffic and demand are switches, off by default; on, the rate rises on a slow road and never drops at night', () => {

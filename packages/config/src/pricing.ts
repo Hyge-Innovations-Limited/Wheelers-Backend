@@ -121,6 +121,13 @@ export type PricingSettings = {
    * an offer never goes under the other app.
    */
   modelPremiumNgn: number;
+  /**
+   * How far under the suggested fare a rider may offer, in naira: the
+   * minimum offer is the suggested fare less this (never under the minimum
+   * fare). 0 goes back to the older rule: a tenth off, and with the floor on
+   * no more than the premium.
+   */
+  minOfferGapNgn: number;
   /** What a completed ride is worth to Wheelers beyond what it earns on it: the higher, the readier the model is to cut. */
   rideValueNgn: number;
   /**
@@ -154,6 +161,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   liftCap: 1.5,
   maxDiscountNgn: 700,
   modelPremiumNgn: 150,
+  minOfferGapNgn: 850,
   rideValueNgn: 500,
   trialShare: 0.1,
 };
@@ -210,6 +218,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     liftCap: finite(v.liftCap, d.liftCap, 1, 3),
     maxDiscountNgn: finite(v.maxDiscountNgn, d.maxDiscountNgn, 0, 3_000),
     modelPremiumNgn: finite(v.modelPremiumNgn, d.modelPremiumNgn, 0, 5_000),
+    minOfferGapNgn: finite(v.minOfferGapNgn, d.minOfferGapNgn, 0, 5_000),
     rideValueNgn: finite(v.rideValueNgn, d.rideValueNgn, 0, 10_000),
     trialShare: finite(v.trialShare, d.trialShare, 0, 0.5),
   };
@@ -514,6 +523,17 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
  */
 export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number; maxOfferNgn: number } {
   const recommendedTripFare = tripFareNgn(suggestedFareNgn);
+  // The minimum sits a set amount under the suggested fare (₦850 unless
+  // changed), so a rider always sees the same room to bargain whatever the
+  // trip costs. It never goes under the minimum fare, nor above the suggested
+  // fare on a trip that is already at the minimum.
+  if (pricingSettings.minOfferGapNgn > 0) {
+    const byGap = roundUpToIncrement(suggestedFareNgn - pricingSettings.minOfferGapNgn, FARE_ROUNDING_INCREMENT);
+    return {
+      minOfferNgn: Math.min(Math.max(byGap, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
+      maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
+    };
+  }
   const byShare = fareFromTripFareNgn(recommendedTripFare * MIN_OFFER_SHARE);
   // With the trained model on, a price may already be as close to the other
   // app as modelPremiumNgn, so that is all a rider may then bargain away.

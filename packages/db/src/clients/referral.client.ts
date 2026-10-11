@@ -232,6 +232,11 @@ export const referralClient = {
     };
   },
 
+  /** Has this person already had a referral code added to their account? */
+  async hasAppliedCode(userId: string): Promise<boolean> {
+    return (await prisma.referral.count({ where: { referredUserId: userId } })) > 0;
+  },
+
   async applyCode(input: { referredUserId: string; code: string; now?: Date }) {
     const now = input.now ?? new Date();
     const code = normalizeReferralCode(input.code);

@@ -41,6 +41,38 @@ const MENU = {
   ]),
 };
 
+// After a search is cancelled inside the form: the same list, without the rows
+// that need a live ride, so the rider goes on from here and not from the chat.
+const NEXT = {
+  id: 'NEXT', title: 'Quick Actions', terminal: false,
+  data: {
+    greeting_line: str('Search cancelled. Nothing was charged. What would you like to do next?'),
+    choices: rows([
+      { id: 'book', title: 'Book a ride', description: 'Pickup, destination and your price' },
+      { id: 'deposit', title: 'Add money', description: 'Your account number for transfers' },
+    ]),
+    ...errorData,
+  },
+  layout: form('next_form', [
+    { type: 'TextSubheading', text: '${data.greeting_line}' },
+    errorLine,
+    { type: 'RadioButtonsGroup', name: 'choice', label: 'Pick one', required: true, 'data-source': '${data.choices}' },
+    footer('Continue', 'next_choice', { choice: '${form.choice}' }),
+  ]),
+};
+
+// A referral code, typed here and not as a chat message.
+const REFERRAL = {
+  id: 'REFERRAL', title: 'Referral code', terminal: false,
+  data: { intro_line: str('Got a code from a driver or a friend? Enter it here.'), code: str(''), ...errorData },
+  layout: form('referral_form', [
+    { type: 'TextBody', text: '${data.intro_line}' },
+    errorLine,
+    { type: 'TextInput', name: 'code', label: 'Referral code', 'input-type': 'text', required: true, 'helper-text': 'e.g. WHLAB2CD3' },
+    footer('Add code', 'apply_referral', { code: '${form.code}' }),
+  ], { code: '${data.code}' }),
+};
+
 const HISTORY = {
   id: 'HISTORY', title: 'Ride history', terminal: false,
   data: {
@@ -266,8 +298,16 @@ const flow = {
   data_api_version: '3.0',
   // Forward-only: every target sits later in this order (Meta refuses anything else).
   routing_model: {
-    // Meta allows 10 routes out of a screen. MENU never reaches DONE (the server answers NOTE instead), so it is not listed here.
-    MENU: ['BOOK_WHERE', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'STATUS', 'OFFERS', 'ADD_MONEY', 'SUPPORT', 'NOTE'],
+    // Meta allows 10 routes out of a screen. MENU never reaches DONE (the server answers NOTE instead), so it is not
+    // listed here; nor is TRIP, which is only ever reached from HISTORY.
+    MENU: ['STATUS', 'OFFERS', 'REFERRAL', 'BOOK_WHERE', 'HISTORY', 'REVIEW_TRIP', 'SET_PRICE', 'ADD_MONEY', 'SUPPORT', 'NOTE'],
+    STATUS: ['OFFERS', 'NOTE', 'DONE'],
+    OFFERS: ['CHANGE_PRICE', 'CANCEL_SEARCH', 'NOTE', 'DONE'],
+    CHANGE_PRICE: ['NOTE', 'DONE'],
+    // A cancelled search stays in the form: NEXT is the list again, and it sits before the booking screens it opens.
+    CANCEL_SEARCH: ['NEXT', 'NOTE', 'DONE'],
+    NEXT: ['BOOK_WHERE', 'HISTORY', 'REVIEW_TRIP', 'SET_PRICE', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE'],
+    REFERRAL: ['NOTE', 'DONE'],
     BOOK_WHERE: ['BOOK_PLACES', 'NOTE', 'DONE'],
     BOOK_PLACES: ['BOOK_TRIP', 'NOTE', 'DONE'],
     BOOK_TRIP: ['BOOK_STOP_PLACES', 'BOOK_REVIEW', 'SET_PRICE', 'NOTE', 'DONE'],
@@ -277,24 +317,30 @@ const flow = {
     TRIP: ['REVIEW_TRIP', 'NOTE', 'DONE'],
     REVIEW_TRIP: ['SET_PRICE', 'NOTE', 'DONE'],
     SET_PRICE: ['NOTE', 'DONE'],
-    STATUS: ['OFFERS', 'NOTE', 'DONE'],
-    OFFERS: ['CHANGE_PRICE', 'CANCEL_SEARCH', 'NOTE', 'DONE'],
-    CHANGE_PRICE: ['NOTE', 'DONE'],
-    CANCEL_SEARCH: ['NOTE', 'DONE'],
     ADD_MONEY: [],
     SUPPORT: [],
     NOTE: [],
     DONE: [],
   },
   screens: [
-    MENU, BOOK_WHERE, BOOK_PLACES, BOOK_TRIP, BOOK_STOP_PLACES, BOOK_REVIEW, HISTORY, TRIP,
-    pick(trip, 'REVIEW_TRIP'), pick(trip, 'SET_PRICE'),
+    MENU,
     STATUS,
     pick(offers, 'OFFERS'), pick(offers, 'CHANGE_PRICE'), pick(offers, 'CANCEL_SEARCH'),
+    NEXT, REFERRAL,
+    BOOK_WHERE, BOOK_PLACES, BOOK_TRIP, BOOK_STOP_PLACES, BOOK_REVIEW, HISTORY, TRIP,
+    pick(trip, 'REVIEW_TRIP'), pick(trip, 'SET_PRICE'),
     ADD_MONEY, SUPPORT,
     NOTE, DONE,
   ],
 };
 for (const s of flow.screens) if (!s) throw new Error('a copied screen is missing');
+// Forward-only, checked here so a bad route fails now and not at Meta.
+const order = flow.screens.map((s) => s.id);
+for (const [from, targets] of Object.entries(flow.routing_model)) {
+  if (targets.length > 10) throw new Error(`${from} has ${targets.length} routes; Meta allows 10`);
+  for (const to of targets) {
+    if (order.indexOf(to) <= order.indexOf(from)) throw new Error(`${from} -> ${to} goes backwards`);
+  }
+}
 writeFileSync(dir + 'quick-actions-flow-definition.json', JSON.stringify(flow, null, 2) + '\n');
 console.log('screens', flow.screens.map((s) => s.id).join(' '));

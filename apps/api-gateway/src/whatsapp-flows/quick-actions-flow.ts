@@ -1,6 +1,7 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
-import { rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { referralClient, rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
+import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import {
@@ -9,7 +10,7 @@ import {
   getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, setBookingStage, setPendingAreaHint, setPendingLocation, storePendingRoute,
 } from './bid-state';
 import type { PendingRouteData } from './bid-state';
-import { BOOK_RIDE_ACTIONS, handleBookRideAction, isBookRideAction, startBooking } from './book-ride-flow';
+import { BOOK_RIDE_ACTIONS, clearBookDraft, handleBookRideAction, isBookRideAction, startBooking } from './book-ride-flow';
 import {
   confirm, doneScreen, priceScreen, reviewScreen, setPrice,
   EDIT_TRIP_ACTIONS, SEARCHING_NOTE, type EditTripFlowDeps,
@@ -28,7 +29,11 @@ import { handleOffersFormFlow, offersScreen, republishLastSearch, OFFERS_FORM_AC
  *                 what makes sense right now                       [Continue]
  *   HISTORY       the last ten trips                → TRIP
  *   TRIP          one past trip, Repeat or Reverse  → REVIEW_TRIP
- *   BOOK_WHERE    Book a ride: pickup and destination boxes         [Find places]
+ *   NEXT          the list again after a search is cancelled here, so the rider
+ *                 goes on inside the form instead of back in the chat
+ *   REFERRAL      a referral code, typed in a box                    [Add code]
+ *   BOOK_WHERE    Book a ride: pickup and destination boxes, with what was
+ *                 typed last still in them and a shared pin as the pickup [Find places]
  *   BOOK_PLACES   what was found for each, ALWAYS shown — they see what Google
  *                 understood before anything is planned            [Continue]
  *   BOOK_TRIP     the planned trip, its fare, up to three stop boxes [Confirm trip]
@@ -84,7 +89,12 @@ export const MENU_IDS = {
   resume: 'resume', searchAgain: 'search_again', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
   current: 'current', deposit: 'deposit', withdraw: 'withdraw', support: 'support',
   changePickup: 'change_pickup', changeDestination: 'change_destination', startAgain: 'start_again', cancelBooking: 'cancel_booking',
+  bookFromPin: 'book_from_pin', referral: 'referral',
 } as const;
+
+/** What NEXT (the list after a cancelled search) may offer: only rows whose screens it can reach. */
+const NEXT_CHOICES: ReadonlySet<string> = new Set([MENU_IDS.book, MENU_IDS.repeat, MENU_IDS.reverse, MENU_IDS.history, MENU_IDS.deposit, MENU_IDS.withdraw, MENU_IDS.support]);
+const CANCELLED_LINE = 'Search cancelled. Nothing was charged. What would you like to do next?';
 
 /**
  * The chat steps of booking a ride. While a rider is in one, the menu is that
@@ -147,19 +157,28 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
 
   // The offers form's screens, verbatim: its handler reads the active ride itself.
   if (action === 'offers_choice' || action === 'update_price' || action === 'cancel_search') {
-    return handleOffersFormFlow({ ...body, data: { ...data, action } }, userId, offersDeps(deps));
+    const answered = await handleOffersFormFlow({ ...body, data: { ...data, action } }, userId, offersDeps(deps));
+    // A search cancelled here does not close the form: the list comes back, ready for the next thing.
+    if (action === 'cancel_search' && answered.screen === 'NOTE' && answered.data['headline'] === 'Search cancelled') return nextScreen(userId, deps);
+    return answered;
   }
   // The Edit-trip form's review and price screens, verbatim: a repeated trip is confirmed and priced by the same code.
   if (action === 'confirm_trip' || action === 'set_price') {
     const [trip, activeRideId] = await Promise.all([getPendingRoute(deps.redisClient, userId), getActiveRide(deps.redisClient, userId)]);
     if (activeRideId) return doneScreen('Already searching', SEARCHING_NOTE);
     if (!trip) return menuScreen(userId, deps, 'That trip has expired. Pick again.');
-    return action === 'confirm_trip' ? confirm(userId, trip, editDeps(deps)) : setPrice(data, userId, trip, editDeps(deps));
+    if (action === 'confirm_trip') return confirm(userId, trip, editDeps(deps));
+    const priced = await setPrice(data, userId, trip, editDeps(deps));
+    // The search is on: the booking boxes start empty next time.
+    if (priced.screen === 'DONE') await clearBookDraft(deps, userId);
+    return priced;
   }
 
   // Book a ride: its own module (book-ride-flow.ts); BOOK_REVIEW's Confirm is the trip form's confirm_trip below.
   if (isBookRideAction(action)) return handleBookRideAction(action, data, userId, deps);
   if (action === 'menu_choice') return menuChoice(text(data['choice']), userId, deps);
+  if (action === 'next_choice') return nextChoice(text(data['choice']), userId, deps);
+  if (action === 'apply_referral') return applyReferral(text(data['code']), userId);
   if (action === 'history_pick') return historyPick(text(data['trip']), userId, deps);
   if (action === 'trip_direction') return tripDirection(text(data['ride_id']), text(data['direction']), userId, deps);
   if (action === 'status_next') return statusNext(userId, deps);
@@ -169,6 +188,8 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
 /** The one Continue button on each screen. The trip and offers screens are the other forms' own. */
 export const QUICK_ACTIONS_ACTIONS = {
   MENU: 'menu_choice',
+  NEXT: 'next_choice',
+  REFERRAL: 'apply_referral',
   ...BOOK_RIDE_ACTIONS, BOOK_REVIEW: 'confirm_trip',
   HISTORY: 'history_pick', TRIP: 'trip_direction',
   ...EDIT_TRIP_ACTIONS,
@@ -211,6 +232,9 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
       const pickup = trip?.pickupAddress ?? (await getPendingLocation(deps.redisClient, userId).catch(() => null))?.address;
       // A trip already planned (a Repeat, a form they closed) is picked up where it was left.
       if (trip) choices.push({ id: MENU_IDS.resume, title: 'Continue your booking', description: clip(`${shortPlace(trip.pickupAddress)} → ${shortPlace(trip.destAddress)}${trip.confirmed ? ' — name your price' : ''}`, 300) });
+      // A pickup already given (a shared location pin, usually) and nowhere to go yet: the booking
+      // boxes open with it filled in, and only the destination is left to type.
+      else if (pickup) choices.push({ id: MENU_IDS.bookFromPin, title: 'Continue your booking', description: clip(`From ${shortPlace(pickup)} — add where you are going`, 300) });
       if (pickup) {
         choices.push(
           { id: MENU_IDS.changePickup, title: 'Change pickup', description: clip(`Now: ${shortPlace(pickup)}`, 300) },
@@ -246,6 +270,10 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
         { id: MENU_IDS.reverse, title: 'Reverse last ride', description: clip(`${shortPlace(last.destination.address)} → ${shortPlace(last.pickup.address)}`, 300) },
         { id: MENU_IDS.history, title: 'Ride history', description: 'Book a past trip again' },
       );
+    }
+    // Shown until a code is on the account: one per person.
+    if (!(await referralClient.hasAppliedCode(userId).catch(() => true))) {
+      choices.push({ id: MENU_IDS.referral, title: 'Enter referral code', description: 'Got a code from a driver or a friend? Add it here' });
     }
     choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' });
   }
@@ -285,15 +313,22 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     return { screen: 'SUPPORT', data: { headline: 'Wheelers support', contact_line: contact, note_line: 'A person will reply as soon as they can.' } };
   }
 
+  if (choice === MENU_IDS.referral) return referralScreen();
+
   // Everything below starts or changes a booking: not while one is live.
   if (activeRideId) return menuScreen(userId, deps, BUSY_NOTE);
+  if (choice === MENU_IDS.bookFromPin) {
+    const location = await getPendingLocation(deps.redisClient, userId).catch(() => null);
+    if (!location) return startBooking(deps, userId);
+    return startBooking(deps, userId, { pin: { lat: location.lat, lng: location.lng, address: location.address }, destination: location.suggestedDestination });
+  }
   if (choice === MENU_IDS.cancelBooking) {
     await clearBooking(deps.redisClient, userId);
     return doneScreen('Booking cancelled', 'Nothing was charged. Tap Quick Actions whenever you want a ride.', false);
   }
   if (choice === MENU_IDS.startAgain) {
     await clearBooking(deps.redisClient, userId);
-    return startBooking(deps, userId);
+    return startBooking(deps, userId, { fresh: true });
   }
   if (choice === MENU_IDS.changePickup) {
     // Whatever destination they gave travels on: once the new pickup is found,
@@ -348,6 +383,46 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     return historyScreen(trips);
   }
   return menuScreen(userId, deps);
+}
+
+// ── NEXT: the list after a cancelled search ─────────────────────────────────
+
+/** The menu's rows that still make sense once the search is gone, on a screen that can reach them. */
+async function nextScreen(userId: string, deps: QuickActionsFlowDeps, error = ''): Promise<FlowScreen> {
+  const menu = await menuScreen(userId, deps);
+  const choices = (menu.data['choices'] as Array<{ id: string; title: string; description: string }>).filter((row) => NEXT_CHOICES.has(row.id));
+  return { screen: 'NEXT', data: { greeting_line: CANCELLED_LINE, choices, error, has_error: error.length > 0 } };
+}
+
+async function nextChoice(choice: string, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  if (!NEXT_CHOICES.has(choice)) return nextScreen(userId, deps, 'Pick one to continue.');
+  const answered = await menuChoice(choice, userId, deps);
+  // The menu answers its own refusals on MENU, which this screen cannot go back to: say them here.
+  if (answered.screen === 'MENU') return nextScreen(userId, deps, text(answered.data['error']) || 'That is not available right now.');
+  return answered;
+}
+
+// ── REFERRAL ────────────────────────────────────────────────────────────────
+
+function referralScreen(code = '', error = ''): FlowScreen {
+  return { screen: 'REFERRAL', data: { intro_line: 'Got a code from a driver or a friend? Enter it here.', code, error, has_error: error.length > 0 } };
+}
+
+/** The code typed in the box: added to the account, or refused in words on the same screen. */
+async function applyReferral(typed: string, userId: string): Promise<FlowScreen> {
+  const code = referralClient.normalizeCode(typed);
+  if (!code) return referralScreen('', 'Type the referral code to continue.');
+  try {
+    await referralClient.applyCode({ referredUserId: userId, code });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : '';
+    if (/own referral code/i.test(reason)) return referralScreen(code, 'That is your own code. Enter the code someone gave you.');
+    if (/already been applied/i.test(reason)) return doneScreen('Referral code', 'A referral code is already on your account, so this one was not added.', false);
+    if (/not found/i.test(reason)) return referralScreen(code, `"${code}" was not found. Check the code and try again.`);
+    return referralScreen(code, 'That code could not be added just now. Please try again.');
+  }
+  logActivity({ userId, eventType: 'referral_code_applied', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
+  return doneScreen('Referral code added', `${code} is on your account. Tap Quick Actions in the chat to book your first ride.`, false);
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────

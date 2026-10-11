@@ -20,7 +20,8 @@ import { tripSummaryLine } from './trip-text';
  *
  * Every lookup runs in parallel inside the form's ten-second limit. Another
  * city and the same place twice are refused on the places screen, before
- * anything is planned. The draft between screens lives in Redis for 15 minutes.
+ * anything is planned. The draft between screens lives in Redis for 30 minutes,
+ * so closing the form or going back does not lose what was typed.
  */
 
 export interface BookRideDeps {
@@ -42,11 +43,31 @@ const clip = (text: string, max: number) => (text.length <= max ? text : `${text
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 const editDeps = (deps: BookRideDeps): EditTripFlowDeps => ({ redisClient: deps.redisClient, googleMapsApiKey: deps.googleMapsApiKey, routePlanner: deps.routePlanner, publisher: deps.publisher, onBidPlaced: deps.onBidPlaced });
 
-/** Book a ride was chosen: a clean draft and the boxes. */
-export async function startBooking(deps: BookRideDeps, userId: string): Promise<FlowScreen> {
-  await deps.redisClient.del(bookDraftKey(userId)).catch(() => undefined);
-  return whereToScreen({});
+/**
+ * Book a ride was chosen: the boxes, with what the rider typed last time still
+ * in them (they went back, or closed the form) unless they asked to start
+ * again. A location pin they shared in the chat is the pickup: its address is
+ * in the box, and as long as they leave it there the pin itself is used, not
+ * a fresh lookup of its address.
+ */
+export async function startBooking(deps: BookRideDeps, userId: string, options: { fresh?: boolean; pin?: RouteStop; destination?: string } = {}): Promise<FlowScreen> {
+  const kept = options.fresh ? null : await loadDraft(deps, userId);
+  const typed = {
+    pickup: options.pin?.address ?? kept?.typed.pickup ?? '',
+    destination: options.destination ?? kept?.typed.destination ?? '',
+  };
+  const pin = options.pin ?? (kept?.pin && kept.pin.address === typed.pickup ? kept.pin : undefined);
+  if (!typed.pickup && !typed.destination) {
+    await deps.redisClient.del(bookDraftKey(userId)).catch(() => undefined);
+    return whereToScreen({});
+  }
+  await saveDraft(deps, userId, { typed, options: { pickup: [], destination: [] }, ...(pin ? { pin } : {}) });
+  return whereToScreen(typed);
 }
+
+/** The search has started (or the booking was dropped): the boxes are empty next time. */
+export const clearBookDraft = (deps: Pick<BookRideDeps, 'redisClient'>, userId: string) =>
+  deps.redisClient.del(bookDraftKey(userId)).catch(() => undefined);
 
 /** One of the booking screens' Continue buttons. */
 export async function handleBookRideAction(action: string, data: Record<string, unknown>, userId: string, deps: BookRideDeps): Promise<FlowScreen> {
@@ -60,6 +81,8 @@ export async function handleBookRideAction(action: string, data: Record<string, 
 /** What the rider typed and what it became, kept between the booking screens. */
 interface BookDraft {
   typed: { pickup: string; destination: string };
+  /** A location pin shared in the chat, used as the pickup while its address is still in the box. */
+  pin?: RouteStop;
   options: { pickup: RouteStop[]; destination: RouteStop[] };
   pickup?: RouteStop;
   destination?: RouteStop;
@@ -67,7 +90,7 @@ interface BookDraft {
   stopOptions?: Record<number, RouteStop[]>;
   stopsResolved?: Record<number, RouteStop>;
 }
-const BOOK_DRAFT_TTL_SECONDS = 900;
+const BOOK_DRAFT_TTL_SECONDS = 1800;
 const bookDraftKey = (userId: string) => `whatsapp:user:${userId}:book_draft`;
 const NONE = 'none';
 const MAX_MATCHES = 5;
@@ -157,14 +180,22 @@ const toStop = (match: { lat: number; lng: number; formattedAddress: string }): 
 /** Both boxes typed: look both up at once (the form has ~10 s), then show what was found — always. */
 async function bookWhereTo(data: Record<string, unknown>, userId: string, deps: BookRideDeps): Promise<FlowScreen> {
   const typed = { pickup: text(data['pickup']).slice(0, 200), destination: text(data['destination']).slice(0, 200) };
-  if (typed.pickup.length < 2 || typed.destination.length < 2) return whereToScreen(typed, 'A trip needs a pickup and a destination.');
+  // The shared pin is the pickup while its address is still what the box says.
+  const kept = await loadDraft(deps, userId);
+  const pin = kept?.pin && kept.pin.address === typed.pickup ? kept.pin : undefined;
+  if (typed.pickup.length < 2 || typed.destination.length < 2) {
+    await saveDraft(deps, userId, { typed, options: { pickup: [], destination: [] }, ...(pin ? { pin } : {}) });
+    return whereToScreen(typed, 'A trip needs a pickup and a destination.');
+  }
   const [pickup, destination] = await Promise.all([
-    findPlaceOptions(deps.googleMapsApiKey, typed.pickup, { limit: MAX_MATCHES }).catch(() => []),
+    pin ? Promise.resolve([pin]) : findPlaceOptions(deps.googleMapsApiKey, typed.pickup, { limit: MAX_MATCHES }).then((found) => found.map(toStop)).catch(() => []),
     findPlaceOptions(deps.googleMapsApiKey, typed.destination, { limit: MAX_MATCHES }).catch(() => []),
   ]);
+  // Kept either way, so a place that was not found is still in its box when they come back.
+  await saveDraft(deps, userId, { typed, options: { pickup: [], destination: [] }, ...(pin ? { pin } : {}) });
   if (pickup.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.pickup, 40)}". Add the area or a landmark — e.g. "Shoprite, Ikeja".`);
   if (destination.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.destination, 40)}". Add the area or a landmark — e.g. "Unilag gate, Yaba".`);
-  const draft: BookDraft = { typed, options: { pickup: pickup.map(toStop), destination: destination.map(toStop) } };
+  const draft: BookDraft = { typed, options: { pickup, destination: destination.map(toStop) }, ...(pin ? { pin } : {}) };
   await saveDraft(deps, userId, draft);
   return placesScreen(draft);
 }
@@ -172,7 +203,7 @@ async function bookWhereTo(data: Record<string, unknown>, userId: string, deps: 
 /** The places chosen: sanity (same city, not the same place), then the road and the fare. */
 async function bookPlaces(data: Record<string, unknown>, userId: string, deps: BookRideDeps): Promise<FlowScreen> {
   const draft = await loadDraft(deps, userId);
-  if (!draft) return whereToScreen({}, 'That took too long — type the trip again.');
+  if (!draft || draft.options.pickup.length === 0) return whereToScreen(draft?.typed ?? {}, 'That took too long — tap Find places again.');
   const pickPickup = text(data['pick_pickup']);
   const pickDestination = text(data['pick_destination']);
   if (pickPickup === NONE) return placesScreen(draft, 'No problem — tap ← at the top and type the pickup again with the area or a landmark.');

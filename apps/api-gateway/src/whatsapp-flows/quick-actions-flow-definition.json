@@ -3,16 +3,50 @@
   "data_api_version": "3.0",
   "routing_model": {
     "MENU": [
-      "BOOK_WHERE",
-      "HISTORY",
-      "TRIP",
-      "REVIEW_TRIP",
-      "SET_PRICE",
       "STATUS",
       "OFFERS",
+      "REFERRAL",
+      "BOOK_WHERE",
+      "HISTORY",
+      "REVIEW_TRIP",
+      "SET_PRICE",
       "ADD_MONEY",
       "SUPPORT",
       "NOTE"
+    ],
+    "STATUS": [
+      "OFFERS",
+      "NOTE",
+      "DONE"
+    ],
+    "OFFERS": [
+      "CHANGE_PRICE",
+      "CANCEL_SEARCH",
+      "NOTE",
+      "DONE"
+    ],
+    "CHANGE_PRICE": [
+      "NOTE",
+      "DONE"
+    ],
+    "CANCEL_SEARCH": [
+      "NEXT",
+      "NOTE",
+      "DONE"
+    ],
+    "NEXT": [
+      "BOOK_WHERE",
+      "HISTORY",
+      "REVIEW_TRIP",
+      "SET_PRICE",
+      "ADD_MONEY",
+      "SUPPORT",
+      "NOTE",
+      "DONE"
+    ],
+    "REFERRAL": [
+      "NOTE",
+      "DONE"
     ],
     "BOOK_WHERE": [
       "BOOK_PLACES",
@@ -57,25 +91,6 @@
       "DONE"
     ],
     "SET_PRICE": [
-      "NOTE",
-      "DONE"
-    ],
-    "STATUS": [
-      "OFFERS",
-      "NOTE",
-      "DONE"
-    ],
-    "OFFERS": [
-      "CHANGE_PRICE",
-      "CANCEL_SEARCH",
-      "NOTE",
-      "DONE"
-    ],
-    "CHANGE_PRICE": [
-      "NOTE",
-      "DONE"
-    ],
-    "CANCEL_SEARCH": [
       "NOTE",
       "DONE"
     ],
@@ -124,12 +139,12 @@
             {
               "id": "history",
               "title": "Ride history",
-              "description": "Book a past trip again"
+              "description": "Places you have been — book any of them again"
             },
             {
               "id": "deposit",
               "title": "Add money",
-              "description": "Your account number for transfers"
+              "description": "Your account number to transfer to"
             }
           ]
         },
@@ -173,6 +188,499 @@
                   "payload": {
                     "action": "menu_choice",
                     "choice": "${form.choice}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "STATUS",
+      "title": "Your current trip",
+      "terminal": false,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Looking for drivers"
+        },
+        "line_1": {
+          "type": "string",
+          "__example__": "Ikorodu Garage → Shoprite Ikeja"
+        },
+        "line_2": {
+          "type": "string",
+          "__example__": "Your price: ₦2,500"
+        },
+        "line_3": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_line_3": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "note": {
+          "type": "string",
+          "__example__": "No offers yet. Drivers near you are seeing your request now. Tap below to check for offers."
+        },
+        "cta_label": {
+          "type": "string",
+          "__example__": "Check for offers"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "status_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.line_1}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.line_2}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.line_3}",
+                "visible": "${data.has_line_3}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.note}"
+              },
+              {
+                "type": "Footer",
+                "label": "${data.cta_label}",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "status_next"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "OFFERS",
+      "title": "Driver offers",
+      "terminal": false,
+      "data": {
+        "route_line": {
+          "type": "string",
+          "__example__": "Itamaga Bus Stop → 15 Aiyetoro Street, Akoka"
+        },
+        "offer_line": {
+          "type": "string",
+          "__example__": "Your price: ₦17,000"
+        },
+        "count_line": {
+          "type": "string",
+          "__example__": "1 driver has made an offer"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "offer:17000:bid-1",
+              "title": "₦17,000 · oke oyebade",
+              "description": "Camry · LAG-CAMRY · 5.0★ · 1 min away"
+            },
+            {
+              "id": "change_price",
+              "title": "Change my price",
+              "description": "Offer drivers a different amount"
+            },
+            {
+              "id": "decline_all",
+              "title": "Decline all",
+              "description": "None of these drivers — keep searching"
+            },
+            {
+              "id": "cancel_search",
+              "title": "Cancel search",
+              "description": "Stop looking. Nothing is charged."
+            }
+          ]
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "offers_form",
+            "children": [
+              {
+                "type": "TextCaption",
+                "text": "${data.route_line}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "${data.offer_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.count_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "choice",
+                "label": "Pick a driver — or something else",
+                "required": true,
+                "data-source": "${data.choices}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "offers_choice",
+                    "choice": "${form.choice}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "CHANGE_PRICE",
+      "title": "Change my price",
+      "terminal": false,
+      "data": {
+        "current_price": {
+          "type": "string",
+          "__example__": "17000"
+        },
+        "offer_line": {
+          "type": "string",
+          "__example__": "Your price now: ₦17,000"
+        },
+        "limits_line": {
+          "type": "string",
+          "__example__": "Lowest for this trip: ₦9,120 · suggested ₦11,400"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "price_form",
+            "init-values": {
+              "new_price": "${data.current_price}"
+            },
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "${data.offer_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.limits_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextInput",
+                "name": "new_price",
+                "label": "New price (₦)",
+                "input-type": "number",
+                "required": true,
+                "helper-text": "Every driver looking at your request sees it."
+              },
+              {
+                "type": "Footer",
+                "label": "Update price",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "update_price",
+                    "new_price": "${form.new_price}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "CANCEL_SEARCH",
+      "title": "Cancel search",
+      "terminal": false,
+      "data": {
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "Long waiting time"
+            },
+            {
+              "id": "2",
+              "title": "Wrong pickup or destination"
+            }
+          ]
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "cancel_form",
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Nothing has been charged. Why are you cancelling?"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "reason",
+                "label": "Reason",
+                "required": true,
+                "data-source": "${data.reasons}"
+              },
+              {
+                "type": "Footer",
+                "label": "Cancel search",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "cancel_search",
+                    "reason": "${form.reason}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEXT",
+      "title": "Quick Actions",
+      "terminal": false,
+      "data": {
+        "greeting_line": {
+          "type": "string",
+          "__example__": "Search cancelled. Nothing was charged. What would you like to do next?"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "book",
+              "title": "Book a ride",
+              "description": "Pickup, destination and your price"
+            },
+            {
+              "id": "deposit",
+              "title": "Add money",
+              "description": "Your account number for transfers"
+            }
+          ]
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "next_form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "${data.greeting_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "choice",
+                "label": "Pick one",
+                "required": true,
+                "data-source": "${data.choices}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "next_choice",
+                    "choice": "${form.choice}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "REFERRAL",
+      "title": "Referral code",
+      "terminal": false,
+      "data": {
+        "intro_line": {
+          "type": "string",
+          "__example__": "Got a code from a driver or a friend? Enter it here."
+        },
+        "code": {
+          "type": "string",
+          "__example__": ""
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "referral_form",
+            "init-values": {
+              "code": "${data.code}"
+            },
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "${data.intro_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextInput",
+                "name": "code",
+                "label": "Referral code",
+                "input-type": "text",
+                "required": true,
+                "helper-text": "e.g. WHLAB2CD3"
+              },
+              {
+                "type": "Footer",
+                "label": "Add code",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "apply_referral",
+                    "code": "${form.code}"
                   }
                 }
               }
@@ -449,21 +957,21 @@
               {
                 "type": "TextInput",
                 "name": "stop_1",
-                "label": "Stop 1",
+                "label": "Stop 1 (optional)",
                 "input-type": "text",
                 "required": false
               },
               {
                 "type": "TextInput",
                 "name": "stop_2",
-                "label": "Stop 2",
+                "label": "Stop 2 (optional)",
                 "input-type": "text",
                 "required": false
               },
               {
                 "type": "TextInput",
                 "name": "stop_3",
-                "label": "Stop 3",
+                "label": "Stop 3 (optional)",
                 "input-type": "text",
                 "required": false
               },
@@ -1160,348 +1668,6 @@
                   "payload": {
                     "action": "set_price",
                     "price": "${form.price}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "STATUS",
-      "title": "Your current trip",
-      "terminal": false,
-      "data": {
-        "headline": {
-          "type": "string",
-          "__example__": "Looking for drivers"
-        },
-        "line_1": {
-          "type": "string",
-          "__example__": "Ikorodu Garage → Shoprite Ikeja"
-        },
-        "line_2": {
-          "type": "string",
-          "__example__": "Your price: ₦2,500"
-        },
-        "line_3": {
-          "type": "string",
-          "__example__": ""
-        },
-        "has_line_3": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "note": {
-          "type": "string",
-          "__example__": "No offers yet. Drivers near you are seeing your request now. Tap below to check for offers."
-        },
-        "cta_label": {
-          "type": "string",
-          "__example__": "Check for offers"
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "status_form",
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "${data.headline}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.line_1}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.line_2}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.line_3}",
-                "visible": "${data.has_line_3}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.note}"
-              },
-              {
-                "type": "Footer",
-                "label": "${data.cta_label}",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "action": "status_next"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "OFFERS",
-      "title": "Driver offers",
-      "terminal": false,
-      "data": {
-        "route_line": {
-          "type": "string",
-          "__example__": "Itamaga Bus Stop → 15 Aiyetoro Street, Akoka"
-        },
-        "offer_line": {
-          "type": "string",
-          "__example__": "Your price: ₦17,000"
-        },
-        "count_line": {
-          "type": "string",
-          "__example__": "1 driver has made an offer"
-        },
-        "choices": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "description": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "offer:17000:bid-1",
-              "title": "₦17,000 · oke oyebade",
-              "description": "Camry · LAG-CAMRY · 5.0★ · 1 min away"
-            },
-            {
-              "id": "change_price",
-              "title": "Change my price",
-              "description": "Offer drivers a different amount"
-            },
-            {
-              "id": "decline_all",
-              "title": "Decline all",
-              "description": "None of these drivers — keep searching"
-            },
-            {
-              "id": "cancel_search",
-              "title": "Cancel search",
-              "description": "Stop looking. Nothing is charged."
-            }
-          ]
-        },
-        "error": {
-          "type": "string",
-          "__example__": ""
-        },
-        "has_error": {
-          "type": "boolean",
-          "__example__": false
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "offers_form",
-            "children": [
-              {
-                "type": "TextCaption",
-                "text": "${data.route_line}"
-              },
-              {
-                "type": "TextSubheading",
-                "text": "${data.offer_line}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.count_line}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.error}",
-                "visible": "${data.has_error}"
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "name": "choice",
-                "label": "Pick a driver — or something else",
-                "required": true,
-                "data-source": "${data.choices}"
-              },
-              {
-                "type": "Footer",
-                "label": "Continue",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "action": "offers_choice",
-                    "choice": "${form.choice}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "CHANGE_PRICE",
-      "title": "Change my price",
-      "terminal": false,
-      "data": {
-        "current_price": {
-          "type": "string",
-          "__example__": "17000"
-        },
-        "offer_line": {
-          "type": "string",
-          "__example__": "Your price now: ₦17,000"
-        },
-        "limits_line": {
-          "type": "string",
-          "__example__": "Lowest for this trip: ₦9,120 · suggested ₦11,400"
-        },
-        "error": {
-          "type": "string",
-          "__example__": ""
-        },
-        "has_error": {
-          "type": "boolean",
-          "__example__": false
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "price_form",
-            "init-values": {
-              "new_price": "${data.current_price}"
-            },
-            "children": [
-              {
-                "type": "TextSubheading",
-                "text": "${data.offer_line}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.limits_line}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.error}",
-                "visible": "${data.has_error}"
-              },
-              {
-                "type": "TextInput",
-                "name": "new_price",
-                "label": "New price (₦)",
-                "input-type": "number",
-                "required": true,
-                "helper-text": "Every driver looking at your request sees it."
-              },
-              {
-                "type": "Footer",
-                "label": "Update price",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "action": "update_price",
-                    "new_price": "${form.new_price}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "CANCEL_SEARCH",
-      "title": "Cancel search",
-      "terminal": false,
-      "data": {
-        "reasons": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "description": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "Long waiting time"
-            },
-            {
-              "id": "2",
-              "title": "Wrong pickup or destination"
-            }
-          ]
-        },
-        "error": {
-          "type": "string",
-          "__example__": ""
-        },
-        "has_error": {
-          "type": "boolean",
-          "__example__": false
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "cancel_form",
-            "children": [
-              {
-                "type": "TextBody",
-                "text": "Nothing has been charged. Why are you cancelling?"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.error}",
-                "visible": "${data.has_error}"
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "name": "reason",
-                "label": "Reason",
-                "required": true,
-                "data-source": "${data.reasons}"
-              },
-              {
-                "type": "Footer",
-                "label": "Cancel search",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "action": "cancel_search",
-                    "reason": "${form.reason}"
                   }
                 }
               }
