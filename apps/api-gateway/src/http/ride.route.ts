@@ -140,7 +140,11 @@ function resolveNetFareNgn(params: {
   return Math.max(0, params.grossFareNgn - params.discountNgn);
 }
 
-function parseScheduledFor(value: unknown): Date {
+const SCHEDULE_MIN_AHEAD_MS = 10 * 60 * 1000;
+/** Seven days, and an hour for a rider who chose the last slot and took their time. */
+const SCHEDULE_MAX_AHEAD_MS = (7 * 24 + 1) * 60 * 60 * 1000;
+
+export function parseScheduledFor(value: unknown): Date {
   if (typeof value !== "string") {
     throw new Error("scheduledFor must be an ISO datetime string");
   }
@@ -148,6 +152,16 @@ function parseScheduledFor(value: unknown): Date {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error("scheduledFor must be a valid ISO datetime string");
+  }
+
+  // The search starts a few minutes before the pickup time, so a time that
+  // close (or already gone) cannot be honoured; nor is a ride held for weeks.
+  const ahead = parsed.getTime() - Date.now();
+  if (ahead < SCHEDULE_MIN_AHEAD_MS) {
+    throw new Error("Pick a pickup time at least 10 minutes from now.");
+  }
+  if (ahead > SCHEDULE_MAX_AHEAD_MS) {
+    throw new Error("A ride can be scheduled up to 7 days ahead.");
   }
 
   return parsed;

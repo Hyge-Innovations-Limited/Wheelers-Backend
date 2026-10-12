@@ -155,10 +155,15 @@ async function doDispatch(
     plannedDurationSeconds: claimed.plannedDurationSeconds ?? undefined,
     fareEstimateNgn: fareEstimateNgn || pricing.suggestedFareNgn,
     paymentMethod: 'WALLET',
-    riderOfferNgn: fareEstimateNgn || pricing.suggestedFareNgn,
+    // The price shown when it was booked, unless today's minimum for the
+    // trip is now above it: drivers are never offered less than the minimum.
+    riderOfferNgn: Math.max(fareEstimateNgn || pricing.suggestedFareNgn, pricing.minOfferNgn),
     suggestedFareNgn: pricing.suggestedFareNgn,
     minOfferNgn: pricing.minOfferNgn,
     ratePerKmNgn: pricing.ratePerKmNgn,
+    // Scheduling exists only in the app, and the rider is not watching it now.
+    channel: 'APP',
+    scheduled: true,
     timestamp: new Date().toISOString(),
   };
 

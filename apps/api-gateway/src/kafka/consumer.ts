@@ -367,6 +367,55 @@ function isOpenBid(status: string): boolean {
 }
 
 /** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
+/** A search the scheduler started: its offers belong to the app, never to WhatsApp. Remembered a little longer than a search can run. */
+const APP_ONLY_RIDE_TTL_SECONDS = 2 * 60 * 60;
+const appOnlyRideKey = (rideId: string) => `ride:${rideId}:app-only`;
+const isAppOnlyRide = async (deps: StartGatewayConsumerDeps, rideId: string) =>
+  (await deps.redisClient.get(appOnlyRideKey(rideId)).catch(() => null)) === '1';
+
+/** True the first time it is asked for a ride: one "a driver made an offer" push per search, not one per offer. */
+async function firstOfferPush(deps: StartGatewayConsumerDeps, rideId: string): Promise<boolean> {
+  const key = `ride:${rideId}:offer-push`;
+  try {
+    if (await deps.redisClient.get(key)) return false;
+    await deps.redisClient.set(key, '1', APP_ONLY_RIDE_TTL_SECONDS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A push to the rider's phone, and the same line in the app's notifications when it should stay on record. Never throws. */
+async function tellAppRider(
+  deps: StartGatewayConsumerDeps,
+  riderId: string,
+  message: { title: string; body: string; type: string; rideId: string; inApp?: boolean },
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await deps.publisher.publishNotificationEvent({
+    eventType: 'PUSH_SEND',
+    notificationId: randomUUID(),
+    userId: riderId,
+    title: message.title,
+    body: message.body,
+    data: { type: message.type, rideId: message.rideId },
+    priority: 'high',
+    timestamp,
+  }).catch(() => {});
+  if (message.inApp) {
+    await deps.publisher.publishNotificationEvent({
+      eventType: 'IN_APP_SEND',
+      notificationId: randomUUID(),
+      userId: riderId,
+      title: message.title,
+      body: message.body,
+      category: 'ride',
+      read: false,
+      timestamp,
+    }).catch(() => {});
+  }
+}
+
 export async function handleRideEvent(
   event: RideEvent,
   deps: StartGatewayConsumerDeps,
@@ -375,6 +424,19 @@ export async function handleRideEvent(
   const registry = deps.registry;
   if (event.eventType === 'RIDE_REQUESTED') {
     rideParticipants.set(event.rideId, { riderId: event.riderId });
+    // A ride booked for later has just started looking for drivers. The rider
+    // did not start it and is not looking at the app, and no driver is theirs
+    // until they pick one: without this they never knew, and the search died.
+    if (event.scheduled) {
+      await deps.redisClient.set(appOnlyRideKey(event.rideId), '1', APP_ONLY_RIDE_TTL_SECONDS).catch(() => undefined);
+      await tellAppRider(deps, event.riderId, {
+        title: 'Your scheduled ride',
+        body: 'We are finding your driver now. Open Wheelers to see the offers and choose one.',
+        type: 'ride:scheduled_started',
+        rideId: event.rideId,
+        inApp: true,
+      });
+    }
     return;
   }
 
@@ -437,6 +499,9 @@ export async function handleRideEvent(
       const hasPhone = (await lookupPhoneByUserId(deps.redisClient, event.riderId)) !== null;
       const hasWaMeta = hasPhone && (await getRideMeta(deps.redisClient, event.rideId)) !== null;
       waRider = hasPhone && (hasWaMeta || !registry.hasUser(event.riderId));
+      // A scheduled ride was booked in the app: its offers stay in the app,
+      // even when the rider chatted with the bot today and the app is closed.
+      if (waRider && !hasWaMeta && await isAppOnlyRide(deps, event.rideId)) waRider = false;
     }
     console.info('[consumer] counter-offer', {
       rideId: event.rideId,
@@ -560,6 +625,16 @@ export async function handleRideEvent(
         etaSeconds: event.etaSeconds,
         distanceKm: event.distanceKm,
       });
+      // The socket only reaches an open app. With the app closed, the first
+      // offer of a search is a push, so the rider knows to come and choose.
+      if (!waRider && !registry.hasUser(event.riderId) && await firstOfferPush(deps, event.rideId)) {
+        await tellAppRider(deps, event.riderId, {
+          title: 'A driver made an offer',
+          body: `${event.driverName} offered ₦${Math.round(event.counterOfferNgn).toLocaleString('en-NG')}. Open Wheelers to accept or see more offers.`,
+          type: 'ride:offer',
+          rideId: event.rideId,
+        });
+      }
     }
     return;
   }
@@ -654,6 +729,17 @@ export async function handleRideEvent(
       await registry.sendToUser(event.riderId, 'ride:bid_timeout', {
         rideId: event.rideId,
       });
+      // Said by push as well when the app is closed: a search that ends
+      // unseen (a scheduled ride, most of all) must not just vanish.
+      if (!registry.hasUser(event.riderId)) {
+        await tellAppRider(deps, event.riderId, {
+          title: 'No driver accepted your ride',
+          body: 'You were not charged. Open Wheelers to search again or change your price.',
+          type: 'ride:bid_timeout',
+          rideId: event.rideId,
+          inApp: true,
+        });
+      }
     }
     rideParticipants.delete(event.rideId);
     return;

@@ -58,6 +58,9 @@ export const RideRequestedEvent = BaseRideEvent.extend({
   route:            RouteGeometry.optional(),
   // Where the ride was booked; stored on the ride for analytics. Absent on older publishers.
   channel:          z.enum(['APP', 'WHATSAPP', 'MCP']).optional(),
+  // Started by the scheduler for a ride booked for later, not by the rider
+  // just now: the rider is not looking at the app and has to be told.
+  scheduled:        z.boolean().optional(),
 });
 
 export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({

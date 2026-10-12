@@ -121,17 +121,19 @@ export const rideClient = {
   // nobody accepted and the timeout should have cancelled it. Don't let a
   // stale one block a rider from booking again while the sweeper catches up.
   // A search runs 30 minutes (RIDE.BID_TIMEOUT_SECONDS): an unmatched ride is live that long, plus a margin.
-  findActiveByRider: (riderId: string, unmatchedMaxAgeMs = 35 * 60 * 1000) =>
+  // A trip with a driver comes first: a rider mid-trip whose scheduled ride
+  // has just started searching must get their trip (and its code) back, not
+  // the search.
+  findActiveByRider: async (riderId: string, unmatchedMaxAgeMs = 35 * 60 * 1000) =>
+    (await prisma.ride.findFirst({
+      where: { riderId, status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] } },
+      orderBy: { createdAt: 'desc' },
+    })) ??
     prisma.ride.findFirst({
       where: {
         riderId,
-        OR: [
-          {
-            status: { in: ['REQUESTED', 'MATCHING'] },
-            createdAt: { gte: new Date(Date.now() - unmatchedMaxAgeMs) },
-          },
-          { status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] } },
-        ],
+        status: { in: ['REQUESTED', 'MATCHING'] },
+        createdAt: { gte: new Date(Date.now() - unmatchedMaxAgeMs) },
       },
       orderBy: { createdAt: 'desc' },
     }),

@@ -165,8 +165,11 @@ export const scheduledRideClient = {
     outbox: { topic: string; key: string; payload: unknown };
   }) => {
     const [ride] = await prisma.$transaction(async (tx) => {
+      // Only a ride still being dispatched: one cancelled in the instant between
+      // the claim and this update stays cancelled, and no search goes out
+      // (the update finds nothing, throws, and the whole transaction is undone).
       const dispatchedRide = await tx.scheduledRide.update({
-        where: { id: params.id },
+        where: { id: params.id, status: ScheduledRideStatus.DISPATCHING },
         data: {
           status: ScheduledRideStatus.DISPATCHED,
           requestedRideId: params.rideId,
