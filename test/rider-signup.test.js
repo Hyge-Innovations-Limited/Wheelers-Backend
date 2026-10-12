@@ -444,3 +444,27 @@ test('a wrong code never hands out a session', async () => {
   assert.equal(wrong.body.code, 'OTP_INVALID');
   assert.ok(wrong.body.attemptsRemaining >= 1, 'the rider should be told how many tries are left');
 });
+
+test('a rider\'s sign-in code goes by text message only: with WhatsApp set up too it is still an SMS, and with no SMS sender nothing is sent at all', async () => {
+  sentMessages = [];
+  const phone = `+23481${Math.floor(10000000 + Math.random() * 89999999)}`.slice(0, 14);
+
+  // WhatsApp is configured as well: any request to it fails this test (the fetch stub throws on anything but Twilio).
+  const both = { ...loginDeps(memoryRedis()), metaAccessToken: 'meta-token', metaPhoneNumberId: '123456' };
+  const send = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), both);
+  assert.equal(send.status, 200, JSON.stringify(send.body));
+  assert.equal(send.body.channel, 'sms');
+  assert.equal(sentMessages.length, 1);
+  assert.ok(!String(sentMessages[0].from).startsWith('whatsapp:'), 'a plain text message, not a WhatsApp one through Twilio');
+  assert.ok(!String(sentMessages[0].to).startsWith('whatsapp:'));
+  assert.match(sentMessages[0].body, /^Your Wheelers sign-in code is \d{6}\. It expires in \d+ minutes?\. Do not share it with anyone\.$/);
+
+  // Only WhatsApp is set up: there is no way to text, so the rider is told, and WhatsApp is not used instead.
+  sentMessages = [];
+  const whatsappOnly = { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), metaAccessToken: 'meta-token', metaPhoneNumberId: '123456', onboarding: loginDeps(memoryRedis()).onboarding };
+  const refused = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), whatsappOnly);
+  assert.equal(refused.status, 502);
+  assert.equal(refused.body.code, 'OTP_DELIVERY_FAILED');
+  assert.match(refused.body.error, /could not send a text message/);
+  assert.equal(sentMessages.length, 0);
+});

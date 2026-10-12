@@ -13,8 +13,7 @@ import {
   deliverOtp,
   isOtpConfigured,
   OtpDeliveryFailed,
-  type OtpChannelConfig,
-} from '../otp/channels';
+  type OtpChannelConfig, smsChannels } from '../otp/channels';
 
 const PHONE_OTP_KEY_PREFIX = 'auth:phone-otp:';
 const PHONE_OTP_LENGTH = 6;
@@ -186,16 +185,22 @@ export async function sendPhoneOtpMessage(
   phone: string,
   body: string,
   code: string,
+  /** `smsOnly`: the code goes by text message and nothing else (a rider signing in to the app). */
+  options: { smsOnly?: boolean } = {},
 ): Promise<'whatsapp' | 'sms'> {
   if (!hasOtpChannel(deps)) {
     throw new Error(OTP_NOT_CONFIGURED);
   }
 
   try {
-    const result = await deliverOtp(otpConfigFrom(deps), {
+    const config = otpConfigFrom(deps);
+    const result = await deliverOtp(config, {
       phone,
       code,
       body,
+      // SMS only: the provider chosen in .env first, the other behind it, and
+      // never WhatsApp. Naming the order also keeps the code ours to check.
+      ...(options.smsOnly ? { prefer: 'sms' as const, order: smsChannels(config) } : {}),
       log: (message, meta) => console.warn(message, meta ?? {}),
     });
     // Twilio Verify owns the code; remember that so verification asks Twilio

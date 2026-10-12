@@ -122,7 +122,7 @@ export async function handlePhoneLoginSendOtpRoute(
     }
     if (sends > MAX_SENDS_PER_WINDOW) {
       sendJson(res, 429, {
-        error: `Too many codes requested for this number. Wait up to ${Math.ceil(SEND_WINDOW_SECONDS / 60)} minutes and check WhatsApp for the last code sent.`,
+        error: `Too many codes requested for this number. Wait up to ${Math.ceil(SEND_WINDOW_SECONDS / 60)} minutes and check your text messages for the last code sent.`,
         code: 'OTP_RATE_LIMITED',
       });
       return;
@@ -136,11 +136,13 @@ export async function handlePhoneLoginSendOtpRoute(
       ttlSeconds,
     );
 
-    const messageBody = `Your Wheelers sign-in code is ${code}. It expires in ${Math.max(1, Math.floor(ttlSeconds / 60))} minute(s). If you did not request this, ignore this message.`;
+    const minutes = Math.max(1, Math.floor(ttlSeconds / 60));
+    const messageBody = `Your Wheelers sign-in code is ${code}. It expires in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Do not share it with anyone.`;
 
     let channel: 'whatsapp' | 'sms';
     try {
-      channel = await sendPhoneOtpMessage(deps, phone, messageBody, code);
+      // By text message, never WhatsApp: the app tells the rider to look in their messages.
+      channel = await sendPhoneOtpMessage(deps, phone, messageBody, code, { smsOnly: true });
     } catch (error) {
       // A code that never left the building must not eat the rider's quota —
       // otherwise a broken sender locks them out for the whole window.
@@ -161,7 +163,7 @@ export async function handlePhoneLoginSendOtpRoute(
         return;
       }
       sendJson(res, 502, {
-        error: `We could not deliver the code: ${error instanceof Error ? error.message : 'unknown error'}`,
+        error: 'We could not send a text message to this number. Check the number and try again.',
         code: 'OTP_DELIVERY_FAILED',
       });
       return;
