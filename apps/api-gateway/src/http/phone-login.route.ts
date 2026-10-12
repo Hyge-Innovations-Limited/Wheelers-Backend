@@ -32,7 +32,8 @@ import { readJsonBody, sendJson } from './utils';
 
 const LOGIN_OTP_KEY_PREFIX = 'auth:phone-login:otp:';
 const LOGIN_SEND_COUNT_PREFIX = 'auth:phone-login:sends:';
-const LOGIN_OTP_TTL_SECONDS = 300;
+/** A sign-in code is good for 30 minutes, the same as a driver's phone code. */
+export const LOGIN_OTP_TTL_SECONDS = 30 * 60;
 const MAX_SENDS_PER_WINDOW = 5;
 const SEND_WINDOW_SECONDS = 600;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -129,7 +130,8 @@ export async function handlePhoneLoginSendOtpRoute(
     }
 
     const code = buildOtpCode();
-    const ttlSeconds = deps.phoneOtpTtlSeconds ?? LOGIN_OTP_TTL_SECONDS;
+    // Its own lifetime: WHATSAPP_OTP_TTL_SECONDS is for codes sent over WhatsApp, which this never is.
+    const ttlSeconds = LOGIN_OTP_TTL_SECONDS;
     await deps.redisClient.set(
       otpKey(phone),
       JSON.stringify({ codeHash: hashOtp(code), attempts: 0 } satisfies StoredLoginOtp),
