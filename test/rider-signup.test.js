@@ -457,7 +457,8 @@ test('a rider\'s sign-in code goes by text message only: with WhatsApp set up to
   assert.equal(sentMessages.length, 1);
   assert.ok(!String(sentMessages[0].from).startsWith('whatsapp:'), 'a plain text message, not a WhatsApp one through Twilio');
   assert.ok(!String(sentMessages[0].to).startsWith('whatsapp:'));
-  assert.match(sentMessages[0].body, /^Your Wheelers sign-in code is \d{6}\. It expires in \d+ minutes?\. Do not share it with anyone\.$/);
+  assert.match(sentMessages[0].body, /^Your Wheelers sign-in code is \d{6}\. It expires in 30 minutes\. Do not share it with anyone\.$/);
+  assert.equal(send.body.expiresInSeconds, 1800);
 
   // Only WhatsApp is set up: there is no way to text, so the rider is told, and WhatsApp is not used instead.
   sentMessages = [];
