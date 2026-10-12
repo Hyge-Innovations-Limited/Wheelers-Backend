@@ -71,10 +71,13 @@ test('the link opens a chat with the Wheelers number with the code typed, and is
   assert.equal(referralShareLink('WHLAB2CD3', ''), null);
 });
 
+/** A code this person created for themselves, as the app has them do. */
+const ownCode = (userId) => referralClient.setCustomCode(userId, `R${Math.random().toString(36).slice(2, 10).toUpperCase()}`);
+
 test('a rider who sends a driver\'s code has it added to their account and is told', async () => {
   const driver = await person('DRIVER');
   const rider = await person();
-  const { code } = await referralClient.ensureCodeForUser(driver.id);
+  const { code } = await ownCode(driver.id);
   sent.length = 0;
 
   await applyReferralFromChat(deps, rider, '2348030000009', referralChatMessage(code), code);
@@ -91,12 +94,12 @@ test('a second code, their own code and a code that does not exist are refused i
   const friend = await person();
   const other = await person();
   const rider = await person();
-  const friendCode = (await referralClient.ensureCodeForUser(friend.id)).code;
-  const otherCode = (await referralClient.ensureCodeForUser(other.id)).code;
-  const ownCode = (await referralClient.ensureCodeForUser(rider.id)).code;
+  const friendCode = (await ownCode(friend.id)).code;
+  const otherCode = (await ownCode(other.id)).code;
+  const riderCode = (await ownCode(rider.id)).code;
 
   sent.length = 0;
-  await applyReferralFromChat(deps, rider, '2348030000010', ownCode, ownCode);
+  await applyReferralFromChat(deps, rider, '2348030000010', riderCode, riderCode);
   assert.match(said(0), /cannot use your own referral code/);
   assert.equal(await prisma.referral.count({ where: { referredUserId: rider.id } }), 0);
 
@@ -111,16 +114,19 @@ test('a second code, their own code and a code that does not exist are refused i
   assert.match(referralRefusal('something unexpected'), /could not be added right now/);
 });
 
-test('a person can choose their own code: it works in a link, the old one stops, and a taken or too short one is refused in words', async () => {
+test('a person creates their own code: none exists before, it works in a link, the one before stops, and a taken or too short one is refused in words', async () => {
   const driver = await person('DRIVER');
   const other = await person();
   const rider = await person();
-  const given = (await referralClient.ensureCodeForUser(driver.id)).code;
+  assert.equal((await referralClient.findSummary(driver.id)).code, null, 'nobody is handed a code');
+  assert.equal(await prisma.referralCode.count({ where: { userId: driver.id } }), 0, 'and looking does not make one');
+  const given = (await ownCode(driver.id)).code;
   const mine = `T${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
   const saved = await referralClient.setCustomCode(driver.id, ` ${mine.toLowerCase()} `);
   assert.equal(saved.code, mine, 'tidied to capitals');
   assert.equal((await referralClient.setCustomCode(driver.id, mine)).code, mine, 'choosing the same again is fine');
+  assert.equal((await referralClient.findSummary(driver.id)).code, mine);
   await assert.rejects(referralClient.setCustomCode(other.id, mine), /That code is taken/);
   await assert.rejects(referralClient.setCustomCode(other.id, 'ab'), /4 to 12 letters or numbers/);
   await assert.rejects(referralClient.setCustomCode(other.id, 'ABCDEFGHIJKLMNOP'), /4 to 12 letters or numbers/);
@@ -132,7 +138,7 @@ test('a person can choose their own code: it works in a link, the old one stops,
   assert.equal((await prisma.referral.findUnique({ where: { referredUserId: rider.id } })).referrerId, driver.id);
   assert.match(said(0), /has been added/);
 
-  // The code they were first given no longer finds them.
+  // The code they had before no longer finds them.
   await applyReferralFromChat(deps, other, '2348030000012', given, given);
   assert.match(said(1), /was not found/);
 });

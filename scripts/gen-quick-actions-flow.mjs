@@ -68,7 +68,7 @@ const REFERRAL = {
   layout: form('referral_form', [
     { type: 'TextBody', text: '${data.intro_line}' },
     errorLine,
-    { type: 'TextInput', name: 'code', label: 'Referral code', 'input-type': 'text', required: true, 'helper-text': 'e.g. WHLAB2CD3' },
+    { type: 'TextInput', name: 'code', label: 'Referral code', 'input-type': 'text', required: true, 'helper-text': 'e.g. TIMI24' },
     footer('Add code', 'apply_referral', { code: '${form.code}' }),
   ], { code: '${data.code}' }),
 };

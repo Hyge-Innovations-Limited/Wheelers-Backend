@@ -671,7 +671,7 @@
                 "label": "Referral code",
                 "input-type": "text",
                 "required": true,
-                "helper-text": "e.g. WHLAB2CD3"
+                "helper-text": "e.g. TIMI24"
               },
               {
                 "type": "Footer",

@@ -3027,8 +3027,8 @@ test('QUICK ACTIONS FORM · a referral code is typed in its own box, not sent as
   const form = menuForm(at);
   const friend = await prisma.user.create({ data: { privyDid: `did:test:${require('node:crypto').randomUUID()}`, role: 'DRIVER', name: 'Tunde Ade' } });
   const { referralClient } = require('@wheleers/db');
-  const friendCode = (await referralClient.ensureCodeForUser(friend.id)).code;
-  const ownCode = (await referralClient.ensureCodeForUser(at.user.id)).code;
+  const friendCode = (await referralClient.setCustomCode(friend.id, `R${Math.random().toString(36).slice(2, 10).toUpperCase()}`)).code;
+  const ownCode = (await referralClient.setCustomCode(at.user.id, `R${Math.random().toString(36).slice(2, 10).toUpperCase()}`)).code;
   const before = at.sent.length;
 
   const box = await form('data_exchange', { action: 'menu_choice', choice: 'referral' }, 'MENU');

@@ -29,15 +29,6 @@ function normalizeReferralCode(code: string): string {
 export const CUSTOM_CODE_MIN = 4;
 export const CUSTOM_CODE_MAX = 12;
 
-function buildReferralCodeCandidate(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let value = 'WHL';
-  for (let index = 0; index < 6; index += 1) {
-    value += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return value;
-}
-
 function toNgnDecimal(value: number): Prisma.Decimal {
   if (!Number.isFinite(value) || value <= 0) {
     return new Prisma.Decimal(0);
@@ -154,39 +145,10 @@ async function settleReferralWithReward(
 export const referralClient = {
   normalizeCode: normalizeReferralCode,
 
-  async ensureCodeForUser(userId: string) {
-    const existing = await prisma.referralCode.findUnique({
-      where: { userId },
-    });
-
-    if (existing) return existing;
-
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      try {
-        return await prisma.referralCode.create({
-          data: {
-            userId,
-            code: buildReferralCodeCandidate(),
-          },
-        });
-      } catch (error) {
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === 'P2002'
-        ) {
-          continue;
-        }
-        throw error;
-      }
-    }
-
-    throw new Error('Could not create a unique referral code.');
-  },
-
   async findSummary(userId: string) {
     const [code, referrals, cashbackGroups, settledUsages, reservedUsages] =
       await Promise.all([
-        this.ensureCodeForUser(userId),
+        prisma.referralCode.findUnique({ where: { userId } }),
         prisma.referral.groupBy({
           by: ['status'],
           where: { referrerId: userId },
@@ -223,7 +185,8 @@ export const referralClient = {
       );
 
     return {
-      code: code.code,
+      // Null until the person has created their code: nobody is handed one.
+      code: code?.code ?? null,
       availableCashbackNgn: cashbackAmount(ReferralCashbackStatus.AVAILABLE),
       frozenCashbackNgn: cashbackAmount(ReferralCashbackStatus.FROZEN),
       reservedCashbackNgn: decimalToNumber(reservedUsages._sum.amountNgn),
@@ -236,22 +199,28 @@ export const referralClient = {
   },
 
   /**
-   * A person's own choice of code, in place of the one they were given:
-   * "TIMI", "RIDEWITHADA". Four to twelve letters and digits, and nobody
-   * else's. The old code stops working; people who already used it stay
-   * referred. Throws a sentence the person can read when it is refused.
+   * The referral code a person creates for themselves: "TIMI", "RIDEWITHADA".
+   * Nobody is handed one. Four to twelve letters and digits, and nobody
+   * else's. Creating another replaces the first, which stops working; people
+   * who already used it stay referred. Throws a sentence the person can read
+   * when it is refused.
    */
   async setCustomCode(userId: string, wanted: string) {
     const code = normalizeReferralCode(wanted);
     if (code.length < CUSTOM_CODE_MIN || code.length > CUSTOM_CODE_MAX) {
       throw new Error(`A referral code is ${CUSTOM_CODE_MIN} to ${CUSTOM_CODE_MAX} letters or numbers.`);
     }
-    const current = await this.ensureCodeForUser(userId);
-    if (current.code === code) return current;
     try {
-      return await prisma.referralCode.update({ where: { userId }, data: { code, isActive: true } });
+      return await prisma.referralCode.upsert({
+        where: { userId },
+        create: { userId, code },
+        update: { code, isActive: true },
+      });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        // The same person asking twice at once lands here too, with their own code.
+        const mine = await prisma.referralCode.findUnique({ where: { userId } });
+        if (mine?.code === code) return mine;
         throw new Error('That code is taken. Try another one.');
       }
       throw error;
