@@ -991,6 +991,14 @@ export async function handleRideEvent(
         rideId: event.rideId,
         driverId: event.driverId,
       });
+      // A rider waiting indoors has the phone in a pocket, not the app open:
+      // the driver at the kerb is said by push as well.
+      await tellAppRider(deps, event.riderId, {
+        title: 'Your driver is outside',
+        body: 'Open Wheelers for your trip code and give it to the driver.',
+        type: 'ride:driver_arrived',
+        rideId: event.rideId,
+      });
     }
     return;
   }
@@ -1202,6 +1210,17 @@ export async function handleRideEvent(
         refundedNgn: holdRelease?.holdAmountNgn ?? 0,
         ...(driverBailed ? { searchingAgain: true } : {}),
       });
+      // A driver pulling out is news the rider did not cause and must not
+      // find out by waiting: said by push, and kept in the app's notifications.
+      if (driverBailed) {
+        await tellAppRider(deps, event.riderId, {
+          title: 'Your driver cancelled',
+          body: 'You were not charged. We are looking for another driver; open Wheelers to see the offers.',
+          type: 'ride:driver_cancelled',
+          rideId: event.rideId,
+          inApp: true,
+        });
+      }
     }
 
     // Notify driver via WebSocket (app).

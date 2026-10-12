@@ -121,6 +121,17 @@ test('a search that ends with the app closed says so by push; with the app open 
   assert.equal(open.pushes.length, 0);
 });
 
+test('a driver arriving for an app rider is on the trip screen and a push, so a rider indoors hears it', async () => {
+  const at = gateway({ online: false });
+  const rideId = randomUUID(); const riderId = randomUUID();
+  await at.send({ eventType: 'RIDE_ARRIVED', rideId, riderId, driverId: randomUUID() });
+  assert.equal(at.socket[0].type, 'ride:driver_arrived');
+  assert.deepEqual(at.pushes.map((p) => p.eventType), ['PUSH_SEND']);
+  assert.equal(at.pushes[0].userId, riderId);
+  assert.equal(at.pushes[0].title, 'Your driver is outside');
+  assert.deepEqual(at.pushes[0].data, { type: 'ride:driver_arrived', rideId });
+});
+
 test('a ride cancelled in the instant it was being dispatched stays cancelled, and no search goes out', async () => {
   const user = await rider();
   const scheduled = await prisma.scheduledRide.create({ data: { riderId: user.id, scheduledFor: new Date(Date.now() + 5 * 60_000), status: 'DISPATCHING', ...place } });
