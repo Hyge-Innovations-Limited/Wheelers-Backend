@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { userClient } from '@wheleers/db';
 import { authenticateHttpUser, HttpAuthError } from './authenticate';
-import { createLocalAccessToken, verifyLocalAccessToken } from '../auth/local';
+import { createLocalAccessToken, verifyLocalAccessToken, TOKEN_TTL_SECONDS } from '../auth/local';
 import { sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
@@ -12,8 +12,9 @@ import type { RedisClient } from '../redis/client';
  */
 const BLACKLIST_PREFIX = 'auth:blacklist:';
 
-// Max token TTL is 30 days (from auth/local.ts TOKEN_TTL_SECONDS)
-const MAX_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+// A signed-out login is remembered as dead for as long as it could still have
+// been used: the full life of a login (auth/local.ts TOKEN_TTL_SECONDS).
+const MAX_TOKEN_TTL_SECONDS = TOKEN_TTL_SECONDS;
 
 function extractTokenSignature(authorization: string | undefined): string | null {
   if (!authorization) return null;

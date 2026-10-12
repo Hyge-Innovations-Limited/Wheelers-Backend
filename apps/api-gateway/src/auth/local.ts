@@ -4,7 +4,12 @@ import { isRecord } from '../utils/object';
 
 const scrypt = promisify(scryptCallback);
 const TOKEN_TYPE = 'wheelers.local.auth';
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+/**
+ * A login lasts a year. The app swaps it for a fresh one whenever it is opened
+ * with a login over a day old, so the year starts again each time: someone is
+ * signed out only by signing out, or by not opening the app for a whole year.
+ */
+export const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 365;
 
 interface LocalTokenPayload {
   sub: string;

@@ -58,7 +58,8 @@ test('the code is read from what a referral link sends, and from a message that 
 test('ordinary messages are not mistaken for a code', () => {
   assert.equal(referralCodeIn('from Yaba to WHLAB2CD3 street'), null, 'a code inside another sentence is left alone');
   assert.equal(referralCodeIn('what is a referral code'), null);
-  assert.equal(referralCodeIn('my referral code is ABC123'), null, 'not a Wheelers code');
+  assert.equal(referralCodeIn('referral code ABC123'), null, 'only a WHL code is read outside the full sentence a link sends');
+  assert.equal(referralCodeIn('TIMI'), null, 'a short word alone is a place name, not a code');
   assert.equal(referralCodeIn('from Yaba to Victoria Island'), null);
   assert.equal(referralCodeIn(''), null);
 });
@@ -108,4 +109,30 @@ test('a second code, their own code and a code that does not exist are refused i
   assert.equal((await prisma.referral.findUnique({ where: { referredUserId: rider.id } })).referrerId, friend.id, 'the first code stays');
 
   assert.match(referralRefusal('something unexpected'), /could not be added right now/);
+});
+
+test('a person can choose their own code: it works in a link, the old one stops, and a taken or too short one is refused in words', async () => {
+  const driver = await person('DRIVER');
+  const other = await person();
+  const rider = await person();
+  const given = (await referralClient.ensureCodeForUser(driver.id)).code;
+  const mine = `T${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+
+  const saved = await referralClient.setCustomCode(driver.id, ` ${mine.toLowerCase()} `);
+  assert.equal(saved.code, mine, 'tidied to capitals');
+  assert.equal((await referralClient.setCustomCode(driver.id, mine)).code, mine, 'choosing the same again is fine');
+  await assert.rejects(referralClient.setCustomCode(other.id, mine), /That code is taken/);
+  await assert.rejects(referralClient.setCustomCode(other.id, 'ab'), /4 to 12 letters or numbers/);
+  await assert.rejects(referralClient.setCustomCode(other.id, 'ABCDEFGHIJKLMNOP'), /4 to 12 letters or numbers/);
+
+  // What the link now sends is read as the chosen code, and adds it.
+  assert.equal(referralCodeIn(referralChatMessage(mine)), mine);
+  sent.length = 0;
+  await applyReferralFromChat(deps, rider, '2348030000011', referralChatMessage(mine), mine);
+  assert.equal((await prisma.referral.findUnique({ where: { referredUserId: rider.id } })).referrerId, driver.id);
+  assert.match(said(0), /has been added/);
+
+  // The code they were first given no longer finds them.
+  await applyReferralFromChat(deps, other, '2348030000012', given, given);
+  assert.match(said(1), /was not found/);
 });

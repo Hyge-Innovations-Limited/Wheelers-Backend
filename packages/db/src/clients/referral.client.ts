@@ -26,6 +26,9 @@ function normalizeReferralCode(code: string): string {
   return code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+export const CUSTOM_CODE_MIN = 4;
+export const CUSTOM_CODE_MAX = 12;
+
 function buildReferralCodeCandidate(): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let value = 'WHL';
@@ -230,6 +233,29 @@ export const referralClient = {
       expiredNoRideReferrals: referralCount(ReferralStatus.EXPIRED_NO_RIDE),
       closedReferrals: referralCount(ReferralStatus.CLOSED),
     };
+  },
+
+  /**
+   * A person's own choice of code, in place of the one they were given:
+   * "TIMI", "RIDEWITHADA". Four to twelve letters and digits, and nobody
+   * else's. The old code stops working; people who already used it stay
+   * referred. Throws a sentence the person can read when it is refused.
+   */
+  async setCustomCode(userId: string, wanted: string) {
+    const code = normalizeReferralCode(wanted);
+    if (code.length < CUSTOM_CODE_MIN || code.length > CUSTOM_CODE_MAX) {
+      throw new Error(`A referral code is ${CUSTOM_CODE_MIN} to ${CUSTOM_CODE_MAX} letters or numbers.`);
+    }
+    const current = await this.ensureCodeForUser(userId);
+    if (current.code === code) return current;
+    try {
+      return await prisma.referralCode.update({ where: { userId }, data: { code, isActive: true } });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new Error('That code is taken. Try another one.');
+      }
+      throw error;
+    }
   },
 
   /** Has this person already had a referral code added to their account? */

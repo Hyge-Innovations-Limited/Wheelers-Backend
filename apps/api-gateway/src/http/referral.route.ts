@@ -92,6 +92,8 @@ export async function handleGetReferralSummaryRoute(
       ...summary,
       shareLink: summary.code ? referralShareLink(summary.code) : null,
       shareMessage: summary.code ? referralChatMessage(summary.code) : null,
+      // Whether someone else's code is already on this account: one per person.
+      hasAppliedCode: await referralClient.hasAppliedCode(user.id),
     });
   } catch (error) {
     sendJson(res, 400, {
@@ -100,6 +102,38 @@ export async function handleGetReferralSummaryRoute(
           ? error.message
           : "Could not load referral summary.",
     });
+  }
+}
+
+/** PUT /referrals/me/code { code } — the person's own choice of referral code. */
+export async function handleSetReferralCodeRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReferralRouteDeps,
+): Promise<void> {
+  let userId: string;
+  try {
+    userId = (await authenticateHttpUser(req, deps.jwtSecret)).id;
+  } catch {
+    sendJson(res, 401, { error: "Please sign in again." });
+    return;
+  }
+  try {
+    const rawBody = await readJsonBody(req);
+    const wanted = isRecord(rawBody) ? getString(rawBody, "code") : undefined;
+    if (!wanted) {
+      sendJson(res, 400, { error: "Type the code you want." });
+      return;
+    }
+    const saved = await referralClient.setCustomCode(userId, wanted);
+    logActivity({ userId, eventType: "referral_code_changed", metadata: { code: saved.code } });
+    sendJson(res, 200, {
+      code: saved.code,
+      shareLink: referralShareLink(saved.code),
+      shareMessage: referralChatMessage(saved.code),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error instanceof Error ? error.message : "Could not change your referral code." });
   }
 }
 

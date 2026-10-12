@@ -3,20 +3,26 @@ import { logActivity } from '../analytics/log-activity';
 import type { MetaWhatsappRouteDeps } from './deps';
 import { replyAndLog } from './send';
 
-/** Every code is WHL and six more letters or digits (see referralClient). */
-const CODE = 'WHL[A-Z0-9]{6}';
-const SAID = new RegExp(`\\breferral\\s+code\\b[^A-Za-z0-9]*(?:is\\b[^A-Za-z0-9]*)?(${CODE})\\b`, 'i');
-const ALONE = new RegExp(`^\\s*(${CODE})\\s*$`, 'i');
+/**
+ * A code Wheelers gave out is WHL and six more letters or digits; one a person
+ * chose for themselves is any four to twelve (see referralClient).
+ */
+const GIVEN = 'WHL[A-Z0-9]{6}';
+const ANY = '[A-Z0-9]{4,12}';
+const SAID = new RegExp(`\\bmy\\s+referral\\s+code\\s+is\\b[^A-Za-z0-9]*(${ANY})\\b|\\breferral\\s+code\\b[^A-Za-z0-9]*(?:is\\b[^A-Za-z0-9]*)?(${GIVEN})\\b`, 'i');
+const ALONE = new RegExp(`^\\s*(${GIVEN})\\s*$`, 'i');
 
 /**
  * The referral code in a message, or null. It is read from "my referral code
- * is WHLAB2CD3" (what a referral link or QR code opens the chat with) and from
- * a message that is nothing but the code. A code inside any other sentence is
+ * is WHLAB2CD3" (what a referral link or QR code opens the chat with; here a
+ * code someone chose for themselves, like TIMI, is read too) and from a
+ * message that is nothing but a WHL code. A code inside any other sentence is
  * left alone: it could be part of an address.
  */
 export function referralCodeIn(text: string): string | null {
-  const found = SAID.exec(text) ?? ALONE.exec(text);
-  return found ? found[1]!.toUpperCase() : null;
+  const said = SAID.exec(text);
+  const found = said ? (said[1] ?? said[2]) : ALONE.exec(text)?.[1];
+  return found ? found.toUpperCase() : null;
 }
 
 /** What a referral link puts in the chat box, ready to send. */

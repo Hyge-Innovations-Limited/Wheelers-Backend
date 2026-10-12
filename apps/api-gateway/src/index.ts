@@ -213,6 +213,7 @@ import {
   handleListReferralCashbackRoute,
   handleListReferralReferralsRoute,
   handlePreviewReferralRideCashbackRoute,
+  handleSetReferralCodeRoute,
 } from "./http/referral.route";
 import {
   handleGetKycStatusRoute,
@@ -863,6 +864,18 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleGetReferralSummaryRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
+    if (url.pathname === "/referrals/me/code") {
+      if (req.method !== "PUT") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleSetReferralCodeRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
       });
       return;

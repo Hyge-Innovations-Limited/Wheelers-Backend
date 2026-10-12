@@ -1,4 +1,4 @@
-// Rolling logins: a valid login is swapped for a fresh 30-day one; an expired,
+// Rolling logins: a valid login is swapped for a fresh one-year one; an expired,
 // signed-out or deleted one is refused (401, SESSION_ENDED), so the app sends
 // that person to sign in. Local Postgres, Redis database 15.
 //
@@ -55,15 +55,15 @@ function issuedAgo(userId, ageSeconds, ttlSeconds) {
   return `${unsigned}.${crypto.createHmac('sha256', SECRET).update(unsigned).digest('base64url')}`;
 }
 
-test('a valid login comes back as a fresh 30-day one for the same person', async () => {
+test('a valid login comes back as a fresh one-year one for the same person', async () => {
   const id = await user();
   const old = issuedAgo(id, 20 * 86400, 30 * 86400); // 20 days in, 10 left
   const r = await post('/auth/refresh', old);
   assert.equal(r.status, 200);
   const fresh = local.verifyLocalAccessToken(r.body.accessToken, SECRET);
   assert.equal(fresh.sub, id);
-  assert.equal(fresh.exp - fresh.iat, 30 * 86400);
-  assert.ok(Date.parse(r.body.expiresAt) > Date.now() + 29 * 86400e3);
+  assert.equal(fresh.exp - fresh.iat, 365 * 86400, 'a year from now, whatever was left on the old one');
+  assert.ok(Date.parse(r.body.expiresAt) > Date.now() + 364 * 86400e3);
   assert.equal(local.verifyLocalAccessToken(old, SECRET).sub, id, 'the old one still works until it expires');
 });
 
