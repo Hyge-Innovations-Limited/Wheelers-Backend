@@ -153,6 +153,27 @@ export async function provisionDepositAccount(
   return 'ready';
 }
 
+/**
+ * Opens a rider's deposit account as soon as everything it needs is there,
+ * wherever they joined: the app or WhatsApp. It needs their agreement to the
+ * privacy policy (their name and number go to the payment provider), a phone
+ * number, and their own name (without one the bank would name the account
+ * "Wheelers User" for good). Called whenever one of those may have just
+ * arrived: signing in, giving a name, accepting the terms. Until then, and
+ * for an account that already exists, it does nothing. Never throws.
+ */
+export async function openDepositAccountWhenReady(payments: PaymentsClient, userId: string): Promise<void> {
+  try {
+    const user = await userClient.findById(userId);
+    if (user.role === 'DRIVER' || user.privyDid.startsWith('deleted:')) return;
+    if (user.privacyConsent !== 'AGREED' || !user.name?.trim() || !user.phone?.trim()) return;
+    if (await virtualAccountClient.findByUserId(userId)) return;
+    await provisionDepositAccount(payments, userId, user.name, user.phone);
+  } catch (error) {
+    console.warn('[onboarding] deposit account not opened (non-blocking)', { userId, error: getErrorMessage(error) });
+  }
+}
+
 async function requestCryptoWalletCreation(
   deps: Pick<UserOnboardingDeps, 'publisher' | 'jwtSecret'>,
   userId: string,

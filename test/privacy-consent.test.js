@@ -82,3 +82,37 @@ test('someone who declined cannot have a bank account opened; they are told how 
   assert.equal(refused.body.code, 'CONSENT_REQUIRED');
   assert.match(refused.body.error, /Accept the Terms and Privacy Policy/);
 });
+
+test('a rider\'s deposit account opens by itself once they have agreed, given a name and have a number, and not before', async () => {
+  const { openDepositAccountWhenReady } = require('../apps/api-gateway/dist/onboarding/user-onboarding.js');
+  const calls = [];
+  const payments = {
+    createCustomer: async (input) => { calls.push(['customer', input.firstName, input.lastName, input.phoneNumber]); return { id: `cus_${randomUUID()}` }; },
+    updateCustomer: async () => {},
+    createVirtualAccount: async () => { calls.push(['account']); return { id: `acc_${randomUUID()}`, bank_name: 'Test Bank', account_number: String(Math.floor(1e9 + Math.random() * 8e9)), account_name: 'Ada Obi', currency: 'NGN', country: 'NG' }; },
+  };
+  const user = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', phone: `+23480${Math.floor(10000000 + Math.random() * 89999999)}` } });
+  made.push(user.id);
+
+  await openDepositAccountWhenReady(payments, user.id);
+  assert.equal(calls.length, 0, 'not agreed, no name: nothing is sent to the bank');
+
+  await userClient.setPrivacyConsent(user.id, 'AGREED');
+  await openDepositAccountWhenReady(payments, user.id);
+  assert.equal(calls.length, 0, 'agreed but nameless: the bank would call them "Wheelers User"');
+
+  await prisma.user.update({ where: { id: user.id }, data: { name: 'Ada Obi' } });
+  await openDepositAccountWhenReady(payments, user.id);
+  assert.deepEqual(calls.map((c) => c[0]), ['customer', 'account']);
+  assert.deepEqual(calls[0].slice(1, 3), ['Ada', 'Obi']);
+  assert.ok(await prisma.virtualAccount.findFirst({ where: { userId: user.id } }), 'the account number is theirs');
+
+  await openDepositAccountWhenReady(payments, user.id);
+  assert.equal(calls.length, 2, 'asked again, nothing more is opened');
+  await prisma.virtualAccount.deleteMany({ where: { userId: user.id } });
+
+  const declined = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'No Thanks', phone: `+23480${Math.floor(10000000 + Math.random() * 89999999)}`, privacyConsent: 'DECLINED' } });
+  made.push(declined.id);
+  await openDepositAccountWhenReady(payments, declined.id);
+  assert.equal(calls.length, 2, 'declined: nothing is opened');
+});

@@ -5,7 +5,7 @@ import { createLocalAccessToken, verifyLocalAccessToken, TOKEN_TTL_SECONDS } fro
 import { readJsonBody, sendJson } from './utils';
 import { getString, isRecord } from '../utils/object';
 import type { PaymentsClient } from '@wheleers/payments';
-import { provisionDepositAccount } from '../onboarding/user-onboarding';
+import { openDepositAccountWhenReady } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
@@ -151,11 +151,8 @@ export async function handlePrivacyConsentRoute(
     await userClient.setPrivacyConsent(user.id, wanted);
     logActivity({ userId: user.id, eventType: wanted === 'AGREED' ? 'privacy_consent_agreed' : 'privacy_consent_declined', source: 'app' });
     // Now, and only now, their name and phone may go to the payment provider.
-    if (wanted === 'AGREED' && deps.paymentsClient) {
-      void provisionDepositAccount(deps.paymentsClient, user.id, user.name ?? undefined, user.phone ?? undefined).catch((error) => {
-        console.warn('[consent] deposit account not opened (non-blocking)', { userId: user.id, error: error instanceof Error ? error.message : String(error) });
-      });
-    }
+    // (A new rider has no name yet: the account opens when they give one.)
+    if (wanted === 'AGREED' && deps.paymentsClient) void openDepositAccountWhenReady(deps.paymentsClient, user.id);
     sendJson(res, 200, { privacyConsent: wanted });
   } catch (error) {
     console.error('[consent] failed', { error: error instanceof Error ? error.message : String(error) });

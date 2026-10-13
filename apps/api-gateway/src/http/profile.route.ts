@@ -5,9 +5,13 @@ import { readJsonBody, sendJson } from "./utils";
 import { getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
 import { fillMissingName } from '../auth/display-name';
+import type { PaymentsClient } from '@wheleers/payments';
+import { openDepositAccountWhenReady } from '../onboarding/user-onboarding';
 
 interface ProfileRouteDeps {
   jwtSecret: string;
+  /** With it, a rider's deposit account is opened the moment their name completes what the bank needs. */
+  paymentsClient?: PaymentsClient;
 }
 
 function serializeUser(user: {
@@ -148,6 +152,9 @@ export async function handleUpdateCurrentProfileRoute(
           .map(([key]) => key),
       },
     });
+
+    // A name (or a number) may be the last thing the bank was waiting for.
+    if (deps.paymentsClient) void openDepositAccountWhenReady(deps.paymentsClient, user.id);
 
     sendJson(res, 200, {
       user: serializeUser(updated),

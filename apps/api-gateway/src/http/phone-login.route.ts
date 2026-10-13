@@ -1,3 +1,4 @@
+import { openDepositAccountWhenReady } from '../onboarding/user-onboarding';
 import { noteRequestPhone } from '../analytics/user-outcomes';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { userClient } from '@wheleers/db';
@@ -250,6 +251,9 @@ export async function handlePhoneLoginVerifyOtpRoute(
     const accessToken = createLocalAccessToken(user.id, deps.jwtSecret);
 
     logActivity({ userId: user.id, eventType: 'phone_login', metadata: { created } });
+    // Someone who agreed on WhatsApp, or signed up in the app before accounts
+    // were opened for them, gets theirs now if everything the bank needs is there.
+    void openDepositAccountWhenReady(deps.onboarding.paymentsClient, user.id);
 
     sendJson(res, 200, {
       accessToken,

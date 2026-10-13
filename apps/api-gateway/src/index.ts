@@ -821,6 +821,7 @@ async function bootstrap(): Promise<void> {
 
       await handleUpdateCurrentProfileRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
+        paymentsClient,
       });
       return;
     }
