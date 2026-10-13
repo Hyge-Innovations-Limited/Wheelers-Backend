@@ -893,6 +893,17 @@ export async function handleProvisionVirtualAccountRoute(
       return;
     }
 
+    // Opening an account sends their name and number to the payment provider.
+    // Someone who was asked and declined the privacy policy has said no to
+    // that: they are told how to change it. (Never asked is as before.)
+    if ((await userClient.getPrivacyConsent(user.id).catch(() => "PENDING")) === "DECLINED") {
+      sendJson(res, 403, {
+        error: "Accept the Terms and Privacy Policy to add money to your wallet.",
+        code: "CONSENT_REQUIRED",
+      });
+      return;
+    }
+
     // Ensure wallet exists (catch P2002 in case of concurrent creation)
     const wallet = await walletClient.findByUserId(user.id);
     if (!wallet) {

@@ -32,6 +32,7 @@ import {
   handleLogoutRoute,
   handleRefreshRoute,
   handleSessionCheckRoute,
+  handlePrivacyConsentRoute,
   handleDeleteAccountRoute,
 } from "./http/account.route";
 import {
@@ -833,6 +834,20 @@ async function bootstrap(): Promise<void> {
       await handleLogoutRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/privacy-consent") {
+      if (req.method !== "GET" && req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handlePrivacyConsentRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        paymentsClient,
       });
       return;
     }

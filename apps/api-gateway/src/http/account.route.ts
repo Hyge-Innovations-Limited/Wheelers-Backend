@@ -2,7 +2,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { userClient } from '@wheleers/db';
 import { authenticateHttpUser, HttpAuthError } from './authenticate';
 import { createLocalAccessToken, verifyLocalAccessToken, TOKEN_TTL_SECONDS } from '../auth/local';
-import { sendJson } from './utils';
+import { readJsonBody, sendJson } from './utils';
+import { getString, isRecord } from '../utils/object';
+import type { PaymentsClient } from '@wheleers/payments';
+import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
@@ -102,6 +105,61 @@ export async function handleRefreshRoute(
     }
     console.error('[auth] refresh failed', { error: error instanceof Error ? error.message : String(error) });
     sendJson(res, 500, { error: 'Could not renew the login right now.' });
+  }
+}
+
+/**
+ * The terms and privacy policy, agreed once for the account wherever that
+ * happens: in the app or on WhatsApp. Each asks only when the other has not.
+ *
+ *   GET  /auth/privacy-consent                    → { privacyConsent }
+ *   POST /auth/privacy-consent { consent }        consent: "AGREED" | "DECLINED"
+ *
+ * Agreeing is also what lets a bank account be opened for the person's
+ * deposits (their name and number go to the payment provider), exactly as
+ * tapping Continue on WhatsApp does. Declining never undoes an agreement.
+ */
+export async function handlePrivacyConsentRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: AccountRouteDeps & { paymentsClient?: PaymentsClient },
+): Promise<void> {
+  let user: Awaited<ReturnType<typeof authenticateHttpUser>>;
+  try {
+    user = await authenticateHttpUser(req, deps.jwtSecret);
+  } catch (error) {
+    sendJson(res, 401, { error: error instanceof Error ? error.message : 'Please sign in again.' });
+    return;
+  }
+  try {
+    const current = await userClient.getPrivacyConsent(user.id);
+    if (req.method === 'GET') {
+      sendJson(res, 200, { privacyConsent: current });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const wanted = isRecord(body) ? getString(body, 'consent') : undefined;
+    if (wanted !== 'AGREED' && wanted !== 'DECLINED') {
+      sendJson(res, 400, { error: 'consent must be AGREED or DECLINED' });
+      return;
+    }
+    // Already agreed (here or on WhatsApp): that stands, whatever is sent now.
+    if (current === 'AGREED' || current === wanted) {
+      sendJson(res, 200, { privacyConsent: current });
+      return;
+    }
+    await userClient.setPrivacyConsent(user.id, wanted);
+    logActivity({ userId: user.id, eventType: wanted === 'AGREED' ? 'privacy_consent_agreed' : 'privacy_consent_declined', source: 'app' });
+    // Now, and only now, their name and phone may go to the payment provider.
+    if (wanted === 'AGREED' && deps.paymentsClient) {
+      void provisionDepositAccount(deps.paymentsClient, user.id, user.name ?? undefined, user.phone ?? undefined).catch((error) => {
+        console.warn('[consent] deposit account not opened (non-blocking)', { userId: user.id, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    sendJson(res, 200, { privacyConsent: wanted });
+  } catch (error) {
+    console.error('[consent] failed', { error: error instanceof Error ? error.message : String(error) });
+    sendJson(res, 500, { error: 'Could not save your answer right now. Please try again.' });
   }
 }
 

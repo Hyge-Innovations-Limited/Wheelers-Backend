@@ -255,6 +255,9 @@ export async function handlePhoneLoginVerifyOtpRoute(
       accessToken,
       tokenType: 'Bearer',
       isNewUser: created,
+      // Whether this account has agreed to the terms and privacy policy, here
+      // or on WhatsApp. Said only now: the code has proved the number is theirs.
+      privacyConsent: await userClient.getPrivacyConsent(user.id).catch(() => 'PENDING'),
       user: {
         id: user.id,
         privyDid: user.privyDid,
