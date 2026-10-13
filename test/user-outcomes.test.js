@@ -45,6 +45,8 @@ test('screens loading, constant pings and the dashboard itself are not written d
   assert.equal(outcomeOf({ method: 'GET', path: '/auth/me', status: 401, userId: null }), null, 'signed out is ordinary');
   assert.equal(outcomeOf({ method: 'POST', path: '/drivers/me/location', status: 500, userId: 'u1' }), null);
   assert.equal(outcomeOf({ method: 'POST', path: '/admin/login', status: 401, userId: null }), null);
+  assert.equal(outcomeOf({ method: 'GET', path: '/interstate/driver/offers', status: 403, userId: 'u1', shownError: 'Finish your verification (KYC) before taking interstate trips.' }), null, 'the app asking by itself is not a person hitting a wall');
+  assert.equal(outcomeOf({ method: 'GET', path: '/auth/session', status: 401, userId: null }), null);
   assert.equal(outcomeOf({ method: 'POST', path: '/webhooks/whatsapp', status: 500, userId: null }), null);
   assert.equal(outcomeOf({ method: 'POST', path: '/rides/estimate', status: 200, userId: 'u1' }), null, 'a price looked up is not news');
   assert.equal(outcomeOf({ method: 'GET', path: '/wallet/overview', status: 500, userId: 'u1' }).eventType, OUTCOME_FAILED, 'a screen that broke is');

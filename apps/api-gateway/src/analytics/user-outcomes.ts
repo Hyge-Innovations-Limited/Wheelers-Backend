@@ -74,8 +74,12 @@ const LIVE_ACTIONS: Record<string, string> = {
   'chat:send': 'Sent a chat message',
 };
 
-/** Requests that happen constantly or mean nothing to a person reading the page. */
-const NEVER = /^\/(admin|webhooks|health|widget|ride-page|wallet-page|stellar)(\/|$)|^\/drivers\/me\/(location|standby|standby-location)$|^\/notifications/;
+/**
+ * Requests that happen constantly or mean nothing to a person reading the
+ * page. Among them two the app makes by itself, with nobody tapping: older
+ * builds asking for intercity requests, and the login check on opening.
+ */
+const NEVER = /^\/(admin|webhooks|health|widget|ride-page|wallet-page|stellar)(\/|$)|^\/drivers\/me\/(location|standby|standby-location)$|^\/notifications|^\/interstate\/driver\/offers$|^\/auth\/session$/;
 /** Successes worth a line: things a person did, not screens loading. */
 const WORTH_SAYING = /^\/auth\/(phone\/|apple$|google$|signin$|signup$|reset-password$|delete-account$)|^\/drivers\/kyc\/(submit|resubmit)$|^\/referrals\/(apply|me\/code)$|^\/scheduled-rides|^\/wallet\/(withdrawals$|pin)|^\/safety\/alerts|^\/support\/chat\/messages$/;
 
