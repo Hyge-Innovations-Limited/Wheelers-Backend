@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import { noteShownError } from '../analytics/user-outcomes';
 
 const MAX_BODY_SIZE_BYTES = 50_000_000;
 
@@ -42,6 +43,8 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 export function sendJson(res: ServerResponse, statusCode: number, payload: Record<string, unknown>): void {
+  // The sentence a refusal shows the person, kept for the admin Activity page.
+  if (statusCode >= 400) noteShownError(res, payload.error ?? payload.message);
   const body = JSON.stringify(payload);
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json; charset=utf-8');

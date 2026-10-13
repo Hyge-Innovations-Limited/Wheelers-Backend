@@ -58,6 +58,34 @@ export const activityClient = {
       take: Math.min(limit, 200),
     }),
 
+  /**
+   * A page of activity for the admin Activity page, newest first: only the
+   * given event types when named, only one person when named, and older than
+   * `before` when paging back.
+   */
+  listPage: async (options: { eventTypes?: string[]; userId?: string; before?: Date; limit?: number }) => {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const rows = await prisma.userActivityEvent.findMany({
+      where: {
+        ...(options.eventTypes?.length ? { eventType: { in: options.eventTypes } } : {}),
+        ...(options.userId ? { userId: options.userId } : {}),
+        ...(options.before ? { createdAt: { lt: options.before } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+    });
+    return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
+  },
+
+  /** Every row of one event type since a cutoff, capped: the Activity page counts problems from these. */
+  listSince: async (eventType: string, since: Date, cap = 2000) =>
+    prisma.userActivityEvent.findMany({
+      where: { eventType, createdAt: { gte: since } },
+      orderBy: { createdAt: 'desc' },
+      take: cap,
+      select: { userId: true, metadata: true, createdAt: true },
+    }),
+
   /** Event counts by type since a cutoff — the dashboard's 24h pulse. */
   countsByType: async (since: Date) => {
     const rows = await prisma.userActivityEvent.groupBy({

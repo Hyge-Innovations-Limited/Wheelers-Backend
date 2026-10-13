@@ -1,3 +1,4 @@
+import { noteRequestPhone } from '../analytics/user-outcomes';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { userClient } from '@wheleers/db';
 import { createLocalAccessToken } from '../auth/local';
@@ -111,6 +112,8 @@ export async function handlePhoneLoginSendOtpRoute(
       return;
     }
     phone = normalizePhoneNumber(rawPhone);
+    // Not signed in yet: the number is how the admin Activity page knows whose attempt this was.
+    noteRequestPhone(res, phone);
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid request' });
     return;
@@ -200,6 +203,8 @@ export async function handlePhoneLoginVerifyOtpRoute(
       return;
     }
     phone = normalizePhoneNumber(rawPhone);
+    // Not signed in yet: the number is how the admin Activity page knows whose attempt this was.
+    noteRequestPhone(res, phone);
     code = rawCode;
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid request' });

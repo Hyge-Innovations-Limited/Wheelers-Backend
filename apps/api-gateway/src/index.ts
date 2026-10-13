@@ -95,6 +95,7 @@ import {
   handleAdminRecentRidesRoute,
   handleAdminUserActivityRoute,
   handleAdminActivityFeedRoute,
+  handleAdminAppActivityRoute,
 } from "./http/admin-analytics.route";
 import {
   handleCancelGroupRideMatchRequestRoute,
@@ -109,6 +110,7 @@ import { handlePaystackWebhookRoute } from "./http/paystack.route";
 import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
+import { recordRequestOutcome } from "./analytics/user-outcomes";
 import { handleRidePageRoute } from "./http/ride-page.route";
 import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
@@ -664,6 +666,8 @@ async function bootstrap(): Promise<void> {
     const startedAt = Date.now();
     res.once("finish", () => {
       healthStats.http(Date.now() - startedAt, res.statusCode);
+      // What people tried in the app and how it went, for the admin Activity page.
+      recordRequestOutcome(req, res, url.pathname, gatewayEnv.JWT_SECRET);
       // Admins' searches, records opened and changes, for the owners' Team activity page.
       if (url.pathname.startsWith("/admin/")) {
         const adminId = extractAdminId(req, gatewayEnv.JWT_SECRET);
@@ -2053,6 +2057,19 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleAdminUserActivityRoute(req, res, {
+        adminApiKey: process.env.ADMIN_API_KEY ?? '',
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      }, url);
+      return;
+    }
+
+    if (url.pathname === "/admin/analytics/app-activity") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleAdminAppActivityRoute(req, res, {
         adminApiKey: process.env.ADMIN_API_KEY ?? '',
         jwtSecret: gatewayEnv.JWT_SECRET,
       }, url);

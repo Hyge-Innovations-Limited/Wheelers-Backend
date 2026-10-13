@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server as HttpServer } from 'http';
+import { recordLiveFailure } from '../analytics/user-outcomes';
 import type { Duplex } from 'stream';
 import WebSocket, { Server as WebSocketServer } from 'ws';
 import { driverClient, driverPresence, userClient } from '@wheleers/db';
@@ -396,6 +397,9 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           message: error instanceof Error ? error.message : 'Unknown message handling error',
           ...(code ? { code } : {}),
         });
+        // The refusal, for the admin Activity page: who hit it, doing what.
+        const who = deps.registry.getAuthContext(socket);
+        if (who) recordLiveFailure(who.userId, requestTypeOf(raw), error instanceof Error ? error.message : 'Something went wrong.', code);
         deps.registry.sendToSocket(socket, 'error', {
           message: error instanceof Error ? error.message : 'Unknown message handling error',
           // Which refusal it was, and to which request, so the app can act on it (e.g. "chat closed").

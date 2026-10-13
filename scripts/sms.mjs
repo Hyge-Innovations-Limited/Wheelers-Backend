@@ -50,7 +50,25 @@ async function status() {
   }
   console.log(`SMS goes first through: ${first.toUpperCase()}   (SMS_PROVIDER in .env${env('SMS_PROVIDER') ? '' : ', not set: twilio'})`);
   console.log(`  Twilio: ${twilioReady ? 'ready' : 'NOT ready'}   ${twilioNote}`);
-  console.log(`  Termii: ${termiiReady ? `ready   sends as "${env('TERMII_SENDER_ID')}"` : `NOT ready   ${env('TERMII_API_KEY') ? 'TERMII_SENDER_ID is not set (the sender name Termii approved)' : 'TERMII_API_KEY is not set'}`}`);
+  // What Termii itself says of the key: the wallet, and whether the sender name is approved.
+  let termiiNote = '';
+  if (termiiReady) {
+    const base = (env('TERMII_BASE_URL') || 'https://v3.api.termii.com').replace(/\/+$/, '');
+    const ask = async (path) => (await fetch(`${base}${path}?api_key=${encodeURIComponent(env('TERMII_API_KEY'))}`, { signal: AbortSignal.timeout(20_000) })).json();
+    try {
+      const wallet = await ask('/api/get-balance');
+      const senders = await ask('/api/sender-id').catch(() => null);
+      const list = Array.isArray(senders?.data) ? senders.data : Array.isArray(senders?.content) ? senders.content : [];
+      const mine = list.find((row) => row.sender_id === env('TERMII_SENDER_ID'));
+      const balance = Number(wallet.balance);
+      termiiNote = Number.isFinite(balance)
+        ? `   wallet ${wallet.currency ?? 'NGN'} ${balance.toLocaleString('en-NG')}${balance < 500 ? '  <- LOW: add money in the Termii dashboard or texts stop' : ''}`
+        : `   Termii refused the key (${wallet.message ?? 'no reason given'}). Check TERMII_API_KEY and TERMII_BASE_URL.`;
+      if (list.length && !mine) termiiNote += `\n          "${env('TERMII_SENDER_ID')}" is not a sender name on this account. Approved: ${list.filter((row) => row.status === 'active').map((row) => `"${row.sender_id}"`).join(', ') || 'none'}`;
+      else if (mine && mine.status !== 'active') termiiNote += `\n          "${mine.sender_id}" is ${mine.status}, not approved yet: Termii will refuse to send as it.`;
+    } catch (error) { termiiNote = `   could not ask Termii (${error.message})`; }
+  }
+  console.log(`  Termii: ${termiiReady ? `ready   sends as "${env('TERMII_SENDER_ID')}"` : `NOT ready   ${env('TERMII_API_KEY') ? 'TERMII_SENDER_ID is not set (the sender name Termii approved)' : 'TERMII_API_KEY is not set'}`}${termiiNote}`);
   const order = (first === 'termii' ? [['Termii', termiiReady], ['Twilio', twilioReady]] : [['Twilio', twilioReady], ['Termii', termiiReady]]).filter(([, ready]) => ready).map(([name]) => name);
   console.log(order.length ? `A driver's code will be tried by: ${order.join(', then ')}, then WhatsApp.` : 'No SMS provider is ready: a driver\'s code can only go by WhatsApp.');
   if (first === 'termii' && !termiiReady) console.log('Termii is chosen but not ready, so Twilio is carrying SMS for now.');
