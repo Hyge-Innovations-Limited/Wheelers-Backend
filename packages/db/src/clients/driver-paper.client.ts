@@ -32,8 +32,22 @@ export const driverPaperClient = {
   details: (driverId: string) =>
     prisma.driver.findUnique({ where: { id: driverId }, select: { legalName: true, licenceNumber: true, licenceExpiresOn: true } }),
 
+  /**
+   * The name on the licence, its number and expiry. A driver who signed up
+   * with only an email or a username has no name on their account, and riders
+   * and the admin saw "Driver" or "Unnamed driver": the licence name becomes
+   * their name when they have none. A name they already have is left alone.
+   */
   saveDetails: (driverId: string, details: { legalName: string; licenceNumber: string; licenceExpiresOn: Date }) =>
-    prisma.driver.update({ where: { id: driverId }, data: { ...details, licenceRemindedAt: null }, select: { legalName: true, licenceNumber: true, licenceExpiresOn: true } }),
+    prisma.$transaction(async (tx) => {
+      const saved = await tx.driver.update({
+        where: { id: driverId },
+        data: { ...details, licenceRemindedAt: null },
+        select: { legalName: true, licenceNumber: true, licenceExpiresOn: true, userId: true, user: { select: { name: true } } },
+      });
+      if (!saved.user.name?.trim()) await tx.user.update({ where: { id: saved.userId }, data: { name: details.legalName } });
+      return { legalName: saved.legalName, licenceNumber: saved.licenceNumber, licenceExpiresOn: saved.licenceExpiresOn };
+    }),
 
   /**
    * The admin's lists. `waiting`: sent and not yet looked at, oldest first.

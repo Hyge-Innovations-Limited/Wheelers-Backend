@@ -72,7 +72,8 @@ const driverForMap = {
   vehiclePlate: true,
   rating: true,
   totalRides: true,
-  user: { select: { name: true, phone: true, photoUrl: true } },
+  legalName: true,
+  user: { select: { name: true, username: true, phone: true, photoUrl: true } },
 } as const;
 
 const activeRideSelect = {

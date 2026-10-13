@@ -102,7 +102,8 @@ function toMapDriver(row: MapDriverRow, ride: ActiveRide | undefined, now: numbe
   return {
     id: row.id,
     userId: row.userId,
-    name: row.user.name ?? 'Unnamed driver',
+    // The name on the account, else the one on their licence, else their username: someone to call them by.
+    name: row.user.name?.trim() || row.legalName?.trim() || (row.user.username ? `@${row.user.username}` : 'Unnamed driver'),
     phone: row.user.phone,
     photoUrl: row.user.photoUrl,
     status: row.status,

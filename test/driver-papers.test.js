@@ -402,3 +402,26 @@ test.after(async () => {
   await prisma.user.deleteMany({ where: { id: { in: made.users } } });
   await prisma.$disconnect();
 });
+
+test('a driver with no name on their account takes the name on their licence; one who has a name keeps it', async () => {
+  const { prisma, driverPaperClient } = require('@wheleers/db');
+  const { randomUUID } = require('node:crypto');
+  const make = async (name) => {
+    const user = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'DRIVER', name, username: `t${randomUUID().slice(0, 8)}` } });
+    const driver = await prisma.driver.create({ data: { userId: user.id } });
+    return { user, driver };
+  };
+  const nameless = await make(null);
+  const named = await make('Tunde A');
+  const details = { licenceNumber: 'ABC12345DE67', licenceExpiresOn: new Date('2030-01-01') };
+  try {
+    const saved = await driverPaperClient.saveDetails(nameless.driver.id, { ...details, legalName: 'Michael Okoro' });
+    assert.equal(saved.legalName, 'Michael Okoro');
+    assert.equal((await prisma.user.findUnique({ where: { id: nameless.user.id } })).name, 'Michael Okoro');
+    await driverPaperClient.saveDetails(named.driver.id, { ...details, legalName: 'Babatunde Adeyemi' });
+    assert.equal((await prisma.user.findUnique({ where: { id: named.user.id } })).name, 'Tunde A', 'a name they chose is not replaced');
+  } finally {
+    await prisma.driver.deleteMany({ where: { id: { in: [nameless.driver.id, named.driver.id] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [nameless.user.id, named.user.id] } } });
+  }
+});
