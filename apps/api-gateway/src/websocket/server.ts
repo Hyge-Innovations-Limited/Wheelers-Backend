@@ -151,11 +151,15 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       // and the apps do, a little later each time. The token is checked first:
       // that costs nothing, and a bad one should hear 401, not "busy".
       let tokenSubject: string;
+      // When a real login (not a page link) was issued: an admin's sign-out ends those from before it.
+      let loginIssuedAt: number | null = null;
       // A Trip chat page signs in with its link, not a login: that socket may
       // only chat and call, and only on the ride its link names.
       let pageRideId: string | null = null;
       try {
-        tokenSubject = verifyLocalAccessToken(token, deps.jwtSecret).sub;
+        const login = verifyLocalAccessToken(token, deps.jwtSecret);
+        tokenSubject = login.sub;
+        loginIssuedAt = login.iat;
       } catch (error) {
         const page = (() => {
           try {
@@ -197,6 +201,11 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       pendingUpgrades += 1;
       try {
         const user = await userClient.findById(tokenSubject);
+        if (loginIssuedAt !== null && user.sessionsEndedAt && loginIssuedAt * 1000 + 999 < user.sessionsEndedAt.getTime()) {
+          counts.refusedAuth += 1;
+          rejectUpgrade(socket, 401, 'You were signed out. Please sign in again.');
+          return;
+        }
 
         // A page socket is never a driver on shift: no driver record, no presence, no grace.
         const driver = pageRideId ? null : await driverClient.findByUserId(user.id);

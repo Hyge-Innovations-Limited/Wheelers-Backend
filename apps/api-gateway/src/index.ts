@@ -31,6 +31,7 @@ import {
 import {
   handleLogoutRoute,
   handleRefreshRoute,
+  handleSessionCheckRoute,
   handleDeleteAccountRoute,
 } from "./http/account.route";
 import {
@@ -189,6 +190,7 @@ import {
   handleAdminListUsersRoute,
   handleAdminGetUserRoute,
   handleAdminWithdrawalFreezeRoute,
+  handleAdminSignOutUserRoute,
   handleAdminOverviewRoute,
   handleAdminServiceUsageRoute,
   handleAdminTimeseriesRoute,
@@ -829,6 +831,19 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleLogoutRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/session") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleSessionCheckRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
       });
@@ -1833,6 +1848,16 @@ async function bootstrap(): Promise<void> {
           decodeURIComponent(adminFreezeMatch[1]),
           adminFreezeMatch[2] as "freeze" | "unfreeze",
         );
+        return;
+      }
+
+      const adminSignOutMatch = url.pathname.match(/^\/admin\/users\/([^/]+)\/sign-out$/);
+      if (adminSignOutMatch) {
+        if (req.method !== "POST") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminSignOutUserRoute(req, res, adminDeps, decodeURIComponent(adminSignOutMatch[1]));
         return;
       }
 

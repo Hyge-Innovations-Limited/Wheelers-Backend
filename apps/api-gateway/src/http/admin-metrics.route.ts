@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RedisClient } from '../redis/client';
 import { serviceUsage } from '../usage/service-usage';
-import { activityClient, adminMetricsClient, safetyAlertClient, walletSecurityClient } from '@wheleers/db';
+import { activityClient, adminMetricsClient, safetyAlertClient, userClient, walletSecurityClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
@@ -411,6 +411,33 @@ export async function handleAdminWithdrawalFreezeRoute(
     });
   } catch (error) {
     fail(res, error, 'Could not change the withdrawal freeze');
+  }
+}
+
+/**
+ * POST /admin/users/:id/sign-out — sign this person out of every phone. Every
+ * login they hold stops working at once; they sign in again as usual and land
+ * where their account belongs (a driver who has not finished verification, on
+ * verification). A driver is also taken offline.
+ */
+export async function handleAdminSignOutUserRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps,
+  userId: string,
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+
+  try {
+    const endedAt = await userClient.endSessions(userId);
+    if (!endedAt) {
+      sendJson(res, 404, { error: 'User not found' });
+      return;
+    }
+    console.info('[admin] signed a user out everywhere', { userId });
+    sendJson(res, 200, { userId, sessionsEndedAt: endedAt.toISOString() });
+  } catch (error) {
+    fail(res, error, 'Could not sign this person out');
   }
 }
 

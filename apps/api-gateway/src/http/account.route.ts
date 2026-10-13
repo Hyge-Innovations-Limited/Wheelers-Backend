@@ -106,6 +106,39 @@ export async function handleRefreshRoute(
 }
 
 /**
+ * GET /auth/session — is this login still good? 200 when it is; 401 with
+ * SESSION_ENDED when it was signed out (by the person, or by an admin from
+ * the dashboard), so the app can take them to sign in instead of leaving
+ * every screen to fail on its own.
+ */
+export async function handleSessionCheckRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: AccountRouteDeps,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const sig = extractTokenSignature(
+      typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined,
+    );
+    if (!sig || (await deps.redisClient.get(`${BLACKLIST_PREFIX}${sig}`))) {
+      throw new HttpAuthError('This login was signed out.');
+    }
+    if (!user || user.privyDid?.startsWith('deleted:')) {
+      throw new HttpAuthError('This account no longer exists.');
+    }
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    if (error instanceof HttpAuthError || (error instanceof Error && /No User found|not found/i.test(error.message))) {
+      sendJson(res, 401, { error: error.message, code: 'SESSION_ENDED' });
+      return;
+    }
+    console.error('[auth] session check failed', { error: error instanceof Error ? error.message : String(error) });
+    sendJson(res, 500, { error: 'Could not check the login right now.' });
+  }
+}
+
+/**
  * POST /auth/delete-account
  *
  * Soft-deletes the authenticated user's account:

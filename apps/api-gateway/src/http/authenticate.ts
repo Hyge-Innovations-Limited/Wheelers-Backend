@@ -49,7 +49,13 @@ export async function authenticateHttpUser(
     );
   }
 
-  return await userClient.findById(localToken.sub);
+  const user = await userClient.findById(localToken.sub);
+  // An admin signed this person out everywhere: logins from before that moment
+  // are over. (A token's time is whole seconds, so the last second is theirs.)
+  if (user.sessionsEndedAt && localToken.iat * 1000 + 999 < user.sessionsEndedAt.getTime()) {
+    throw new HttpAuthError('You were signed out. Please sign in again.');
+  }
+  return user;
 }
 
 /**

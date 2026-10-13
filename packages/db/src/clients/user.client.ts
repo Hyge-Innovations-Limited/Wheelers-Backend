@@ -11,6 +11,19 @@ export const userClient = {
       include: { wallet: true },
     }),
 
+  /**
+   * Sign this person out everywhere: logins made before now are refused from
+   * here on. A driver is taken offline too, so no ride is offered to a phone
+   * that is about to be asked to sign in. Null when there is no such person.
+   */
+  endSessions: async (userId: string): Promise<Date | null> => {
+    const now = new Date();
+    const changed = await prisma.user.updateMany({ where: { id: userId }, data: { sessionsEndedAt: now } });
+    if (changed.count === 0) return null;
+    await prisma.driver.updateMany({ where: { userId, status: 'ONLINE' }, data: { status: 'OFFLINE' } });
+    return now;
+  },
+
   /** Lightweight batch lookup for labelling ids in admin views. */
   findManyByIds: (userIds: string[]) =>
     prisma.user.findMany({
