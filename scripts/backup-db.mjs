@@ -9,9 +9,11 @@
  * Each run: pg_dump from the Postgres container (its own user and database,
  * read inside the container, so no password is typed or logged), checked by
  * reading it back with pg_restore --list, uploaded to Cloudflare R2 under
- * daily/, then old copies are let go: 90 days of nightly copies in the bucket
- * (a problem found weeks late can still be undone from before it began), the
- * newest 3 on this server. A copy only on this server dies with it, so the
+ * daily/, then old copies are let go: 14 nightly copies in the bucket, the
+ * newest 3 on this server. Each copy is the whole database (users, wallets,
+ * rides, payments) as it stood that night; 14 is how far back one can go.
+ * Documents and photos are not in it: they live in the app's R2 bucket, which
+ * this script never touches. A copy only on this server dies with it, so the
  * upload is the part that matters.
  *
  * Settings (.env), its own and never the app's R2_* keys: backups live in a
@@ -41,8 +43,8 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 
-/** Nightly copies kept in the bucket: about three months. */
-const KEEP_DAILY = 90;
+/** Nightly copies kept in the bucket: two weeks. */
+const KEEP_DAILY = 14;
 const KEEP_LOCAL = 3;
 
 const args = new Set(process.argv.slice(2));
