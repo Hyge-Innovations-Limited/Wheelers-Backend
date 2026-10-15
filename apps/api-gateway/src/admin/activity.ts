@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { IncomingMessage } from 'http';
 import { adminActivityClient, adminClient, type AdminActivityInput } from '@wheleers/db';
+import { clientIp as realClientIp } from '../utils/client-ip';
 
 /**
  * What admins do in the dashboard, recorded for the owners' Team activity
@@ -20,8 +21,7 @@ export function adminMarkCode(adminId: string, secret: string): string {
 }
 
 export function clientIp(req: IncomingMessage): string | null {
-  const forwarded = req.headers['x-forwarded-for'];
-  return (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) ?? req.socket?.remoteAddress ?? null;
+  return realClientIp(req);
 }
 
 export function recordAdminActivity(input: AdminActivityInput): void {

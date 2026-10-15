@@ -7,6 +7,7 @@ import { readJsonBody, sendJson } from './utils';
 import { isRecord, getString, getNumber, getRecord } from '../utils/object';
 import type { RiderKycFaceStorage } from '../storage/rider-kyc-face-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
+import { clientIp } from '../utils/client-ip';
 
 interface KycRouteDeps {
   jwtSecret: string;
@@ -213,11 +214,5 @@ function parseBase64Image(dataUrl: string): ImageParseResult {
 }
 
 function extractIp(req: IncomingMessage): string | undefined {
-  const cloudflare = req.headers['cf-connecting-ip'];
-  if (typeof cloudflare === 'string' && cloudflare) return cloudflare.trim();
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    return forwarded.split(',')[0]?.trim();
-  }
-  return req.socket.remoteAddress ?? undefined;
+  return clientIp(req) ?? undefined;
 }

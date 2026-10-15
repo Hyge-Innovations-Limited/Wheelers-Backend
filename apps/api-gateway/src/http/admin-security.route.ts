@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { readJsonBody, sendJson } from './utils';
 import { verifyAdminAuth } from './admin-auth.route';
 import { recordCapture } from './admin-team.route';
+import { clientIp } from '../utils/client-ip';
 
 interface Deps {
   jwtSecret: string;
@@ -33,8 +34,7 @@ export async function handleAdminSecurityRoute(req: IncomingMessage, res: Server
   const body = ((await readJsonBody(req).catch(() => null)) ?? {}) as Record<string, unknown>;
   const kind = typeof body.kind === 'string' && KINDS.has(body.kind) ? body.kind : 'unknown';
   const page = typeof body.page === 'string' ? body.page.slice(0, 200).replace(/[^\w\-/.()]/g, '') : null;
-  const forwarded = req.headers['x-forwarded-for'];
-  const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) ?? req.socket.remoteAddress ?? null;
+  const ip = clientIp(req);
   const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 200) : null;
 
   console.warn('[admin-security] screenshot attempt', { admin: admin.adminName, kind, page, ip, userAgent });

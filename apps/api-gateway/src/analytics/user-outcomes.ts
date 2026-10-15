@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { verifyLocalAccessToken } from '../auth/local';
 import { logActivity } from './log-activity';
+import { clientIp } from '../utils/client-ip';
 
 /**
  * What people tried to do in the app and how it went, for the admin Activity
@@ -220,8 +221,7 @@ export function recordRequestOutcome(req: IncomingMessage, res: ServerResponse, 
   if (!outcome) return;
   if (outcome.eventType === OUTCOME_PROBE) {
     // Where it came from: the address and what it calls itself. One line per address and path an hour.
-    const forwarded = req.headers['x-forwarded-for'];
-    const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) || req.socket.remoteAddress || 'unknown';
+    const ip = clientIp(req) ?? 'unknown';
     if (saidLately(`probe|${ip}|${path}`, Date.now(), PROBE_REPEAT_MS)) return;
     const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 200) : null;
     logActivity({ userId: GUEST_USER_ID, eventType: OUTCOME_PROBE, source: 'app', metadata: { ...outcome.metadata, ip, userAgent } });

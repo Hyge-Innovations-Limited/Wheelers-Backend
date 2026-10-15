@@ -246,6 +246,7 @@ import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
 import { startReferralJobs } from "./referrals/jobs";
+import { clientIp } from "./utils/client-ip";
 
 const SCHEDULED_RIDE_QUEUE = "wheleers-scheduled-rides";
 
@@ -358,19 +359,6 @@ function getHeaderValue(req: IncomingMessage, name: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function getClientIp(req: IncomingMessage): string | null {
-  // Behind Cloudflare every connection comes FROM Cloudflare; the visitor's own
-  // address is in this header. Only nginx can reach this port, so the header
-  // is trusted — nobody else can forge it.
-  const cloudflare = getHeaderValue(req, "cf-connecting-ip");
-  if (cloudflare) return cloudflare.trim();
-  const forwardedFor = getHeaderValue(req, "x-forwarded-for");
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0]?.trim() || null;
-  }
-
-  return req.socket.remoteAddress ?? null;
-}
 
 function getSafePathForLog(url: URL): string {
   if (url.searchParams.size === 0) {
@@ -674,11 +662,11 @@ async function bootstrap(): Promise<void> {
       // Admins' searches, records opened and changes, for the owners' Team activity page.
       if (url.pathname.startsWith("/admin/")) {
         const adminId = extractAdminId(req, gatewayEnv.JWT_SECRET);
-        if (adminId) void recordAdminRequest(adminId, req.method ?? "GET", url, res.statusCode, getClientIp(req)).catch(() => undefined);
+        if (adminId) void recordAdminRequest(adminId, req.method ?? "GET", url, res.statusCode, clientIp(req)).catch(() => undefined);
       }
     });
     const url = new URL(req.url ?? "/", "http://localhost");
-    attachRequestLog(req, res, getSafePathForLog(url), url.pathname, getClientIp(req), startedAt);
+    attachRequestLog(req, res, getSafePathForLog(url), url.pathname, clientIp(req), startedAt);
 
     try {
       applyCorsHeaders(req, res, allowedOrigins);
