@@ -114,33 +114,29 @@ test('a second code, their own code and a code that does not exist are refused i
   assert.match(referralRefusal('something unexpected'), /could not be added right now/);
 });
 
-test('a person creates their own code: none exists before, it works in a link, the one before stops, and a taken or too short one is refused in words', async () => {
+test('a person creates their own code once: none exists before, it works in a link, it can never be changed, and a taken or too short one is refused in words', async () => {
   const driver = await person('DRIVER');
   const other = await person();
   const rider = await person();
   assert.equal((await referralClient.findSummary(driver.id)).code, null, 'nobody is handed a code');
   assert.equal(await prisma.referralCode.count({ where: { userId: driver.id } }), 0, 'and looking does not make one');
-  const given = (await ownCode(driver.id)).code;
   const mine = `T${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
   const saved = await referralClient.setCustomCode(driver.id, ` ${mine.toLowerCase()} `);
   assert.equal(saved.code, mine, 'tidied to capitals');
-  assert.equal((await referralClient.setCustomCode(driver.id, mine)).code, mine, 'choosing the same again is fine');
-  assert.equal((await referralClient.findSummary(driver.id)).code, mine);
+  assert.equal((await referralClient.setCustomCode(driver.id, mine)).code, mine, 'asking for the same again is fine');
+  await assert.rejects(referralClient.setCustomCode(driver.id, `X${mine}`), new RegExp(`Your referral code is ${mine}. A referral code can't be changed`));
+  assert.equal((await referralClient.findSummary(driver.id)).code, mine, 'the first code stays');
   await assert.rejects(referralClient.setCustomCode(other.id, mine), /That code is taken/);
   await assert.rejects(referralClient.setCustomCode(other.id, 'ab'), /4 to 12 letters or numbers/);
   await assert.rejects(referralClient.setCustomCode(other.id, 'ABCDEFGHIJKLMNOP'), /4 to 12 letters or numbers/);
 
-  // What the link now sends is read as the chosen code, and adds it.
+  // What the link sends is read as the chosen code, and adds it.
   assert.equal(referralCodeIn(referralChatMessage(mine)), mine);
   sent.length = 0;
   await applyReferralFromChat(deps, rider, '2348030000011', referralChatMessage(mine), mine);
   assert.equal((await prisma.referral.findUnique({ where: { referredUserId: rider.id } })).referrerId, driver.id);
   assert.match(said(0), /has been added/);
-
-  // The code they had before no longer finds them.
-  await applyReferralFromChat(deps, other, '2348030000012', given, given);
-  assert.match(said(1), /was not found/);
 });
 
 /* ── Quick Actions on WhatsApp: their own code, created and shared as in the app ── */
@@ -175,6 +171,7 @@ test('QUICK ACTIONS · a rider with no code is offered to create one, and creati
   assert.equal(screen.data.heading, 'Create your referral code');
   assert.equal(screen.data.code, '');
   assert.equal(screen.data.has_stats, false);
+  assert.match(screen.data.intro_line, /can't be changed later/);
   assert.equal(screen.data.action, 'save_my_code');
   assert.equal(screen.data.button_label, 'Save and share');
 
@@ -195,7 +192,7 @@ test('QUICK ACTIONS · a rider with no code is offered to create one, and creati
   assert.match(row(after, 'my_code').description, new RegExp(code));
 });
 
-test('QUICK ACTIONS · a taken code is refused on the same screen; the same code again is kept and shared; a new one replaces it', async () => {
+test('QUICK ACTIONS · a taken code is refused on the same screen; once they have a code it is only ever shared, never changed', async () => {
   const first = await person();
   const second = await person();
   const taken = (await referralClient.setCustomCode(first.id, uniqueCode())).code;
@@ -209,29 +206,27 @@ test('QUICK ACTIONS · a taken code is refused on the same screen; the same code
 
   const mine = uniqueCode();
   await tap('save_my_code', { code: mine });
-  const again = await tap('save_my_code', { code: mine });
-  assert.equal(again.data.headline, `Your code is ${mine}`);
-  assert.equal(saved.length, 2, 'saving the same code still sends it to share');
 
-  const screen = await tap('menu_choice', { choice: 'my_code' });
-  assert.equal(screen.data.heading, `Your code: ${mine}`);
-  assert.equal(screen.data.code, mine);
-  assert.match(screen.data.intro_line, new RegExp(`${mine} then stops working`));
+  // Their row now sends the code straight to the chat: no box to type a new one in.
+  const shared = await tap('menu_choice', { choice: 'my_code' });
+  assert.equal(shared.screen, 'NOTE');
+  assert.equal(shared.data.headline, `Your code is ${mine}`);
+  assert.equal(saved.length, 2);
 
-  const next = uniqueCode();
-  await tap('save_my_code', { code: next });
-  assert.equal(await referralClient.findOwnCode(second.id), next);
+  // An old form still open on a phone cannot change it either.
+  const late = await tap('save_my_code', { code: uniqueCode() });
+  assert.equal(late.data.headline, `Your code is ${mine}`);
+  assert.equal(await referralClient.findOwnCode(second.id), mine);
 });
 
-test('QUICK ACTIONS · the screen says how many people joined with the code', async () => {
+test('QUICK ACTIONS · sharing the code says how many people joined with it', async () => {
   const owner = await person();
   const friend = await person();
   const code = (await referralClient.setCustomCode(owner.id, uniqueCode())).code;
   await referralClient.applyCode({ referredUserId: friend.id, code });
 
-  const screen = await quickActions(owner.id)('menu_choice', { choice: 'my_code' });
-  assert.equal(screen.data.has_stats, true);
-  assert.match(screen.data.stats_line, /1 person has joined with your code/);
+  const shared = await quickActions(owner.id)('menu_choice', { choice: 'my_code' });
+  assert.match(shared.data.note, /1 person has joined with it/);
 });
 
 test('QUICK ACTIONS · the chat gets a line to read and a message to forward, whose link adds the code', async () => {

@@ -201,21 +201,22 @@ export const referralClient = {
   /**
    * The referral code a person creates for themselves: "TIMI", "RIDEWITHADA".
    * Nobody is handed one. Four to twelve letters and digits, and nobody
-   * else's. Creating another replaces the first, which stops working; people
-   * who already used it stay referred. Throws a sentence the person can read
-   * when it is refused.
+   * else's. Created once and theirs for good: links, QR codes and messages
+   * already shared keep working, so it cannot be changed. Asking for the same
+   * code again is fine. Throws a sentence the person can read when refused.
    */
   async setCustomCode(userId: string, wanted: string) {
     const code = normalizeReferralCode(wanted);
+    const existing = await prisma.referralCode.findUnique({ where: { userId } });
+    if (existing) {
+      if (existing.code === code) return existing;
+      throw new Error(`Your referral code is ${existing.code}. A referral code can't be changed once it's created.`);
+    }
     if (code.length < CUSTOM_CODE_MIN || code.length > CUSTOM_CODE_MAX) {
       throw new Error(`A referral code is ${CUSTOM_CODE_MIN} to ${CUSTOM_CODE_MAX} letters or numbers.`);
     }
     try {
-      return await prisma.referralCode.upsert({
-        where: { userId },
-        create: { userId, code },
-        update: { code, isActive: true },
-      });
+      return await prisma.referralCode.create({ data: { userId, code } });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         // The same person asking twice at once lands here too, with their own code.

@@ -33,8 +33,9 @@ import { handleOffersFormFlow, offersScreen, republishLastSearch, OFFERS_FORM_AC
  *                 goes on inside the form instead of back in the chat
  *   REFERRAL      a code, typed in a box. Two uses, one screen (MENU may
  *                 have only ten routes): a friend's code      [Add code]
- *                 or their own, created or changed as in the app, then
- *                 sent to the chat ready to forward      [Save and share]
+ *                 or their own, created once as in the app, then sent to
+ *                 the chat ready to forward             [Save and share]
+ *                 (one they already have is just sent again, no screen)
  *   BOOK_WHERE    Book a ride: pickup and destination boxes, with what was
  *                 typed last still in them and a shared pin as the pickup [Find places]
  *   BOOK_PLACES   what was found for each, ALWAYS shown — they see what Google
@@ -327,7 +328,11 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
   }
 
   if (choice === MENU_IDS.referral) return referralScreen();
-  if (choice === MENU_IDS.myCode) return myCodeScreen(userId);
+  if (choice === MENU_IDS.myCode) {
+    // Theirs for good once created: nothing to type, it goes straight to the chat to forward.
+    const code = await referralClient.findOwnCode(userId).catch(() => null);
+    return code ? shareMyCode(userId, code, deps) : myCodeScreen();
+  }
 
   // Everything below starts or changes a booking: not while one is live.
   if (activeRideId) return menuScreen(userId, deps, BUSY_NOTE);
@@ -450,29 +455,16 @@ async function applyReferral(typed: string, userId: string): Promise<FlowScreen>
 /** What a friend's first ride earns the person whose code they used (referralClient). */
 const RIDE_REWARD_LINE = 'When someone joins with your code and takes a ride within 30 days, you get ₦1,000 cashback for your rides.';
 
-/**
- * Their own referral code, as the app has it: created here if they have none,
- * changed here if they want another. What it has done so far is under it.
- */
-async function myCodeScreen(userId: string, typed?: string, error = ''): Promise<FlowScreen> {
-  const summary = await referralClient.findSummary(userId).catch(() => null);
-  const code = summary?.code ?? null;
-  const joined = summary ? summary.pendingReferrals + summary.qualifiedReferrals + summary.expiredNoRideReferrals + summary.closedReferrals : 0;
-  const cashback = summary?.availableCashbackNgn ?? 0;
-  const stats = [
-    joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with your code.` : '',
-    cashback > 0 ? `${naira(cashback)} cashback ready for your rides.` : '',
-  ].filter(Boolean).join(' ');
+/** Creating their own referral code, as the app has it: once, and theirs for good. */
+function myCodeScreen(typed = '', error = ''): FlowScreen {
   return {
     screen: 'REFERRAL',
     data: {
-      heading: code ? `Your code: ${code}` : 'Create your referral code',
-      intro_line: code
-        ? `${RIDE_REWARD_LINE}\n\nTo use a different code, type it below. ${code} then stops working; people who already used it stay yours.`
-        : `Pick a code friends will remember. Your name works well. ${RIDE_REWARD_LINE}`,
-      stats_line: stats,
-      has_stats: stats.length > 0,
-      code: typed ?? code ?? '',
+      heading: 'Create your referral code',
+      intro_line: `Pick a code friends will remember. Your name works well. It can't be changed later. ${RIDE_REWARD_LINE}`,
+      stats_line: '',
+      has_stats: false,
+      code: typed,
       error,
       has_error: error.length > 0,
       input_label: 'Your code',
@@ -482,22 +474,33 @@ async function myCodeScreen(userId: string, typed?: string, error = ''): Promise
   };
 }
 
-/** Saved (or kept, if unchanged), then sent to the chat to forward. Refusals are said on the same screen. */
+/** Created here; refusals (taken, too short, already has one) are said on the same screen. */
 async function saveMyCode(typed: string, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const wanted = referralClient.normalizeCode(typed);
-  if (!wanted) return myCodeScreen(userId, '', 'Type the code you want.');
-  const current = await referralClient.findOwnCode(userId).catch(() => null);
-  let code = wanted;
-  if (wanted !== current) {
-    try {
-      code = (await referralClient.setCustomCode(userId, wanted)).code;
-    } catch (error) {
-      return myCodeScreen(userId, wanted, error instanceof Error ? error.message : 'That code could not be saved just now. Please try again.');
-    }
-    logActivity({ userId, eventType: 'referral_code_changed', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
+  if (!wanted) return myCodeScreen('', 'Type the code you want.');
+  const already = await referralClient.findOwnCode(userId).catch(() => null);
+  if (already) return shareMyCode(userId, already, deps);
+  let code: string;
+  try {
+    code = (await referralClient.setCustomCode(userId, wanted)).code;
+  } catch (error) {
+    return myCodeScreen(wanted, error instanceof Error ? error.message : 'That code could not be saved just now. Please try again.');
   }
+  logActivity({ userId, eventType: 'referral_code_changed', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
+  return shareMyCode(userId, code, deps);
+}
+
+/** Their code, sent to the chat to forward, and what it has earned so far. */
+async function shareMyCode(userId: string, code: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   void deps.onReferralCodeSaved?.(userId, code).catch((error) => console.error('[quick-actions] referral code message not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
-  return doneScreen(`Your code is ${code}`, 'It is in your chat now. Forward that message to friends: when they book with it, you earn ride cashback.', false);
+  const summary = await referralClient.findSummary(userId).catch(() => null);
+  const joined = summary ? summary.pendingReferrals + summary.qualifiedReferrals + summary.expiredNoRideReferrals + summary.closedReferrals : 0;
+  const cashback = summary?.availableCashbackNgn ?? 0;
+  const stats = [
+    joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
+    cashback > 0 ? `${naira(cashback)} cashback ready for your rides.` : '',
+  ].filter(Boolean).join(' ');
+  return doneScreen(`Your code is ${code}`, `It is in your chat now. Forward that message to friends. ${RIDE_REWARD_LINE}${stats ? `\n\n${stats}` : ''}`, false);
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────
