@@ -22,6 +22,7 @@
  *   BACKUP_R2_ACCOUNT_ID, BACKUP_R2_ACCESS_KEY_ID, BACKUP_R2_SECRET_ACCESS_KEY
  *                        an R2 token with Object Read & Write on the backup bucket only
  *   BACKUP_R2_BUCKET     the backup bucket, e.g. wheelers-backups
+ *   BACKUP_R2_JURISDICTION  only for a bucket made in a jurisdiction: eu (or fedramp)
  *   BACKUP_DIR           default ~/backups
  *   POSTGRES_CONTAINER   default infra-postgres-1
  *
@@ -81,9 +82,11 @@ function r2() {
   if (R2_BUCKET && bucket === R2_BUCKET) {
     throw new Error(`BACKUP_R2_BUCKET is the app's storage bucket (${bucket}); backups need a bucket of their own`);
   }
+  // A bucket made in a jurisdiction (EU) lives at its own address.
+  const jurisdiction = (process.env.BACKUP_R2_JURISDICTION || '').trim().toLowerCase();
   return new S3Client({
     region: 'auto',
-    endpoint: `https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    endpoint: `https://${BACKUP_R2_ACCOUNT_ID}${jurisdiction ? `.${jurisdiction}` : ''}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId: BACKUP_R2_ACCESS_KEY_ID, secretAccessKey: BACKUP_R2_SECRET_ACCESS_KEY },
   });
 }
@@ -160,7 +163,22 @@ async function main() {
   log('done');
 }
 
+/** Cloudflare's own words, plus what usually causes them. */
+function explain(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error?.name === 'NoSuchBucket' || /specified bucket does not exist/i.test(message)) {
+    return `${message} Cloudflare has no bucket named "${bucket}" in account ${process.env.BACKUP_R2_ACCOUNT_ID}`
+      + `${process.env.BACKUP_R2_JURISDICTION ? ` (jurisdiction ${process.env.BACKUP_R2_JURISDICTION})` : ''}. `
+      + 'Check R2 > Overview: is it there, spelt the same, and made in that account? '
+      + 'A bucket made with location EU also needs BACKUP_R2_JURISDICTION=eu.';
+  }
+  if (error?.name === 'InvalidAccessKeyId' || error?.name === 'SignatureDoesNotMatch' || /access denied|unauthorized/i.test(message)) {
+    return `${message} The key is refused: check BACKUP_R2_ACCESS_KEY_ID and BACKUP_R2_SECRET_ACCESS_KEY, and that the token covers "${bucket}".`;
+  }
+  return message;
+}
+
 main().catch((error) => {
-  console.error(`[backup] ${new Date().toISOString()} FAILED: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[backup] ${new Date().toISOString()} FAILED: ${explain(error)}`);
   process.exit(1);
 });
