@@ -9,9 +9,10 @@
  * Each run: pg_dump from the Postgres container (its own user and database,
  * read inside the container, so no password is typed or logged), checked by
  * reading it back with pg_restore --list, uploaded to Cloudflare R2 under
- * daily/ (and weekly/ on Sundays), then old copies are let go: 14 daily and
- * 8 weekly in the bucket, the newest 3 on this server. A copy only on this
- * server dies with it, so the upload is the part that matters.
+ * daily/, then old copies are let go: 90 days of nightly copies in the bucket
+ * (a problem found weeks late can still be undone from before it began), the
+ * newest 3 on this server. A copy only on this server dies with it, so the
+ * upload is the part that matters.
  *
  * Settings (.env), its own and never the app's R2_* keys: backups live in a
  * bucket of their own, with a token that can reach nothing else, and the run
@@ -34,15 +35,14 @@ import { createReadStream, createWriteStream, mkdirSync, readdirSync, statSync, 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CopyObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 
-const KEEP_DAILY = 14;
-const KEEP_WEEKLY = 8;
+/** Nightly copies kept in the bucket: about three months. */
+const KEEP_DAILY = 90;
 const KEEP_LOCAL = 3;
 
 const args = new Set(process.argv.slice(2));
@@ -109,7 +109,7 @@ async function letGo(client, prefix, keep) {
 async function main() {
   if (args.has('--list')) {
     const client = r2();
-    for (const prefix of ['daily/', 'weekly/']) {
+    for (const prefix of ['daily/']) {
       const keys = await listKeys(client, prefix);
       console.log(`${prefix} ${keys.length} copies`);
       for (const { key, bytes } of keys) console.log(`  ${key}  ${(bytes / 1024 / 1024).toFixed(1)} MB`);
@@ -146,11 +146,7 @@ async function main() {
     key = `daily/${name}`;
     await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: createReadStream(file), ContentLength: bytes, ContentType: 'application/octet-stream' }));
     log('uploaded', `${bucket}/${key}`);
-    if (new Date().getUTCDay() === 0) {
-      await client.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${key}`, Key: `weekly/${name}` }));
-      log('kept as this week\'s copy', `weekly/${name}`);
-    }
-    const gone = (await letGo(client, 'daily/', KEEP_DAILY)) + (await letGo(client, 'weekly/', KEEP_WEEKLY));
+    const gone = await letGo(client, 'daily/', KEEP_DAILY);
     if (gone) log(`let ${gone} old cop${gone === 1 ? 'y' : 'ies'} go`);
   }
 
