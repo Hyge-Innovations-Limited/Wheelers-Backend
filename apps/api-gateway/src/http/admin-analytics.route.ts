@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { activityClient, analyticsClient, userClient } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { sendJson } from './utils';
-import { GUEST_USER_ID, OUTCOME_FAILED, OUTCOME_OK } from '../analytics/user-outcomes';
+import { GUEST_USER_ID, OUTCOME_FAILED, OUTCOME_OK, OUTCOME_PROBE } from '../analytics/user-outcomes';
 
 interface AnalyticsDeps {
   adminApiKey: string;
@@ -176,21 +176,33 @@ export async function handleAdminAppActivityRoute(
 
   const outcome = url.searchParams.get('outcome') ?? 'all';
   const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
-  const beforeRaw = url.searchParams.get('before');
-  const before = beforeRaw && !Number.isNaN(Date.parse(beforeRaw)) ? new Date(beforeRaw) : undefined;
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const moment = (name: string) => {
+    const raw = url.searchParams.get(name);
+    return raw && !Number.isNaN(Date.parse(raw)) ? new Date(raw) : undefined;
+  };
+  // The window looked at: `from`–`to` when a range is picked, else the last 24 hours.
+  const to = moment('to');
+  const since = moment('from') ?? new Date((to?.getTime() ?? Date.now()) - 24 * 60 * 60 * 1000);
+  const pageCursor = moment('before');
+  const before = pageCursor && to ? (pageCursor < to ? pageCursor : to) : (pageCursor ?? to);
 
-  const [page, failures] = await Promise.all([
+  const [page, failures, probes] = await Promise.all([
     activityClient.listPage({
       eventTypes: outcome === 'failed' ? [OUTCOME_FAILED] : undefined,
+      exceptTypes: [OUTCOME_PROBE],
       userId: url.searchParams.get('userId') ?? undefined,
       before,
+      after: since,
       limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 60,
     }),
-    activityClient.listSince(OUTCOME_FAILED, since),
+    activityClient.listSince(OUTCOME_FAILED, since, 2000, to),
+    activityClient.listSince(OUTCOME_PROBE, since, 2000, to),
   ]);
+  // A bot's "not found" saved before probes were told apart is not a person's problem either.
+  const byPerson = <T extends { userId: string; metadata: unknown }>(row: T) =>
+    !(row.userId === GUEST_USER_ID && (row.metadata as Record<string, unknown> | null)?.status === 404 && !(row.metadata as Record<string, unknown>).phone);
   // "ok" is everything but the refusals; asked for alone, they are dropped from the page.
-  const rows = outcome === 'ok' ? page.rows.filter((row) => row.eventType !== OUTCOME_FAILED) : page.rows;
+  const rows = (outcome === 'ok' ? page.rows.filter((row) => row.eventType !== OUTCOME_FAILED) : page.rows).filter(byPerson);
 
   const userIds = [...new Set(rows.map((row) => row.userId).filter((id) => id !== GUEST_USER_ID))];
   const users = userIds.length ? await userClient.findManyByIds(userIds).catch(() => []) : [];
@@ -200,7 +212,7 @@ export async function handleAdminAppActivityRoute(
   const problems = new Map<string, { action: string; message: string; count: number; people: Set<string>; ours: boolean }>();
   const affected = new Set<string>();
   let ours = 0;
-  for (const row of failures) {
+  for (const row of failures.filter(byPerson)) {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const action = text(meta.action) ?? 'Used the app';
     const message = text(meta.message) ?? 'The request was refused.';
@@ -214,9 +226,33 @@ export async function handleAdminAppActivityRoute(
     problems.set(key, known);
   }
 
+  // Bots probing the server: how many tries, from how many addresses, after what.
+  const probePaths = new Map<string, number>();
+  const probeAddresses = new Map<string, number>();
+  for (const row of probes) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const path = `${text(meta.method) ?? ''} ${text(meta.path) ?? ''}`.trim();
+    probePaths.set(path, (probePaths.get(path) ?? 0) + 1);
+    const ip = text(meta.ip) ?? 'unknown';
+    probeAddresses.set(ip, (probeAddresses.get(ip) ?? 0) + 1);
+  }
+  const most = (counts: Map<string, number>, take: number) =>
+    [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, take).map(([name, count]) => ({ name, count }));
+
   sendJson(res, 200, {
+    range: { from: since.toISOString(), to: (to ?? new Date()).toISOString() },
+    probes: {
+      count: probes.length,
+      addresses: probeAddresses.size,
+      paths: most(probePaths, 8),
+      fromWhere: most(probeAddresses, 5),
+      recent: probes.slice(0, 15).map((row) => {
+        const meta = (row.metadata ?? {}) as Record<string, unknown>;
+        return { at: row.createdAt.toISOString(), method: text(meta.method), path: text(meta.path), ip: text(meta.ip), userAgent: text(meta.userAgent), status: typeof meta.status === 'number' ? meta.status : null };
+      }),
+    },
     summary: {
-      failed: failures.length,
+      failed: failures.filter(byPerson).length,
       people: affected.size,
       ourFault: ours,
       top: [...problems.values()]

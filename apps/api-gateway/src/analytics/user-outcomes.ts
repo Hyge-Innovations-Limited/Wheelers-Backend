@@ -11,6 +11,13 @@ import { logActivity } from './log-activity';
 
 export const OUTCOME_FAILED = 'request_failed';
 export const OUTCOME_OK = 'request_ok';
+/**
+ * Someone not signed in asking for an address the server does not have: not a
+ * person using the app (it only calls real routes) but a bot trying known
+ * weaknesses, like POST /vendor/phpunit/.../eval-stdin.php or GET /.env. Kept
+ * apart from people's problems, with where it came from, for the security view.
+ */
+export const OUTCOME_PROBE = 'security_probe';
 /** Rows written for someone who is not signed in (asking for a sign-in code, say). */
 export const GUEST_USER_ID = 'guest';
 
@@ -141,21 +148,26 @@ function userIdOf(req: IncomingMessage, jwtSecret: string): string | null {
 /** The same person hitting the same wall again inside a minute is one line, not twenty. */
 const lately = new Map<string, number>();
 const REPEAT_MS = 60_000;
-function saidLately(key: string, now: number): boolean {
+const PROBE_REPEAT_MS = 60 * 60 * 1000;
+
+function saidLately(key: string, now: number, window = REPEAT_MS): boolean {
   const last = lately.get(key);
-  if (last && now - last < REPEAT_MS) return true;
+  if (last && now - last < window) return true;
   lately.set(key, now);
   if (lately.size > 5000) {
-    for (const [k, at] of lately) if (now - at >= REPEAT_MS) lately.delete(k);
+    for (const [k, at] of lately) if (now - at >= PROBE_REPEAT_MS) lately.delete(k);
   }
   return false;
 }
 
 export type Outcome = {
   userId: string;
-  eventType: typeof OUTCOME_FAILED | typeof OUTCOME_OK;
+  eventType: typeof OUTCOME_FAILED | typeof OUTCOME_OK | typeof OUTCOME_PROBE;
   metadata: Record<string, unknown>;
 };
+
+/** What a browser asks every site for by itself: not worth a line anywhere. */
+const BROWSER_NOISE = /^\/(favicon\.ico|robots\.txt|apple-touch-icon[\w-]*\.png)$/;
 
 /** What to write for a finished request, or null when it is not worth a line. Pure: tested without a server. */
 export function outcomeOf(input: {
@@ -168,12 +180,18 @@ export function outcomeOf(input: {
   via?: string;
 }): Outcome | null {
   const { method, path, status } = input;
-  if (method === 'OPTIONS' || method === 'HEAD' || NEVER.test(path)) return null;
+  if (method === 'OPTIONS' || NEVER.test(path)) return null;
   const failed = status >= 400;
   if (failed) {
+    // Nobody signed in, asking for an address that does not exist: a bot probing, not a person.
+    if (status === 404 && !input.userId) {
+      if (BROWSER_NOISE.test(path)) return null;
+      return { userId: GUEST_USER_ID, eventType: OUTCOME_PROBE, metadata: { method, path: path.slice(0, 300), status } };
+    }
+    if (method === 'HEAD') return null;
     // A screen loading while signed out, or finding nothing, is the app's ordinary business.
     if (method === 'GET' && (status === 401 || status === 404)) return null;
-  } else if (method === 'GET' || !WORTH_SAYING.test(path)) {
+  } else if (method === 'GET' || method === 'HEAD' || !WORTH_SAYING.test(path)) {
     return null;
   }
   const metadata: Record<string, unknown> = {
@@ -200,6 +218,15 @@ export function recordRequestOutcome(req: IncomingMessage, res: ServerResponse, 
     phone: noted?.phone,
   });
   if (!outcome) return;
+  if (outcome.eventType === OUTCOME_PROBE) {
+    // Where it came from: the address and what it calls itself. One line per address and path an hour.
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) || req.socket.remoteAddress || 'unknown';
+    if (saidLately(`probe|${ip}|${path}`, Date.now(), PROBE_REPEAT_MS)) return;
+    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 200) : null;
+    logActivity({ userId: GUEST_USER_ID, eventType: OUTCOME_PROBE, source: 'app', metadata: { ...outcome.metadata, ip, userAgent } });
+    return;
+  }
   const who = outcome.userId === GUEST_USER_ID ? `guest:${noted?.phone ?? ''}` : outcome.userId;
   if (saidLately(`${who}|${path}|${res.statusCode}|${outcome.metadata.message ?? ''}`, Date.now())) return;
   logActivity({ userId: outcome.userId, eventType: outcome.eventType, source: 'app', metadata: outcome.metadata });

@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { prisma, activityClient } = require('@wheleers/db');
-const { outcomeOf, plainReason, describeAction, describeLiveAction, OUTCOME_FAILED, OUTCOME_OK, GUEST_USER_ID } =
+const { outcomeOf, plainReason, describeAction, describeLiveAction, OUTCOME_FAILED, OUTCOME_OK, OUTCOME_PROBE, GUEST_USER_ID } =
   require('../apps/api-gateway/dist/analytics/user-outcomes.js');
 const { handleAdminAppActivityRoute } = require('../apps/api-gateway/dist/http/admin-analytics.route.js');
 
@@ -42,6 +42,7 @@ test('a server fault says it was ours and never shows the machine\'s own words',
 test('screens loading, constant pings and the dashboard itself are not written down', () => {
   assert.equal(outcomeOf({ method: 'GET', path: '/wallet/overview', status: 200, userId: 'u1' }), null, 'a screen that loaded');
   assert.equal(outcomeOf({ method: 'GET', path: '/rides/active', status: 404, userId: 'u1' }), null, 'nothing found is ordinary');
+  assert.ok(outcomeOf({ method: 'POST', path: '/rides', status: 404, userId: 'u1' }), 'a signed-in person hitting a missing thing is still shown');
   assert.equal(outcomeOf({ method: 'GET', path: '/auth/me', status: 401, userId: null }), null, 'signed out is ordinary');
   assert.equal(outcomeOf({ method: 'POST', path: '/drivers/me/location', status: 500, userId: 'u1' }), null);
   assert.equal(outcomeOf({ method: 'POST', path: '/admin/login', status: 401, userId: null }), null);
@@ -98,4 +99,50 @@ test('the admin page gets the rows with names, and the day counted by problem an
   const ok = await ask(`outcome=ok&userId=${user.id}`);
   assert.deepEqual(ok.body.rows.map((row) => row.action), ['Scheduled a ride']);
   assert.equal(ok.body.rows[0].message, null);
+});
+
+test('a bot probing for weaknesses is kept apart from people, with what it tried; a browser\'s own asks are not', () => {
+  const phpunit = outcomeOf({ method: 'POST', path: '/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php', status: 404, userId: null });
+  assert.equal(phpunit.eventType, OUTCOME_PROBE);
+  assert.deepEqual(phpunit.metadata, { method: 'POST', path: '/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php', status: 404 });
+  assert.equal(outcomeOf({ method: 'GET', path: '/.env', status: 404, userId: null }).eventType, OUTCOME_PROBE, 'the commonest probe of all is a GET');
+  assert.equal(outcomeOf({ method: 'HEAD', path: '/wp-login.php', status: 404, userId: null }).eventType, OUTCOME_PROBE);
+  assert.equal(outcomeOf({ method: 'GET', path: '/favicon.ico', status: 404, userId: null }), null);
+  assert.equal(outcomeOf({ method: 'GET', path: '/rides/active', status: 404, userId: 'u1' }), null, 'a signed-in person finding nothing is ordinary, not a probe');
+});
+
+test('the admin page leaves probes out of people\'s problems, counts them on their own, and keeps to the dates picked', async () => {
+  const say = async (userId, eventType, metadata, createdAt) => {
+    const row = await activityClient.record({ userId, eventType, source: 'app', metadata });
+    made.events.push(row.id);
+    if (createdAt) await prisma.userActivityEvent.update({ where: { id: row.id }, data: { createdAt } });
+    return row;
+  };
+  const ip = `203.0.113.${Math.floor(Math.random() * 200)}`;
+  const path = `/vendor/phpunit/${randomUUID()}.php`;
+  await say(GUEST_USER_ID, OUTCOME_PROBE, { method: 'POST', path, status: 404, ip, userAgent: 'scanner' });
+  await say(GUEST_USER_ID, OUTCOME_FAILED, { action: `POST ${path}`, message: 'What they asked for could not be found.', status: 404, path, method: 'POST' });
+  const marker = `Old wall ${randomUUID()}`;
+  await say(GUEST_USER_ID, OUTCOME_FAILED, { action: 'Searched for a driver', message: marker, phone: '+2348030000003' }, new Date('2026-01-10T10:00:00Z'));
+
+  const ask = async (query) => {
+    let sent;
+    const res = { setHeader() {}, end(body) { sent = JSON.parse(body); }, statusCode: 0 };
+    await handleAdminAppActivityRoute({ headers: { 'x-admin-key': 'test-key' } }, res, { adminApiKey: 'test-key', jwtSecret: 's' }, new URL(`http://x/admin/analytics/app-activity?${query}`));
+    return sent;
+  };
+
+  const today = await ask('outcome=all&limit=200');
+  assert.ok(!today.rows.some((row) => (row.technical ?? '').includes(path)), 'neither the probe nor an old bot 404 is a row about people');
+  assert.ok(!today.summary.top.some((problem) => problem.action.includes(path)));
+  assert.ok(today.probes.paths.some((entry) => entry.name === `POST ${path}`));
+  assert.ok(today.probes.fromWhere.some((entry) => entry.name === ip));
+  assert.equal(today.probes.recent.find((entry) => entry.path === path).userAgent, 'scanner');
+
+  const january = await ask(`outcome=failed&from=${encodeURIComponent('2026-01-10T00:00:00Z')}&to=${encodeURIComponent('2026-01-11T00:00:00Z')}`);
+  assert.deepEqual(january.rows.filter((row) => row.message === marker).length, 1, 'a row from the picked day');
+  assert.ok(january.rows.every((row) => row.at >= '2026-01-10' && row.at < '2026-01-11'), 'and nothing outside it');
+  assert.ok(january.summary.top.some((problem) => problem.message === marker), 'the counts are for the picked days');
+  assert.equal(january.range.from, '2026-01-10T00:00:00.000Z');
+  assert.ok(!january.probes.paths.some((entry) => entry.name === `POST ${path}`), 'today\'s probe is not in January');
 });

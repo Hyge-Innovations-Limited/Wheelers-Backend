@@ -63,13 +63,28 @@ export const activityClient = {
    * given event types when named, only one person when named, and older than
    * `before` when paging back.
    */
-  listPage: async (options: { eventTypes?: string[]; userId?: string; before?: Date; limit?: number }) => {
+  listPage: async (options: {
+    eventTypes?: string[];
+    /** Left out, whatever else is asked for: the bot probes, on a page about people. */
+    exceptTypes?: string[];
+    userId?: string;
+    before?: Date;
+    /** The earliest moment wanted (a date range's start). */
+    after?: Date;
+    limit?: number;
+  }) => {
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
     const rows = await prisma.userActivityEvent.findMany({
       where: {
-        ...(options.eventTypes?.length ? { eventType: { in: options.eventTypes } } : {}),
+        ...(options.eventTypes?.length
+          ? { eventType: { in: options.eventTypes } }
+          : options.exceptTypes?.length
+            ? { eventType: { notIn: options.exceptTypes } }
+            : {}),
         ...(options.userId ? { userId: options.userId } : {}),
-        ...(options.before ? { createdAt: { lt: options.before } } : {}),
+        ...(options.before || options.after
+          ? { createdAt: { ...(options.before ? { lt: options.before } : {}), ...(options.after ? { gte: options.after } : {}) } }
+          : {}),
       },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
@@ -78,9 +93,9 @@ export const activityClient = {
   },
 
   /** Every row of one event type since a cutoff, capped: the Activity page counts problems from these. */
-  listSince: async (eventType: string, since: Date, cap = 2000) =>
+  listSince: async (eventType: string, since: Date, cap = 2000, until?: Date) =>
     prisma.userActivityEvent.findMany({
-      where: { eventType, createdAt: { gte: since } },
+      where: { eventType, createdAt: { gte: since, ...(until ? { lt: until } : {}) } },
       orderBy: { createdAt: 'desc' },
       take: cap,
       select: { userId: true, metadata: true, createdAt: true },
