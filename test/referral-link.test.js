@@ -142,3 +142,132 @@ test('a person creates their own code: none exists before, it works in a link, t
   await applyReferralFromChat(deps, other, '2348030000012', given, given);
   assert.match(said(1), /was not found/);
 });
+
+/* ── Quick Actions on WhatsApp: their own code, created and shared as in the app ── */
+
+const { handleQuickActionsFlow, QUICK_ACTIONS_ACTIONS } = require('../apps/api-gateway/dist/whatsapp-flows/quick-actions-flow.js');
+const { createQuickActionsChatHooks, referralShareMessage } = require('../apps/api-gateway/dist/whatsapp/menu.js');
+const QUICK_ACTIONS_FLOW = require('../apps/api-gateway/src/whatsapp-flows/quick-actions-flow-definition.json');
+
+/** Tap something in the Quick Actions form as this person; `saved` hears every code sent to the chat. */
+function quickActions(userId, saved = []) {
+  const formDeps = {
+    redisClient: deps.redisClient, publisher: { publish: async () => undefined }, googleMapsApiKey: '', routePlanner: {},
+    onReferralCodeSaved: async (id, code) => { saved.push({ id, code }); },
+  };
+  // As Meta sends it: a data_exchange from the screen the button is on.
+  // REFERRAL's button carries its action, as the form's JSON sends it.
+  return (action, data = {}) => handleQuickActionsFlow({ version: '3.0', action: 'data_exchange', flow_token: 'x', screen: action === 'menu_choice' ? 'MENU' : 'REFERRAL', data: action === 'menu_choice' ? data : { ...data, action } }, userId, formDeps);
+}
+const row = (menu, id) => menu.data.choices.find((choice) => choice.id === id);
+const uniqueCode = () => `Q${Math.random().toString(36).slice(2, 9).toUpperCase()}`;
+
+test('QUICK ACTIONS · a rider with no code is offered to create one, and creating it sends it to the chat', async () => {
+  const rider = await person();
+  const saved = [];
+  const tap = quickActions(rider.id, saved);
+
+  const menu = await tap('menu_choice', { choice: 'nothing' });
+  assert.equal(row(menu, 'my_code')?.title, 'Create your referral code');
+
+  const screen = await tap('menu_choice', { choice: 'my_code' });
+  assert.equal(screen.screen, 'REFERRAL');
+  assert.equal(screen.data.heading, 'Create your referral code');
+  assert.equal(screen.data.code, '');
+  assert.equal(screen.data.has_stats, false);
+  assert.equal(screen.data.action, 'save_my_code');
+  assert.equal(screen.data.button_label, 'Save and share');
+
+  const short = await tap('save_my_code', { code: 'ab' });
+  assert.equal(short.screen, 'REFERRAL');
+  assert.match(short.data.error, /4 to 12/);
+  assert.equal(saved.length, 0, 'nothing is sent for a refused code');
+
+  const code = uniqueCode();
+  const done = await tap('save_my_code', { code: ` ${code.toLowerCase()} ` });
+  assert.equal(done.screen, 'NOTE');
+  assert.equal(done.data.headline, `Your code is ${code}`);
+  assert.deepEqual(saved, [{ id: rider.id, code }]);
+  assert.equal(await referralClient.findOwnCode(rider.id), code);
+
+  const after = await tap('menu_choice', { choice: 'nothing' });
+  assert.equal(row(after, 'my_code')?.title, 'Your referral code');
+  assert.match(row(after, 'my_code').description, new RegExp(code));
+});
+
+test('QUICK ACTIONS · a taken code is refused on the same screen; the same code again is kept and shared; a new one replaces it', async () => {
+  const first = await person();
+  const second = await person();
+  const taken = (await referralClient.setCustomCode(first.id, uniqueCode())).code;
+  const saved = [];
+  const tap = quickActions(second.id, saved);
+
+  const refused = await tap('save_my_code', { code: taken });
+  assert.equal(refused.screen, 'REFERRAL');
+  assert.match(refused.data.error, /taken/);
+  assert.equal(refused.data.code, taken, 'what they typed stays in the box');
+
+  const mine = uniqueCode();
+  await tap('save_my_code', { code: mine });
+  const again = await tap('save_my_code', { code: mine });
+  assert.equal(again.data.headline, `Your code is ${mine}`);
+  assert.equal(saved.length, 2, 'saving the same code still sends it to share');
+
+  const screen = await tap('menu_choice', { choice: 'my_code' });
+  assert.equal(screen.data.heading, `Your code: ${mine}`);
+  assert.equal(screen.data.code, mine);
+  assert.match(screen.data.intro_line, new RegExp(`${mine} then stops working`));
+
+  const next = uniqueCode();
+  await tap('save_my_code', { code: next });
+  assert.equal(await referralClient.findOwnCode(second.id), next);
+});
+
+test('QUICK ACTIONS · the screen says how many people joined with the code', async () => {
+  const owner = await person();
+  const friend = await person();
+  const code = (await referralClient.setCustomCode(owner.id, uniqueCode())).code;
+  await referralClient.applyCode({ referredUserId: friend.id, code });
+
+  const screen = await quickActions(owner.id)('menu_choice', { choice: 'my_code' });
+  assert.equal(screen.data.has_stats, true);
+  assert.match(screen.data.stats_line, /1 person has joined with your code/);
+});
+
+test('QUICK ACTIONS · the chat gets a line to read and a message to forward, whose link adds the code', async () => {
+  const rider = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Referral Tester', phone: `23480${Math.floor(10000000 + Math.random() * 89999999)}` } });
+  made.push(rider.id);
+  process.env.WHATSAPP_BOT_NUMBER = '+234 814 197 9106';
+  const hooks = createQuickActionsChatHooks({ ...deps, redisClient: { ...deps.redisClient, lPush: async () => 0, rPush: async () => 0, lTrim: async () => undefined, expire: async () => undefined } });
+  sent.length = 0;
+
+  await hooks.onReferralCodeSaved(rider.id, 'TIMI');
+
+  assert.equal(sent.length, 2);
+  assert.match(said(0), /Your referral code is \*TIMI\*/);
+  assert.match(said(0), /Forward the next message/);
+  assert.match(said(1), /Use my code \*TIMI\*/);
+  const link = said(1).match(/https:\/\/wa\.me\/[^"\s\\]+/)[0];
+  assert.equal(referralCodeIn(decodeURIComponent(link.split('text=')[1])), 'TIMI', 'the friend\'s tap sends the code to the bot');
+
+  assert.match(referralShareMessage('TIMI', null), /say: My referral code is TIMI/);
+  assert.equal(referralCodeIn('My referral code is TIMI'), 'TIMI', 'the words without a link are read too');
+});
+
+test('QUICK ACTIONS · one REFERRAL screen does both: its button sends the action the server chose, and a friend\'s code still works', async () => {
+  assert.ok(QUICK_ACTIONS_FLOW.routing_model.MENU.length <= 10, 'Meta allows ten routes from a screen');
+  const screen = QUICK_ACTIONS_FLOW.screens.find((s) => s.id === 'REFERRAL');
+  assert.match(JSON.stringify(screen.layout), /"action":"\$\{data.action\}"/);
+  assert.equal(QUICK_ACTIONS_ACTIONS.REFERRAL, undefined, 'the screen does not force one action');
+
+  const owner = await person();
+  const rider = await person();
+  const code = (await referralClient.setCustomCode(owner.id, uniqueCode())).code;
+  const tap = quickActions(rider.id);
+  const friendScreen = await tap('menu_choice', { choice: 'referral' });
+  assert.equal(friendScreen.data.action, 'apply_referral');
+  assert.equal(friendScreen.data.button_label, 'Add code');
+  const added = await tap('apply_referral', { code });
+  assert.equal(added.data.headline, 'Referral code added');
+  assert.equal((await prisma.referral.findUnique({ where: { referredUserId: rider.id } })).referrerId, owner.id);
+});

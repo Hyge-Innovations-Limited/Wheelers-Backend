@@ -31,7 +31,10 @@ import { handleOffersFormFlow, offersScreen, republishLastSearch, OFFERS_FORM_AC
  *   TRIP          one past trip, Repeat or Reverse  → REVIEW_TRIP
  *   NEXT          the list again after a search is cancelled here, so the rider
  *                 goes on inside the form instead of back in the chat
- *   REFERRAL      a referral code, typed in a box                    [Add code]
+ *   REFERRAL      a code, typed in a box. Two uses, one screen (MENU may
+ *                 have only ten routes): a friend's code      [Add code]
+ *                 or their own, created or changed as in the app, then
+ *                 sent to the chat ready to forward      [Save and share]
  *   BOOK_WHERE    Book a ride: pickup and destination boxes, with what was
  *                 typed last still in them and a shared pin as the pickup [Find places]
  *   BOOK_PLACES   what was found for each, ALWAYS shown — they see what Google
@@ -77,6 +80,8 @@ export interface QuickActionsFlowDeps {
   ensureDepositAccount?: (userId: string) => Promise<VirtualAccountLines | null>;
   /** Book a ride: the form closes and the chat asks where they are going. */
   onBookInChat?: (userId: string) => Promise<void>;
+  /** Their own referral code saved here: the chat gets it as a message to forward. */
+  onReferralCodeSaved?: (userId: string, code: string) => Promise<void>;
   /** A bid placed here: the chat gets the See driver offers button. */
   onBidPlaced?: EditTripFlowDeps['onBidPlaced'];
 }
@@ -89,7 +94,7 @@ export const MENU_IDS = {
   resume: 'resume', searchAgain: 'search_again', book: 'book', repeat: 'repeat', reverse: 'reverse', history: 'history',
   current: 'current', deposit: 'deposit', withdraw: 'withdraw', support: 'support',
   changePickup: 'change_pickup', changeDestination: 'change_destination', startAgain: 'start_again', cancelBooking: 'cancel_booking',
-  bookFromPin: 'book_from_pin', referral: 'referral',
+  bookFromPin: 'book_from_pin', referral: 'referral', myCode: 'my_code',
 } as const;
 
 /** What NEXT (the list after a cancelled search) may offer: only rows whose screens it can reach. */
@@ -179,6 +184,7 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
   if (action === 'menu_choice') return menuChoice(text(data['choice']), userId, deps);
   if (action === 'next_choice') return nextChoice(text(data['choice']), userId, deps);
   if (action === 'apply_referral') return applyReferral(text(data['code']), userId);
+  if (action === 'save_my_code') return saveMyCode(text(data['code']), userId, deps);
   if (action === 'history_pick') return historyPick(text(data['trip']), userId, deps);
   if (action === 'trip_direction') return tripDirection(text(data['ride_id']), text(data['direction']), userId, deps);
   if (action === 'status_next') return statusNext(userId, deps);
@@ -189,7 +195,7 @@ async function answerQuickActions(body: FlowRequestBody, userId: string, deps: Q
 export const QUICK_ACTIONS_ACTIONS = {
   MENU: 'menu_choice',
   NEXT: 'next_choice',
-  REFERRAL: 'apply_referral',
+  // REFERRAL is not here: its button says which of its two uses it is (apply_referral or save_my_code).
   ...BOOK_RIDE_ACTIONS, BOOK_REVIEW: 'confirm_trip',
   HISTORY: 'history_pick', TRIP: 'trip_direction',
   ...EDIT_TRIP_ACTIONS,
@@ -275,6 +281,13 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
     if (!(await referralClient.hasAppliedCode(userId).catch(() => true))) {
       choices.push({ id: MENU_IDS.referral, title: 'Enter referral code', description: 'Got a code from a driver or a friend? Add it here' });
     }
+    // Their own code to share, as in the app: nobody is handed one, they create it.
+    const ownCode = await referralClient.findOwnCode(userId).catch(() => null);
+    choices.push(
+      ownCode
+        ? { id: MENU_IDS.myCode, title: 'Your referral code', description: clip(`${ownCode} — share it and earn ride cashback`, 300) }
+        : { id: MENU_IDS.myCode, title: 'Create your referral code', description: 'Pick your own code, share it, earn ride cashback' },
+    );
     choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' });
   }
   // Add money sits after the ride rows in both lists; Withdraw is not offered mid-ride (the fare is held).
@@ -314,6 +327,7 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
   }
 
   if (choice === MENU_IDS.referral) return referralScreen();
+  if (choice === MENU_IDS.myCode) return myCodeScreen(userId);
 
   // Everything below starts or changes a booking: not while one is live.
   if (activeRideId) return menuScreen(userId, deps, BUSY_NOTE);
@@ -405,7 +419,13 @@ async function nextChoice(choice: string, userId: string, deps: QuickActionsFlow
 // ── REFERRAL ────────────────────────────────────────────────────────────────
 
 function referralScreen(code = '', error = ''): FlowScreen {
-  return { screen: 'REFERRAL', data: { intro_line: 'Got a code from a driver or a friend? Enter it here.', code, error, has_error: error.length > 0 } };
+  return {
+    screen: 'REFERRAL',
+    data: {
+      heading: 'Add a referral code', intro_line: 'Got a code from a driver or a friend? Enter it here.', stats_line: '', has_stats: false,
+      code, error, has_error: error.length > 0, input_label: 'Referral code', button_label: 'Add code', action: 'apply_referral',
+    },
+  };
 }
 
 /** The code typed in the box: added to the account, or refused in words on the same screen. */
@@ -423,6 +443,61 @@ async function applyReferral(typed: string, userId: string): Promise<FlowScreen>
   }
   logActivity({ userId, eventType: 'referral_code_applied', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
   return doneScreen('Referral code added', `${code} is on your account. Tap Quick Actions in the chat to book your first ride.`, false);
+}
+
+// ── REFERRAL, their own code ─────────────────────────────────────────────────────────────────
+
+/** What a friend's first ride earns the person whose code they used (referralClient). */
+const RIDE_REWARD_LINE = 'When someone joins with your code and takes a ride within 30 days, you get ₦1,000 cashback for your rides.';
+
+/**
+ * Their own referral code, as the app has it: created here if they have none,
+ * changed here if they want another. What it has done so far is under it.
+ */
+async function myCodeScreen(userId: string, typed?: string, error = ''): Promise<FlowScreen> {
+  const summary = await referralClient.findSummary(userId).catch(() => null);
+  const code = summary?.code ?? null;
+  const joined = summary ? summary.pendingReferrals + summary.qualifiedReferrals + summary.expiredNoRideReferrals + summary.closedReferrals : 0;
+  const cashback = summary?.availableCashbackNgn ?? 0;
+  const stats = [
+    joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with your code.` : '',
+    cashback > 0 ? `${naira(cashback)} cashback ready for your rides.` : '',
+  ].filter(Boolean).join(' ');
+  return {
+    screen: 'REFERRAL',
+    data: {
+      heading: code ? `Your code: ${code}` : 'Create your referral code',
+      intro_line: code
+        ? `${RIDE_REWARD_LINE}\n\nTo use a different code, type it below. ${code} then stops working; people who already used it stay yours.`
+        : `Pick a code friends will remember. Your name works well. ${RIDE_REWARD_LINE}`,
+      stats_line: stats,
+      has_stats: stats.length > 0,
+      code: typed ?? code ?? '',
+      error,
+      has_error: error.length > 0,
+      input_label: 'Your code',
+      button_label: 'Save and share',
+      action: 'save_my_code',
+    },
+  };
+}
+
+/** Saved (or kept, if unchanged), then sent to the chat to forward. Refusals are said on the same screen. */
+async function saveMyCode(typed: string, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
+  const wanted = referralClient.normalizeCode(typed);
+  if (!wanted) return myCodeScreen(userId, '', 'Type the code you want.');
+  const current = await referralClient.findOwnCode(userId).catch(() => null);
+  let code = wanted;
+  if (wanted !== current) {
+    try {
+      code = (await referralClient.setCustomCode(userId, wanted)).code;
+    } catch (error) {
+      return myCodeScreen(userId, wanted, error instanceof Error ? error.message : 'That code could not be saved just now. Please try again.');
+    }
+    logActivity({ userId, eventType: 'referral_code_changed', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
+  }
+  void deps.onReferralCodeSaved?.(userId, code).catch((error) => console.error('[quick-actions] referral code message not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
+  return doneScreen(`Your code is ${code}`, 'It is in your chat now. Forward that message to friends: when they book with it, you earn ride cashback.', false);
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────

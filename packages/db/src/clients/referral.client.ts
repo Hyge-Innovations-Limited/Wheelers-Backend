@@ -227,6 +227,12 @@ export const referralClient = {
     }
   },
 
+  /** The code this person created for themselves; null until they create one. */
+  async findOwnCode(userId: string): Promise<string | null> {
+    const row = await prisma.referralCode.findUnique({ where: { userId }, select: { code: true } });
+    return row?.code ?? null;
+  },
+
   /** Has this person already had a referral code added to their account? */
   async hasAppliedCode(userId: string): Promise<boolean> {
     return (await prisma.referral.count({ where: { referredUserId: userId } })) > 0;

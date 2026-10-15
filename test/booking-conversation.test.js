@@ -2288,7 +2288,7 @@ test('QUICK ACTIONS FORM · Repeat last ride: REVIEW_TRIP → Confirm → SET_PR
   const opened = await form('INIT');
   assert.equal(opened.screen, 'MENU');
   assert.match(opened.data.greeting_line, /^Hi Test\./);
-  assert.deepEqual(opened.data.choices.map((c) => c.id), ['book', 'repeat', 'reverse', 'history', 'referral', 'deposit', 'withdraw', 'support']);
+  assert.deepEqual(opened.data.choices.map((c) => c.id), ['book', 'repeat', 'reverse', 'history', 'referral', 'my_code', 'deposit', 'withdraw', 'support']);
   assert.ok(opened.data.choices.every((c) => c.title.length <= 30 && c.description.length <= 300), "WhatsApp's radio limits");
   assert.match(opened.data.choices[1].description, /31 Emily Akinola St → 7 Osaro Isokpan St/, 'Repeat names the LAST trip');
   const before = at.sent.length;
@@ -2479,7 +2479,9 @@ test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it car
   }
   assert.deepEqual(QUICK_ACTIONS_FLOW.routing_model.CANCEL_SEARCH, ['NEXT', 'NOTE', 'DONE'], 'a cancelled search can stay in the form');
   assert.deepEqual(qa.footer('NEXT')['on-click-action'].payload, { action: 'next_choice', choice: '${form.choice}' });
-  assert.deepEqual(qa.footer('REFERRAL')['on-click-action'].payload, { action: 'apply_referral', code: '${form.code}' });
+  // One screen, two uses (a friend's code, or their own): the server says which in data.action.
+  assert.deepEqual(qa.footer('REFERRAL')['on-click-action'].payload, { action: '${data.action}', code: '${form.code}' });
+  assert.equal(qa.footer('REFERRAL').label, '${data.button_label}');
   assert.deepEqual(qa.footer('BOOK_WHERE')['on-click-action'].payload, { action: 'where_to', pickup: '${form.pickup}', destination: '${form.destination}' });
   assert.deepEqual(qa.footer('BOOK_TRIP')['on-click-action'].payload, { action: 'book_trip', stop_1: '${form.stop_1}', stop_2: '${form.stop_2}', stop_3: '${form.stop_3}' });
   assert.deepEqual(qa.footer('BOOK_REVIEW')['on-click-action'].payload, { action: 'confirm_trip' });

@@ -9,6 +9,7 @@ import { MetaWhatsappRouteDeps } from './deps';
 import { createOffersFormChatHooks, sendCurrentOffers } from './ride-card';
 import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText } from './send';
 import { BOOKING_START_PROMPT, BUSY_REPLY, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
+import { referralShareLink } from './referral';
 import { sendWalletPageButton } from './wallet';
 
 export const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
@@ -161,6 +162,16 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
  * screen is the offers form), where support points, the Withdraw button, and a
  * way to open an account number for a rider who has none yet.
  */
+/**
+ * What a rider forwards to a friend: the code, and the link that opens a chat
+ * with Wheelers with it already typed (the bot reads it and adds it).
+ */
+export function referralShareMessage(code: string, link = referralShareLink(code)): string {
+  return link
+    ? `Book rides on WhatsApp with Wheelers. Use my code *${code}* — tap to start: ${link}`
+    : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
+}
+
 export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
   return {
     ...createOffersFormChatHooks(deps),
@@ -181,6 +192,22 @@ export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
       const prompt = `Where are you going?\n\n${BOOKING_START_PROMPT}`;
       await sendMetaText(deps, phone, prompt);
       await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: '[chose Book a ride in Quick Actions]' }, { role: 'assistant', content: prompt }]);
+    },
+    /**
+     * Their own referral code saved in Quick Actions: a line saying what to
+     * do, then the message itself, written for the friend, ready to forward.
+     */
+    onReferralCodeSaved: async (userId: string, code: string): Promise<void> => {
+      const phone = (await userClient.findById(userId).catch(() => null))?.phone;
+      if (!phone) return;
+      const note = `Your referral code is *${code}*. Forward the next message to friends: when they take a ride with your code, you get ride cashback.`;
+      const forward = referralShareMessage(code);
+      await sendMetaText(deps, phone, note);
+      await sendMetaText(deps, phone, forward);
+      await appendWhatsappConversation(deps.redisClient, phone, [
+        { role: 'user', content: '[saved their referral code in Quick Actions]' },
+        { role: 'assistant', content: `${note}\n\n${forward}` },
+      ]);
     },
     onWithdraw: async (userId: string): Promise<void> => {
       const phone = (await userClient.findById(userId).catch(() => null))?.phone;
