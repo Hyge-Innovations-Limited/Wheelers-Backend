@@ -169,7 +169,10 @@ export async function reverseGeocode(
     return {
       lat,
       lng,
-      formattedAddress: result.formatted_address ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      // A shared pin reads like a place ("Orupodi, Ilemere, Ikorodu"), never a Plus Code ("J987+547, Oregun").
+      formattedAddress:
+        placeLabelFromResults(data.results) ??
+        (tidyAddress(stripPlusCode(result.formatted_address ?? '')) || `${lat.toFixed(4)}, ${lng.toFixed(4)}`),
       countryCode: countryOf(result),
     };
   } catch {
@@ -417,6 +420,74 @@ interface PlacesSearchResponse {
 }
 
 /** "J94G+2QW, Ketu, Lagos" → "Ketu, Lagos". A plus code is a map reference, not something a rider recognises. */
+const PLUS_CODE_PART = /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{0,3}$/i;
+const UNNAMED_ROAD = /^unnamed road$/i;
+
+/**
+ * Google's reverse answers for a spot, best first, made into the label a ride
+ * app shows: the street or the named place there, then the area, then the
+ * town ("Orupodi, Ilemere, Ikorodu", "3 Herbert Macaulay Way, Yaba"). Its
+ * first answer has the street; the area is often only in a later one, so all
+ * are read. Null when nothing readable comes of them. The app does the same
+ * (lib/google-places.ts placeLabelFromResults).
+ */
+export function placeLabelFromResults(results: GoogleGeocodingResult[]): string | null {
+  const top = results.find((result) => !(result.types ?? []).every((type) => type === 'plus_code')) ?? results[0];
+  if (!top) return null;
+  const parts = top.address_components ?? [];
+  type Part = NonNullable<GoogleGeocodingResult['address_components']>[number];
+  const named = (part: Part | undefined) => part?.long_name?.trim() || null;
+  const of = (list: Part[], ...types: string[]) => named(list.find((part) => types.some((type) => (part.types ?? []).includes(type))));
+  const state = of(parts, 'administrative_area_level_1');
+  const lga = of(parts, 'administrative_area_level_2');
+  const same = (a: string | null, b: string | null) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  const tooBroad = (name: string | null) =>
+    !name || same(name, state) || same(name, lga) || same(name, 'Lagos') || same(name, 'Nigeria') || PLUS_CODE_PART.test(name);
+
+  const route = of(parts, 'route');
+  const number = of(parts, 'street_number');
+  const street = route && !UNNAMED_ROAD.test(route) ? (number ? `${number} ${route}` : route) : null;
+  const known = new Set(parts.map((part) => named(part)?.toLowerCase()).filter(Boolean));
+  const place = street
+    ? null
+    : (top.formatted_address ?? '')
+        .split(',')
+        .map((token) => token.replace(/\s*\b\d{5,6}\b/g, '').trim())
+        .find((token) => token && !known.has(token.toLowerCase()) && !tooBroad(token) && !UNNAMED_ROAD.test(token)) ?? null;
+
+  let area: string | null = null;
+  for (const result of results) {
+    for (const type of ['neighborhood', 'sublocality_level_1', 'sublocality', 'locality']) {
+      const name = of(result.address_components ?? [], type);
+      if (!tooBroad(name)) { area = name; break; }
+    }
+    if (area) break;
+  }
+  const town = of(parts, 'locality') ?? lga;
+  const label = [street ?? place, area, tooBroad(town) && !same(town, lga) ? null : town]
+    .filter((value): value is string => !!value)
+    .filter((value, index, list) => list.findIndex((other) => same(other, value)) === index);
+  return label.length >= 2 ? label.join(', ') : null;
+}
+
+/** "Oregun, Lagos 101233, Lagos, Nigeria" → "Oregun, Lagos": no postcodes, no country, nothing twice. */
+function tidyAddress(address: string): string {
+  return address
+    .split(',')
+    .map((part) => part.replace(/\s*\b\d{5,6}\b/g, '').trim())
+    .filter((part, index, list) => part && !/^nigeria$/i.test(part) && list.findIndex((other) => other.toLowerCase() === part.toLowerCase()) === index)
+    .join(', ');
+}
+
+/**
+ * "15 Aiyetoro Street, Lagos": a match that names no area, only the city. Shown
+ * alone it hides the real choices (that street is in Surulere and in Akoka).
+ */
+export function isVagueAddress(address: string): boolean {
+  const rest = address.split(',').slice(1).map((part) => part.replace(/\s*\b\d{5,6}\b/g, '').trim()).filter(Boolean);
+  return rest.every((part) => /^(lagos|lagos state|nigeria)$/i.test(part));
+}
+
 export function stripPlusCode(address: string): string {
   return address
     .replace(/(^|,\s*|\s)[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}(?=\s*,|\s|$)\s*,?/gi, '$1')
@@ -739,6 +810,7 @@ function normalisePlaceName(text: string): string {
   return text.toLowerCase().split(',')[0]!.replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+const STREET_WORD = /\b(street|str|st|road|rd|avenue|ave|close|crescent|lane|drive|way|estate)\b/i;
 const ADDRESS_LIKE = /^\s*(?:no\.?\s*)?\d+[a-z]?\b|\b(street|str|road|rd|avenue|ave|close|crescent|lane|drive|estate|way)\b/i;
 
 /**
@@ -773,6 +845,18 @@ export async function findPlaceOptions(
   }
 
   found = found.map((option) => ({ ...option, formattedAddress: stripPlusCode(option.formattedAddress) || option.formattedAddress }));
+
+  // Only vague matches ("15 Aiyetoro Street, Lagos" for "15 aiyetoro"): the
+  // words with "Street" find each real one ("…Surulere", "…Akoka"). Shown
+  // instead, all of them, so the rider picks the right one.
+  if (found.length > 0 && found.every((option) => isVagueAddress(option.formattedAddress)) && !STREET_WORD.test(query)) {
+    const asStreet = await geocodeAddressCandidates(apiKey, `${query.trim()} Street`, limit, { near }).catch(() => []);
+    const specific = asStreet
+      .map((option) => ({ ...option, formattedAddress: stripPlusCode(option.formattedAddress) || option.formattedAddress }))
+      .filter((option) => !isVagueAddress(option.formattedAddress));
+    if (specific.length > 0) found = specific;
+  }
+
   if (near) {
     found = found.map((option) => ({ ...option, distanceKm: Math.round(kmBetween(near, option) * 10) / 10 }));
     const sameCity = found.filter((option) => (option.distanceKm ?? 0) <= SAME_CITY_KM);
