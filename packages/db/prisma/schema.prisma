@@ -17,8 +17,6 @@ model User {
   phone                      String?
   photoUrl                   String?
   email                      String?
-  /// When the person proved `email` is theirs with a code sent to it. Cleared when they change it.
-  emailVerifiedAt            DateTime?
   providerCustomerId         String?                     @unique
   /// Wallet PIN (4 digits) — scrypt hash, never the PIN. Required to withdraw.
   walletPinHash              String?

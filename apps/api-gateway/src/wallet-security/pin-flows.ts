@@ -64,9 +64,7 @@ export async function consumeCode(deps: PinFlowDeps, key: string, code: unknown)
   return stored.email;
 }
 
-const PIN_FOOTER = 'If you did not ask for this, ignore this email — your PIN has not changed.';
-
-export async function emailCode(deps: PinFlowDeps, to: string, code: string, purpose: string, footer = PIN_FOOTER): Promise<void> {
+export async function emailCode(deps: PinFlowDeps, to: string, code: string, purpose: string): Promise<void> {
   if (!deps.resendApiKey) throw new PinFlowError('Email is not available right now. Please try again later.', 503, 'EMAIL_UNAVAILABLE');
   await sendEmail({
     to,
@@ -74,7 +72,7 @@ export async function emailCode(deps: PinFlowDeps, to: string, code: string, pur
     html: `<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:24px;background:#FFF8EC;border:2px solid #141210;border-radius:12px">
   <p style="font-size:15px;color:#141210;margin:0 0 12px">Use this code to ${purpose}:</p>
   <p style="font-size:34px;font-weight:700;letter-spacing:8px;color:#FF7700;margin:0 0 16px">${code}</p>
-  <p style="font-size:13px;color:#5B534A;margin:0">It expires in 10 minutes. ${footer}</p>
+  <p style="font-size:13px;color:#5B534A;margin:0">It expires in 10 minutes. If you did not ask for this, ignore this email — your PIN has not changed.</p>
 </div>`,
   }, deps.resendApiKey);
 }
@@ -84,11 +82,11 @@ export async function emailCode(deps: PinFlowDeps, to: string, code: string, pur
  * stored but never delivered is a secret nobody holds and a guess target for
  * ten minutes; if the email cannot go out, the code does not exist.
  */
-export async function sendCode(deps: PinFlowDeps, key: string, email: string, purpose: string, footer?: string): Promise<void> {
+export async function sendCode(deps: PinFlowDeps, key: string, email: string, purpose: string): Promise<void> {
   if (!deps.resendApiKey) throw new PinFlowError('Email is not available right now. Please try again later.', 503, 'EMAIL_UNAVAILABLE');
   const code = await storeCode(deps, key, email);
   try {
-    await emailCode(deps, email, code, purpose, footer);
+    await emailCode(deps, email, code, purpose);
   } catch (error) {
     await deps.redisClient.del(key).catch(() => {});
     throw error instanceof PinFlowError

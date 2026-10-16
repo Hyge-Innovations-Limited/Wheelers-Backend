@@ -79,7 +79,7 @@ async function readStoredLoginOtp(deps: PhoneRouteDeps, phone: string): Promise<
 async function resolveUserForPhone(
   phone: string,
   onboarding: UserOnboardingDeps,
-): Promise<{ user: { id: string; privyDid: string; email: string | null; emailVerifiedAt?: Date | null; role: string; name: string | null; phone: string | null; username?: string | null }; created: boolean }> {
+): Promise<{ user: { id: string; privyDid: string; email: string | null; role: string; name: string | null; phone: string | null; username?: string | null }; created: boolean }> {
   const whatsappUser = await userClient.findByPrivyDid(buildWhatsappPrivyDid(phone));
   if (whatsappUser) {
     return { user: whatsappUser, created: false };
@@ -267,8 +267,6 @@ export async function handlePhoneLoginVerifyOtpRoute(
         privyDid: user.privyDid,
         username: user.username ?? null,
         email: user.email,
-        // The app asks for an email, proved with a code, until this is true.
-        emailVerified: Boolean(user.email && user.emailVerifiedAt),
         role: user.role,
         name: user.name,
         phone: user.phone,

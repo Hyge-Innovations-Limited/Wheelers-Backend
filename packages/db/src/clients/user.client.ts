@@ -112,22 +112,18 @@ export const userClient = {
       include: { wallet: true },
     }),
 
-  updateProfile: async (userId: string, data: {
+  updateProfile: (userId: string, data: {
     username?: string;
     email?:    string;
     name?:     string;
     phone?:    string;
     photoUrl?: string;
-  }) => {
-    // A new email is not proved yet: it has to be confirmed again with a code.
-    const before = data.email ? await prisma.user.findUnique({ where: { id: userId }, select: { email: true } }) : null;
-    const changedEmail = data.email !== undefined && data.email !== before?.email;
-    return prisma.user.update({
+  }) =>
+    prisma.user.update({
       where: { id: userId },
-      data: { ...data, ...(changedEmail ? { emailVerifiedAt: null } : {}) },
+      data,
       include: { wallet: true },
-    });
-  },
+    }),
 
   updateProviderCustomerId: (userId: string, providerCustomerId: string) =>
     prisma.user.update({

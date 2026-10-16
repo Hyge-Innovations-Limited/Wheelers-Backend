@@ -19,7 +19,6 @@ function serializeUser(user: {
   privyDid: string;
   username?: string | null;
   email: string | null;
-  emailVerifiedAt?: Date | null;
   role: string;
   name: string | null;
   phone: string | null;
@@ -29,8 +28,6 @@ function serializeUser(user: {
     privyDid: user.privyDid,
     username: user.username ?? null,
     email: user.email,
-    // Proved with a code. The app asks for one until this is true.
-    emailVerified: Boolean(user.email && user.emailVerifiedAt),
     role: user.role,
     name: user.name,
     phone: user.phone,

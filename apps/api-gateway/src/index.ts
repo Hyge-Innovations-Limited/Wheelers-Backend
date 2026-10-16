@@ -246,7 +246,6 @@ import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
 import { startReferralJobs } from "./referrals/jobs";
 import { clientIp } from "./utils/client-ip";
-import { handleAccountEmailRoute } from "./http/email.route";
 
 const SCHEDULED_RIDE_QUEUE = "wheleers-scheduled-rides";
 
@@ -786,11 +785,6 @@ async function bootstrap(): Promise<void> {
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
-      return;
-    }
-
-    // The account's email, proved with a code (asked for right after the privacy policy).
-    if (await handleAccountEmailRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, resendApiKey: gatewayEnv.RESEND_API_KEY }, url)) {
       return;
     }
 
