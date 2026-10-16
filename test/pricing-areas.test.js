@@ -33,29 +33,29 @@ test('a trip from Ikorodu takes the pickup factor; one into Ikorodu the drop-off
   const into = price(25, 55, { origin: YABA, destination: IKORODU });
   assert.equal(city.areaFactor, 1);
   assert.equal(city.area, null);
-  assert.equal(from.areaFactor, 1.4);
+  assert.equal(from.areaFactor, 1.65);
   assert.equal(from.area, 'ikorodu');
-  assert.equal(into.areaFactor, 1.25);
+  assert.equal(into.areaFactor, 1.5);
   assert.ok(from.suggestedFareNgn > into.suggestedFareNgn && into.suggestedFareNgn > city.suggestedFareNgn);
-  assert.ok(from.suggestedFareNgn >= Math.floor(city.suggestedFareNgn * 1.4 / 50) * 50, 'about 1.4 times the city price');
+  assert.ok(from.suggestedFareNgn >= Math.floor(city.suggestedFareNgn * 1.65 / 50) * 50, 'about 1.65 times the city price');
   assert.ok(from.maxOfferNgn > city.maxOfferNgn, 'drivers may ask more there too');
   const epeToIkorodu = price(40, 70, { origin: EPE, destination: IKORODU });
-  assert.equal(epeToIkorodu.areaFactor, 1.45);
+  assert.equal(epeToIkorodu.areaFactor, 1.7);
 });
 
 test('with the floor on, what the other app charges in Ikorodu is lifted too: the floor follows the area', () => {
   config.setPricingSettings({ marketFloorOn: true });
   const city = price(25, 55, { origin: YABA, destination: LEKKI_PHASE_1 });
   const ikorodu = price(25, 55, { origin: IKORODU, destination: YABA });
-  assert.ok(Math.abs(ikorodu.marketFareNgn / city.marketFareNgn - 1.4) < 0.001);
+  assert.ok(Math.abs(ikorodu.marketFareNgn / city.marketFareNgn - 1.65) < 0.001);
   assert.ok(ikorodu.floorFareNgn > city.floorFareNgn);
 });
 
 test('saved factors are kept in range: never under 1, never over the cap; a missing area keeps its default', () => {
   const s = config.setPricingSettings({ areas: { ikorodu: { pickup: 9, dropoff: 0.2 }, epe: { pickup: 'x' } } });
   assert.deepEqual(s.areas.ikorodu, { pickup: config.AREA_FACTOR_MAX, dropoff: 1 });
-  assert.equal(s.areas.epe.pickup, 1.45);
-  assert.deepEqual(s.areas.badagry, { pickup: 1.45, dropoff: 1.3 });
+  assert.equal(s.areas.epe.pickup, 1.7);
+  assert.deepEqual(s.areas.badagry, { pickup: 1.7, dropoff: 1.5 });
   config.setPricingSettings({ areas: { ikorodu: { pickup: 1, dropoff: 1 } } });
   assert.equal(price(25, 55, { origin: IKORODU, destination: YABA }).areaFactor, 1, 'set to 1, Ikorodu is priced like the city');
 });

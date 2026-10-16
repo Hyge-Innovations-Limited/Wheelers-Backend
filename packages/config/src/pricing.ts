@@ -180,10 +180,10 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
   areas: {
-    ikorodu: { pickup: 1.4, dropoff: 1.25 },
-    epe: { pickup: 1.45, dropoff: 1.3 },
-    'ibeju-lekki': { pickup: 1.3, dropoff: 1.2 },
-    badagry: { pickup: 1.45, dropoff: 1.3 },
+    ikorodu: { pickup: 1.65, dropoff: 1.5 },
+    epe: { pickup: 1.7, dropoff: 1.5 },
+    'ibeju-lekki': { pickup: 1.5, dropoff: 1.35 },
+    badagry: { pickup: 1.7, dropoff: 1.5 },
   },
 };
 
