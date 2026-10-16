@@ -16,6 +16,8 @@ export function buildRideEstimatePricing(
   distanceKm: number | null | undefined,
   /** The trip's planned time: the fare has a per-minute part, so pass it wherever it is known. */
   durationSeconds?: number | null,
+  /** The trip's ends, wherever known: a pickup or drop-off in an outer area (Ikorodu, Epe…) lifts the price. */
+  ends: { origin?: { lat: number; lng: number }; destination?: { lat: number; lng: number } } = {},
 ): RideEstimatePricingFields {
   if (distanceKm === null || distanceKm === undefined || !Number.isFinite(distanceKm)) {
     return {
@@ -29,7 +31,7 @@ export function buildRideEstimatePricing(
     };
   }
 
-  const pricing = calculateSuggestedFare(distanceKm, { durationSeconds: durationSeconds ?? undefined });
+  const pricing = calculateSuggestedFare(distanceKm, { durationSeconds: durationSeconds ?? undefined, ...ends });
   const fees = calculateRideFees(pricing.suggestedFareNgn);
 
   return {

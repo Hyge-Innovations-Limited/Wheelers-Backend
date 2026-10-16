@@ -687,7 +687,8 @@ export async function handleRideMessage(
         route: plannedRoute?.geometry,
         plannedDistanceKm: event.plannedDistanceKm,
         plannedDurationSeconds: event.plannedDurationSeconds,
-        ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds),
+        // Mid-trip the car is the start; only where the trip now ends decides an area factor.
+        ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds, { destination }),
       },
     };
   }

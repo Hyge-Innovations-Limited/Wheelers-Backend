@@ -617,7 +617,10 @@ export function createRideRequestedConsumer(params: {
       .filter((stop) => stop.type === 'INTERMEDIATE' && stop.status !== 'COMPLETED')
       .map((stop) => ({ lat: stop.lat, lng: stop.lng, address: stop.address }));
     const distanceKm = ride.distanceKm ?? 0;
-    const pricing = calculateSuggestedFare(distanceKm);
+    const pricing = calculateSuggestedFare(distanceKm, {
+      origin: { lat: ride.pickupLat, lng: ride.pickupLng },
+      destination: { lat: ride.destLat, lng: ride.destLng },
+    });
     const quotedFareNgn = ride.fareEstimateNgn !== null && ride.fareEstimateNgn !== undefined
       ? Number(ride.fareEstimateNgn)
       : pricing.suggestedFareNgn;

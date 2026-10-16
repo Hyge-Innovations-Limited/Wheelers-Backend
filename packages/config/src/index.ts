@@ -19,6 +19,10 @@ export type { GroupRideEnv }    from './env/group-ride.env';
 export type { WhatsappEnv }     from './env/whatsapp.env';
 export type { McpEnv }          from './env/mcp.env';
 
+// Outer areas priced higher (pickup / drop-off factors in the pricing settings)
+export { PRICING_AREAS, pricingAreaOf } from './pricing-areas';
+export type { PricingArea, PricingAreaKey } from './pricing-areas';
+
 // Where rides are taken: Lagos State
 export { SERVICE_AREA_NAME, OUTSIDE_SERVICE_AREA_LINE, LAGOS_OUTLINE, isInLagos, isInServiceArea, firstOutsideServiceArea } from './service-area';
 
@@ -57,6 +61,8 @@ export {
   COMMISSION_RATE,
   VAT_RATE,
   calculateSuggestedFare,
+  areaFactorOf,
+  AREA_FACTOR_MAX,
   resolveMaxOfferNgn,
   validateRiderOffer,
   validateDriverOffer,
@@ -69,7 +75,7 @@ export {
 } from './pricing';
 export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';
-export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula } from './pricing';
+export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula, AreaFactors } from './pricing';
 export {
   GoogleMapsRoutePlanner,
   RoutePlanningError,

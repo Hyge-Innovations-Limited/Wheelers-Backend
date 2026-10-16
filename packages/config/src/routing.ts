@@ -105,7 +105,7 @@ export class GoogleMapsRoutePlanner {
     const distanceKm = round3(route.distanceMeters / 1000);
     const durationSeconds = Math.max(0, Math.round(route.durationSeconds));
     const trafficRatio = traffic ? trafficRatioOf(payload, route.durationSeconds) : undefined;
-    const ridePrice = calculateSuggestedFare(distanceKm, { trafficRatio, durationSeconds });
+    const ridePrice = calculateSuggestedFare(distanceKm, { trafficRatio, durationSeconds, origin: params.origin, destination: params.destination });
 
     return {
       distanceKm,

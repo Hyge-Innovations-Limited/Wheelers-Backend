@@ -28,6 +28,7 @@
  * and, once switched on, the model. The floor is never undercut.
  */
 import { candidateFares, chooseFare, getPricingMlModel, steadyDraw } from './pricing-ml';
+import { PRICING_AREAS, pricingAreaOf, type PricingAreaKey } from './pricing-areas';
 
 export type PricingVersion = 1 | 2;
 export const CURRENT_PRICING_VERSION: PricingVersion = 2;
@@ -94,6 +95,11 @@ export type PricingModel = {
   coef: { lnKm: number; minPerKm: number; lnDemand: number; rush: number; night: number; weekend: number };
 };
 
+export type AreaFactors = { pickup: number; dropoff: number };
+
+/** No area factor above this, whatever is saved. */
+export const AREA_FACTOR_MAX = 2;
+
 export type PricingSettings = {
   /** Never suggest less than the market fare + the premium. */
   marketFloorOn: boolean;
@@ -131,6 +137,13 @@ export type PricingSettings = {
   /** What a completed ride is worth to Wheelers beyond what it earns on it: the higher, the readier the model is to cut. */
   rideValueNgn: number;
   /**
+   * The parts of Lagos where drivers are few and come back empty (Ikorodu,
+   * Epe, Ibeju-Lekki, Badagry): a trip picked up there is multiplied by its
+   * pickup factor, one dropped off there by its drop-off factor, the larger
+   * of the two. 1 is no change. Set with npm run pricing area.
+   */
+  areas: Record<PricingAreaKey, AreaFactors>;
+  /**
    * With the model on, the share of trips shown a price OTHER than the
    * model's pick: one of the other prices inside the same limits. Without
    * these the model only ever sees what happens at its own prices and can
@@ -164,6 +177,14 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   minOfferGapNgn: 850,
   rideValueNgn: 500,
   trialShare: 0.1,
+  // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
+  // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
+  areas: {
+    ikorodu: { pickup: 1.4, dropoff: 1.25 },
+    epe: { pickup: 1.45, dropoff: 1.3 },
+    'ibeju-lekki': { pickup: 1.3, dropoff: 1.2 },
+    badagry: { pickup: 1.45, dropoff: 1.3 },
+  },
 };
 
 let pricingSettings: PricingSettings = DEFAULT_PRICING_SETTINGS;
@@ -184,6 +205,19 @@ function formulaFrom(value: unknown, fallback: MarketFormula): MarketFormula {
     perKmNgn: finite(v.perKmNgn, fallback.perKmNgn, 0, 5_000),
     perMinuteNgn: finite(v.perMinuteNgn, fallback.perMinuteNgn, 0, 1_000),
   };
+}
+
+function areasFrom(value: unknown, fallback: PricingSettings['areas']): PricingSettings['areas'] {
+  const saved = (value ?? {}) as Partial<Record<PricingAreaKey, Partial<AreaFactors>>>;
+  const out = {} as PricingSettings['areas'];
+  for (const { key } of PRICING_AREAS) {
+    const v = saved[key] ?? {};
+    out[key] = {
+      pickup: finite(v.pickup, fallback[key].pickup, 1, AREA_FACTOR_MAX),
+      dropoff: finite(v.dropoff, fallback[key].dropoff, 1, AREA_FACTOR_MAX),
+    };
+  }
+  return out;
 }
 
 function modelFrom(value: unknown): PricingModel | null {
@@ -221,6 +255,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     minOfferGapNgn: finite(v.minOfferGapNgn, d.minOfferGapNgn, 0, 5_000),
     rideValueNgn: finite(v.rideValueNgn, d.rideValueNgn, 0, 10_000),
     trialShare: finite(v.trialShare, d.trialShare, 0, 0.5),
+    areas: areasFrom(v.areas, d.areas),
   };
 }
 
@@ -303,6 +338,9 @@ export type RateFactors = {
   durationSeconds?: number;
   /** When the quote is for. Now, unless a test says otherwise. */
   at?: Date;
+  /** Where the trip starts and ends: an outer area (Ikorodu, Epe…) lifts the price. */
+  origin?: { lat: number; lng: number };
+  destination?: { lat: number; lng: number };
   /**
    * Names this trip for a while (its two ends and the half hour): whether it
    * is shown a trial price, and which, is decided from this alone, so asking
@@ -365,6 +403,9 @@ export type SuggestedFare = {
   rulesFareNgn: number;
   /** The model's fare. Recorded even when the model is not allowed to set the price. Null with no model. */
   modelFareNgn: number | null;
+  /** The outer area that lifted the price (Ikorodu, Epe…) and by how much; 1 and null elsewhere. */
+  areaFactor: number;
+  area: PricingAreaKey | null;
 };
 
 export type RidePriceBreakdown = {
@@ -417,20 +458,35 @@ export function driverRatePerKmNgn(
 
 // ── The suggested fare and the limits on offers ───────────────────────────
 
+/**
+ * The area factor for a trip: the pickup area's pickup factor or the drop-off
+ * area's drop-off factor, whichever is larger. 1 inside the rest of Lagos.
+ */
+export function areaFactorOf(factors: Pick<RateFactors, 'origin' | 'destination'>): { factor: number; area: PricingAreaKey | null } {
+  const from = factors.origin ? pricingAreaOf(factors.origin.lat, factors.origin.lng) : null;
+  const to = factors.destination ? pricingAreaOf(factors.destination.lat, factors.destination.lng) : null;
+  const pickup = from ? pricingSettings.areas[from.key].pickup : 1;
+  const dropoff = to ? pricingSettings.areas[to.key].dropoff : 1;
+  if (pickup <= 1 && dropoff <= 1) return { factor: 1, area: null };
+  return pickup >= dropoff ? { factor: pickup, area: from!.key } : { factor: dropoff, area: to!.key };
+}
+
 export function calculateSuggestedFare(distanceKm: number, factors: RateFactors = {}): SuggestedFare {
   if (!Number.isFinite(distanceKm) || distanceKm < 0) {
     throw new TypeError('distanceKm must be a finite number >= 0');
   }
 
   const settings = pricingSettings;
-  const rulesFareNgn = fareFromRatePerKmNgn(recommendedRatePerKmNgn(factors), distanceKm);
+  // Ikorodu, Epe, Ibeju-Lekki, Badagry: what other apps charge there, and our own rate, are both higher.
+  const { factor: areaFactor, area } = areaFactorOf(factors);
+  const rulesFareNgn = roundUpToIncrement(fareFromRatePerKmNgn(recommendedRatePerKmNgn(factors), distanceKm) * areaFactor, FARE_ROUNDING_INCREMENT);
   const modelRate = modelRatePerKmNgn(distanceKm, factors);
   const modelFareNgn = modelRate === null ? null : fareFromRatePerKmNgn(modelRate, distanceKm);
 
   // The floor: what the other app charges for this trip, plus the premium.
   // Nothing is ever suggested below it.
   const marketFare = settings.marketFloorOn && distanceKm > 0
-    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at)
+    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor
     : null;
   const floorFareNgn = marketFare === null
     ? null
@@ -438,7 +494,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
 
   // The rules and the model may only lift it, and only so far: at most
   // liftCap × the floor (or × our own plain rate, where that is the higher).
-  const plainFareNgn = fareFromRatePerKmNgn(RATE_PER_KM_NGN, distanceKm);
+  const plainFareNgn = fareFromRatePerKmNgn(RATE_PER_KM_NGN, distanceKm) * areaFactor;
   const liftLimit = floorFareNgn === null
     ? Infinity
     : roundUpToIncrement(Math.max(floorFareNgn, plainFareNgn) * settings.liftCap, FARE_ROUNDING_INCREMENT);
@@ -507,6 +563,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     floorFareNgn,
     rulesFareNgn,
     modelFareNgn: modelFare,
+    areaFactor,
+    area,
   };
 }
 

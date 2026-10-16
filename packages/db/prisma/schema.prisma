@@ -1444,6 +1444,8 @@ model MarketSample {
   rush      Boolean
   takenAt   DateTime
   addedBy   String?
+  /// The outer area the trip started in (ikorodu, epe, ibeju-lekki, badagry), when it was one: priced against the area factor, kept out of the city-wide fit.
+  area      String?
 
   @@index([takenAt])
 }
