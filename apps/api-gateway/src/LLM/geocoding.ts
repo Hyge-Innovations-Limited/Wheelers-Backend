@@ -1,4 +1,5 @@
 import { cachedMaps, mapsKey } from '../maps/shared-cache';
+import { isInServiceArea, OUTSIDE_SERVICE_AREA_LINE as ONLY_IN_LAGOS, SERVICE_AREA_NAME } from '@wheleers/config';
 
 export interface GeocodeResult {
   lat: number;
@@ -61,6 +62,10 @@ function countryOf(result: GoogleGeocodingResult): string | undefined {
 }
 
 function isOutsideServiceArea(result: GoogleGeocodingResult): boolean {
+  // Rides are taken in Lagos only: a match anywhere else (Ota, Abeokuta, Abuja)
+  // is refused with the reason, not offered.
+  const at = result.geometry?.location;
+  if (at?.lat != null && at?.lng != null && !isInServiceArea(at.lat, at.lng)) return true;
   if (!SERVICE_COUNTRY) return false;
   const country = countryOf(result);
   if (country) return country !== SERVICE_COUNTRY;
@@ -94,8 +99,7 @@ export function outsideServiceAreaMatch(query: string): string | null {
   return hit.resolvedTo;
 }
 
-export const OUTSIDE_SERVICE_AREA_LINE =
-  `Wheelers only runs in ${SERVICE_COUNTRY_NAME} for now.`;
+export const OUTSIDE_SERVICE_AREA_LINE = ONLY_IN_LAGOS;
 
 /**
  * The first line of a "we could not use that address" reply. Says why: a
@@ -104,7 +108,7 @@ export const OUTSIDE_SERVICE_AREA_LINE =
 export function geocodeMissLine(query: string): string {
   const abroad = outsideServiceAreaMatch(query);
   if (abroad) {
-    return `"${query}" is outside ${SERVICE_COUNTRY_NAME} (${abroad}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+    return `"${query}" is outside ${SERVICE_AREA_NAME} (${abroad}). ${OUTSIDE_SERVICE_AREA_LINE}`;
   }
   return `I couldn't find "${query}" on the map.`;
 }
@@ -190,6 +194,7 @@ export function isPinInsideServiceArea(
   lng: number,
   reverse: GeocodeResult | null,
 ): boolean {
+  if (!isInServiceArea(lat, lng)) return false;
   if (!SERVICE_COUNTRY) return true;
   if (!isWithinServiceBounds(lat, lng)) return false;
   if (reverse?.countryCode && reverse.countryCode !== SERVICE_COUNTRY) return false;
@@ -605,8 +610,8 @@ async function textSearchPlacesFromGoogle(
       // the end of the address threw away 16 of 20 real Ikorodu bus stops —
       // most Nigerian addresses end "…, Lagos".
       const country = place.addressComponents?.find((part) => part.types?.includes('country'))?.shortText?.toUpperCase();
-      const inNigeria = isWithinServiceBounds(lat, lng) && (!SERVICE_COUNTRY || !country || country === SERVICE_COUNTRY);
-      if (!inNigeria) {
+      const served = isInServiceArea(lat, lng) && isWithinServiceBounds(lat, lng) && (!SERVICE_COUNTRY || !country || country === SERVICE_COUNTRY);
+      if (!served) {
         rememberOutsideMatch(text, placeLabel(name, address));
         continue;
       }
@@ -746,7 +751,7 @@ async function searchPlacesFromGoogle(apiKey: string, text: string, near: GeoPoi
 
     const located = await Promise.all(suggestions.map(async (prediction) => {
       const point = await placeLocation(apiKey, prediction.placeId!);
-      if (!point || !isWithinServiceBounds(point.lat, point.lng)) return null;
+      if (!point || !isWithinServiceBounds(point.lat, point.lng) || !isInServiceArea(point.lat, point.lng)) return null;
       const name = prediction.structuredFormat!.mainText!.text!.trim();
       const where = (prediction.structuredFormat?.secondaryText?.text ?? '').trim();
       const result: GeocodeResult = { ...point, name, formattedAddress: placeLabel(name, where), countryCode: SERVICE_COUNTRY || undefined };

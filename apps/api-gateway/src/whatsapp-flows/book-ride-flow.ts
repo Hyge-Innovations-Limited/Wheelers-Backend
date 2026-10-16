@@ -1,5 +1,5 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
-import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
+import { findPlaceOptions, kmBetween, OUTSIDE_SERVICE_AREA_LINE, outsideServiceAreaMatch, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { getActiveRide, getPendingRoute, setBookingStage, storePendingRoute } from './bid-state';
@@ -175,6 +175,16 @@ function bookReviewScreen(trip: PendingRouteData, error = ''): FlowScreen {
   };
 }
 
+/**
+ * Nothing usable for what was typed. A place that exists but is outside Lagos
+ * says so ("Wheelers is only in Lagos for now"); anything else asks for the area.
+ */
+function notFoundLine(typed: string, hint: string): string {
+  const outside = outsideServiceAreaMatch(typed);
+  if (outside) return `"${clip(typed, 40)}" is outside Lagos (${clip(outside, 60)}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+  return `I could not find "${clip(typed, 40)}". Add the area or a landmark — ${hint}.`;
+}
+
 const toStop = (match: { lat: number; lng: number; formattedAddress: string }): RouteStop => ({ lat: match.lat, lng: match.lng, address: match.formattedAddress });
 
 /** Both boxes typed: look both up at once (the form has ~10 s), then show what was found — always. */
@@ -193,8 +203,8 @@ async function bookWhereTo(data: Record<string, unknown>, userId: string, deps: 
   ]);
   // Kept either way, so a place that was not found is still in its box when they come back.
   await saveDraft(deps, userId, { typed, options: { pickup: [], destination: [] }, ...(pin ? { pin } : {}) });
-  if (pickup.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.pickup, 40)}". Add the area or a landmark — e.g. "Shoprite, Ikeja".`);
-  if (destination.length === 0) return whereToScreen(typed, `I could not find "${clip(typed.destination, 40)}". Add the area or a landmark — e.g. "Unilag gate, Yaba".`);
+  if (pickup.length === 0) return whereToScreen(typed, notFoundLine(typed.pickup, 'e.g. "Shoprite, Ikeja"'));
+  if (destination.length === 0) return whereToScreen(typed, notFoundLine(typed.destination, 'e.g. "Unilag gate, Yaba"'));
   const draft: BookDraft = { typed, options: { pickup, destination: destination.map(toStop) }, ...(pin ? { pin } : {}) };
   await saveDraft(deps, userId, draft);
   return placesScreen(draft);
@@ -244,7 +254,7 @@ async function bookTrip(data: Record<string, unknown>, userId: string, deps: Boo
     ? findPlaceOptions(deps.googleMapsApiKey, typed, { near: draft.pickup, limit: MAX_MATCHES }).catch(() => [])
     : Promise.resolve([]))));
   const missing = stopsTyped.findIndex((typed, index) => typed && found[index]!.length === 0);
-  if (missing >= 0) return tripScreenFor(trip, stopsTyped, `I could not find "${clip(stopsTyped[missing]!, 40)}" (stop ${missing + 1}). Add the area or a landmark.`);
+  if (missing >= 0) return tripScreenFor(trip, stopsTyped, notFoundLine(stopsTyped[missing]!, `(stop ${missing + 1})`));
 
   const stopOptions: Record<number, RouteStop[]> = {};
   const stopsResolved: Record<number, RouteStop> = {};

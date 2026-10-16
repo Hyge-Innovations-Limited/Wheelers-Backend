@@ -4,6 +4,10 @@
 //
 //   npm -w @wheleers/api-gateway run build && node --test test/geocoding-fallback.test.js
 
+// Other cities: much here is about a trip to, or a namesake in, another city,
+// which is still handled when the Lagos fence is lifted. The fence itself
+// (Lagos only, on by default) is tested in test/service-area.test.js.
+process.env.SERVICE_AREA = 'off';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {

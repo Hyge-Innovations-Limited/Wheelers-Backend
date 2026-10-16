@@ -15,6 +15,7 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
+import { assertInServiceArea, refusalCode } from "../utils/service-area";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -205,6 +206,7 @@ export async function handleRideEstimateRoute(
     const pickup = parseWaypoint(rawBody, "pickup");
     const destination = parseWaypoint(rawBody, "destination");
     const stops = parseStops(rawBody, "stops");
+    assertInServiceArea([pickup, destination, ...stops]);
     const plannedRoute = await deps.routePlanner.planRoute({
       origin: pickup,
       stops,
@@ -237,6 +239,7 @@ export async function handleRideEstimateRoute(
         error instanceof Error
           ? error.message
           : "Could not estimate ride route",
+      ...(refusalCode(error) ? { code: refusalCode(error) } : {}),
     });
   }
 }
@@ -307,6 +310,7 @@ export async function handleCreateScheduledRideRoute(
         const pickup = parseWaypoint(rawBody, "pickup");
         const destination = parseWaypoint(rawBody, "destination");
         const stops = parseStops(rawBody, "stops");
+        assertInServiceArea([pickup, destination, ...stops]);
         const plannedRoute = await deps.routePlanner.planRoute({
           origin: pickup,
           stops,

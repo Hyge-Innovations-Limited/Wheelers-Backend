@@ -18,6 +18,7 @@ import { getNumber, getRecord, getString, isRecord } from '../utils/object';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { GroupRideFaceStorage } from '../storage/group-ride-face-storage';
 import type { RedisClient } from '../redis/client';
+import { assertInServiceArea } from '../utils/service-area';
 
 interface GroupRideRouteDeps {
   jwtSecret: string;
@@ -291,6 +292,7 @@ export async function handleCreateGroupRideMatchRequestRoute(
         const pickup = parseWaypoint(rawBody, 'pickup');
         const destination = parseWaypoint(rawBody, 'destination');
         const stops = parseStops(rawBody, 'stops');
+        assertInServiceArea([pickup, destination, ...stops]);
         const plannedRoute = await deps.routePlanner.planRoute({
           origin: pickup,
           stops,

@@ -22,6 +22,10 @@ const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailabi
 // The "model" in this file is a stub behind Groq's URL. A GEMINI_API_KEY in the
 // developer's shell would send these calls to a provider the stub does not play.
 delete process.env.GEMINI_API_KEY;
+// Other cities: much here is about a trip to, or a namesake in, another city,
+// which is still handled when the Lagos fence is lifted. The fence itself
+// (Lagos only, on by default) is tested in test/service-area.test.js.
+process.env.SERVICE_AREA = 'off';
 
 const prisma = new PrismaClient();
 const realFetch = global.fetch;

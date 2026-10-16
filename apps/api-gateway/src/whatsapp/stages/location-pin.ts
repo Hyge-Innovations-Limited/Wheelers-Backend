@@ -31,7 +31,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
     const address = reverseGeo?.formattedAddress ?? `${locationLat.toFixed(4)}, ${locationLng.toFixed(4)}`;
 
     if (!isPinInsideServiceArea(locationLat, locationLng, reverseGeo)) {
-      const reply = `That location is outside Nigeria (${address}). ${OUTSIDE_SERVICE_AREA_LINE}`;
+      const reply = `That location is outside Lagos (${address}). ${OUTSIDE_SERVICE_AREA_LINE}`;
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: '[Shared location pin]' },
         { role: 'assistant', content: reply },

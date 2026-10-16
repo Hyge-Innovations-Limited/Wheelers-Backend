@@ -1,6 +1,6 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { userClient } from '@wheleers/db';
-import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
+import { findPlaceOptions, kmBetween, OUTSIDE_SERVICE_AREA_LINE, outsideServiceAreaMatch, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import type { RedisClient } from '../redis/client';
 import { publishWhatsappRide } from '../rides/whatsapp-ride.service';
 import type { GatewayPublisher } from '../websocket/publisher';
@@ -254,6 +254,8 @@ export async function editTrip(data: Record<string, unknown>, userId: string, tr
 
   if (misses.length > 0) {
     const first = FIELDS.find((field) => misses.includes(field))!;
+    const outside = outsideServiceAreaMatch(typed[first]);
+    if (outside) return editScreen(typed, `"${clip(typed[first], 40)}" is outside Lagos (${clip(outside, 60)}). ${OUTSIDE_SERVICE_AREA_LINE}`, trip);
     return editScreen(typed, `I could not find "${clip(typed[first], 40)}" (${FIELD_LABEL[first]}). Add the area or a landmark — e.g. "Shoprite, Ikeja".`, trip);
   }
 

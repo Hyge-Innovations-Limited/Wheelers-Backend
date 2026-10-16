@@ -33,6 +33,7 @@ import type { GatewayPublisher } from '../publisher';
 import type { HandlerResponse } from './types';
 import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
+import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
   lat: number;
@@ -297,6 +298,7 @@ export async function handleRideMessage(
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
     const paymentMethod = parsePaymentMethod(payload['paymentMethod']);
+    assertInServiceArea([pickup, destination, ...stops]);
     const plannedRoute = await routePlanner.planRoute({
       origin: pickup,
       stops,
@@ -651,6 +653,8 @@ export async function handleRideMessage(
     const origin = getRecord(payload, 'origin') ? parseLatLng(payload, 'origin') : undefined;
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
+    // A new destination or stop mid-trip stays in Lagos too; where the car is now does not matter.
+    assertInServiceArea([destination, ...stops]);
     const plannedRoute = origin
       ? await routePlanner.planRoute({
           origin,
