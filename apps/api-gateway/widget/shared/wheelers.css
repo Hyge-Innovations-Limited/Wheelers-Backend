@@ -1,0 +1,46 @@
+/* The Wheelers app's look, for the pages WhatsApp opens: the same cream,
+ * ink and orange, the same type (Bricolage Grotesque for headings and money,
+ * Hanken Grotesk for everything read), the same corners. Each page imports
+ * this first and keeps its own layout. Values match the app's rider theme
+ * (Wheelersapp constants/rider-theme.ts); change both together.
+ *
+ * Fonts are served from here (SIL Open Font License, texts beside them):
+ * the pages load nothing from anywhere else. */
+
+@font-face { font-family: "Bricolage Grotesque"; src: url("fonts/BricolageGrotesque_700Bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url("fonts/BricolageGrotesque_800ExtraBold.ttf") format("truetype"); font-weight: 800; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("fonts/HankenGrotesk_400Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("fonts/HankenGrotesk_500Medium.ttf") format("truetype"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("fonts/HankenGrotesk_600SemiBold.ttf") format("truetype"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("fonts/HankenGrotesk_700Bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Hanken Grotesk"; src: url("fonts/HankenGrotesk_800ExtraBold.ttf") format("truetype"); font-weight: 800; font-display: swap; }
+
+:root {
+  /* the app's rider colours */
+  --page: #FEFAEF;          /* cream: every screen's background */
+  --bg: #FFFFFF;            /* cards */
+  --soft: #F3ECDC;          /* tint: quiet fills */
+  --line: #E6DFD2;
+  --line-strong: #D6CCBA;
+  --ink: #0D0D0D;
+  --muted: #5C534B;
+  --faint: #9A9086;
+  --orange: #FF7700;        /* the one main action */
+  --orange-soft: #FFE9D5;
+  --orange-ink: #B04A00;    /* orange that reads as small text on cream */
+  --good: #0B7A55;
+  --good-ink: #0B7A55;
+  --good-soft: #DDF3EA;
+  --bad: #A32020;
+  --bad-soft: #FBE3E3;
+  --bad-line: #EDBDBD;
+  --on-ink: #FEFAEF;        /* words on an ink card */
+  --on-ink-muted: #CFC6B8;
+  --ink-line: #786F68;
+
+  --display: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --text: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --sans: var(--text);
+  --r-sm: 12px; --r-md: 16px; --r-lg: 18px; --r-xl: 22px; --r-sheet: 28px;
+  --lift: 0 6px 20px rgba(13, 13, 13, 0.06);
+}
