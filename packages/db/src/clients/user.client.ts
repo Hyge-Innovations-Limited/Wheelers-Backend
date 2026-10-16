@@ -21,6 +21,8 @@ export const userClient = {
     const changed = await prisma.user.updateMany({ where: { id: userId }, data: { sessionsEndedAt: now } });
     if (changed.count === 0) return null;
     await prisma.driver.updateMany({ where: { userId, status: 'ONLINE' }, data: { status: 'OFFLINE' } });
+    // A passkey on a lost phone would sign straight back in: they go too, and are made again after an SMS sign-in.
+    await prisma.passkey.deleteMany({ where: { userId } });
     return now;
   },
 

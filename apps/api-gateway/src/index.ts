@@ -246,6 +246,7 @@ import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
 import { startReferralJobs } from "./referrals/jobs";
 import { clientIp } from "./utils/client-ip";
+import { handlePasskeyRoute } from "./http/passkey.route";
 
 const SCHEDULED_RIDE_QUEUE = "wheleers-scheduled-rides";
 
@@ -785,6 +786,11 @@ async function bootstrap(): Promise<void> {
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
+      return;
+    }
+
+    // Passkeys: Face ID or a fingerprint instead of an SMS code.
+    if (await handlePasskeyRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient }, url)) {
       return;
     }
 

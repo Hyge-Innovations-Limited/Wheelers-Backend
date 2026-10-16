@@ -75,6 +75,8 @@ model User {
   @@index([username])
   @@index([email])
   @@index([providerCustomerId])
+  /// Passkeys: sign in with Face ID or a fingerprint instead of an SMS code.
+  passkeys                   Passkey[]
 }
 
 model UserConsent {
@@ -1534,4 +1536,26 @@ model SupportMessage {
   conversation   SupportConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, createdAt])
+}
+
+/// A passkey: the PUBLIC half of a key kept on the person's phone (synced by
+/// iCloud Keychain or Google Password Manager), unlocked only by their face or
+/// finger. Signing in with it proves the phone holds the private half; nothing
+/// here can be used to sign in by someone who reads this table.
+model Passkey {
+  id           String    @id @default(uuid())
+  userId       String
+  /// The credential's id, base64url, as the phone reports it.
+  credentialId String    @unique
+  publicKey    Bytes
+  /// The phone's own use count: one that goes backwards means a copied key, and is refused.
+  counter      BigInt    @default(0)
+  transports   String[]
+  /// What it was made on, to tell them apart in settings: "iPhone", "Android phone".
+  deviceName   String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
