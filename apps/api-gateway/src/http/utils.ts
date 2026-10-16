@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { noteShownError } from '../analytics/user-outcomes';
+import { publicMessage } from './public-error';
 
 const MAX_BODY_SIZE_BYTES = 50_000_000;
 
@@ -43,8 +44,21 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 export function sendJson(res: ServerResponse, statusCode: number, payload: Record<string, unknown>): void {
-  // The sentence a refusal shows the person, kept for the admin Activity page.
-  if (statusCode >= 400) noteShownError(res, payload.error ?? payload.message);
+  if (statusCode >= 400) {
+    // Every refusal is said in our words: an engineer's message (a database
+    // error, a crash, JSON) never reaches a person. The original goes to the log.
+    for (const key of ['error', 'message'] as const) {
+      const said = payload[key];
+      if (said === undefined) continue;
+      const shown = publicMessage(said, statusCode);
+      if (shown !== said) {
+        console.warn('[reply] replaced a technical message', { status: statusCode, original: typeof said === 'string' ? said.slice(0, 500) : said });
+        payload = { ...payload, [key]: shown };
+      }
+    }
+    // The sentence a refusal shows the person, kept for the admin Activity page.
+    noteShownError(res, payload.error ?? payload.message);
+  }
   const body = JSON.stringify(payload);
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json; charset=utf-8');

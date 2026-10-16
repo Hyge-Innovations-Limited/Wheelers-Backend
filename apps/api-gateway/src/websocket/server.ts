@@ -17,6 +17,7 @@ import { resyncDriverActiveRide } from './driver-ride-sync';
 import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
+import { publicMessage } from '../http/public-error';
 
 interface WebSocketServerDeps {
   server: HttpServer;
@@ -410,7 +411,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         const who = deps.registry.getAuthContext(socket);
         if (who) recordLiveFailure(who.userId, requestTypeOf(raw), error instanceof Error ? error.message : 'Something went wrong.', code);
         deps.registry.sendToSocket(socket, 'error', {
-          message: error instanceof Error ? error.message : 'Unknown message handling error',
+          // Ours, always: an engineer's message stays in the log above.
+          message: publicMessage(error instanceof Error ? error.message : undefined, 400),
           // Which refusal it was, and to which request, so the app can act on it (e.g. "chat closed").
           ...(code ? { code } : {}),
           requestType: requestTypeOf(raw),

@@ -82,7 +82,7 @@ async function authenticateHttpUser(
 export function normalizePhoneNumber(value: string): string {
   const trimmed = value.trim();
   if (!/^\+[1-9]\d{7,14}$/.test(trimmed)) {
-    throw new Error('phone must be a valid E.164 number, for example +2348012345678');
+    throw new Error('Enter a valid phone number with the country code, for example +2348012345678.');
   }
 
   return trimmed;

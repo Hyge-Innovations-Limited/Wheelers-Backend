@@ -351,7 +351,7 @@ test('a malformed phone number is rejected before anything is sent', async () =>
     deps,
   );
   assert.equal(out.status, 400);
-  assert.match(out.body.error, /E\.164/);
+  assert.match(out.body.error, /Enter a valid phone number/);
   assert.equal(sentMessages.length, 0, 'nothing should be sent for an invalid number');
 });
 
