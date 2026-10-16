@@ -125,7 +125,6 @@ import { configureMapsCache } from "./maps/shared-cache";
 import { CachedRoutePlanner } from "./maps/cached-route-planner";
 import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
-import { handleAdminPricingRoute } from "./http/admin-pricing.route";
 import { startBusynessJob } from "./pricing/busyness";
 import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
@@ -1906,11 +1905,6 @@ async function bootstrap(): Promise<void> {
 
       // Who is signed in, the team, roles and the activity timeline.
       if (await handleAdminTeamRoute(req, res, adminDeps, url)) {
-        return;
-      }
-
-      // Owners: the pricing settings and the weekly check.
-      if (await handleAdminPricingRoute(req, res, adminDeps, url)) {
         return;
       }
 

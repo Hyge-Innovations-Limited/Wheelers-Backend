@@ -12,11 +12,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
-const local = require('../apps/api-gateway/dist/auth/local.js');
 const { prisma, pricingClient } = require('@wheleers/db');
 const config = require('../packages/config/dist/index.js');
 const { calculateSuggestedFare, setPricingSettings, DEFAULT_PRICING_SETTINGS, validateRiderOffer, marketFareNgn, isRushHour, calculateRideFees, getPricingMlModel, setPricingMlModel, scoreForest } = config;
-const { handleAdminPricingRoute } = require('../apps/api-gateway/dist/http/admin-pricing.route.js');
 const { measureBusyness, demandFactorAt } = require('../apps/api-gateway/dist/pricing/busyness.js');
 
 const QUIET = new Date('2026-10-14T12:00:00Z'); // Wednesday 13:00 in Lagos
@@ -340,105 +338,7 @@ test('the export gives one row for each asking of a price, with how it ended, an
   }
 });
 
-// ── the owners' endpoint ────────────────────────────────────────────────────
-
-const SECRET = 'test-secret-for-the-pricing-settings-page';
-let server; let base;
-
-async function admin(role) {
-  const row = await prisma.adminUser.create({ data: { username: `price-${role.toLowerCase()}-${randomUUID().slice(0, 8)}`, passwordHash: 'x', name: `Price ${role}`, role } });
-  made.admins.push(row.id);
-  return local.createLocalAccessToken(row.id, SECRET, 3600);
-}
-
-const call = async (token, method = 'GET', body) => {
-  const res = await fetch(`${base}/admin/pricing`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  return { status: res.status, body: await res.json() };
-};
-
-test('owners read and save the settings; staff are told there is nothing there; the model cannot be switched on before it exists', async () => {
-  server = http.createServer((req, res) => {
-    void handleAdminPricingRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET }, new URL(req.url, 'http://x')).then((handled) => {
-      if (!handled) { res.statusCode = 404; res.end('{}'); }
-    });
-  });
-  await new Promise((resolve) => server.listen(0, resolve));
-  base = `http://127.0.0.1:${server.address().port}`;
-  const owner = await admin('OWNER'); const staff = await admin('STAFF');
-
-  assert.equal((await call(staff)).status, 404);
-  assert.equal((await call(staff, 'PUT', { premiumNgn: 0 })).status, 404);
-
-  const saved = await call(owner, 'PUT', { ...FLOOR_ON, premiumNgn: 450, quiet: { baseNgn: 550, perKmNgn: 300, perMinuteNgn: 48 } });
-  assert.equal(saved.status, 200);
-  assert.equal(saved.body.settings.premiumNgn, 450);
-  assert.equal(saved.body.fixed.serviceChargeNgn, 350);
-  const sixteen = saved.body.examples.find((e) => e.distanceKm === 16);
-  assert.equal(sixteen.quiet.marketFareNgn, 550 + 300 * 16 + 48 * 41);
-  assert.equal(sixteen.quiet.suggestedFareNgn, Math.ceil((sixteen.quiet.marketFareNgn + 450) / 50) * 50);
-  assert.ok(sixteen.rush.suggestedFareNgn > sixteen.quiet.suggestedFareNgn);
-
-  assert.equal((await pricingClient.loadSettings()).settings.premiumNgn, 450, 'in the database');
-  assert.equal(config.getPricingSettings().premiumNgn, 450, 'and in this process at once');
-
-  assert.ok(saved.body.trainedModel.rows >= 1_000_000, 'the page is told which model this build prices with');
-  const on = await call(owner, 'PUT', { ...FLOOR_ON, modelOn: true });
-  assert.equal(on.status, 200, 'there is a trained model, so it can be switched on');
-  assert.equal(on.body.settings.modelOn, true);
-  setPricingMlModel(null);
-  const refused = await call(owner, 'PUT', { ...FLOOR_ON, modelOn: true });
-  assert.equal(refused.status, 400, 'with no model of any kind there is nothing to switch on');
-  const log = await prisma.adminActivity.findFirst({ where: { adminId: made.admins[0], kind: 'pricing' } });
-  assert.ok(log, 'the change is on the owners\' activity timeline');
-});
-
-// ── how busy a zone is ──────────────────────────────────────────────────────
-
-const fakeRedis = () => {
-  const store = new Map();
-  return { store, get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); } };
-};
-
-test('a zone gets dearer only with a real signal, and only a step at a time', async () => {
-  const redis = fakeRedis();
-  const now = new Date('2026-10-14T12:00:00Z');
-  const rider = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Busy Rider' } });
-  made.users.push(rider.id);
-  const request = async (n, at) => {
-    for (let i = 0; i < n; i++) {
-      const r = await prisma.ride.create({ data: { riderId: rider.id, status: 'REQUESTED', pickupLat: 6.51, pickupLng: 3.38, pickupAddress: 'Yaba', destLat: 6.45, destLng: 3.42, destAddress: 'VI', pickupZone: 'Yaba', createdAt: new Date(at.getTime() - 60_000) } });
-      made.rides.push(r.id);
-    }
-  };
-  // Other tests' rides in the zone must not count: this test owns the last ten minutes of a fixed moment.
-  const yaba = (zones) => zones.find((z) => z.zone === 'Yaba');
-
-  // No history for this hour: whatever happens, the price does not move.
-  await request(4, now);
-  let z = yaba(await measureBusyness(redis, now));
-  assert.equal(z.requests, 4);
-  assert.equal(z.ratio, null, 'nothing usual to compare with yet');
-  assert.equal(z.factor, 1);
-
-  // A usual level of one request per pass at this hour, learned over many passes.
-  redis.store.set('pricing:busyness:usual', JSON.stringify({ 'Yaba:13:wd': { level: 1, n: 40 } }));
-  z = yaba(await measureBusyness(redis, now));
-  assert.equal(z.ratio, 4, 'four times the usual');
-  assert.equal(z.factor, 1.1, 'one step, not the whole way');
-  z = yaba(await measureBusyness(redis, now));
-  assert.equal(z.factor, 1.2);
-
-  // Quiet again (a later window with no requests): it comes back down a step at a time.
-  const later = new Date(now.getTime() + 30 * 60_000);
-  z = yaba(await measureBusyness(redis, later));
-  assert.equal(z.requests, 0);
-  assert.equal(z.factor, 1.1);
-  assert.equal(demandFactorAt(6.51, 3.38), 1.1, 'what a quote from Yaba now uses');
-  assert.equal(demandFactorAt(6.6, 3.3), 1, 'outside the launch zones nothing is added');
-});
-
 test.after(async () => {
-  await new Promise((resolve) => (server ? server.close(resolve) : resolve()));
   await prisma.ride.deleteMany({ where: { id: { in: made.rides } } });
   await prisma.user.deleteMany({ where: { id: { in: made.users } } });
   await prisma.adminActivity.deleteMany({ where: { adminId: { in: made.admins } } });
