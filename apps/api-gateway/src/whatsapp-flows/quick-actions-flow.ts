@@ -357,10 +357,8 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     ]);
     const keepDestination = trip?.destAddress ?? (heldFar?.field === 'destination' ? heldFar.address : undefined) ?? location?.suggestedDestination;
     await clearBooking(deps.redisClient, userId);
-    await setBookingStage(deps.redisClient, userId, 'awaiting_pickup');
-    if (keepDestination) await setPendingAreaHint(deps.redisClient, userId, { kind: 'pickup', area: '', counterpartAddress: keepDestination });
-    return doneScreen('Change pickup',
-      `Send your new pickup in the chat: the address with the area (e.g. "92 Murtala Muhammed Way, Yaba"), or share a location pin.${keepDestination ? ` Your destination stays: ${shortPlace(keepDestination)}.` : ''}`, false);
+    // Typed right here: the booking boxes, the destination kept and the pickup empty.
+    return startBooking(deps, userId, { pickup: '', destination: keepDestination ?? '' });
   }
   if (choice === MENU_IDS.changeDestination) {
     const [trip, location] = await Promise.all([getPendingRoute(deps.redisClient, userId), getPendingLocation(deps.redisClient, userId)]);
@@ -369,10 +367,8 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
       : location ? { lat: location.lat, lng: location.lng, address: location.address } : null;
     if (!pickup) return menuScreen(userId, deps, 'Send your pickup in the chat first.');
     await clearBooking(deps.redisClient, userId);
-    await setPendingLocation(deps.redisClient, userId, { ...pickup, savedAt: new Date().toISOString() });
-    await setBookingStage(deps.redisClient, userId, 'awaiting_destination');
-    return doneScreen('Change destination',
-      `Send your new destination in the chat: the address with the area (e.g. "Yaba College of Technology, Yaba"), or share a location pin. Your pickup stays: ${shortPlace(pickup.address)}.`, false);
+    // Typed right here: the booking boxes, the pickup kept as it was found and the destination empty.
+    return startBooking(deps, userId, { pin: pickup, destination: '' });
   }
   if (choice === MENU_IDS.searchAgain) {
     const [ended, last] = await Promise.all([getSearchTimedOut(deps.redisClient, userId), getLastRoute(deps.redisClient, userId)]);

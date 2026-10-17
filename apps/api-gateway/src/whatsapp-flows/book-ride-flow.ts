@@ -50,10 +50,10 @@ const editDeps = (deps: BookRideDeps): EditTripFlowDeps => ({ redisClient: deps.
  * in the box, and as long as they leave it there the pin itself is used, not
  * a fresh lookup of its address.
  */
-export async function startBooking(deps: BookRideDeps, userId: string, options: { fresh?: boolean; pin?: RouteStop; destination?: string } = {}): Promise<FlowScreen> {
+export async function startBooking(deps: BookRideDeps, userId: string, options: { fresh?: boolean; pin?: RouteStop; pickup?: string; destination?: string } = {}): Promise<FlowScreen> {
   const kept = options.fresh ? null : await loadDraft(deps, userId);
   const typed = {
-    pickup: options.pin?.address ?? kept?.typed.pickup ?? '',
+    pickup: options.pin?.address ?? options.pickup ?? kept?.typed.pickup ?? '',
     destination: options.destination ?? kept?.typed.destination ?? '',
   };
   const pin = options.pin ?? (kept?.pin && kept.pin.address === typed.pickup ? kept.pin : undefined);

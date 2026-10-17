@@ -2915,19 +2915,19 @@ test('QUICK ACTIONS FORM mid-booking: the booking\'s own choices, each doing wha
   assert.match(menu.data.choices[0].description, /From 31 Emily Akinola St — add where you are going/);
   assert.match(menu.data.choices[1].description, /Now: 31 Emily Akinola St/);
 
-  // Change pickup: the chat now waits for a pickup, and says so on the form.
+  // Change pickup: typed right here, in the booking boxes, with the pickup box empty.
   let note = await form('data_exchange', { action: 'menu_choice', choice: 'change_pickup' }, 'MENU');
-  assert.equal(note.screen, 'NOTE');
-  assert.match(note.data.note, /Send your new pickup in the chat/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_pickup');
+  assert.equal(note.screen, 'BOOK_WHERE');
+  assert.equal(note.data.pickup, '');
 
-  // Change destination keeps the pickup.
+  // Change destination keeps the pickup in its box, and the destination box is empty to type in.
   await bidState.setPendingLocation(redis, user.id, { ...AKOKA, savedAt: new Date().toISOString() });
   await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
   note = await form('data_exchange', { action: 'menu_choice', choice: 'change_destination' }, 'MENU');
-  assert.match(note.data.note, /Send your new destination in the chat[\s\S]*Your pickup stays: 31 Emily Akinola St/);
-  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_destination');
-  assert.equal((await bidState.getPendingLocation(redis, user.id)).address, AKOKA.address);
+  assert.equal(note.screen, 'BOOK_WHERE');
+  assert.equal(note.data.pickup, AKOKA.address);
+  assert.equal(note.data.destination, '');
+  await bidState.setBookingStage(redis, user.id, 'awaiting_destination');
 
   // Cancel booking forgets it all.
   note = await form('data_exchange', { action: 'menu_choice', choice: 'cancel_booking' }, 'MENU');
