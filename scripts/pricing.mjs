@@ -9,6 +9,9 @@
 //   npm run pricing discount 700             the most the model may take off a trip, in naira
 //   npm run pricing closest 150              the least a model price may sit above the other app
 //   npm run pricing premium 300              how far above the other app the floor sits
+//   npm run pricing period evening 4000      a premium of its own for a part of the day (morning 05–12,
+//                                            afternoon 12–16, evening 16–21, night 21–05, Lagos time)
+//   npm run pricing period evening off       that part back to the general premium
 //   npm run pricing indrive quiet 500 268 50 the other app's figures: base, per km, per minute
 //   npm run pricing indrive rush 575 308 58
 //   npm run pricing try 15.5 23              price a trip (km, minutes) now, with the model off and on
@@ -67,6 +70,7 @@ async function status() {
   const on = (v) => (v ? 'ON' : 'off');
   const f = (x) => `base ${naira(x.baseNgn)}, ${naira(x.perKmNgn)} a km, ${naira(x.perMinuteNgn)} a minute`;
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
+  console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${settings.periodPremiums[p] === undefined ? `${naira(settings.premiumNgn)} (general)` : naira(settings.periodPremiums[p])}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
@@ -123,6 +127,16 @@ async function tryTrip() {
     { model: 'on', otherApp: naira(on.marketFareNgn), shown: naira(on.suggestedFareNgn), lowestOffer: naira(on.minOfferNgn), highestBid: naira(on.maxOfferNgn), ratePerKm: naira(on.ratePerKmNgn), setBy: on.setBy },
   ]);
   console.log(`The model would ${on.suggestedFareNgn < off.suggestedFareNgn ? `take ${naira(off.suggestedFareNgn - on.suggestedFareNgn)} off` : on.suggestedFareNgn > off.suggestedFareNgn ? `add ${naira(on.suggestedFareNgn - off.suggestedFareNgn)}` : 'leave it as it is'}. (It is ${settings.modelOn ? 'ON' : 'off'} right now.)`);
+  // The same trip through a weekday, with the model as it is now: what each part of the day charges.
+  config.setPricingSettings(settings);
+  const weekday = new Date();
+  while ([0, 6].includes(weekday.getUTCDay())) weekday.setUTCDate(weekday.getUTCDate() + 1);
+  const lagosHour = (h) => new Date(Date.UTC(weekday.getUTCFullYear(), weekday.getUTCMonth(), weekday.getUTCDate(), h - 1));
+  console.log('Through a weekday (clear road):');
+  console.table([['morning', 8], ['afternoon', 14], ['evening', 18], ['night', 23]].map(([period, h]) => {
+    const fare = config.calculateSuggestedFare(km, { durationSeconds: minutes * 60, trafficRatio: 1, origin, at: lagosHour(h) });
+    return { period, at: `${String(h).padStart(2, '0')}:00`, otherApp: naira(fare.marketFareNgn), premium: naira(config.premiumAt(lagosHour(h))), shown: naira(fare.suggestedFareNgn) };
+  }));
 }
 
 async function sample() {
@@ -249,6 +263,23 @@ async function areaFit() {
   console.log('Saved. New prices follow within a minute.');
 }
 
+/** npm run pricing period evening 4000 | period evening off */
+async function setPeriod() {
+  const [period, value] = rest;
+  if (!config.DAY_PERIODS.includes(period)) throw new Error(`Say which part of the day: npm run pricing period ${config.DAY_PERIODS.join('|')} AMOUNT (or off)`);
+  if (value === undefined) throw new Error(`Say an amount in naira, or off: npm run pricing period ${period} 4000`);
+  const { settings } = await pricingClient.loadSettings();
+  if (!settings.marketFloorOn) console.log('Note: the floor is off, so no premium applies until "npm run pricing floor on".');
+  await save((s) => {
+    const periodPremiums = { ...s.periodPremiums };
+    if (value === 'off') delete periodPremiums[period];
+    else periodPremiums[period] = number(value, 'the amount');
+    return { periodPremiums };
+  }, (s) => s.periodPremiums[period] === undefined
+    ? `The ${period} is back to the general premium (other app + ${naira(s.premiumNgn)}).`
+    : `In the ${period} the floor is now the other app + ${naira(s.periodPremiums[period])}.`);
+}
+
 const onOff = (key, label) => () => {
   const word = rest[0];
   if (word !== 'on' && word !== 'off') throw new Error(`Say on or off: npm run pricing ${label} on`);
@@ -274,13 +305,14 @@ const commands = {
   closest: () => save(() => ({ modelPremiumNgn: number(rest[0], 'the amount') }), (s) => `A model price now stays at least ${naira(s.modelPremiumNgn)} above the other app.`),
   gap: () => save(() => ({ minOfferGapNgn: number(rest[0], 'the gap') }), (s) => s.minOfferGapNgn > 0 ? `A rider's minimum offer is now the suggested price less ${naira(s.minOfferGapNgn)}.` : 'The minimum offer is back to the older rule: a tenth off, and no more than the premium.'),
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
+  period: setPeriod,
   indrive,
   try: tryTrip,
 };
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | period morning|afternoon|evening|night N|off | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

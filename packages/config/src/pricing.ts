@@ -100,11 +100,22 @@ export type AreaFactors = { pickup: number; dropoff: number };
 /** No area factor above this, whatever is saved. */
 export const AREA_FACTOR_MAX = 2;
 
+/** The parts of a Lagos day, each of which may carry its own premium. */
+export type DayPeriod = 'morning' | 'afternoon' | 'evening' | 'night';
+export const DAY_PERIODS: readonly DayPeriod[] = ['morning', 'afternoon', 'evening', 'night'];
+/** The highest premium a part of the day may carry, in naira. */
+export const PERIOD_PREMIUM_MAX_NGN = 10_000;
+
 export type PricingSettings = {
   /** Never suggest less than the market fare + the premium. */
   marketFloorOn: boolean;
   /** How far above the market fare the floor sits, in naira per trip. */
   premiumNgn: number;
+  /**
+   * A premium of its own for a part of the day (dayPeriodOf), in place of
+   * premiumNgn then. A part not named here takes premiumNgn.
+   */
+  periodPremiums: Partial<Record<DayPeriod, number>>;
   /** inDrive's fare outside rush hours, and in them (weekdays 07–10 and 16–20, Lagos time). */
   quiet: MarketFormula;
   rush: MarketFormula;
@@ -165,6 +176,7 @@ const MODEL_MAX_DISCOUNT_SHARE = 0.1;
 export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   marketFloorOn: false,
   premiumNgn: 300,
+  periodPremiums: {},
   quiet: { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 },
   rush: { baseNgn: 575, perKmNgn: 308, perMinuteNgn: 58 },
   trafficOn: false,
@@ -220,6 +232,18 @@ function areasFrom(value: unknown, fallback: PricingSettings['areas']): PricingS
   return out;
 }
 
+function periodPremiumsFrom(value: unknown): PricingSettings['periodPremiums'] {
+  const saved = (value ?? {}) as Record<string, unknown>;
+  const out: PricingSettings['periodPremiums'] = {};
+  for (const period of DAY_PERIODS) {
+    const n = Number(saved[period]);
+    if (saved[period] !== null && saved[period] !== undefined && Number.isFinite(n)) {
+      out[period] = Math.min(PERIOD_PREMIUM_MAX_NGN, Math.max(0, Math.round(n)));
+    }
+  }
+  return out;
+}
+
 function modelFrom(value: unknown): PricingModel | null {
   const v = value as PricingModel | null | undefined;
   if (!v || typeof v !== 'object' || !Number.isFinite(v.intercept) || !v.coef) return null;
@@ -243,6 +267,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
   return {
     marketFloorOn: v.marketFloorOn === true,
     premiumNgn: finite(v.premiumNgn, d.premiumNgn, 0, 5_000),
+    periodPremiums: periodPremiumsFrom(v.periodPremiums),
     quiet: formulaFrom(v.quiet, d.quiet),
     rush: formulaFrom(v.rush, d.rush),
     trafficOn: v.trafficOn === true,
@@ -275,6 +300,20 @@ function lagosClock(at: Date): { hour: number; weekend: boolean } {
   const local = new Date(at.getTime() + 60 * 60 * 1000);
   const day = local.getUTCDay();
   return { hour: local.getUTCHours(), weekend: day === 0 || day === 6 };
+}
+
+/** Lagos time: morning 05–12, afternoon 12–16, evening 16–21, night 21–05. */
+export function dayPeriodOf(at: Date = new Date()): DayPeriod {
+  const { hour } = lagosClock(at);
+  if (hour >= 5 && hour < 12) return 'morning';
+  if (hour >= 12 && hour < 16) return 'afternoon';
+  if (hour >= 16 && hour < 21) return 'evening';
+  return 'night';
+}
+
+/** How far above the other app the floor sits at this time: the part of the day's own premium, or the general one. */
+export function premiumAt(at: Date = new Date()): number {
+  return pricingSettings.periodPremiums[dayPeriodOf(at)] ?? pricingSettings.premiumNgn;
 }
 
 /** Weekdays 07:00–10:00 and 16:00–20:00, Lagos time. */
@@ -490,7 +529,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     : null;
   const floorFareNgn = marketFare === null
     ? null
-    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + settings.premiumNgn, FARE_ROUNDING_INCREMENT));
+    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + premiumAt(factors.at), FARE_ROUNDING_INCREMENT));
 
   // The rules and the model may only lift it, and only so far: at most
   // liftCap × the floor (or × our own plain rate, where that is the higher).
@@ -595,7 +634,7 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
   const byShare = fareFromTripFareNgn(recommendedTripFare * MIN_OFFER_SHARE);
   // With the trained model on, a price may already be as close to the other
   // app as modelPremiumNgn, so that is all a rider may then bargain away.
-  const room = mlPricingOn() ? Math.min(pricingSettings.premiumNgn, pricingSettings.modelPremiumNgn) : pricingSettings.premiumNgn;
+  const room = mlPricingOn() ? Math.min(premiumAt(), pricingSettings.modelPremiumNgn) : premiumAt();
   const byPremium = pricingSettings.marketFloorOn
     ? roundUpToIncrement(suggestedFareNgn - room, FARE_ROUNDING_INCREMENT)
     : 0;

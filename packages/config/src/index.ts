@@ -72,10 +72,11 @@ export {
   recommendedRatePerKmNgn, trafficFactorOn, demandFactorOn,
   getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
   marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
+  dayPeriodOf, premiumAt, DAY_PERIODS, PERIOD_PREMIUM_MAX_NGN,
 } from './pricing';
 export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';
-export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula, AreaFactors } from './pricing';
+export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula, AreaFactors, DayPeriod } from './pricing';
 export {
   GoogleMapsRoutePlanner,
   RoutePlanningError,
