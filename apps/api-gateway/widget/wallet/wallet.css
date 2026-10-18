@@ -2,168 +2,280 @@
 
 /* Wheelers wallet pages: add money, withdraw.
  *
- * The app's look (../shared/wheelers.css): cream page, white cards, one
- * orange button for the thing to do, the account number on an ink card.
- * Red and green appear when something failed or landed, and nowhere else.
- *
- * Every class name here is unchanged: the markup and the JS never knew about
- * the paint. */
-:root {
-  --r: 16px;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-}
+ * These are the app's rider screens, drawn for the page WhatsApp opens:
+ * Wheelersapp app/rider-add-money.tsx and app/rider-withdraw.tsx, built
+ * from the rider kit (components/rider/kit.tsx) and its theme
+ * (constants/rider-theme.ts). Sizes below are the kit's, in px. The PIN
+ * screens follow components/wallet-pin-sheet.tsx. Change both together. */
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; min-height: 100%; background: var(--page); color: var(--ink); }
 body {
-  font-family: var(--sans);
+  font-family: var(--text);
   font-size: 16px;
-  line-height: 1.5;
-  padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 32px);
+  line-height: 23px;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 [hidden] { display: none !important; }
-button, input { font: inherit; color: inherit; }
+button, input { font: inherit; color: inherit; margin: 0; }
+button { cursor: pointer; }
+p, h1, h2 { margin: 0; }
+svg { display: block; flex: none; }
 
-.shell { max-width: 420px; margin: 0 auto; padding: 0 20px; }
+/* RScreen: cream, the 20 px gutter, 12 px above, 16 px below, 16 px between. */
+.shell {
+  position: relative;
+  max-width: 480px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding:
+    calc(env(safe-area-inset-top) + 12px)
+    calc(env(safe-area-inset-right) + 20px)
+    calc(env(safe-area-inset-bottom) + 16px)
+    calc(env(safe-area-inset-left) + 20px);
+  display: flex;
+  flex-direction: column;
+}
+.shell > section { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.spacer { flex-grow: 1; min-height: 8px; }
 
-/* ── header ───────────────────────────────────────────────────────── */
-.top { display: flex; align-items: center; gap: 10px; padding: 22px 0 6px; border-bottom: 1px solid var(--line); }
-.top svg { width: 30px; height: 30px; flex: none; border-radius: 7px; background: var(--orange); }
-.top .brand { font-family: var(--display); font-weight: 800; font-size: 19px; letter-spacing: -.01em; }
-.top .where { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); }
-.top .back { flex: none; width: 34px; height: 34px; margin-left: -10px; padding: 0 0 4px; border: 0; border-radius: 17px; background: transparent; color: var(--ink); font-size: 32px; line-height: 1; cursor: pointer; }
-.top .back:active { background: var(--line); }
-.top .back[hidden] { display: none; }
-.top { padding-bottom: 14px; }
+/* ── header: RBack + the title (26 px) ────────────────────────────── */
+.head { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+/* The one back control the shared script shows and hides; the title makes room for it. */
+.back {
+  position: absolute;
+  z-index: 2;
+  top: calc(env(safe-area-inset-top) + 12px);
+  left: calc(env(safe-area-inset-left) + 20px);
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: 22px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.back svg { width: 22px; height: 22px; }
+.back:not([hidden]) ~ section .head { padding-left: 56px; }
 
-/* ── type ─────────────────────────────────────────────────────────── */
-.eyebrow { margin: 26px 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--orange-ink); }
-h1 { margin: 0 0 8px; font-family: var(--display); font-weight: 800; font-size: 28px; line-height: 1.15; letter-spacing: -.02em; text-wrap: balance; }
-h1 em, .serif { font-style: normal; font-weight: 800; color: var(--ink); }
-.lede { margin: 0 0 22px; color: var(--muted); font-size: 15px; line-height: 1.5; text-wrap: pretty; }
-.label { font-size: 12px; font-weight: 500; color: var(--muted); }
+/* ── RText ────────────────────────────────────────────────────────── */
+.title { flex: 1; min-width: 0; font-family: var(--display); font-weight: 800; font-size: 26px; line-height: 32px; letter-spacing: -0.6px; }
+.heading { font-family: var(--display); font-weight: 800; font-size: 22px; line-height: 26px; letter-spacing: -0.4px; }
+.body { font-size: 16px; line-height: 23px; }
+.body-bold { font-weight: 700; font-size: 16px; line-height: 22px; }
+.small { font-size: 14px; line-height: 20px; }
+.small-bold { font-weight: 700; font-size: 14px; line-height: 20px; }
+.caption { font-weight: 600; font-size: 13px; line-height: 17px; color: var(--muted); }
+.label { font-weight: 700; font-size: 13px; line-height: 17px; letter-spacing: 0.5px; color: var(--muted); }
+.muted { color: var(--muted); }
+.danger { color: var(--bad); font-weight: 600; }
+.center { text-align: center; align-self: center; }
 .num { font-variant-numeric: tabular-nums; }
+.on-ink-muted { color: var(--on-ink-muted); }
+.on-ink-soft { color: #E9E1D4; }
+.on-ink { color: var(--on-ink); }
 
-/* ── amount ───────────────────────────────────────────────────────── */
-.amount { display: flex; align-items: baseline; gap: 4px; padding: 14px 16px; background: var(--bg); border: 2px solid var(--ink); border-radius: var(--r); transition: border-color .15s ease; }
-.amount:focus-within { border-color: var(--orange); }
-.amount .naira { font-family: var(--display); font-weight: 700; font-size: 26px; color: var(--faint); }
-.amount input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 0; font-family: var(--display); font-weight: 800; font-size: 32px; line-height: 1.2; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.amount input::placeholder { color: var(--faint); }
-.amount input:disabled { color: var(--faint); }
-.under { display: flex; justify-content: space-between; gap: 12px; margin: 10px 2px 0; font-size: 14px; color: var(--muted); }
-.under b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* ── RButton ──────────────────────────────────────────────────────── */
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; height: 60px; padding: 0 18px;
+  border: 0; border-radius: var(--r-lg);
+  background: var(--orange); color: var(--ink);
+  font-weight: 800; font-size: 18px; line-height: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.btn.md { height: 52px; border-radius: var(--r-md); font-weight: 700; font-size: 16px; }
+.btn.dark { background: var(--ink); color: var(--on-ink); }
+.btn.ghost { background: transparent; border: 2px solid var(--ink); }
+.btn.on-ink { background: transparent; border: 2px solid var(--ink-line); color: var(--on-ink); }
+.btn:active, .link:active, .text-btn:active, .bank-row:active, .quick button:active, .back:active { opacity: .72; }
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn.busy { color: transparent; position: relative; }
+.btn.busy::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; border: 2.5px solid var(--on-ink); border-right-color: transparent; animation: spin .8s linear infinite; }
 
-/* What the fee takes and what reaches the bank, under the amount as it is typed. */
-.breakdown { margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
-.breakdown div { display: flex; justify-content: space-between; gap: 12px; }
-.breakdown b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-.breakdown .gets { padding-top: 6px; border-top: 1px dashed var(--line); color: var(--ink); font-weight: 500; }
-.breakdown .gets b { font-size: 16px; }
+/* RLink: a quiet text action. */
+.link { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 6px; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--ink); align-self: center; }
+/* "Change" / "Add" beside a card's text. */
+.text-btn { flex: none; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 700; font-size: 15px; color: var(--orange-ink); text-decoration: underline; }
 
-.chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0 0; }
-.chips.one { grid-template-columns: 1fr; }
-.chips button { border: 1px solid var(--line); background: var(--bg); padding: 10px 4px; border-radius: 999px; font-weight: 500; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; cursor: pointer; transition: border-color .12s ease, color .12s ease; }
-.chips button:active, .chips button.on { border-color: var(--orange); color: var(--ink); }
-.chips button:disabled { opacity: .4; }
+/* ── RCard ────────────────────────────────────────────────────────── */
+.card { border-radius: var(--r-xl); padding: 16px; background: var(--bg); border: 1px solid var(--line); min-width: 0; }
+.card.ink { background: var(--ink); border: 0; color: var(--on-ink); }
+.card.soft { background: var(--orange-soft); border: 0; }
+.card.outline { border: 2px solid var(--ink); }
+/* The big ink card at the top of each wallet screen. */
+.card.feature { padding: 20px; border-radius: 24px; display: flex; flex-direction: column; gap: 14px; }
 
-/* ── buttons: one orange action, everything else out of the way ───── */
-.btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 60px; margin-top: 22px; padding: 15px 20px; border: 2px solid var(--orange); border-radius: 18px; background: var(--orange); color: var(--ink); font-weight: 800; font-size: 18px; cursor: pointer; transition: opacity .12s ease; }
-.btn:active { opacity: .72; }
-.btn[disabled] { opacity: .45; cursor: not-allowed; }
-.btn.ink, .btn.ghost { min-height: 52px; background: transparent; color: var(--ink); border-color: var(--ink); font-weight: 700; font-size: 16px; }
-.btn.ghost { margin-top: 10px; }
-.btn.quiet { margin-top: 8px; padding: 12px; border-color: transparent; background: transparent; color: var(--muted); font-weight: 500; font-size: 15px; }
-.btn.quiet:active { color: var(--ink); opacity: 1; }
-.btn .arrow { font-size: 17px; line-height: 1; }
+/* A card with an icon, two lines and an action: the bank account. */
+.row-card { display: flex; align-items: center; gap: 12px; padding-top: 14px; padding-bottom: 14px; border-radius: var(--r-lg); }
+.row-copy { flex: 1; min-width: 0; }
+.row-copy > * { overflow: hidden; text-overflow: ellipsis; }
+.one-line { white-space: nowrap; }
+.icon-dot { flex: none; width: 44px; height: 44px; border-radius: 22px; display: flex; align-items: center; justify-content: center; background: var(--orange-soft); color: var(--orange-ink); }
+.icon-dot.sm { width: 40px; height: 40px; border-radius: 20px; }
+.icon-dot svg { width: 20px; height: 20px; }
 
-/* ── receipt ──────────────────────────────────────────────────────── */
-.receipt { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.rows { margin: 0; padding: 2px 16px; list-style: none; }
-.rows li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
-.rows li:last-child { border-bottom: 0; }
-.rows .k { flex: none; color: var(--muted); }
-.rows .v { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
-.rows .minus { color: var(--bad); }
-.rows .mono-v { font-family: var(--mono); }
-h1 + .receipt, h1 + .notice { margin-top: 20px; }
-.total { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 16px; background: var(--ink); color: var(--on-ink); border-top: 1px solid var(--ink); }
-.total .k { font-size: 13px; color: var(--on-ink-muted); }
-.total .v { font-family: var(--display); font-weight: 800; font-size: 24px; color: var(--orange); line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.fine { margin: 12px 2px 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.section { display: flex; flex-direction: column; gap: 8px; }
 
-/* ── the account to transfer to: the one thing on the page to read ── */
-.acct { margin-top: 20px; padding: 20px 18px; background: var(--ink); color: var(--on-ink); border: 0; border-radius: 22px; }
-.acct .label { color: var(--on-ink-muted); }
-.acct .bank { margin-top: 10px; font-weight: 600; font-size: 15px; color: var(--on-ink-muted); }
-.acct .number { margin: 2px 0 4px; font-family: var(--display); font-weight: 800; color: var(--orange); font-size: clamp(28px, 9vw, 36px); letter-spacing: .02em; line-height: 1.2; user-select: all; -webkit-user-select: all; }
-.acct .name { font-size: 13px; color: var(--on-ink-muted); }
-.acct .btn { margin-top: 14px; min-height: 52px; background: transparent; color: var(--on-ink); border-color: var(--ink-line); font-size: 16px; }
+/* ActivityIndicator */
+.spinner { width: 24px; height: 24px; border-radius: 50%; border: 3px solid var(--orange); border-right-color: transparent; animation: spin .8s linear infinite; }
+.spinner.lg { width: 36px; height: 36px; border-width: 3.5px; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-.waiting { display: flex; align-items: center; justify-content: center; gap: 9px; margin-top: 20px; font-size: 13px; color: var(--muted); }
+/* A state inside the ink card: loading, phone needed. */
+.state-box { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; text-align: center; }
+
+/* ── add money: the account card ──────────────────────────────────── */
+.account-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.account-number {
+  font-family: var(--display); font-weight: 800;
+  font-size: 38px; line-height: 44px; letter-spacing: 1.5px;
+  color: var(--orange); font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+  user-select: all; -webkit-user-select: all;
+}
+.account-name { font-size: 15px; line-height: 21px; color: #E9E1D4; }
+.account-actions { display: flex; gap: 10px; }
+.account-actions .btn { flex: 1; min-width: 0; }
+
+/* HOW IT WORKS */
+.steps { display: flex; flex-direction: column; gap: 12px; }
+.step { display: flex; align-items: center; gap: 12px; }
+.step-number { flex: none; width: 32px; height: 32px; border-radius: 16px; background: var(--ink); color: var(--orange); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 800; font-size: 15px; line-height: 1; }
+.step-text { flex: 1; min-width: 0; }
+.step-text b { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.needed { padding-top: 14px; padding-bottom: 14px; border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 2px; }
+
+.waiting { min-height: 44px; padding: 12px 0; text-align: center; }
+.waiting .pulse { display: inline-block; margin-right: 9px; vertical-align: 1px; }
 .pulse { position: relative; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--orange); }
 .pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--orange); animation: ping 1.6s ease-out infinite; }
 @keyframes ping { 0% { transform: scale(.8); opacity: .7; } 100% { transform: scale(3); opacity: 0; } }
 
-/* ── fields ───────────────────────────────────────────────────────── */
-.field { margin: 0 0 14px; }
-.field label { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--muted); }
-.field input { width: 100%; padding: 14px 14px; background: var(--bg); border: 2px solid var(--line); border-radius: var(--r); font-size: 16px; outline: 0; transition: border-color .15s ease; }
-.field input:focus { border-color: var(--orange); }
-.field input.mono { font-family: var(--mono); font-size: 18px; letter-spacing: .06em; }
+/* ── the amount, typed on the ink card ────────────────────────────── */
+.amount-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.balance { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); white-space: nowrap; }
+.balance b { font-weight: 700; color: var(--on-ink); font-variant-numeric: tabular-nums; }
+.amount-row { display: flex; align-items: center; min-height: 64px; min-width: 0; cursor: text; }
+.amount-figure, .amount-row input {
+  font-family: var(--display); font-weight: 800;
+  font-size: 54px; line-height: 64px; letter-spacing: -1px;
+  color: var(--orange); font-variant-numeric: tabular-nums;
+}
+.amount-row input { flex: 1; min-width: 0; height: 64px; padding: 0; border: 0; outline: 0; background: transparent; caret-color: var(--orange); }
+.amount-row input::placeholder { color: var(--ink-line); opacity: 1; }
+.amount-row input:disabled { opacity: .6; }
+.amount-row.mid .amount-figure, .amount-row.mid input { font-size: 42px; }
+.amount-row.long .amount-figure, .amount-row.long input { font-size: 32px; }
 
-.banklist { max-height: 264px; overflow-y: auto; margin: -4px 0 16px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); -webkit-overflow-scrolling: touch; }
-.banklist button { display: block; width: 100%; padding: 14px 16px; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; font-size: 15px; cursor: pointer; }
-.banklist button:last-child { border-bottom: 0; }
-.banklist button:active { background: var(--soft); }
-.banklist .none { padding: 16px; color: var(--muted); font-size: 14px; }
+.quick { display: flex; gap: 10px; }
+.quick button {
+  flex: 1; min-width: 0; max-width: 110px; height: 48px; padding: 0 6px;
+  border: 2px solid var(--ink-line); border-radius: 14px; background: transparent;
+  color: var(--on-ink); font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Add money offers four round amounts: a little tighter so they fit a 360 px phone. */
+.quick.four { gap: 8px; }
+.quick.four button { padding: 0 2px; }
+.quick button.on { border-color: var(--orange); background: var(--orange); color: var(--ink); font-weight: 800; }
+.quick button:disabled { opacity: .45; }
 
-.picked { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; padding: 13px 14px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--r); font-weight: 500; }
-.picked button { border: 0; background: transparent; font-size: 13px; font-weight: 700; color: var(--orange-ink); cursor: pointer; }
+/* ── RInput ───────────────────────────────────────────────────────── */
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-weight: 600; font-size: 14px; line-height: 20px; color: var(--ink); }
+.input-wrap { position: relative; }
+.input {
+  display: block; width: 100%; height: 58px; padding: 0 16px;
+  border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg);
+  font-weight: 600; font-size: 18px; color: var(--ink); outline: 0;
+  -webkit-appearance: none; appearance: none;
+}
+.input::placeholder { color: #8C837A; opacity: 1; }
+.input.error { border-color: var(--bad); }
+.input.valid { border-color: var(--good); padding-right: 48px; }
+.input-tick { position: absolute; right: 14px; top: 0; bottom: 0; display: flex; align-items: center; color: var(--good); pointer-events: none; }
+.input-tick svg { width: 24px; height: 24px; }
+.field-hint { font-size: 14px; line-height: 19px; color: var(--muted); }
+.field-hint.error { font-weight: 600; color: var(--bad); }
+.field-hint.ok { font-weight: 600; color: var(--good); }
 
-.resolved { margin: -2px 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); font-size: 14px; }
-.resolved.ok { background: var(--good-soft); color: var(--good); border-color: transparent; font-weight: 500; }
-.resolved.err { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
-.resolved.wait { background: var(--soft); color: var(--muted); }
+/* ── the bank list ────────────────────────────────────────────────── */
+.bank-list { display: flex; flex-direction: column; }
+.bank-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 0;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left;
+  font-weight: 700; font-size: 16px; line-height: 22px; color: var(--ink);
+}
+.bank-row span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bank-row svg { width: 18px; height: 18px; color: var(--muted); }
+.bank-list-state { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 32px 0; text-align: center; }
 
-/* ── PIN ──────────────────────────────────────────────────────────── */
-.pin { margin-top: 22px; text-align: center; }
-.pin .label { display: block; }
-.dots { display: flex; justify-content: center; gap: 14px; margin: 14px 0 8px; }
-.dots i { width: 14px; height: 14px; border: 2px solid var(--line-strong); border-radius: 50%; background: var(--bg); transition: background .1s ease, border-color .1s ease; }
-.dots i.on { background: var(--orange); border-color: var(--orange); }
+/* ── confirm: what the bank receives, and the details ─────────────── */
+.receive { display: flex; flex-direction: column; gap: 2px; }
+.receive-figure { font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 46px; letter-spacing: -1px; color: var(--orange); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.details { padding-top: 4px; padding-bottom: 4px; }
+.detail-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.detail-row:last-child { border-bottom: 0; }
+.detail-row .k { flex: none; font-size: 14px; line-height: 20px; color: var(--muted); }
+.detail-row .v { flex: 1; min-width: 0; text-align: right; font-weight: 700; font-size: 14px; line-height: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* ── the wallet PIN (components/wallet-pin-sheet.tsx) ─────────────── */
+.pin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
+.pin-label { font-weight: 700; font-size: 14px; line-height: 18px; color: var(--orange); }
+.pin-cancel { min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--muted); }
+.pin-copy { display: flex; flex-direction: column; gap: 4px; }
+.pin-title { font-family: var(--display); font-weight: 700; font-size: 19px; line-height: 23px; letter-spacing: -0.3px; }
+.pin-body { font-weight: 500; font-size: 15px; line-height: 20px; color: var(--muted); }
+.dots { display: flex; justify-content: center; gap: 14px; margin-top: 8px; }
+.dots i { width: 20px; height: 20px; border: 1.5px solid var(--ink); border-radius: 50%; background: var(--bg); transition: background .1s ease; }
+.dots i.on { background: var(--orange); }
 .dots.shake { animation: shake .34s; }
 @keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
-.pinmsg { min-height: 22px; margin: 0 0 10px; font-size: 14px; color: var(--bad); }
-.pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 290px; margin: 0 auto; }
-.pad button { padding: 15px 0; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font-family: var(--display); font-weight: 700; font-size: 24px; font-variant-numeric: tabular-nums; cursor: pointer; transition: background .08s ease; }
-.pad button:active { background: var(--soft); }
-.pad button.fn { background: transparent; border-color: transparent; font-size: 22px; color: var(--muted); }
+.pinmsg { min-height: 18px; margin-top: -8px; text-align: center; font-weight: 500; font-size: 13px; line-height: 18px; color: var(--bad); }
+.pad { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 5%; row-gap: 12px; width: 100%; max-width: 320px; margin: 0 auto; }
+.pad button {
+  height: 58px; padding: 0;
+  border: 1.5px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+  box-shadow: 0 2px 8px rgba(13, 13, 13, 0.05);
+  font-family: var(--display); font-weight: 700; font-size: 19px; color: var(--ink);
+  transition: background .08s ease;
+}
+.pad button:active { background: var(--orange-soft); }
+.pad button.fn { background: transparent; border-color: transparent; box-shadow: none; font-family: var(--text); font-weight: 600; font-size: 15px; color: var(--muted); }
+.pad button.fn:active { opacity: .5; }
 .pad button[disabled] { visibility: hidden; }
+.forgot { align-self: center; min-height: 44px; padding: 4px; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--muted); text-decoration: underline; }
+.warn-box { padding: 16px; border: 1.5px solid var(--ink); border-radius: var(--r-md); background: #FFEFC2; display: flex; flex-direction: column; gap: 4px; }
+.warn-box b { font-weight: 600; font-size: 15px; line-height: 20px; }
+.warn-box span { font-weight: 500; font-size: 13px; line-height: 18px; color: var(--muted); }
+.code-input { text-align: center; height: 60px; font-size: 28px; letter-spacing: 10px; font-weight: 600; border-width: 1.5px; }
+.code-input::placeholder { color: #B5ACA4; }
 
-/* ── notices + end states ─────────────────────────────────────────── */
-.notice { margin: 0 0 18px; padding: 14px 14px; border: 1px solid var(--line); border-radius: var(--r); font-size: 14.5px; line-height: 1.5; background: var(--soft); }
-.notice b { display: block; margin-bottom: 2px; font-weight: 600; }
-.notice.warn { background: var(--soft); }
-.notice.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+/* ── end states: the app's outcome screen ─────────────────────────── */
+.outcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px 0; text-align: center; }
+.outcome-icon { width: 84px; height: 84px; margin-bottom: 4px; border-radius: 42px; display: flex; align-items: center; justify-content: center; background: var(--good-soft); color: var(--good); }
+.outcome-icon svg { width: 40px; height: 40px; }
+.icon-slot { display: flex; }
+.outcome-icon.bad { background: var(--bad-soft); color: var(--bad); }
+.outcome .title { flex: none; }
 
-.done { padding: 40px 0 8px; text-align: center; }
-.done .tick { display: grid; place-items: center; width: 60px; height: 60px; margin: 0 auto 20px; border-radius: 50%; background: var(--good-soft); color: var(--good); font-weight: 800; font-size: 28px; line-height: 1; }
-.done.fail .tick { background: var(--bad-soft); color: var(--bad); }
-.done h1 { margin-bottom: 8px; }
-.done .lede { margin-bottom: 0; }
+/* The wait between "Confirm" and the answer. */
+.loader { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
 
-.skeleton { height: 18px; margin: 14px 0; border-radius: 6px; background: linear-gradient(90deg, var(--soft) 25%, #FBF6EA 50%, var(--soft) 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
-.skeleton.tall { height: 76px; border-radius: var(--r); }
-@keyframes shimmer { to { background-position: -200% 0; } }
+.notice { display: flex; flex-direction: column; gap: 2px; padding-top: 14px; padding-bottom: 14px; border-radius: var(--r-lg); }
 
-.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); z-index: 10; transform: translate(-50%, 20px); padding: 11px 16px; background: var(--ink); color: var(--on-ink); border-radius: 12px; font-size: 14px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); z-index: 10; max-width: calc(100vw - 40px); transform: translate(-50%, 20px); padding: 11px 16px; background: var(--ink); color: var(--on-ink); border-radius: var(--r-sm); font-size: 14px; line-height: 20px; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-.foot { margin: 22px 0 0; text-align: center; font-size: 13px; line-height: 1.5; color: var(--muted); }
-.step-in { animation: step-in .26s ease; }
-@keyframes step-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-
 .offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }
+
+@media (max-width: 359px) {
+  .account-number { font-size: 32px; letter-spacing: 1px; }
+}
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
