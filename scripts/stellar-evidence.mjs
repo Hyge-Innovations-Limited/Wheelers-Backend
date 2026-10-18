@@ -8,6 +8,8 @@
  *
  *   node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs WH-01234
  *   node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs WH-01234 > stellar-evidence.md
+ *   node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs latest     the newest trip with a Stellar fare
+ *   node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs list       the last 10 trips with a Stellar fare
  *
  * The trip can also be given by its ride id (the uuid).
  */
@@ -20,7 +22,20 @@ const EXPLORER = 'https://stellar.expert/explorer/testnet';
 const account = (key) => `${EXPLORER}/account/${key}`;
 const tx = (hash) => `${EXPLORER}/tx/${hash}`;
 
+const tripLabel = (n) => `WH-${String(n).padStart(5, '0')}`;
+
+/** The newest trips that have a fare on Stellar, newest first. */
+async function tripsWithFares(take) {
+  const fares = await prisma.stellarTransfer.findMany({ where: { kind: 'FARE', rideId: { not: null } }, orderBy: { createdAt: 'desc' }, take });
+  const rides = await prisma.ride.findMany({ where: { id: { in: fares.map((f) => f.rideId) } }, select: { id: true, tripNumber: true } });
+  return fares.map((f) => ({ fare: f, ride: rides.find((r) => r.id === f.rideId) })).filter((x) => x.ride);
+}
+
 async function findRide(given) {
+  if (given.trim().toLowerCase() === 'latest') {
+    const [newest] = await tripsWithFares(1);
+    return newest ? prisma.ride.findUnique({ where: { id: newest.ride.id } }) : null;
+  }
   const number = /^WH-?(\d+)$/i.exec(given.trim());
   if (number) return prisma.ride.findUnique({ where: { tripNumber: Number(number[1]) } });
   return prisma.ride.findUnique({ where: { id: given.trim() } });
@@ -36,12 +51,18 @@ function line(t) {
 
 async function main() {
   const given = process.argv[2];
-  if (!given) throw new Error('Give the trip: node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs WH-01234');
+  if (!given) throw new Error('Give the trip (WH-01234), or latest, or list: node scripts/run-with-env.cjs node scripts/stellar-evidence.mjs latest');
+  if (given.trim().toLowerCase() === 'list') {
+    const trips = await tripsWithFares(10);
+    if (!trips.length) { console.log('No trip has a fare on Stellar yet. Finish a trip paid from the wallet, then try again.'); return; }
+    for (const { fare, ride } of trips) console.log(`${tripLabel(ride.tripNumber)}  ${fare.createdAt.toISOString().slice(0, 16).replace('T', ' ')}  ${Number(fare.amountXlm)} XLM  ${fare.status}`);
+    return;
+  }
   const ride = await findRide(given);
-  if (!ride) throw new Error(`No trip ${given}`);
+  if (!ride) throw new Error(given.trim().toLowerCase() === 'latest' ? 'No trip has a fare on Stellar yet. Finish a trip paid from the wallet, then try again.' : `No trip ${given}. Run with "list" to see the trips that have a Stellar fare.`);
   if (!ride.driverId) throw new Error(`Trip ${given} has no driver`);
   const driver = await prisma.driver.findUnique({ where: { id: ride.driverId }, select: { userId: true } });
-  const tripId = `WH-${String(ride.tripNumber).padStart(5, '0')}`;
+  const tripId = tripLabel(ride.tripNumber);
 
   const [riderAcct, driverAcct, opsAcct] = await Promise.all([
     prisma.stellarAccount.findUnique({ where: { userId: ride.riderId } }),
