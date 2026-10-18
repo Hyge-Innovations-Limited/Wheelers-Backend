@@ -43,24 +43,33 @@
   function clock(iso) {
     var d = new Date(iso);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleTimeString('en-NG', { hour: 'numeric', minute: '2-digit' });
+    // As the app writes it: the phone's own clock style, hours in two digits.
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   function mmss(seconds) {
     var m = Math.floor(seconds / 60), s = seconds % 60;
     return m + ':' + (s < 10 ? '0' : '') + s;
   }
   function roleWord(role) { return role === 'DRIVER' ? 'driver' : 'rider'; }
+  /** RAvatar's initials: first and last word's first letters, W for nobody. */
+  function initials(name) {
+    var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return 'W';
+    return (parts[0].charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : '')).toUpperCase();
+  }
+  function firstName(name) { return String(name || '').trim().split(/\s+/)[0] || ''; }
 
   /* ── the thread ───────────────────────────────────────────────────────── */
 
   function isMine(message) { return state && state.me && message.senderRole === state.me.role; }
 
+  /** A message as the app draws it: the bubble, and its time under it. A call is a line. */
   function bubbleFor(message) {
     if (message.kind === 'call') {
       return el('li', 'line', message.content + ' · ' + clock(message.createdAt));
     }
-    var li = el('li', 'msg ' + (isMine(message) ? 'mine' : 'theirs'));
-    li.appendChild(document.createTextNode(message.content));
+    var li = el('li', 'row ' + (isMine(message) ? 'mine' : 'theirs'));
+    li.appendChild(el('div', 'bubble', message.content));
     li.appendChild(el('span', 'time', clock(message.createdAt)));
     return li;
   }
@@ -90,19 +99,25 @@
     if (nearBottom) scrollDown();
   }
 
+  function otherWord() { return 'Your ' + roleWord((state.other || {}).role); }
+
   function drawHeader() {
     var other = state.other || {};
-    $('who-name').textContent = other.name || ('Your ' + roleWord(other.role));
-    var meta = [];
-    if (other.vehicle) meta.push(other.vehicle);
-    if (other.plate) meta.push(other.plate);
-    if (state.tripId) meta.push(state.tripId);
+    var name = (other.name || '').trim();
+    var first = firstName(name);
+    $('who-avatar').textContent = initials(name);
+    $('who-name').textContent = name || otherWord();
+    $('who-meta').textContent = other.plate ? otherWord() + ' · ' + other.plate : otherWord();
     // The code the rider gives the driver to start the trip, until it has been used.
-    if (state.tripCode) meta.push('Trip code ' + state.tripCode);
-    $('who-meta').textContent = meta.join(' · ');
+    $('code').hidden = !state.tripCode;
+    $('code-digits').textContent = state.tripCode || '';
+    $('code').setAttribute('aria-label', state.tripCode
+      ? 'Your trip code is ' + String(state.tripCode).split('').join(' ') + '. Give this code to your ' + roleWord(other.role) + ' when you get in.'
+      : '');
     var callBtn = $('call-btn');
     callBtn.hidden = !state.callsEnabled;
     callBtn.disabled = !state.open || !!call;
+    callBtn.setAttribute('aria-label', first ? 'Call ' + first : 'Call your ' + roleWord(other.role));
   }
 
   function drawOpen() {
@@ -116,8 +131,12 @@
     } else {
       banner.hidden = true;
     }
+    var first = firstName((state.other || {}).name);
     $('input').disabled = !state.open;
+    $('input').placeholder = !state.open ? 'Chat closed' : first ? 'Message ' + first : 'Message your ' + roleWord((state.other || {}).role);
     $('send').disabled = !state.open || !$('input').value.trim();
+    // The one-tap replies are the rider's, while the chat is open.
+    $('quick').hidden = !state.open || !state.me || state.me.role !== 'RIDER';
   }
 
   function applyState(next) {
@@ -142,14 +161,14 @@
 
   function sendText(text, reuse) {
     var clientId = W.uuid();
-    var bubble = reuse || el('li', 'msg mine pending');
+    var bubble = reuse || el('li', 'row mine pending');
     if (!reuse) {
-      bubble.appendChild(document.createTextNode(text));
+      bubble.appendChild(el('div', 'bubble', text));
       $('thread').appendChild(bubble);
       $('empty').hidden = true;
       scrollDown();
     } else {
-      bubble.className = 'msg mine pending';
+      bubble.className = 'row mine pending';
       var stale = bubble.querySelector('.retry');
       if (stale) bubble.removeChild(stale);
     }
@@ -188,7 +207,7 @@
     var item = pending[clientId];
     if (!item) return;
     delete pending[clientId];
-    item.bubble.className = 'msg mine failed';
+    item.bubble.className = 'row mine failed';
     var retry = el('span', 'retry', reason || 'Not sent. Tap to try again.');
     item.bubble.appendChild(retry);
     item.bubble.onclick = function () {
@@ -208,6 +227,12 @@
       event.preventDefault();
       $('composer').requestSubmit ? $('composer').requestSubmit() : $('send').click();
     }
+  });
+  // A quick reply goes as it is, the way the app sends it.
+  $('quick').addEventListener('click', function (event) {
+    var chip = event.target.closest ? event.target.closest('[data-say]') : null;
+    if (!chip || !state || !state.open) return;
+    sendText(chip.getAttribute('data-say'));
   });
   $('composer').addEventListener('submit', function (event) {
     event.preventDefault();
@@ -374,8 +399,8 @@
     if (call || !incoming || incoming.state === 'ended') return;
     if (incoming.direction !== 'incoming' || incoming.state !== 'ringing') return;
     call = { id: incoming.callId, direction: 'incoming', other: incoming.other, iceServers: incoming.iceServers || [], queued: [] };
-    showCall(incoming.other && incoming.other.name, true);
-    status('is calling you…');
+    showCall((incoming.other && incoming.other.name) || (state && state.other && state.other.name) || 'Your driver', true);
+    status('Your ' + roleWord((incoming.other && incoming.other.role) || (state && state.other && state.other.role)) + ' is calling');
     answerOnOpen = null;
     ring(true);
   }
@@ -384,7 +409,7 @@
     if (call || !state || !state.open) return;
     if (!socketOpen) { W.toast('Connecting… try again in a moment.'); connect(); return; }
     call = { id: null, direction: 'outgoing', other: state.other, iceServers: [], queued: [] };
-    showCall(state.other.name, false);
+    showCall(state.other.name || otherWord(), false);
     status('Starting…');
     microphone().then(function () {
       if (!call) return;
