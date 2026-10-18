@@ -42,72 +42,66 @@
     <p class="foot">In the chat, tap <strong>Quick Actions</strong> to book again, see your trips or add money.</p>
   </section>
 
-  <!-- 1 · name your price -->
+  <!-- 1 · set your price — as the app's price screen (app/ride-selection.tsx) -->
   <section data-view="price" hidden>
-    <div class="heading">
-      <p class="eyebrow">Your trip</p>
-      <h1>Name your price</h1>
+    <h1 class="title">Set your price</h1>
+    <div class="steps" role="progressbar" aria-label="Step 1 of 4"><div class="step on"><span class="bar"></span><span class="step-text current">Your price</span></div><div class="step"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+
+    <div class="card route-card">
+      <div class="route-row stop"><span class="rail"><span class="dot from"></span><span class="rail-line"></span></span><div class="route-text"><span class="route-label">Pickup</span><span class="route-value where" data-route="pickup"></span></div></div>
+      <div class="route-row stop"><span class="rail"><span class="dot to"></span></span><div class="route-text"><span class="route-label">Destination</span><span class="route-value where" data-route="dest"></span></div></div>
     </div>
 
-    <div class="card trip">
-      <div class="stop"><span class="dot from"></span><div class="place"><span class="label">Pickup</span><span class="where" data-route="pickup"></span></div></div>
-      <div class="stop"><span class="dot to"></span><div class="place"><span class="label">Drop-off</span><span class="where" data-route="dest"></span></div></div>
-      <div class="trip-meta"><span class="pill" data-route="distance"></span><span class="pill" data-route="time"></span></div>
-    </div>
+    <div class="tint-chips"><span class="tint-chip" data-route="distance"></span><span class="tint-chip" data-route="time"></span></div>
 
-    <div class="field">
-      <label class="field-label" for="price-input">Your price</label>
-      <div class="amount"><span class="naira">₦</span><input id="price-input" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Your price in naira"></div>
-      <div class="chips" id="price-chips"></div>
-      <p class="hint" id="price-hint"></p>
+    <div class="price-card">
+      <div class="price-top"><span class="price-label">Your offer</span><span class="price-side">Suggested price <strong id="price-suggested"></strong></span></div>
+      <div class="stepper">
+        <button class="round minus" type="button" id="price-down" aria-label="Lower by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        <label class="figure-wrap"><span class="visually-hidden">Your offer in naira</span><span class="figure-naira">₦</span><input class="figure" id="price-input" inputmode="numeric" autocomplete="off" placeholder="0"></label>
+        <button class="round plus" type="button" id="price-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <p class="price-note" id="price-hint"></p>
       <div class="notice bad" id="price-err" hidden></div>
     </div>
 
     <div class="actions">
+      <p class="footnote">This is the total price. No extra charges.</p>
       <button class="btn primary" type="button" id="find" disabled>Find drivers</button>
-      <p class="foot">Drivers near you see this price and can take it or offer their own. Nothing is charged until you accept a driver.</p>
     </div>
   </section>
 
   <!-- 2 · the price is out — drivers' offers, live -->
+  <!-- as the app's offers screen (app/matching.tsx): the same words, the same cards -->
   <section data-view="offers" hidden>
+    <div class="steps-wrap" id="offers-steps-2"><div class="steps" role="progressbar" aria-label="Step 2 of 4"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text current">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
+    <div class="steps-wrap" id="offers-steps-3" hidden><div class="steps" role="progressbar" aria-label="Step 3 of 4"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
     <div class="heading">
-      <p class="eyebrow ok">Your price is out</p>
-      <h1 id="offers-title">Driver offers</h1>
-      <p class="lede" id="offers-lede">Pick one. New offers show up here as drivers answer.</p>
+      <h1 class="title" id="offers-title">Finding drivers</h1>
+      <p class="lede offers-sub" id="offers-sub"><span id="offers-route"></span><span id="offers-yours"> · your offer <strong id="my-offer"></strong></span></p>
     </div>
 
-    <div class="trip-line">
-      <span class="dot from small"></span><span class="where" data-route="pickup"></span>
-      <svg class="arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-      <span class="dot to small"></span><span class="where" data-route="dest"></span>
-    </div>
-
-    <div class="mine">
-      <div><span class="label">Your price</span><span class="big" id="my-offer"></span></div>
-      <button class="btn small" type="button" id="change-offer">Change</button>
-    </div>
-
-    <div class="searching" id="searching">
-      <span class="pulse"></span>
-      <div><strong id="sent-title">Asking drivers near you…</strong><span id="sent-text">Offers show up here as drivers answer.</span></div>
+    <!-- the app's searching screen: the line, then the dark "Your offer" card -->
+    <div class="finding" id="searching">
+      <p class="finding-sub"><span class="pulse"></span><span id="sent-text">Your offer has been sent to drivers near you.</span></p>
+      <div class="offer-ink">
+        <div class="offer-ink-text"><span class="offer-ink-label">Your offer</span><span class="offer-ink-route" id="finding-route"></span></div>
+        <strong class="offer-ink-figure" id="finding-offer"></strong>
+      </div>
     </div>
 
     <div class="offer-list" id="offer-list" aria-live="polite"></div>
-    <button class="btn decline" type="button" id="decline-all" hidden>Decline all offers</button>
 
+    <div class="offers-foot">
+      <button class="btn ghost" type="button" id="change-offer">Change my price</button>
+      <button class="btn ghost" type="button" id="decline-all" hidden>Decline all</button>
+    </div>
     <a class="btn" id="back-to-chat" href="#" hidden>Back to WhatsApp</a>
-    <p class="foot" id="close-hint">You can leave this page. The number on your “Your bid is in” message in WhatsApp counts the offers waiting.</p>
-    <button class="btn quiet" type="button" id="cancel-search">Cancel search</button>
+    <button class="btn quiet danger-link" type="button" id="cancel-search">Cancel search</button>
   </section>
 
-  <!-- 3 · confirmed -->
+  <!-- 3 · the trip — as the app's trip screen (app/rider/active-trip.tsx) -->
   <section data-view="confirmed" hidden>
-    <div class="heading">
-      <p class="eyebrow ok" id="trip-eyebrow">Ride confirmed</p>
-      <h1 id="trip-title">Your driver is on the way</h1>
-    </div>
-
     <div class="map-card" id="map-card" hidden>
       <div id="map" class="map" aria-label="Live map of your trip"></div>
       <div class="map-badge" id="map-eta" hidden></div>
@@ -115,29 +109,37 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
       </button>
     </div>
-    <p class="hint stale" id="map-stale" hidden></p>
-
-    <div class="card driver">
-      <div class="avatar" id="d-initial"></div>
-      <div class="who"><strong id="d-name"></strong><span id="d-meta"></span></div>
-      <div class="price" id="d-fare"></div>
-    </div>
-    <div class="facts">
-      <div><span class="label">Car</span><strong id="d-vehicle"></strong></div>
-      <div><span class="label">Plate</span><strong class="plate" id="d-plate"></strong></div>
-      <div class="fact-code" id="d-code-box" hidden><span class="label">Trip code</span><strong class="code" id="d-code"></strong></div>
-      <div id="d-eta-box"><span class="label">Arrives in</span><strong id="d-eta"></strong></div>
+    <div class="headline">
+      <span class="visually-hidden" id="trip-eyebrow"></span>
+      <h1 class="trip-title" id="trip-title">Your driver is on the way</h1>
+      <p class="trip-sub" id="map-stale" hidden></p>
     </div>
 
-    <div class="contact">
-      <a class="btn primary" id="d-call" href="#">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>Call
+    <div class="driver-row">
+      <div class="avatar ink" id="d-initial"></div>
+      <div class="driver-text"><strong id="d-name"></strong><span id="d-vehicle"></span></div>
+      <span class="plate big-plate" id="d-plate"></span>
+    </div>
+
+    <div class="code-card" id="d-code-box" hidden>
+      <div class="code-text"><span class="code-label">Your trip code</span><span class="code-note">Give this code to your driver when you get in.</span></div>
+      <strong class="code-digits" id="d-code"></strong>
+    </div>
+
+    <div class="trip-actions">
+      <a class="action" id="d-call" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg>Call
       </a>
-      <a class="btn" id="d-chat" href="#" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Chat
+      <a class="action" id="d-chat" href="#" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C6.5 3 2 6.9 2 11.6c0 2.5 1.3 4.8 3.4 6.3L4.6 21l3.6-1.9c1.2.4 2.5.6 3.8.6 5.5 0 10-3.9 10-8.6S17.5 3 12 3zm-4 9.9a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm4 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm4 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6z"/></svg>Chat
       </a>
     </div>
-    <p class="foot" id="d-foot">The fare is held in your wallet and paid when the trip ends.</p>
+
+    <div class="agreed">
+      <div class="agreed-text"><span class="agreed-label">Agreed price</span><strong class="agreed-to">To <span data-route="dest"></span></strong></div>
+      <strong class="agreed-amount" id="d-fare"></strong>
+    </div>
+    <p class="foot" id="d-foot" hidden></p>
   </section>
 </div>
 

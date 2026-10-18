@@ -50,6 +50,10 @@
     return node;
   }
   function roundTo(value, step) { return Math.round(value / step) * step; }
+  /** "Timilehin Olowu" → "TO", as the app's avatar shows a name. */
+  function initials(name) {
+    return String(name || '?').trim().split(/\s+/).slice(0, 2).map(function (part) { return part.charAt(0).toUpperCase(); }).join('');
+  }
   function minutes(n) { return n + ' min'; }
 
   function drawRoute(route) {
@@ -57,7 +61,7 @@
     setText('[data-route="pickup"]', route.pickupAddress);
     setText('[data-route="dest"]', route.destAddress);
     setText('[data-route="distance"]', (Number(route.distanceKm) || 0).toFixed(1) + ' km');
-    setText('[data-route="time"]', '~' + minutes(route.durationMin));
+    setText('[data-route="time"]', 'About ' + minutes(route.durationMin));
   }
 
   /** The places on the way, between the pickup row and the destination row of every trip card. */
@@ -71,12 +75,16 @@
       var destRow = dest.closest('.stop');
       if (!destRow) return;
       stops.forEach(function (address, index) {
-        var row = el('div', 'stop mid');
-        row.appendChild(el('span', 'dot mid'));
-        var place = el('div', 'place');
-        place.appendChild(el('span', 'label', stops.length > 1 ? 'Stop ' + (index + 1) : 'Stop'));
-        place.appendChild(el('span', 'where', address));
-        row.appendChild(place);
+        // A row as the app's route card draws one: the hollow dot on the rail, "Stop 1", the address.
+        var row = el('div', 'route-row stop mid');
+        var rail = el('span', 'rail');
+        rail.appendChild(el('span', 'dot mid'));
+        rail.appendChild(el('span', 'rail-line'));
+        row.appendChild(rail);
+        var text = el('div', 'route-text');
+        text.appendChild(el('span', 'route-label', 'Stop ' + (index + 1)));
+        text.appendChild(el('span', 'route-value where', address));
+        row.appendChild(text);
         destRow.parentNode.insertBefore(row, destRow);
       });
     });
@@ -172,7 +180,7 @@
     var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + s.route.suggestedFareNgn;
     if (priceDrawnFor !== signature) {           // a fresh quote — not every poll, or typing would be wiped
       priceDrawnFor = signature;
-      drawChips('price-chips', 'price-input', s.route.suggestedFareNgn, s.minOfferNgn, syncPrice);
+      W.$('price-suggested').textContent = W.naira(s.route.suggestedFareNgn);
       if (!W.$('price-input').value) W.$('price-input').value = Number(s.route.suggestedFareNgn).toLocaleString('en-NG');
     }
     syncPrice();
@@ -184,18 +192,31 @@
     var floor = state.minOfferNgn;
     var hint = W.$('price-hint');
     W.show(W.$('price-err'), false);
-    markChips('price-chips', amount);
 
+    // The app's words under the price (components/rider/price-card.tsx).
     if (amount > 0 && amount < floor) {
-      hint.className = 'hint bad';
+      hint.className = 'price-note bad';
       hint.textContent = 'The lowest price for this trip is ' + W.naira(floor) + '.';
     } else {
-      hint.className = 'hint';
-      // One fare for the rider: nothing about what it is made of.
-      hint.textContent = 'Suggested ' + W.naira(state.route.suggestedFareNgn) + ' · lowest ' + W.naira(floor);
+      hint.className = 'price-note';
+      hint.textContent = amount <= floor ? 'This is the minimum offer for this trip.' : 'Minimum offer: ' + W.naira(floor);
     }
-    W.$('find').disabled = !(amount >= floor);
+    W.$('price-down').disabled = !(amount > floor);
+    var find = W.$('find');
+    find.disabled = !(amount >= floor);
+    if (!busy) find.textContent = amount > 0 ? 'Find drivers at ' + W.naira(amount) : 'Find drivers';
   }
+
+  // Minus and plus move the price to the next ₦100, as in the app; never under the lowest.
+  function stepPrice(up) {
+    if (!state || state.phase !== 'price') return;
+    var amount = W.parseAmount(W.$('price-input').value) || state.route.suggestedFareNgn;
+    var next = up ? amount + (100 - (amount % 100)) : Math.max(state.minOfferNgn, amount - (amount % 100 || 100));
+    W.$('price-input').value = Number(next).toLocaleString('en-NG');
+    syncPrice();
+  }
+  W.$('price-down').addEventListener('click', function () { stepPrice(false); });
+  W.$('price-up').addEventListener('click', function () { stepPrice(true); });
   W.$('price-input').addEventListener('input', function () { W.formatAmountInput(this); syncPrice(); });
 
   W.$('find').addEventListener('click', function () {
@@ -203,7 +224,7 @@
     if (busy) return;
     busy = true;
     button.className = 'btn primary busy';
-    button.firstChild.textContent = 'Asking drivers… ';
+    button.textContent = 'Asking drivers…';
     W.api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
       seenOffers = null;
       apply(next);
@@ -215,7 +236,7 @@
     }).then(function () {
       busy = false;
       button.className = 'btn primary';
-      button.firstChild.textContent = 'Find drivers ';
+      syncPrice();
     });
   });
 
@@ -224,51 +245,40 @@
   function drawSent(s) {
     drawRoute(s.route);
 
-    var mine = W.$('my-offer');
-    var shown = mine.getAttribute('data-value');
-    mine.textContent = W.naira(s.offerNgn);
-    mine.setAttribute('data-value', String(s.offerNgn));
-    if (shown && shown !== String(s.offerNgn)) {
-      mine.parentNode.parentNode.className = 'mine';
-      void mine.offsetWidth;                                  // restart the flash
-      mine.parentNode.parentNode.className = 'mine flash';
-    }
+    // "Ilemere Rd → Ikorodu Garage · your offer ₦12,450", as in the app.
+    var place = function (address) { return String(address || '').split(',')[0].trim(); };
+    W.$('offers-route').textContent = [place(s.route && s.route.pickupAddress), place(s.route && s.route.destAddress)].filter(Boolean).join(' → ');
+    W.$('my-offer').textContent = W.naira(s.offerNgn);
 
-    var offers = s.offers || [];
+    // Declined one by one on this page, as in the app: off the list here, the search goes on.
+    var offers = (s.offers || []).filter(function (offer) { return !dismissed[offer.key]; });
     var showingDeclined = declined && Date.now() < declined.until;
     if (!showingDeclined) declined = null;
     var list = showingDeclined ? declined.offers : offers;
 
     var count = offers.length;
     W.show(W.$('searching'), list.length === 0);
-    W.$('sent-title').textContent = 'Asking drivers near you…';
     W.$('sent-text').textContent = declinedOnce
-      ? 'Offers declined. New offers will show up here — raising your price usually gets drivers moving.'
-      : 'Offers show up here as drivers answer.';
+      ? 'Offers declined. A higher price usually gets drivers moving.'
+      : 'Your offer has been sent to drivers near you.';
+    W.$('finding-route').textContent = W.$('offers-route').textContent;
+    W.$('finding-offer').textContent = W.naira(s.offerNgn);
+    W.show(W.$('offers-sub'), list.length > 0);
     if (seenOffers !== null && count > seenOffers && !paying) say(count - seenOffers === 1 ? 'New offer' : (count - seenOffers) + ' new offers', 'good');
     seenOffers = count;
 
     drawOffers(list, showingDeclined, s.offerNgn);
     W.$('offers-title').textContent = showingDeclined
       ? 'Offers declined'
-      : count === 0 ? 'Driver offers' : count === 1 ? '1 driver offered' : count + ' drivers offered';
-    W.$('offers-lede').textContent = count > 0 && !showingDeclined
-      ? 'Pick one. New offers show up here as drivers answer.'
-      : 'Drivers near you can see your price. Offers show up here.';
+      : count === 0 ? 'Finding drivers' : count === 1 ? '1 driver offer' : count + ' driver offers';
+    // The app's steps: drivers reply, then you choose.
+    W.show(W.$('offers-steps-2'), count === 0);
+    W.show(W.$('offers-steps-3'), count > 0);
     W.show(W.$('decline-all'), count > 0 && !paying && !showingDeclined);
 
     var back = W.$('back-to-chat');
     W.show(back, Boolean(s.chatUrl));
     if (s.chatUrl) back.setAttribute('href', s.chatUrl);
-  }
-
-  /** How a driver's price sits next to the rider's: "Took your price", "₦200 more", "₦300 less". */
-  function versusYours(priceNgn, yoursNgn) {
-    var gap = Math.round(Number(priceNgn) - Number(yoursNgn));
-    if (!yoursNgn || gap === 0) return { text: 'Took your price', tone: 'same' };
-    return gap > 0
-      ? { text: W.naira(gap) + ' more', tone: 'up' }
-      : { text: W.naira(-gap) + ' less', tone: 'down' };
   }
 
   /** One card per offer: white while open, green while paying, red once declined. */
@@ -277,6 +287,7 @@
   // changed, and slide in only the offers not seen before.
   var drawnOffers = null;
   var shownKeys = {};
+  var dismissed = {};
 
   function drawOffers(offers, asDeclined, yoursNgn) {
     var holder = W.$('offer-list');
@@ -284,32 +295,31 @@
     if (signature === drawnOffers) return;
     drawnOffers = signature;
     holder.innerHTML = '';
-    offers.forEach(function (offer) {
+    offers.forEach(function (offer, index) {
       var isPaying = paying && paying.key === offer.key;
       var isNew = !shownKeys[offer.key];
       shownKeys[offer.key] = true;
-      var card = el('div', 'offer' + (isNew ? ' in' : '') + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
+      // The first card is the dark one, as in the app.
+      var card = el('div', 'offer' + (index === 0 && !asDeclined && !isPaying ? ' featured' : '') + (isNew ? ' in' : '') + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
       var top = el('div', 'offer-top');
       var name = offer.driverName || 'Driver';
-      top.appendChild(el('div', 'avatar', name.trim().charAt(0).toUpperCase()));
+      top.appendChild(el('div', 'avatar', initials(name)));
       var who = el('div', 'who');
       who.appendChild(el('strong', '', name));
       who.appendChild(el('span', '', [
-        offer.rating ? '★ ' + Number(offer.rating).toFixed(1) : '',
-        offer.vehicle || ''
+        offer.rating ? Number(offer.rating).toFixed(1) + ' rating' : '',
+        offer.vehicle || '',
+        offer.etaMin ? minutes(offer.etaMin) + ' away' : ''
       ].filter(Boolean).join(' · ')));
       top.appendChild(who);
-      var price = el('div', 'price', W.naira(offer.priceNgn));
-      var versus = versusYours(offer.priceNgn, yoursNgn);
-      price.appendChild(el('small', versus.tone, versus.text));
-      top.appendChild(price);
+      top.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
       card.appendChild(top);
-
-      var facts = el('div', 'offer-facts');
-      facts.appendChild(el('span', 'pill', minutes(offer.etaMin) + ' away'));
-      if (offer.distanceKm) facts.appendChild(el('span', 'pill', Number(offer.distanceKm).toFixed(1) + ' km to you'));
-      if (offer.plate) facts.appendChild(el('span', 'pill plate', offer.plate));
-      card.appendChild(facts);
+      if (offer.plate || offer.distanceKm) {
+        var meta = el('div', 'offer-meta');
+        meta.appendChild(el('span', 'offer-distance', offer.distanceKm ? Number(offer.distanceKm).toFixed(1) + ' km to you' : ''));
+        if (offer.plate) meta.appendChild(el('span', 'plate', offer.plate));
+        card.appendChild(meta);
+      }
 
       if (asDeclined) {
         card.appendChild(el('div', 'offer-status', 'Declined'));
@@ -319,11 +329,22 @@
         status.appendChild(document.createTextNode('Making payment…'));
         card.appendChild(status);
       } else {
-        var accept = el('button', 'btn primary', 'Accept ' + W.naira(offer.priceNgn));
+        var actions = el('div', 'offer-actions');
+        var decline = el('button', 'btn decline-one', 'Decline');
+        decline.type = 'button';
+        decline.disabled = Boolean(paying) || busy;
+        decline.addEventListener('click', function () {
+          dismissed[offer.key] = true;
+          drawnOffers = null;
+          if (state && state.phase === 'offers') drawSent(state);
+        });
+        var accept = el('button', 'btn accept', 'Accept ' + W.naira(offer.priceNgn));
         accept.type = 'button';
         accept.disabled = Boolean(paying) || busy;
         accept.addEventListener('click', function () { acceptOffer(offer); });
-        card.appendChild(accept);
+        actions.appendChild(decline);
+        actions.appendChild(accept);
+        card.appendChild(actions);
       }
       holder.appendChild(card);
     });
@@ -530,10 +551,7 @@
   function drawTrip(trip) {
     var copy = TRIP_COPY[trip.status] || TRIP_COPY.DRIVER_ASSIGNED;
     W.$('trip-eyebrow').textContent = copy[0];
-    var title = W.$('trip-title');
-    title.innerHTML = '';
-    title.appendChild(document.createTextNode(copy[1]));
-    title.appendChild(el('em', '', copy[2]));
+    W.$('trip-title').textContent = copy[1] + copy[2];
 
     // No Leaflet (an ancient browser, a blocked script)? The card below still says everything.
     if (typeof L === 'undefined') return;
@@ -596,27 +614,29 @@
   });
 
   function drawConfirmed(s) {
+    if (s.route) drawRoute(s.route);
     if (s.trip) drawTrip(s.trip);
     var driver = s.driver || {};
-    W.$('d-initial').textContent = (driver.name || '?').trim().charAt(0).toUpperCase();
-    W.$('d-name').textContent = driver.name || 'Your driver';
-    W.$('d-meta').textContent = (driver.rating ? '★ ' + Number(driver.rating).toFixed(1) : '') + (driver.totalRides ? ' · ' + driver.totalRides + ' rides' : '');
+    // As the app's trip screen: "Tunde · 4.9", the car under it, the plate on the right.
+    var name = (driver.name || 'Your driver').trim();
+    W.$('d-initial').textContent = initials(name);
+    W.$('d-name').textContent = name + (driver.rating ? ' · ' + Number(driver.rating).toFixed(1) : '');
     W.$('d-fare').textContent = W.naira(driver.fareNgn || s.offerNgn);
-    W.$('d-vehicle').textContent = driver.vehicle || '—';
-    W.$('d-plate').textContent = driver.plate || '—';
-    W.$('d-eta').textContent = s.trip && s.trip.status === 'ARRIVED' ? 'Here now' : driver.etaMin ? minutes(driver.etaMin) : '—';
+    W.$('d-vehicle').textContent = driver.vehicle || '';
+    W.$('d-plate').textContent = driver.plate || '';
+    W.show(W.$('d-plate'), Boolean(driver.plate));
+    W.show(W.$('d-foot'), Boolean(s.paidWithXlm));
     W.$('d-foot').textContent = s.paidWithXlm
       ? 'Paying ' + Number(s.paidWithXlm.amountXlm).toLocaleString('en-NG', { maximumFractionDigits: 2 }) + ' XLM from your Stellar wallet (testnet). It goes to your driver when the trip ends.'
-      : 'The fare is held in your wallet and paid when the trip ends.';
+      : '';
     var call = W.$('d-call');
     W.show(call, Boolean(driver.phone));
     if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);
     var chat = W.$('d-chat');
     W.show(chat, Boolean(s.tripChatUrl));
     if (s.tripChatUrl) chat.setAttribute('href', s.tripChatUrl);
-    // Before the trip: the code to give the driver. Then: when they arrive.
+    // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
-    W.show(W.$('d-eta-box'), !s.tripCode);
     W.$('d-code').textContent = s.tripCode || '';
   }
 
@@ -625,9 +645,8 @@
   /** The badge in the header: where the booking is, at a glance. */
   function drawPill(next) {
     var pill = W.$('top-pill');
-    var text = next.phase === 'price' ? 'Step 1 of 2'
-      : next.phase === 'offers' ? 'Live'
-      : '';
+    // The app shows where you are with its step bar, not a badge up here.
+    var text = '';
     pill.textContent = text;
     pill.className = 'top-pill' + (next.phase === 'offers' ? ' live' : '');
     W.show(pill, Boolean(text));

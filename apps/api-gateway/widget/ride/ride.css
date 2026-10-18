@@ -55,27 +55,6 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 .note h1 { font-size: 24px; }
 .note p { color: var(--muted); font-size: 15px; }
 
-/* the trip: pickup, the stops, drop-off — joined by a line */
-.trip { display: flex; flex-direction: column; gap: 14px; }
-.stop { position: relative; display: flex; gap: 12px; align-items: flex-start; }
-.stop:has(+ .stop)::after { content: ""; position: absolute; left: 5px; top: 22px; bottom: -12px; width: 2px; background: repeating-linear-gradient(var(--line-strong) 0 4px, transparent 4px 7px); }
-.dot { flex: 0 0 auto; width: 12px; height: 12px; margin-top: 6px; border-radius: 50%; border: 3px solid var(--ink); background: var(--bg); }
-.dot.to { border: 0; border-radius: 3px; background: var(--orange); }
-.dot.mid { border-width: 2px; border-color: var(--faint); }
-.dot.small { width: 9px; height: 9px; margin-top: 0; border-width: 2.5px; }
-.dot.small.to { border-width: 0; border-radius: 2px; }
-.place { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.where { font-weight: 600; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
-.stop.mid .where { color: var(--muted); font-weight: 500; }
-.trip-meta { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
-.pill { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--soft); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.pill.plate { background: var(--bg); border: 1px solid var(--line-strong); letter-spacing: 0.04em; font-weight: 700; }
-
-.trip-line { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); font-size: 14px; }
-.trip-line .where { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
-.trip-line .arrow { width: 16px; height: 16px; flex: 0 0 auto; color: var(--faint); }
-/* the stops are drawn into every trip card; the one-line trip shows only its ends */
-.trip-line .stop.mid { display: none; }
 
 /* ── amount ──────────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 10px; }
@@ -129,13 +108,7 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 .foot { font-size: 12.5px; color: var(--muted); text-align: center; line-height: 1.5; }
 
 /* ── your price ──────────────────────────────────────────────────────── */
-.mine { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border-radius: var(--r-xl); background: var(--ink); color: var(--on-ink); }
-.mine .label { color: var(--on-ink-muted); }
-.mine .big { color: var(--orange); font-size: 34px; }
-.mine .btn.small { border-color: var(--ink-line); color: var(--on-ink); }
 .big { display: block; font-family: var(--display); font-size: 28px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.mine.flash { animation: flash 0.8s ease-out; }
-@keyframes flash { 0% { box-shadow: 0 0 0 4px var(--orange); } 100% { box-shadow: 0 0 0 0 transparent; } }
 
 /* ── looking for drivers ─────────────────────────────────────────────── */
 .searching { display: flex; gap: 14px; align-items: center; padding: 18px 16px; background: var(--bg); border: 1.5px dashed var(--line-strong); border-radius: var(--r-xl); }
@@ -146,6 +119,28 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 @keyframes ping { 0% { transform: scale(1); opacity: 0.6; } 100% { transform: scale(3.4); opacity: 0; } }
 
 /* ── offers: white while open, green while paying, red when declined ─── */
+/* As the app's offers screen: the route and your offer under the title, the first card dark, Decline and Accept on each. */
+.offers-sub { font-size: 14px; font-variant-numeric: tabular-nums; }
+.offers-sub strong { color: var(--ink); font-weight: 700; }
+.offer.featured { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+.offer.featured .avatar { box-shadow: 0 0 0 2px var(--ink-line); }
+.offer.featured .who span { color: var(--on-ink-muted); }
+.offer.featured .price { color: var(--orange); }
+.offer.featured .plate { border-color: var(--ink-line); }
+.offer.featured .decline-one { border-color: var(--ink-line); color: var(--on-ink); }
+.offer.featured .accept { background: var(--orange); border-color: var(--orange); color: var(--ink); }
+.offer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.offer-distance { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.offer.featured .offer-distance { color: var(--on-ink-muted); }
+.plate { padding: 2px 8px; border: 2px solid var(--ink); border-radius: 8px; font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: 0.04em; }
+.offer-actions { display: flex; gap: 10px; }
+.offer-actions .btn { min-height: 48px; border-radius: 14px; font-size: 15px; font-weight: 800; }
+.decline-one { flex: 1; background: transparent; border: 2px solid var(--ink); color: var(--ink); }
+.accept { flex: 1.6; background: var(--ink); border: 2px solid var(--ink); color: var(--on-ink); }
+.offers-foot { display: flex; gap: 10px; }
+.offers-foot .btn { flex: 1; }
+.btn.ghost { background: transparent; border: 2px solid var(--ink); color: var(--ink); min-height: 48px; font-size: 15px; font-weight: 700; }
+.btn.quiet.danger-link { color: var(--bad); }
 .offer-list { display: flex; flex-direction: column; gap: 12px; }
 .offer {
   display: flex; flex-direction: column; gap: 14px; padding: 16px;
@@ -158,18 +153,14 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .offer-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; }
 .avatar {
-  width: 46px; height: 46px; border-radius: 50%; background: var(--orange-soft); color: var(--orange-ink);
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--display); font-weight: 700; font-size: 18px;
+  width: 52px; height: 52px; border-radius: 50%; background: var(--ink); color: var(--orange);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  font-family: var(--display); font-weight: 700; font-size: 19px;
 }
 .who { min-width: 0; }
 .who strong { display: block; font-size: 16px; font-weight: 700; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who span { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .price { font-family: var(--display); font-size: 24px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-.price small { display: block; margin-top: 2px; font-family: var(--text); font-size: 12px; font-weight: 700; letter-spacing: 0; }
-.price small.same, .price small.down { color: var(--good-ink); }
-.price small.up { color: var(--orange-ink); }
-.offer-facts { display: flex; gap: 6px; flex-wrap: wrap; }
 .offer .btn { min-height: 52px; }
 .offer-status { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
 .offer.paying { background: var(--good-soft); border-color: var(--good); }
@@ -181,16 +172,99 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
 .spinner { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%; border: 3px solid #BFE8D3; border-top-color: var(--good-ink); animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── confirmed ───────────────────────────────────────────────────────── */
-.driver { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px 16px; }
-.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.facts > div { padding: 12px; border-radius: var(--r-md); background: var(--bg); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.facts strong { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
-.facts .plate { letter-spacing: 0.04em; }
-.facts .fact-code { background: var(--orange-soft); border-color: var(--orange-soft); }
-.facts .fact-code .label { color: var(--orange-ink); }
-.facts .code { font-family: var(--display); font-size: 17px; letter-spacing: 0.12em; }
-.contact { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
+
+/* ── the app's screens (app/ride-selection.tsx, app/matching.tsx, app/rider/active-trip.tsx) ── */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.title { margin-top: 20px; font-size: 28px; line-height: 32px; letter-spacing: -0.6px; }
+.heading .title { margin-top: 0; }
+.heading { margin-top: 0; }
+
+/* the four steps: Your price, Drivers reply, You choose, Ride */
+.steps-wrap { margin-top: 20px; }
+/* searching: the line, then the dark card with your offer */
+.finding { display: flex; flex-direction: column; gap: 14px; }
+.finding-sub { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--muted); }
+.offer-ink { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border-radius: var(--r-xl); background: var(--ink); }
+.offer-ink-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.offer-ink-label { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); }
+.offer-ink-route { font-size: 14px; line-height: 20px; color: #E9E1D4; }
+.offer-ink-figure { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 26px; line-height: 30px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.steps { display: flex; gap: 6px; }
+.step { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.step .bar { height: 5px; border-radius: 3px; background: var(--line); }
+.step.on .bar { background: var(--orange); }
+.step-text { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-text.current { font-weight: 800; color: var(--ink); }
+
+/* the route card: a rail of dots, the label, the place */
+.route-card { padding: 14px 16px; border-radius: 20px; }
+.route-row { display: flex; gap: 14px; }
+.rail { width: 12px; flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding-top: 6px; }
+.rail .dot { width: 12px; height: 12px; margin: 0; border: 0; border-radius: 6px; background: var(--ink); }
+.rail .dot.to { border-radius: 3px; background: var(--orange); }
+.rail .dot.mid { border: 2px solid var(--ink); background: var(--bg); }
+.rail-line { flex: 1; width: 2px; min-height: 14px; margin: 4px 0; background: var(--line); }
+.route-text { flex: 1; min-width: 0; padding-bottom: 10px; display: flex; flex-direction: column; }
+.route-row:last-child .route-text { padding-bottom: 0; }
+.route-label { font-size: 13px; line-height: 17px; color: var(--muted); }
+.route-value { font-size: 16px; line-height: 23px; font-weight: 700; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tint-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.tint-chip { padding: 8px 12px; border-radius: 999px; background: var(--soft); font-size: 14px; line-height: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* the dark price card: the figure between a minus and a plus */
+.price-card { padding: 18px; border-radius: 24px; background: var(--ink); display: flex; flex-direction: column; gap: 12px; }
+.price-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.price-label { font-size: 15px; color: var(--on-ink-muted); }
+.price-side { font-size: 14px; color: var(--on-ink-muted); text-align: right; }
+.price-side strong { color: var(--page); font-weight: 700; font-variant-numeric: tabular-nums; }
+.stepper { display: flex; align-items: center; gap: 12px; }
+.round { flex: 0 0 auto; width: 56px; height: 56px; border-radius: 28px; display: flex; align-items: center; justify-content: center; padding: 0; }
+.round svg { width: 26px; height: 26px; fill: none; stroke-width: 2.4; stroke-linecap: round; }
+.round.minus { border: 2px solid var(--ink-line); background: transparent; }
+.round.minus svg { stroke: var(--page); }
+.round.plus { border: 0; background: var(--orange); }
+.round.plus svg { stroke: var(--ink); }
+.round:disabled { opacity: 0.4; cursor: not-allowed; }
+.figure-wrap { flex: 1; min-width: 0; display: flex; align-items: baseline; justify-content: center; color: var(--orange); }
+.figure-naira { font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 60px; letter-spacing: -1px; }
+.figure {
+  width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--orange); text-align: left;
+  font-family: var(--display); font-weight: 800; font-size: 46px; line-height: 60px; letter-spacing: -1.6px; font-variant-numeric: tabular-nums;
+}
+.figure-wrap:focus-within { border-radius: 12px; box-shadow: 0 0 0 2px var(--ink-line); }
+.price-note { font-size: 14px; line-height: 19px; color: var(--on-ink-muted); }
+.price-note.bad { color: #FFB4A8; font-weight: 600; }
+.footnote { font-size: 14px; line-height: 20px; color: var(--muted); text-align: center; }
+
+/* the trip screen */
+.map-card { margin-top: 16px; border-radius: var(--r-sheet); }
+.map-badge { border-radius: 14px; padding: 10px 14px; }
+.headline { display: flex; flex-direction: column; gap: 4px; }
+.trip-title { font-size: 26px; line-height: 30px; letter-spacing: -0.4px; }
+.trip-sub { font-size: 15px; line-height: 21px; color: var(--muted); }
+.driver-row { display: flex; align-items: center; gap: 12px; }
+.driver-row .avatar { width: 56px; height: 56px; font-size: 20px; }
+.driver-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.driver-text strong { font-size: 18px; line-height: 24px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.driver-text span { font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.big-plate { padding: 8px 12px; border-radius: 10px; background: var(--bg); font-size: 17px; line-height: 22px; letter-spacing: 0.7px; }
+.code-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border-radius: 20px; background: var(--ink); }
+.code-text { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.code-label { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); }
+.code-note { font-size: 13px; line-height: 18px; color: var(--on-ink-soft, #E9E1D4); }
+.code-digits { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 42px; line-height: 48px; letter-spacing: 5px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.trip-actions { display: flex; gap: 10px; }
+.action {
+  flex: 1; height: 54px; display: flex; align-items: center; justify-content: center; gap: 8px;
+  border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg); color: var(--ink);
+  font-size: 16px; font-weight: 700; text-decoration: none;
+}
+.action svg { width: 20px; height: 20px; fill: var(--ink); }
+.agreed { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--bg); border: 1px solid var(--line); }
+.agreed-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.agreed-label { font-size: 13px; line-height: 18px; color: var(--muted); }
+.agreed-to { font-size: 15px; line-height: 20px; font-weight: 700; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.agreed-amount { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 24px; line-height: 28px; font-variant-numeric: tabular-nums; }
 
 /* ── sheets ──────────────────────────────────────────────────────────── */
 .overlay { position: fixed; inset: 0; z-index: 20; background: rgba(13, 13, 13, 0.45); animation: fade 0.2s ease; }
@@ -309,7 +383,6 @@ h2 { font-family: var(--display); font-size: 22px; line-height: 1.2; font-weight
   .amount input { font-size: 32px; }
   .offer-top { grid-template-columns: auto minmax(0, 1fr); }
   .offer-top .price { grid-column: 1 / -1; text-align: left; display: flex; align-items: baseline; gap: 8px; }
-  .facts { grid-template-columns: 1fr 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
