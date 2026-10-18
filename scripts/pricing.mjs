@@ -10,6 +10,10 @@
 //   npm run pricing closest 150              the least a model price may sit above the other app
 //   npm run pricing premium 300              how far above the other app the floor sits
 //   npm run pricing period evening 4000      a premium of its own for a part of the day (morning 05–12,
+//   npm run pricing period night 1500-3000   ...or a range: traffic, a busy area, an outer area and the
+//                                            weekend place each trip in it (the same trip, the same
+//                                            amount for half an hour)
+//   npm run pricing report [DAYS]            prices shown, matched to the rides they became (default 7 days)
 //                                            afternoon 12–16, evening 16–21, night 21–05, Lagos time)
 //   npm run pricing period evening off       that part back to the general premium
 //   npm run pricing indrive quiet 500 268 50 the other app's figures: base, per km, per minute
@@ -70,7 +74,7 @@ async function status() {
   const on = (v) => (v ? 'ON' : 'off');
   const f = (x) => `base ${naira(x.baseNgn)}, ${naira(x.perKmNgn)} a km, ${naira(x.perMinuteNgn)} a minute`;
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
-  console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${settings.periodPremiums[p] === undefined ? `${naira(settings.premiumNgn)} (general)` : naira(settings.periodPremiums[p])}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
+  console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${premiumText(settings, p)}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
@@ -135,7 +139,10 @@ async function tryTrip() {
   console.log('Through a weekday (clear road):');
   console.table([['morning', 8], ['afternoon', 14], ['evening', 18], ['night', 23]].map(([period, h]) => {
     const fare = config.calculateSuggestedFare(km, { durationSeconds: minutes * 60, trafficRatio: 1, origin, at: lagosHour(h) });
-    return { period, at: `${String(h).padStart(2, '0')}:00`, otherApp: naira(fare.marketFareNgn), premium: naira(config.premiumAt(lagosHour(h))), shown: naira(fare.suggestedFareNgn) };
+    // A range: a clear road on a quiet day, and heavy traffic in a busy area.
+    const heavy = config.calculateSuggestedFare(km, { durationSeconds: minutes * 60, trafficRatio: 1.8, demandFactor: 1.5, origin, at: lagosHour(h) });
+    const shown = heavy.suggestedFareNgn > fare.suggestedFareNgn ? `${naira(fare.suggestedFareNgn)} quiet, ${naira(heavy.suggestedFareNgn)} in heavy traffic` : naira(fare.suggestedFareNgn);
+    return { period, at: `${String(h).padStart(2, '0')}:00`, otherApp: naira(fare.marketFareNgn), premium: premiumText(settings, period), shown };
   }));
 }
 
@@ -272,12 +279,67 @@ async function setPeriod() {
   if (!settings.marketFloorOn) console.log('Note: the floor is off, so no premium applies until "npm run pricing floor on".');
   await save((s) => {
     const periodPremiums = { ...s.periodPremiums };
-    if (value === 'off') delete periodPremiums[period];
-    else periodPremiums[period] = number(value, 'the amount');
+    if (value === 'off') {
+      delete periodPremiums[period];
+    } else {
+      // 4000, or a range 1500-3000
+      const [low, high = low] = String(value).split('-');
+      periodPremiums[period] = { minNgn: number(low, 'the amount'), maxNgn: number(high, 'the top of the range') };
+    }
     return { periodPremiums };
   }, (s) => s.periodPremiums[period] === undefined
     ? `The ${period} is back to the general premium (other app + ${naira(s.premiumNgn)}).`
-    : `In the ${period} the floor is now the other app + ${naira(s.periodPremiums[period])}.`);
+    : `In the ${period} the floor is now the other app + ${premiumText(s, period)}.`);
+}
+
+/** "₦4,000", "₦1,500–₦3,000 (by traffic and demand)", or the general one. */
+function premiumText(settings, period) {
+  const r = settings.periodPremiums[period];
+  if (!r) return `${naira(settings.premiumNgn)} (general)`;
+  return r.maxNgn > r.minNgn ? `${naira(r.minNgn)}–${naira(r.maxNgn)} (by traffic and demand)` : naira(r.minNgn);
+}
+
+/**
+ * The prices shown in the last DAYS, matched to the rides they became by the
+ * trip's ends and half hour, by part of the day: how many became rides, found
+ * a driver and finished, the premium carried, and how long a driver took.
+ */
+async function report() {
+  const days = rest[0] ? number(rest[0], 'days') : 7;
+  const since = new Date(Date.now() - days * 86_400_000);
+  const [quotes, rides] = await Promise.all([
+    prisma.pricingQuote.findMany({ where: { createdAt: { gte: since }, tripKey: { not: null } }, select: { tripKey: true, premiumNgn: true, premiumPosition: true, dayPeriod: true, suggestedFareNgn: true } }),
+    prisma.ride.findMany({ where: { createdAt: { gte: since } }, select: { pickupLat: true, pickupLng: true, destLat: true, destLng: true, createdAt: true, matchedAt: true, status: true } }),
+  ]);
+  const p = (lat, lng) => `${lat.toFixed(5)},${lng.toFixed(5)}`;
+  const rideByKey = new Map();
+  for (const r of rides) {
+    const bucket = Math.floor(r.createdAt.getTime() / (30 * 60_000));
+    // A ride booked just after the half hour turned was quoted in the one before.
+    for (const b of [bucket, bucket - 1]) rideByKey.set(`${p(r.pickupLat, r.pickupLng)}>${p(r.destLat, r.destLng)}@${b}`, r);
+  }
+  const seen = new Set();
+  const rows = new Map(config.DAY_PERIODS.map((d) => [d, { quotes: 0, rides: 0, matched: 0, completed: 0, premium: [], toMatch: [] }]));
+  for (const q of quotes) {
+    if (seen.has(q.tripKey)) continue; // a trip asked about again in the half hour is one quote
+    seen.add(q.tripKey);
+    const row = rows.get(q.dayPeriod) ?? rows.get('night');
+    row.quotes += 1;
+    if (q.premiumNgn !== null) row.premium.push(Number(q.premiumNgn));
+    const ride = rideByKey.get(q.tripKey);
+    if (!ride) continue;
+    row.rides += 1;
+    if (ride.matchedAt) { row.matched += 1; row.toMatch.push((ride.matchedAt - ride.createdAt) / 60_000); }
+    if (ride.status === 'COMPLETED') row.completed += 1;
+  }
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+  const mid = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  console.log(`Prices shown in the last ${days} day${days === 1 ? '' : 's'}, matched to rides:`);
+  console.table([...rows].map(([period, r]) => ({
+    period, quotes: r.quotes, becameRides: `${r.rides} (${pct(r.rides, r.quotes)})`, foundDriver: pct(r.matched, r.rides), finished: pct(r.completed, r.rides),
+    premium: mid(r.premium) === null ? '—' : naira(mid(r.premium)), minutesToDriver: mid(r.toMatch) === null ? '—' : mid(r.toMatch).toFixed(1),
+  })));
+  console.log('premium and minutes are the middle value. Quotes logged before the report existed have no trip key and are left out.');
 }
 
 const onOff = (key, label) => () => {
@@ -306,13 +368,14 @@ const commands = {
   gap: () => save(() => ({ minOfferGapNgn: number(rest[0], 'the gap') }), (s) => s.minOfferGapNgn > 0 ? `A rider's minimum offer is now the suggested price less ${naira(s.minOfferGapNgn)}.` : 'The minimum offer is back to the older rule: a tenth off, and no more than the premium.'),
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
   period: setPeriod,
+  report,
   indrive,
   try: tryTrip,
 };
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | period morning|afternoon|evening|night N|off | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

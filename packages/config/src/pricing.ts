@@ -103,6 +103,9 @@ export const AREA_FACTOR_MAX = 2;
 /** The parts of a Lagos day, each of which may carry its own premium. */
 export type DayPeriod = 'morning' | 'afternoon' | 'evening' | 'night';
 export const DAY_PERIODS: readonly DayPeriod[] = ['morning', 'afternoon', 'evening', 'night'];
+/** A premium in naira: fixed when min and max are the same. */
+export type PremiumRange = { minNgn: number; maxNgn: number };
+
 /** The highest premium a part of the day may carry, in naira. */
 export const PERIOD_PREMIUM_MAX_NGN = 10_000;
 
@@ -113,9 +116,10 @@ export type PricingSettings = {
   premiumNgn: number;
   /**
    * A premium of its own for a part of the day (dayPeriodOf), in place of
-   * premiumNgn then. A part not named here takes premiumNgn.
+   * premiumNgn then: a fixed amount (min = max) or a range the trip's
+   * conditions place it in (premiumFor). A part not named here takes premiumNgn.
    */
-  periodPremiums: Partial<Record<DayPeriod, number>>;
+  periodPremiums: Partial<Record<DayPeriod, PremiumRange>>;
   /** inDrive's fare outside rush hours, and in them (weekdays 07–10 and 16–20, Lagos time). */
   quiet: MarketFormula;
   rush: MarketFormula;
@@ -235,11 +239,21 @@ function areasFrom(value: unknown, fallback: PricingSettings['areas']): PricingS
 function periodPremiumsFrom(value: unknown): PricingSettings['periodPremiums'] {
   const saved = (value ?? {}) as Record<string, unknown>;
   const out: PricingSettings['periodPremiums'] = {};
+  const clamp = (n: number) => Math.min(PERIOD_PREMIUM_MAX_NGN, Math.max(0, Math.round(n)));
   for (const period of DAY_PERIODS) {
-    const n = Number(saved[period]);
-    if (saved[period] !== null && saved[period] !== undefined && Number.isFinite(n)) {
-      out[period] = Math.min(PERIOD_PREMIUM_MAX_NGN, Math.max(0, Math.round(n)));
+    const v = saved[period];
+    if (v === null || v === undefined) continue;
+    // A plain number (saved before ranges existed) is a fixed amount.
+    if (typeof v === 'number' || typeof v === 'string') {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[period] = { minNgn: clamp(n), maxNgn: clamp(n) };
+      continue;
     }
+    const r = v as { minNgn?: unknown; maxNgn?: unknown };
+    const min = Number(r.minNgn);
+    const max = Number(r.maxNgn ?? r.minNgn);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) continue;
+    out[period] = { minNgn: clamp(Math.min(min, max)), maxNgn: clamp(Math.max(min, max)) };
   }
   return out;
 }
@@ -311,9 +325,54 @@ export function dayPeriodOf(at: Date = new Date()): DayPeriod {
   return 'night';
 }
 
-/** How far above the other app the floor sits at this time: the part of the day's own premium, or the general one. */
+/** How far above the other app the floor sits at this time, with nothing known of the trip: a range gives its middle. */
 export function premiumAt(at: Date = new Date()): number {
-  return pricingSettings.periodPremiums[dayPeriodOf(at)] ?? pricingSettings.premiumNgn;
+  const range = pricingSettings.periodPremiums[dayPeriodOf(at)];
+  if (!range) return pricingSettings.premiumNgn;
+  return roundToFifty((range.minNgn + range.maxNgn) / 2);
+}
+
+const roundToFifty = (n: number) => Math.round(n / 50) * 50;
+
+/** What the trip's conditions say about its premium, and where in the range that put it. */
+export type TripPremium = {
+  premiumNgn: number;
+  period: DayPeriod;
+  /** 0 = the bottom of the part of the day's range, 1 = the top. Null: a fixed amount, or the general premium. */
+  position: number | null;
+};
+
+/**
+ * The premium for one trip. With a range for the part of the day, the trip's
+ * conditions place it in the range:
+ *
+ *   heavy traffic (Google's time against an empty road) .... 45%
+ *   a busy pickup area (requests against drivers) .......... 30%
+ *   an outer area (Ikorodu, Epe…) .......................... 15%
+ *   the weekend ............................................ 10%
+ *
+ * starting a little above the bottom, plus a small turn of its own drawn from
+ * the trip's key (its ends and the half hour), so trips on the same road do
+ * not all sit on one number. More traffic never lowers it. The same trip
+ * asked again in the half hour gets the same amount; whole ₦50s, never
+ * outside the range.
+ */
+export function premiumFor(factors: RateFactors, areaFactor = 1): TripPremium {
+  const at = factors.at ?? new Date();
+  const period = dayPeriodOf(at);
+  const range = pricingSettings.periodPremiums[period];
+  if (!range) return { premiumNgn: pricingSettings.premiumNgn, period, position: null };
+  if (range.maxNgn <= range.minNgn) return { premiumNgn: range.minNgn, period, position: null };
+  const unit = (n: number) => Math.min(1, Math.max(0, n));
+  const traffic = factors.trafficRatio !== undefined && Number.isFinite(factors.trafficRatio) ? unit((factors.trafficRatio - 1) / 0.8) : 0;
+  const busy = unit((demandFactorOf(factors) - 1) / 0.5);
+  const outer = areaFactor > 1 ? 1 : 0;
+  const weekend = lagosClock(at).weekend ? 1 : 0;
+  const score = 0.45 * traffic + 0.3 * busy + 0.15 * outer + 0.1 * weekend;
+  const turn = factors.trialKey ? (steadyDraw(`${factors.trialKey}#premium`) - 0.5) * 0.2 : 0;
+  const position = unit(0.15 + 0.85 * score + turn);
+  const premiumNgn = Math.min(range.maxNgn, Math.max(range.minNgn, roundToFifty(range.minNgn + position * (range.maxNgn - range.minNgn))));
+  return { premiumNgn, period, position: Math.round(position * 1000) / 1000 };
 }
 
 /** Weekdays 07:00–10:00 and 16:00–20:00, Lagos time. */
@@ -382,8 +441,10 @@ export type RateFactors = {
   destination?: { lat: number; lng: number };
   /**
    * Names this trip for a while (its two ends and the half hour): whether it
-   * is shown a trial price, and which, is decided from this alone, so asking
-   * again for the same trip gives the same answer. Without it no trial price is shown.
+   * is shown a trial price, and which, and its own small turn within a part
+   * of the day's premium range, are decided from this alone, so asking again
+   * for the same trip gives the same answer. Without it no trial price is
+   * shown, and there is no turn.
    */
   trialKey?: string;
 };
@@ -445,6 +506,8 @@ export type SuggestedFare = {
   /** The outer area that lifted the price (Ikorodu, Epe…) and by how much; 1 and null elsewhere. */
   areaFactor: number;
   area: PricingAreaKey | null;
+  /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
+  premium: TripPremium | null;
 };
 
 export type RidePriceBreakdown = {
@@ -527,9 +590,10 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const marketFare = settings.marketFloorOn && distanceKm > 0
     ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor
     : null;
+  const premium = premiumFor(factors, areaFactor);
   const floorFareNgn = marketFare === null
     ? null
-    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + premiumAt(factors.at), FARE_ROUNDING_INCREMENT));
+    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + premium.premiumNgn, FARE_ROUNDING_INCREMENT));
 
   // The rules and the model may only lift it, and only so far: at most
   // liftCap × the floor (or × our own plain rate, where that is the higher).
@@ -604,6 +668,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     modelFareNgn: modelFare,
     areaFactor,
     area,
+    premium: marketFare === null ? null : premium,
   };
 }
 

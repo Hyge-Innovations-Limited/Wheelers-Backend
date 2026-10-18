@@ -1427,8 +1427,15 @@ model PricingQuote {
   minOfferNgn      Decimal  @db.Decimal(12, 2)
   /// "floor" | "rules" | "model"
   setBy            String
+  /// The trip's ends and the half hour: what matches this price to the ride it became.
+  tripKey          String?
+  /// The premium over the other app the floor carried, where in the part of the day's range it sat (0–1), and the part of the day.
+  premiumNgn       Decimal? @db.Decimal(12, 2)
+  premiumPosition  Float?
+  dayPeriod        String?
 
   @@index([createdAt])
+  @@index([tripKey])
 }
 
 /// A price someone read off another app by hand, for a trip of a known

@@ -21,6 +21,10 @@ export interface PricingQuoteInput {
   suggestedFareNgn: number;
   minOfferNgn: number;
   setBy: string;
+  tripKey?: string | null;
+  premiumNgn?: number | null;
+  premiumPosition?: number | null;
+  dayPeriod?: string | null;
 }
 
 /** The pricing settings owners edit, and the log of every price shown. */
@@ -79,6 +83,10 @@ export const pricingClient = {
         suggestedFareNgn: q.suggestedFareNgn,
         minOfferNgn: q.minOfferNgn,
         setBy: q.setBy.slice(0, 12),
+        tripKey: q.tripKey ?? null,
+        premiumNgn: q.premiumNgn ?? null,
+        premiumPosition: q.premiumPosition ?? null,
+        dayPeriod: q.dayPeriod ?? null,
       },
     }),
 

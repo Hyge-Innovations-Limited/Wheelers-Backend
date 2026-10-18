@@ -35,6 +35,10 @@ type CachedRoute = Pick<PlannedRouteMetrics, 'distanceKm' | 'durationSeconds' | 
 
 const point = (p: RouteWaypoint) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
 
+/** A trip's ends and its half hour: the key a quote is priced and logged under, and a ride matched back by. */
+export const quoteTripKey = (origin: RouteWaypoint, destination: RouteWaypoint, atMs: number) =>
+  `${point(origin)}>${point(destination)}@${Math.floor(atMs / (30 * 60_000))}`;
+
 function isCachedRoute(value: unknown): value is CachedRoute {
   const v = value as CachedRoute | null;
   return Boolean(
@@ -53,6 +57,7 @@ function recordQuote(
   route: CachedRoute,
   price: ReturnType<typeof calculateSuggestedFare>,
   demandFactor: number,
+  tripKey: string,
 ): void {
   const now = Date.now();
   const key = `${point(params.origin)}>${point(params.destination)}=${price.suggestedFareNgn}`;
@@ -70,6 +75,7 @@ function recordQuote(
     trafficRatio: route.trafficRatio ?? null, demandFactor, rush: isRushHour(),
     marketFareNgn: price.marketFareNgn, floorFareNgn: price.floorFareNgn, rulesFareNgn: price.rulesFareNgn,
     modelFareNgn: price.modelFareNgn, suggestedFareNgn: price.suggestedFareNgn, minOfferNgn: price.minOfferNgn, setBy: price.setBy,
+    tripKey, premiumNgn: price.premium?.premiumNgn ?? null, premiumPosition: price.premium?.position ?? null, dayPeriod: price.premium?.period ?? null,
   }).catch((error) => console.warn('[pricing] quote not logged', { error: error instanceof Error ? error.message : String(error) }));
 }
 
@@ -89,14 +95,15 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     // The pickup area's busyness and the trip's time go into the price here,
     // fresh on every call; the cached route is only the road.
     const demandFactor = demandFactorAt(params.origin.lat, params.origin.lng);
+    // The trip and the half hour: a trial price, and the trip's own turn within a premium range, stay the same through quote, edit and confirm.
+    const tripKey = quoteTripKey(params.origin, params.destination, Date.now());
     const ridePrice = calculateSuggestedFare(route.distanceKm, {
       trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor,
       // Ikorodu, Epe, Ibeju-Lekki, Badagry: the trip's ends decide the area factor.
       origin: params.origin, destination: params.destination,
-      // The trip and the half hour: a trial price, when this trip gets one, stays the same through quote, edit and confirm.
-      trialKey: `${point(params.origin)}>${point(params.destination)}@${Math.floor(Date.now() / (30 * 60_000))}`,
+      trialKey: tripKey,
     });
-    recordQuote(params, route, ridePrice, demandFactor);
+    recordQuote(params, route, ridePrice, demandFactor, tripKey);
     return {
       distanceKm: route.distanceKm,
       durationSeconds: route.durationSeconds,

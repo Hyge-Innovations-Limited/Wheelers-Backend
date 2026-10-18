@@ -39,6 +39,56 @@ test('nothing set by part of the day: every hour prices exactly as before', () =
 
 test('saved amounts are kept in range, and nonsense is dropped', () => {
   const s = config.setPricingSettings({ periodPremiums: { morning: 99999, afternoon: -5, evening: 'x', night: null, lunch: 100 } });
-  assert.deepEqual(s.periodPremiums, { morning: config.PERIOD_PREMIUM_MAX_NGN, afternoon: 0 });
+  const max = config.PERIOD_PREMIUM_MAX_NGN;
+  assert.deepEqual(s.periodPremiums, { morning: { minNgn: max, maxNgn: max }, afternoon: { minNgn: 0, maxNgn: 0 } });
+  const r = config.setPricingSettings({ periodPremiums: { night: { minNgn: 3000, maxNgn: 1500 } } });
+  assert.deepEqual(r.periodPremiums.night, { minNgn: 1500, maxNgn: 3000 }, 'a range given backwards is put the right way round');
+  config.setPricingSettings({});
+});
+
+const night = { marketFloorOn: true, premiumNgn: 3000, trafficOn: true, demandOn: true, periodPremiums: { night: { minNgn: 1500, maxNgn: 3000 } } };
+const trip = (extra = {}) => ({ durationSeconds: 1800, at: lagos(23), ...extra });
+
+test('a range: the trip\'s conditions place it — heavier traffic is never cheaper, a busy area dearer, always inside', () => {
+  config.setPricingSettings(night);
+  const key = '6.50000,3.37000>6.44000,3.47000@1';
+  let last = 0;
+  for (const ratio of [1, 1.2, 1.4, 1.6, 1.8, 2.5]) {
+    const p = config.premiumFor(trip({ trafficRatio: ratio, trialKey: key }));
+    assert.ok(p.premiumNgn >= 1500 && p.premiumNgn <= 3000, `${p.premiumNgn} inside`);
+    assert.ok(p.premiumNgn >= last, `traffic ${ratio}: ${p.premiumNgn} is not below ${last}`);
+    assert.equal(p.premiumNgn % 50, 0);
+    assert.equal(p.period, 'night');
+    last = p.premiumNgn;
+  }
+  const quiet = config.premiumFor(trip({ trafficRatio: 1 })).premiumNgn;
+  const busy = config.premiumFor(trip({ trafficRatio: 1, demandFactor: 1.5 })).premiumNgn;
+  assert.ok(busy > quiet, `busy area ${busy} > quiet ${quiet}`);
+  assert.ok(config.premiumFor(trip({ trafficRatio: 1.8, demandFactor: 1.8 }), 1.65).premiumNgn >= 2800, 'heavy traffic, busy and outer on a weekday: near the top');
+  assert.equal(config.premiumFor({ durationSeconds: 1800, at: new Date(Date.UTC(2026, 9, 24, 22)), trafficRatio: 1.8, demandFactor: 1.8 }, 1.65).premiumNgn, 3000, 'and on a Saturday night: the top');
+  config.setPricingSettings({});
+});
+
+test('a range: the same trip in the half hour gets the same amount; different trips are spread a little', () => {
+  config.setPricingSettings(night);
+  const seen = new Set();
+  for (let i = 0; i < 100; i++) {
+    const key = `6.5${i},3.3${i}>6.4${i},3.4${i}@7`;
+    const p = config.premiumFor(trip({ trafficRatio: 1.3, trialKey: key })).premiumNgn;
+    assert.equal(config.premiumFor(trip({ trafficRatio: 1.3, trialKey: key })).premiumNgn, p);
+    seen.add(p);
+  }
+  assert.ok(seen.size > 2, 'not every trip on one number');
+  // The fare carries the premium it was given.
+  const fare = config.calculateSuggestedFare(10, trip({ trafficRatio: 1.3, trialKey: 'a>b@1' }));
+  assert.equal(fare.premium.premiumNgn, config.premiumFor(trip({ trafficRatio: 1.3, trialKey: 'a>b@1' })).premiumNgn);
+  assert.equal(fare.premium.period, 'night');
+  config.setPricingSettings({});
+});
+
+test('a fixed amount or no setting for the part of the day: as before, no position', () => {
+  config.setPricingSettings({ marketFloorOn: true, premiumNgn: 3000, periodPremiums: { afternoon: 4000 } });
+  assert.deepEqual(config.premiumFor(trip({ at: lagos(14), trafficRatio: 1.8 })), { premiumNgn: 4000, period: 'afternoon', position: null });
+  assert.deepEqual(config.premiumFor(trip({ at: lagos(18) })), { premiumNgn: 3000, period: 'evening', position: null });
   config.setPricingSettings({});
 });
