@@ -253,9 +253,13 @@ async function sample() {
     rush: hours ? hours === 'rush' : config.isRushHour(now), takenAt: now, addedBy: 'server', area: area?.key ?? null,
   } });
   const { settings } = await pricingClient.loadSettings();
-  const f = row.rush ? settings.rush : settings.quiet;
+  config.setPricingSettings(settings);
   const factor = area ? settings.areas[area.key].pickup : 1;
-  const ours = (f.baseNgn + f.perKmNgn * row.km + f.perMinuteNgn * row.minutes) * factor;
+  // As prices are made now: by the clock with the curve on, else the rush or quiet figures it was tagged with.
+  const f = row.rush ? settings.rush : settings.quiet;
+  const ours = (config.hourFactorAt(row.takenAt) !== null
+    ? config.marketFareNgn(row.km, row.minutes * 60, row.takenAt)
+    : f.baseNgn + f.perKmNgn * row.km + f.perMinuteNgn * row.minutes) * factor;
   console.log(`Saved: ${row.km} km in ${row.minutes} minutes cost ${naira(row.priceNgn)} (${row.rush ? 'rush' : 'quiet'} hours${area ? `, from ${area.name}` : ''}).`);
   console.log(`Our figures would have said ${naira(ours)}: ${naira(Math.abs(ours - Number(row.priceNgn)))} ${ours > Number(row.priceNgn) ? 'too high' : 'too low'}. Run "npm run pricing ${area ? 'area-fit' : 'fit'}" to see what the prices collected so far give.`);
 }
@@ -274,6 +278,7 @@ async function fit() {
   // City-wide figures only: a price from an outer area carries that area's factor, and is fitted by area-fit.
   const rows = await prisma.marketSample.findMany({ where: { takenAt: { gte: new Date(Date.now() - 60 * 86400_000) }, area: null } });
   const { settings } = await pricingClient.loadSettings();
+  if (settings.hourCurveOn && settings.hourCurve) return fitShape(rows, settings);
   const change = {};
   for (const hours of ['quiet', 'rush']) {
     const mine = rows.filter((r) => r.rush === (hours === 'rush')).map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) }));
@@ -289,6 +294,49 @@ async function fit() {
   if (Object.keys(change).length === 0) { console.log('Nothing to save.'); return; }
   await pricingClient.saveSettings({ ...settings, ...change }, 'server');
   console.log('Saved. New prices follow within a minute.');
+}
+
+/**
+ * With the price by the clock on, the figures are one shape for every hour:
+ * fitted from all the prices at once, each first divided by its hour's
+ * multiplier, so a short trip and a long one, a morning and an evening,
+ * all speak to the same base, per km and per minute. The curve is then
+ * learned again against the new shape, so the two agree; saved together.
+ */
+async function fitShape(rows, settings) {
+  const hourOf = (at) => {
+    const { hour, weekend } = config.lagosClock(at);
+    return (weekend ? settings.hourCurve.weekend : settings.hourCurve.weekday)[hour];
+  };
+  const mine = rows.map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) / hourOf(r.takenAt) }));
+  const result = fitMarket(mine, settings.quiet);
+  const f = result.figures;
+  console.log(`Price by the clock is on: one shape for every hour, from all ${mine.length} price${mine.length === 1 ? '' : 's'} in the last 60 days, each with its hour's multiplier taken out.`);
+  if (result.fitted === 'nothing') { console.log('Nothing to fit from yet. Add prices: npm run pricing sample KM MINUTES PRICE'); return; }
+  console.log(`  fitted ${result.fitted}: base ${naira(f.baseNgn)}, ${naira(f.perKmNgn)} a km, ${naira(f.perMinuteNgn)} a minute (was base ${naira(settings.quiet.baseNgn)}, ${naira(settings.quiet.perKmNgn)}, ${naira(settings.quiet.perMinuteNgn)})`);
+  if (mine.length < 6) console.log(`  ${6 - mine.length} more price${6 - mine.length === 1 ? '' : 's'} (short and long trips) and all three figures are fitted.`);
+
+  // The curve again, against the new shape.
+  const next = { ...settings, quiet: f };
+  config.setPricingSettings(next);
+  const curve = await pricingClient.learnHourCurve(next);
+  const guess = (r, quiet, c) => {
+    const { hour, weekend } = config.lagosClock(r.takenAt);
+    return (quiet.baseNgn + quiet.perKmNgn * r.km + quiet.perMinuteNgn * r.minutes) * (weekend ? c.weekend : c.weekday)[hour];
+  };
+  console.log('\nEach price you collected, and what we would guess for it:');
+  console.table(rows.map((r) => ({
+    taken: lagosTime(r.takenAt), km: r.km, min: r.minutes, inDrive: naira(r.priceNgn),
+    'guess now': naira(guess(r, settings.quiet, settings.hourCurve)), 'guess with these': naira(guess(r, f, curve.curve)),
+  })));
+  const moved = [];
+  for (const day of ['weekday', 'weekend']) {
+    for (let h = 0; h < 24; h++) if (curve.curve[day][h] !== settings.hourCurve[day][h]) moved.push(`${day} ${hh(h)} ×${settings.hourCurve[day][h]} → ×${curve.curve[day][h]}`);
+  }
+  console.log(moved.length ? `The curve against the new shape: ${moved.join(', ')}` : 'The curve stays as it is against the new shape.');
+  if (rest[0] !== 'save') { console.log('\nNothing saved. "npm run pricing fit save" to use the shape and the curve.'); return; }
+  await pricingClient.saveSettings({ ...settings, quiet: f, hourCurve: curve.curve, hourCurveFittedAt: new Date().toISOString() }, 'server');
+  console.log('\nSaved the shape and the curve. New prices follow within a minute.');
 }
 
 function areaNamed(word) {

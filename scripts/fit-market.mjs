@@ -5,7 +5,11 @@
 // because three numbers cannot be told apart from two trips:
 //
 //   1 or 2 prices   only the per-km figure moves; base and per-minute stay as they are
-//   3 to 5          per km and per minute are fitted; the base stays
+//   3 to 5          short and long trips among them (the longest at least 2.5×
+//                   the shortest): base and per km, the minute stays. A short
+//                   trip is what tells the base apart, and in Lagos km and
+//                   minutes rise together, so they cannot be told apart yet.
+//                   All of a length: per km and per minute; the base stays
 //   6 or more       all three
 //
 // A fit that comes out absurd (a negative figure, or a minute dearer than a
@@ -40,7 +44,7 @@ const sane = (f) => f.baseNgn >= 0 && f.baseNgn <= 3000 && f.perKmNgn >= 50 && f
 
 /**
  * Figures for one set of hours. `samples`: [{ km, minutes, priceNgn }]. `current`: what is saved now.
- * Returns { figures, fitted: 'nothing' | 'per km' | 'per km and per minute' | 'all three', missBefore, missAfter }.
+ * Returns { figures, fitted: 'nothing' | 'per km' | 'per km and per minute' | 'base and per km' | 'all three', missBefore, missAfter }.
  */
 export function fitMarket(samples, current) {
   const n = samples.length;
@@ -53,11 +57,22 @@ export function fitMarket(samples, current) {
     const w = solve(samples.map((s) => [s.km, s.minutes]), samples.map((s) => s.priceNgn - current.baseNgn));
     return w && { baseNgn: current.baseNgn, perKmNgn: Math.round(w[0]), perMinuteNgn: Math.round(w[1]) };
   };
+  const kms = samples.map((s) => s.km);
+  const spread = n >= 3 && Math.max(...kms) >= 2.5 * Math.min(...kms);
+  const baseAndKm = () => {
+    const w = solve(samples.map((s) => [1, s.km]), samples.map((s) => s.priceNgn - current.perMinuteNgn * s.minutes));
+    return w && { baseNgn: Math.round(w[0] / 10) * 10, perKmNgn: Math.round(w[1]), perMinuteNgn: current.perMinuteNgn };
+  };
   const allThree = () => {
     const w = solve(samples.map((s) => [1, s.km, s.minutes]), samples.map((s) => s.priceNgn));
     return w && { baseNgn: Math.round(w[0] / 10) * 10, perKmNgn: Math.round(w[1]), perMinuteNgn: Math.round(w[2]) };
   };
-  const steps = [['all three', n >= 6 ? allThree : null], ['per km and per minute', n >= 3 ? kmAndMinute : null], ['per km', perKmOnly]];
+  const steps = [
+    ['all three', n >= 6 ? allThree : null],
+    ['base and per km', spread ? baseAndKm : null],
+    ['per km and per minute', n >= 3 ? kmAndMinute : null],
+    ['per km', perKmOnly],
+  ];
   for (const [fitted, make] of steps) {
     const figures = make?.();
     if (figures && sane(figures)) return { figures, fitted, missBefore: typicalMiss(current, samples), missAfter: typicalMiss(figures, samples) };

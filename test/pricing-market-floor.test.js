@@ -278,10 +278,17 @@ test('the other app\'s figures are fitted from prices read off it: more prices, 
   assert.equal(one.fitted, 'per km');
   assert.deepEqual(one.figures, { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 }, 'the one real quote we have gives 268 a km');
 
-  const four = fitMarket([truth(5, 14), truth(10, 22), truth(16, 45), truth(25, 50)], current);
+  // Four trips of one length range: per km and per minute; the base is not guessed.
+  const four = fitMarket([truth(14, 30), truth(16, 45), truth(18, 40), truth(25, 50)], current);
   assert.equal(four.fitted, 'per km and per minute');
-  assert.equal(four.figures.baseNgn, 500, 'the base is not guessed from four trips');
+  assert.equal(four.figures.baseNgn, 500, 'the base is not guessed from four trips of a length');
   assert.ok(four.missAfter < four.missBefore);
+  // Short and long among them: a short trip tells the base apart; the minute stays.
+  const mixed = fitMarket([truth(3.2, 12), truth(15.5, 47), truth(16.7, 51), truth(25, 50)], current);
+  assert.equal(mixed.fitted, 'base and per km');
+  assert.equal(mixed.figures.perMinuteNgn, 50);
+  assert.notEqual(mixed.figures.baseNgn, 500);
+  assert.ok(mixed.missAfter < mixed.missBefore);
 
   const many = fitMarket([truth(4, 9), truth(6, 20), truth(9, 18), truth(12, 40), truth(16, 33), truth(20, 70), truth(26, 52), truth(33, 95)], current);
   assert.equal(many.fitted, 'all three');
