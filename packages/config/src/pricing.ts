@@ -109,6 +109,18 @@ export type PremiumRange = { minNgn: number; maxNgn: number };
 /** The highest premium a part of the day may carry, in naira. */
 export const PERIOD_PREMIUM_MAX_NGN = 10_000;
 
+/**
+ * The price by the clock: a multiplier on the other app's quiet-hour figures
+ * for each hour of the day (0–23, Lagos time), one list for weekdays and one
+ * for weekends.
+ */
+export type HourCurve = { weekday: number[]; weekend: number[] };
+/** Never under the other app's quiet-hour figures: the curve only ever lifts them. */
+export const HOUR_CURVE_MIN = 1;
+export const HOUR_CURVE_MAX = 1.6;
+/** The live surge may never be set to lift a price past this, whatever is saved. */
+export const SURGE_MAX_LIMIT = 2;
+
 export type PricingSettings = {
   /** Never suggest less than the market fare + the premium. */
   marketFloorOn: boolean;
@@ -123,6 +135,23 @@ export type PricingSettings = {
   /** inDrive's fare outside rush hours, and in them (weekdays 07–10 and 16–20, Lagos time). */
   quiet: MarketFormula;
   rush: MarketFormula;
+  /**
+   * The price by the clock. On: the other app's fare is its quiet-hour
+   * figures times this hour's multiplier (hourCurve), in place of the
+   * rush/quiet pair. The gateway learns the curve again each night from what
+   * trips cost (npm run pricing curve).
+   */
+  hourCurveOn: boolean;
+  hourCurve: HourCurve | null;
+  /** When the curve was last learned. */
+  hourCurveFittedAt: string | null;
+  /**
+   * The live surge: our own riders against our own drivers, and how drivers
+   * bid, lift the other app's fare (never lower it), up to surgeMax times.
+   * The gateway measures it every two minutes (npm run pricing surge).
+   */
+  surgeOn: boolean;
+  surgeMax: number;
   trafficOn: boolean;
   demandOn: boolean;
   /** Off: the model's number is only recorded beside each quote (shadow). On: it may lift the fare. */
@@ -183,6 +212,11 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   periodPremiums: {},
   quiet: { baseNgn: 500, perKmNgn: 268, perMinuteNgn: 50 },
   rush: { baseNgn: 575, perKmNgn: 308, perMinuteNgn: 58 },
+  hourCurveOn: false,
+  hourCurve: null,
+  hourCurveFittedAt: null,
+  surgeOn: false,
+  surgeMax: 1.4,
   trafficOn: false,
   demandOn: false,
   modelOn: false,
@@ -258,6 +292,17 @@ function periodPremiumsFrom(value: unknown): PricingSettings['periodPremiums'] {
   return out;
 }
 
+function hourCurveFrom(value: unknown): HourCurve | null {
+  const v = value as Partial<HourCurve> | null | undefined;
+  const list = (x: unknown) =>
+    Array.isArray(x) && x.length === 24 && x.every((n) => Number.isFinite(Number(n)))
+      ? x.map((n) => Math.round(Math.min(HOUR_CURVE_MAX, Math.max(HOUR_CURVE_MIN, Number(n))) * 100) / 100)
+      : null;
+  const weekday = list(v?.weekday);
+  const weekend = list(v?.weekend);
+  return weekday && weekend ? { weekday, weekend } : null;
+}
+
 function modelFrom(value: unknown): PricingModel | null {
   const v = value as PricingModel | null | undefined;
   if (!v || typeof v !== 'object' || !Number.isFinite(v.intercept) || !v.coef) return null;
@@ -284,6 +329,11 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     periodPremiums: periodPremiumsFrom(v.periodPremiums),
     quiet: formulaFrom(v.quiet, d.quiet),
     rush: formulaFrom(v.rush, d.rush),
+    hourCurveOn: v.hourCurveOn === true,
+    hourCurve: hourCurveFrom(v.hourCurve),
+    hourCurveFittedAt: typeof v.hourCurveFittedAt === 'string' ? v.hourCurveFittedAt.slice(0, 40) : null,
+    surgeOn: v.surgeOn === true,
+    surgeMax: finite(v.surgeMax, d.surgeMax, 1, SURGE_MAX_LIMIT),
     trafficOn: v.trafficOn === true,
     demandOn: v.demandOn === true,
     modelOn: v.modelOn === true,
@@ -310,10 +360,40 @@ export function setPricingSettings(value: unknown): PricingSettings {
 }
 
 /** Lagos is UTC+1 all year. */
-function lagosClock(at: Date): { hour: number; weekend: boolean } {
+export function lagosClock(at: Date): { hour: number; weekend: boolean } {
   const local = new Date(at.getTime() + 60 * 60 * 1000);
   const day = local.getUTCDay();
   return { hour: local.getUTCHours(), weekend: day === 0 || day === 6 };
+}
+
+/** The other app's quiet-hour figures for a trip: what the hour curve multiplies. */
+export function quietMarketFareNgn(distanceKm: number, minutes: number, settings: PricingSettings = pricingSettings): number {
+  const f = settings.quiet;
+  return f.baseNgn + f.perKmNgn * distanceKm + f.perMinuteNgn * minutes;
+}
+
+/**
+ * A curve that changes nothing at first: 1 in quiet hours, and in rush hours
+ * what the rush figures already charge over the quiet ones for a typical trip
+ * (15 km, 40 minutes). Where a new curve starts learning from.
+ */
+export function seedHourCurve(settings: PricingSettings = pricingSettings): HourCurve {
+  const quiet = quietMarketFareNgn(15, 40, settings);
+  const r = settings.rush;
+  const rushShare = Math.min(HOUR_CURVE_MAX, Math.max(HOUR_CURVE_MIN, (r.baseNgn + r.perKmNgn * 15 + r.perMinuteNgn * 40) / quiet));
+  const rushHour = (h: number) => (h >= 7 && h < 10) || (h >= 16 && h < 20);
+  return {
+    weekday: Array.from({ length: 24 }, (_, h) => Math.round((rushHour(h) ? rushShare : 1) * 100) / 100),
+    weekend: Array.from({ length: 24 }, () => 1),
+  };
+}
+
+/** This hour's multiplier on the other app's quiet-hour figures, or null with the curve off. */
+export function hourFactorAt(at: Date = new Date()): number | null {
+  const curve = pricingSettings.hourCurve;
+  if (!pricingSettings.hourCurveOn || !curve) return null;
+  const { hour, weekend } = lagosClock(at);
+  return (weekend ? curve.weekend : curve.weekday)[hour] ?? 1;
 }
 
 /** Lagos time: morning 05–12, afternoon 12–16, evening 16–21, night 21–05. */
@@ -384,12 +464,18 @@ export function isRushHour(at: Date = new Date()): boolean {
 /** With no trip time to hand (a fare rebuilt from distance alone), a Lagos road is taken at 24 km/h. */
 const ASSUMED_MINUTES_PER_KM = 2.5;
 
-/** What the other app would charge for this trip now, as far as its sampled figures say. */
+/**
+ * What the other app would charge for this trip now, as far as its sampled
+ * figures say: with the hour curve on, its quiet-hour figures times this
+ * hour's multiplier; otherwise its rush or quiet figures.
+ */
 export function marketFareNgn(distanceKm: number, durationSeconds: number | undefined, at: Date = new Date()): number {
-  const f = isRushHour(at) ? pricingSettings.rush : pricingSettings.quiet;
   const minutes = durationSeconds !== undefined && Number.isFinite(durationSeconds) && durationSeconds > 0
     ? durationSeconds / 60
     : distanceKm * ASSUMED_MINUTES_PER_KM;
+  const hourFactor = hourFactorAt(at);
+  if (hourFactor !== null) return round2(quietMarketFareNgn(distanceKm, minutes) * hourFactor);
+  const f = isRushHour(at) ? pricingSettings.rush : pricingSettings.quiet;
   return round2(f.baseNgn + f.perKmNgn * distanceKm + f.perMinuteNgn * minutes);
 }
 
@@ -440,6 +526,11 @@ export type RateFactors = {
   origin?: { lat: number; lng: number };
   destination?: { lat: number; lng: number };
   /**
+   * The live surge for the pickup area (1 = none), measured by the gateway
+   * from our own riders, drivers and bids. Used only with the surge switched on.
+   */
+  surgeFactor?: number;
+  /**
    * Names this trip for a while (its two ends and the half hour): whether it
    * is shown a trial price, and which, and its own small turn within a part
    * of the day's premium range, are decided from this alone, so asking again
@@ -459,6 +550,13 @@ function demandFactorOf(factors: RateFactors): number {
   return demand !== undefined && Number.isFinite(demand) && demand > 1
     ? Math.min(1 + DEMAND_SENSITIVITY * Math.log(demand), DEMAND_FACTOR_MAX)
     : 1;
+}
+
+/** The live surge for a trip: 1 with the switch off, never under 1, never past surgeMax. */
+export function surgeFactorOf(factors: RateFactors): number {
+  if (!pricingSettings.surgeOn) return 1;
+  const s = factors.surgeFactor;
+  return s !== undefined && Number.isFinite(s) ? Math.min(pricingSettings.surgeMax, Math.max(1, s)) : 1;
 }
 
 /** The demand multiplier a requests-to-drivers ratio comes to (1 = normal), whatever the switch says. */
@@ -506,6 +604,9 @@ export type SuggestedFare = {
   /** The outer area that lifted the price (Ikorodu, Epe…) and by how much; 1 and null elsewhere. */
   areaFactor: number;
   area: PricingAreaKey | null;
+  /** This hour's multiplier on the other app's quiet-hour figures (null with the curve off), and the live surge applied (1 = none). */
+  hourFactor: number | null;
+  surgeFactor: number;
   /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
   premium: TripPremium | null;
 };
@@ -585,10 +686,12 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const modelRate = modelRatePerKmNgn(distanceKm, factors);
   const modelFareNgn = modelRate === null ? null : fareFromRatePerKmNgn(modelRate, distanceKm);
 
-  // The floor: what the other app charges for this trip, plus the premium.
-  // Nothing is ever suggested below it.
+  // The floor: what the other app charges for this trip (by the hour, and
+  // lifted by our own live surge), plus the premium. Nothing is ever
+  // suggested below it.
+  const surgeFactor = surgeFactorOf(factors);
   const marketFare = settings.marketFloorOn && distanceKm > 0
-    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor
+    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor * surgeFactor
     : null;
   const premium = premiumFor(factors, areaFactor);
   const floorFareNgn = marketFare === null
@@ -672,6 +775,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     modelFareNgn: modelFare,
     areaFactor,
     area,
+    hourFactor: hourFactorAt(factors.at ?? new Date()),
+    surgeFactor: marketFare === null ? 1 : surgeFactor,
     premium: marketFare === null ? null : premium,
   };
 }

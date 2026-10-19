@@ -19,6 +19,19 @@
 //   npm run pricing indrive quiet 500 268 50 the other app's figures: base, per km, per minute
 //   npm run pricing indrive rush 575 308 58
 //   npm run pricing try 15.5 23              price a trip (km, minutes) now, with the model off and on
+//
+// The price by the clock, learned each night from what trips really cost:
+//   npm run pricing curve                    each hour's multiplier, weekday and weekend, and what it learned from
+//   npm run pricing curve fit                what the last four weeks of prices say now (saves nothing)
+//   npm run pricing curve fit save           use it now instead of waiting for the night
+//   npm run pricing curve on                 price by the curve (in place of rush/quiet); relearned at 03:00 each night
+//   npm run pricing curve off                back to the rush and quiet figures
+//
+// The live surge, from our own riders, drivers and bids (only ever lifts a price):
+//   npm run pricing surge                    the surge in each zone and the city now, and why
+//   npm run pricing surge on|off
+//   npm run pricing surge max 1.4            the most it may lift the other app's fare (at most 2)
+//
 //   npm run pricing lift 1                   how far traffic and a busy area may lift a price past the floor
 //                                            (1: never past it, so never more than the other app + the premium; at most 3)
 //   npm run pricing trials 0.1               the share of trips shown a trial price (0 to switch off)
@@ -80,6 +93,8 @@ async function status() {
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
+  console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.lagosClock(new Date()).weekend ? settings.hourCurve.weekend[config.lagosClock(new Date()).hour] : settings.hourCurve.weekday[config.lagosClock(new Date()).hour]}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
+  console.log(`Live surge: ${on(settings.surgeOn)}, at most ×${settings.surgeMax}${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}`);
   console.log(`Traffic: ${on(settings.trafficOn)}   Busy area: ${on(settings.demandOn)}`);
   console.log(`Outer areas (pickup / drop-off): ${config.PRICING_AREAS.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ')}`);
   console.log(`Model: ${on(settings.modelOn)}`);
@@ -91,6 +106,85 @@ async function status() {
   console.log(`  ${settings.trialShare > 0 ? `${Math.round(settings.trialShare * 100)} trips in 100 are shown a trial price (never above today's), so it has something to learn from` : 'no trial prices'}`);
   console.log(`Last saved: ${updatedAt ? updatedAt.toLocaleString('en-NG', { timeZone: 'Africa/Lagos', hour12: false }) : 'never'}${updatedBy ? ` by ${updatedBy}` : ''}\n`);
   await quotes(5);
+}
+
+const lagosTime = (d) => d.toLocaleString('en-NG', { timeZone: 'Africa/Lagos', hour12: false, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const hh = (h) => `${String(h).padStart(2, '0')}:00`;
+
+/**
+ * npm run pricing curve [fit [save] | on | off]: the price by the clock. Each
+ * hour's multiplier on the other app's quiet-hour figures, weekday and weekend.
+ */
+async function curve() {
+  const [word, also] = rest;
+  const { settings } = await pricingClient.loadSettings();
+  config.setPricingSettings(settings);
+  if (word === 'on' || word === 'off') {
+    // Switched on with nothing learned yet, it starts from what rush and quiet charge now: nothing moves at the switch.
+    return save((s) => ({ hourCurveOn: word === 'on', ...(word === 'on' && !s.hourCurve ? { hourCurve: config.seedHourCurve(s) } : {}) }), (s) => (s.hourCurveOn
+      ? 'Prices now follow the hour curve, learned again each night at 03:00.'
+      : 'Prices are back on the rush and quiet figures. The curve is kept for when it is switched on again.'));
+  }
+  if (word === 'fit') {
+    const fit = await pricingClient.learnHourCurve(settings);
+    console.log(`Learned from the last 4 weeks: ${fit.used.sample} inDrive prices, ${fit.used.agreed} agreed fares, ${fit.used.bid} driver bids on rides nobody agreed.`);
+    console.log('Each hour moves at most 15% in one go; run it again (or let the night do it) to go further.\n');
+    console.table(Array.from({ length: 24 }, (_, h) => ({
+      hour: hh(h),
+      weekday: `×${fit.previous.weekday[h]} → ×${fit.curve.weekday[h]}`,
+      'prices (wd)': fit.counts.weekday[h],
+      weekend: `×${fit.previous.weekend[h]} → ×${fit.curve.weekend[h]}`,
+      'prices (we)': fit.counts.weekend[h],
+    })));
+    if (also !== 'save') { console.log('Nothing saved. "npm run pricing curve fit save" to use it.'); return; }
+    await save(() => ({ hourCurve: fit.curve, hourCurveFittedAt: new Date().toISOString() }), (s) => (s.hourCurveOn ? 'Saved.' : 'Saved. It prices once "npm run pricing curve on".'));
+    return;
+  }
+  const c = settings.hourCurve ?? config.seedHourCurve(settings);
+  console.log(`Price by the clock: ${settings.hourCurveOn ? 'ON' : 'off'}${settings.hourCurve ? '' : ' (nothing learned yet: this is what rush and quiet charge now)'}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
+  console.log('Each number multiplies the other app\'s quiet-hour figures (base, per km, per minute); the premium goes on top.');
+  const quiet = config.quietMarketFareNgn(15, 40, settings);
+  console.table(Array.from({ length: 24 }, (_, h) => ({
+    hour: hh(h), weekday: `×${c.weekday[h]}`, '15 km, 40 min': naira(quiet * c.weekday[h]), weekend: `×${c.weekend[h]}`, ' 15 km, 40 min': naira(quiet * c.weekend[h]),
+  })));
+}
+
+/** npm run pricing surge [on | off | max N]: the live surge, and what it reads. */
+async function surge() {
+  const [word, value] = rest;
+  if (word === 'on' || word === 'off') {
+    return save(() => ({ surgeOn: word === 'on' }), (s) => (s.surgeOn
+      ? `The live surge is ON: our own riders, drivers and bids may lift the other app's fare up to ×${s.surgeMax}. It reads the market every 2 minutes.`
+      : 'The live surge is off.'));
+  }
+  if (word === 'max') {
+    return save(() => ({ surgeMax: number(value, 'the most') }), (s) => `The live surge may now lift the other app's fare up to ×${s.surgeMax}.`);
+  }
+  const { settings } = await pricingClient.loadSettings();
+  console.log(`Live surge: ${settings.surgeOn ? 'ON' : 'off'}, at most ×${settings.surgeMax}`);
+  const path = await import('node:path');
+  const { RedisClient } = require(path.join(process.cwd(), 'apps/api-gateway/dist/redis/client.js'));
+  const redis = new RedisClient(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+  try {
+    await redis.connect();
+    const raw = await redis.get('pricing:surge');
+    if (!raw) { console.log('No reading yet: the gateway reads the market every 2 minutes once it is running.'); return; }
+    const areas = JSON.parse(raw);
+    console.log(`Read ${lagosTime(new Date(areas[0].at))}, over the last 30 minutes:`);
+    console.table(areas.map((a) => ({
+      area: a.area,
+      surge: `×${a.factor}`,
+      heading: a.target === a.factor ? '—' : `×${a.target}`,
+      rides: a.rides,
+      drivers: a.drivers,
+      driversAsk: a.counter === null ? '—' : `${a.counter >= 1 ? '+' : ''}${Math.round((a.counter - 1) * 100)}%`,
+      noBid: a.noBidShare === null ? '—' : `${Math.round(a.noBidShare * 100)}%`,
+      reads: a.fromCity ? 'the city (few rides here)' : 'its own rides',
+    })));
+    if (!settings.surgeOn) console.log('Off: these are what it would do. "npm run pricing surge on" to use them.');
+  } finally {
+    await redis.disconnect().catch(() => undefined);
+  }
 }
 
 async function save(change, said) {
@@ -369,6 +463,8 @@ const commands = {
   closest: () => save(() => ({ modelPremiumNgn: number(rest[0], 'the amount') }), (s) => `A model price now stays at least ${naira(s.modelPremiumNgn)} above the other app.`),
   gap: () => save(() => ({ minOfferGapNgn: number(rest[0], 'the gap') }), (s) => s.minOfferGapNgn > 0 ? `A rider's minimum offer is now the suggested price less ${naira(s.minOfferGapNgn)}.` : 'The minimum offer is back to the older rule: a tenth off, and no more than the premium.'),
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
+  curve,
+  surge,
   lift: () => save(() => ({ liftCap: number(rest[0], 'the lift') }), (s) => (s.liftCap <= 1
     ? 'Traffic and a busy area now move a price only inside the premium: never past the other app + the premium.'
     : `Traffic and a busy area may now lift a price to ${s.liftCap}× the floor.`)),
@@ -380,7 +476,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | lift N | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | lift N | curve [fit [save] | on | off] | surge [on | off | max N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

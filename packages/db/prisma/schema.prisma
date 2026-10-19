@@ -1433,6 +1433,9 @@ model PricingQuote {
   premiumNgn       Decimal? @db.Decimal(12, 2)
   premiumPosition  Float?
   dayPeriod        String?
+  /// The hour's multiplier on the other app's quiet-hour figures (null: the curve was off), and the live surge applied (1: none).
+  hourFactor       Float?
+  surgeFactor      Float    @default(1)
 
   @@index([createdAt])
   @@index([tripKey])

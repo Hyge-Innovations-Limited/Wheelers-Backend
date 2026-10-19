@@ -1,5 +1,17 @@
 import { Prisma } from '@prisma/client';
-import { getPricingSettings, normalizePricingSettings, setPricingSettings, type PricingSettings } from '@wheleers/config';
+import {
+  areaFactorOf,
+  fitHourCurve,
+  getPricingSettings,
+  normalizePricingSettings,
+  quietMarketFareNgn,
+  seedHourCurve,
+  setPricingSettings,
+  type CurveEvidence,
+  type HourCurveFit,
+  type PricingAreaKey,
+  type PricingSettings,
+} from '@wheleers/config';
 import { prisma } from '../prisma';
 
 const ROW = 'current';
@@ -25,7 +37,16 @@ export interface PricingQuoteInput {
   premiumNgn?: number | null;
   premiumPosition?: number | null;
   dayPeriod?: string | null;
+  hourFactor?: number | null;
+  surgeFactor?: number;
 }
+
+/** How far back the hour curve learns from. Older prices count less anyway (a week's age halves one). */
+const CURVE_DAYS = 28;
+
+/** With no trip time known, a Lagos road is taken at 24 km/h (as the fare does). */
+const MINUTES_PER_KM = 2.5;
+const point = (lat: number, lng: number) => `${lat.toFixed(5)},${lng.toFixed(5)}`;
 
 /** The pricing settings owners edit, and the log of every price shown. */
 export const pricingClient = {
@@ -87,8 +108,79 @@ export const pricingClient = {
         premiumNgn: q.premiumNgn ?? null,
         premiumPosition: q.premiumPosition ?? null,
         dayPeriod: q.dayPeriod ?? null,
+        hourFactor: q.hourFactor ?? null,
+        surgeFactor: q.surgeFactor ?? 1,
       },
     }),
+
+  /**
+   * Every price since `since` that says what trips really cost, as a ratio to
+   * the other app's quiet-hour figures for the same trip (fitHourCurve):
+   * prices read off the other app; rides' agreed fares, moved from the price
+   * they were shown by however far the bargaining took them; and the lowest
+   * a driver asked on rides nobody agreed. A ride's own surge is taken out,
+   * so a surge is never learned as the usual price for its hour.
+   */
+  async curveEvidence(since: Date, settings: PricingSettings = getPricingSettings()): Promise<CurveEvidence[]> {
+    const [samples, rides, quotes] = await Promise.all([
+      prisma.marketSample.findMany({ where: { takenAt: { gte: since } } }),
+      prisma.ride.findMany({
+        where: { createdAt: { gte: since }, distanceKm: { gt: 0 } },
+        select: {
+          pickupLat: true, pickupLng: true, destLat: true, destLng: true, distanceKm: true, durationSeconds: true,
+          agreedFareNgn: true, createdAt: true, bids: { select: { amountNgn: true } },
+        },
+      }),
+      prisma.pricingQuote.findMany({
+        where: { createdAt: { gte: new Date(since.getTime() - 30 * 60_000) }, tripKey: { not: null }, marketFareNgn: { not: null } },
+        select: { tripKey: true, marketFareNgn: true, suggestedFareNgn: true, surgeFactor: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    const out: CurveEvidence[] = [];
+
+    for (const s of samples) {
+      const area = s.area ? settings.areas[s.area as PricingAreaKey] : undefined;
+      const base = quietMarketFareNgn(s.km, s.minutes, settings) * (area?.pickup ?? 1);
+      if (base > 0) out.push({ at: s.takenAt, ratio: Number(s.priceNgn) / base, weight: 3, kind: 'sample' });
+    }
+
+    // The last price each trip was shown in its half hour.
+    const quoteByKey = new Map(quotes.map((q) => [q.tripKey!, q]));
+    for (const r of rides) {
+      const bucket = Math.floor(r.createdAt.getTime() / (30 * 60_000));
+      const ends = `${point(r.pickupLat, r.pickupLng)}>${point(r.destLat, r.destLng)}`;
+      // A ride booked just after the half hour turned was quoted in the one before.
+      const q = quoteByKey.get(`${ends}@${bucket}`) ?? quoteByKey.get(`${ends}@${bucket - 1}`);
+      if (!q) continue;
+      const km = r.distanceKm!;
+      const minutes = r.durationSeconds && r.durationSeconds > 0 ? r.durationSeconds / 60 : km * MINUTES_PER_KM;
+      const { factor } = areaFactorOf({ origin: { lat: r.pickupLat, lng: r.pickupLng }, destination: { lat: r.destLat, lng: r.destLng } });
+      const base = quietMarketFareNgn(km, minutes, settings) * factor;
+      const shown = Number(q.suggestedFareNgn);
+      const market = Number(q.marketFareNgn) / (q.surgeFactor > 0 ? q.surgeFactor : 1);
+      const lowestBid = r.bids.length ? Math.min(...r.bids.map((b) => Number(b.amountNgn))) : null;
+      if (base <= 0) continue;
+      if (r.agreedFareNgn !== null) {
+        const agreed = Number(r.agreedFareNgn);
+        // Taken as shown only says the price was about right; bargained, it says which way.
+        out.push({ at: r.createdAt, ratio: (market + agreed - shown) / base, weight: Math.abs(agreed - shown) < 50 ? 0.5 : 1, kind: 'agreed' });
+      } else if (lowestBid !== null) {
+        out.push({ at: r.createdAt, ratio: (market + lowestBid - shown) / base, weight: 0.5, kind: 'bid' });
+      }
+    }
+    return out;
+  },
+
+  /**
+   * The hour curve the last four weeks of prices give, from the one saved (or,
+   * with none yet, from what the rush and quiet figures charge now). Saves nothing.
+   */
+  async learnHourCurve(settings: PricingSettings, now = new Date()): Promise<HourCurveFit & { previous: PricingSettings['hourCurve'] }> {
+    const previous = settings.hourCurve ?? seedHourCurve(settings);
+    const evidence = await pricingClient.curveEvidence(new Date(now.getTime() - CURVE_DAYS * 86_400_000), settings);
+    return { ...fitHourCurve(evidence, previous, now), previous };
+  },
 
   /**
    * The weekly check: how many prices were shown since `since`, which part

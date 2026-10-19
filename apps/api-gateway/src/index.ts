@@ -126,6 +126,8 @@ import { CachedRoutePlanner } from "./maps/cached-route-planner";
 import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
 import { startBusynessJob } from "./pricing/busyness";
+import { startSurgeJob } from "./pricing/surge";
+import { startHourCurveJob } from "./pricing/hour-curve-job";
 import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
@@ -2545,6 +2547,8 @@ async function bootstrap(): Promise<void> {
   const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
   const stopHoldSweeper = startHoldSweeper(leader.isLeader);
   const stopBusynessJob = startBusynessJob(redisCommandClient, leader.isLeader);
+  const stopSurgeJob = startSurgeJob(redisCommandClient, leader.isLeader);
+  const stopHourCurveJob = startHourCurveJob(leader.isLeader);
   const stopPaperReminders = startPaperReminderJob({ publisher }, leader.isLeader, () => lagosToday());
   const stopHealthJobs = startHealthJobs({
     redis: redisCommandClient,
@@ -2618,6 +2622,8 @@ async function bootstrap(): Promise<void> {
     stopStellarJob();
     stopHoldSweeper();
     stopBusynessJob();
+    stopSurgeJob();
+    stopHourCurveJob();
     stopPaperReminders();
     stopPricingSync();
     stopHealthJobs();

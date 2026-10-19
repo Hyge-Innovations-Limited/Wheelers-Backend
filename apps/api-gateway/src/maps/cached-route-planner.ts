@@ -9,6 +9,7 @@ import {
 } from '@wheleers/config';
 import { pricingClient } from '@wheleers/db';
 import { demandFactorAt } from '../pricing/busyness';
+import { surgeFactorAt } from '../pricing/surge';
 import { cachedMaps, mapsKey } from './shared-cache';
 
 /**
@@ -76,6 +77,7 @@ function recordQuote(
     marketFareNgn: price.marketFareNgn, floorFareNgn: price.floorFareNgn, rulesFareNgn: price.rulesFareNgn,
     modelFareNgn: price.modelFareNgn, suggestedFareNgn: price.suggestedFareNgn, minOfferNgn: price.minOfferNgn, setBy: price.setBy,
     tripKey, premiumNgn: price.premium?.premiumNgn ?? null, premiumPosition: price.premium?.position ?? null, dayPeriod: price.premium?.period ?? null,
+    hourFactor: price.hourFactor, surgeFactor: price.surgeFactor,
   }).catch((error) => console.warn('[pricing] quote not logged', { error: error instanceof Error ? error.message : String(error) }));
 }
 
@@ -95,10 +97,12 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     // The pickup area's busyness and the trip's time go into the price here,
     // fresh on every call; the cached route is only the road.
     const demandFactor = demandFactorAt(params.origin.lat, params.origin.lng);
+    // Our own market right now: riders against drivers, and how drivers bid (used with the surge switched on).
+    const surgeFactor = surgeFactorAt(params.origin.lat, params.origin.lng);
     // The trip and the half hour: a trial price, and the trip's own turn within a premium range, stay the same through quote, edit and confirm.
     const tripKey = quoteTripKey(params.origin, params.destination, Date.now());
     const ridePrice = calculateSuggestedFare(route.distanceKm, {
-      trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor,
+      trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor, surgeFactor,
       // Ikorodu, Epe, Ibeju-Lekki, Badagry: the trip's ends decide the area factor.
       origin: params.origin, destination: params.destination,
       trialKey: tripKey,
