@@ -19,6 +19,8 @@
 //   npm run pricing indrive quiet 500 268 50 the other app's figures: base, per km, per minute
 //   npm run pricing indrive rush 575 308 58
 //   npm run pricing try 15.5 23              price a trip (km, minutes) now, with the model off and on
+//   npm run pricing lift 1                   how far traffic and a busy area may lift a price past the floor
+//                                            (1: never past it, so never more than the other app + the premium; at most 3)
 //   npm run pricing trials 0.1               the share of trips shown a trial price (0 to switch off)
 //
 //   npm run pricing floor on                 never under the other app + the premium (off: our own rate only)
@@ -367,6 +369,9 @@ const commands = {
   closest: () => save(() => ({ modelPremiumNgn: number(rest[0], 'the amount') }), (s) => `A model price now stays at least ${naira(s.modelPremiumNgn)} above the other app.`),
   gap: () => save(() => ({ minOfferGapNgn: number(rest[0], 'the gap') }), (s) => s.minOfferGapNgn > 0 ? `A rider's minimum offer is now the suggested price less ${naira(s.minOfferGapNgn)}.` : 'The minimum offer is back to the older rule: a tenth off, and no more than the premium.'),
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
+  lift: () => save(() => ({ liftCap: number(rest[0], 'the lift') }), (s) => (s.liftCap <= 1
+    ? 'Traffic and a busy area now move a price only inside the premium: never past the other app + the premium.'
+    : `Traffic and a busy area may now lift a price to ${s.liftCap}× the floor.`)),
   period: setPeriod,
   report,
   indrive,
@@ -375,7 +380,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | lift N | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

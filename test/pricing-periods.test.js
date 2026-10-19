@@ -92,3 +92,21 @@ test('a fixed amount or no setting for the part of the day: as before, no positi
   assert.deepEqual(config.premiumFor(trip({ at: lagos(18) })), { premiumNgn: 3000, period: 'evening', position: null });
   config.setPricingSettings({});
 });
+
+test('lift 1: traffic, a busy area and our own rate never take a price past the other app + the top of the premium', () => {
+  const range = { minNgn: 500, maxNgn: 2000 };
+  const settings = { marketFloorOn: true, trafficOn: true, demandOn: true, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
+  let worst = 0;
+  config.setPricingSettings({ ...settings, liftCap: 1 });
+  for (const km of [1, 5, 16.7, 25, 40]) for (const minPerKm of [1.2, 3]) for (const trafficRatio of [1, 1.8, 2.5]) for (const demandFactor of [1, 1.8]) for (const hour of [8, 14, 18, 23]) {
+    const fare = config.calculateSuggestedFare(km, { durationSeconds: km * minPerKm * 60, trafficRatio, demandFactor, at: lagos(hour), trialKey: `t${km}` });
+    if (fare.suggestedFareNgn > config.MIN_FARE_NGN) worst = Math.max(worst, fare.suggestedFareNgn - fare.marketFareNgn);
+  }
+  assert.ok(worst <= 2000 + 50, `at most ₦2,000 over the other app, rounding aside (worst ₦${Math.round(worst)})`);
+  // Above 1 the rules may lift past it again, as before.
+  config.setPricingSettings({ ...settings, liftCap: 1.5 });
+  const lifted = config.calculateSuggestedFare(40, { durationSeconds: 40 * 1.2 * 60, trafficRatio: 2.5, at: lagos(8) });
+  assert.equal(lifted.setBy, 'rules');
+  assert.ok(lifted.suggestedFareNgn - lifted.marketFareNgn > 2000);
+  config.setPricingSettings({});
+});

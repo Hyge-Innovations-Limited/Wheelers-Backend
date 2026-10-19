@@ -128,7 +128,7 @@ export type PricingSettings = {
   /** Off: the model's number is only recorded beside each quote (shadow). On: it may lift the fare. */
   modelOn: boolean;
   model: PricingModel | null;
-  /** The rules and the model may lift a fare to at most this many times the floor. */
+  /** The rules and the model may lift a fare to at most this many times the floor. 1: never past the floor. */
   liftCap: number;
   /**
    * With the model on, the most it may take off today's price for a trip, in
@@ -597,10 +597,14 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
 
   // The rules and the model may only lift it, and only so far: at most
   // liftCap × the floor (or × our own plain rate, where that is the higher).
+  // A liftCap of 1 holds every trip to the floor itself, long fast ones
+  // included: never more than the other app + the premium.
   const plainFareNgn = fareFromRatePerKmNgn(RATE_PER_KM_NGN, distanceKm) * areaFactor;
   const liftLimit = floorFareNgn === null
     ? Infinity
-    : roundUpToIncrement(Math.max(floorFareNgn, plainFareNgn) * settings.liftCap, FARE_ROUNDING_INCREMENT);
+    : settings.liftCap <= 1
+      ? floorFareNgn
+      : roundUpToIncrement(Math.max(floorFareNgn, plainFareNgn) * settings.liftCap, FARE_ROUNDING_INCREMENT);
   let suggestedFareNgn = floorFareNgn ?? rulesFareNgn;
   let setBy: SuggestedFare['setBy'] = floorFareNgn === null ? 'rules' : 'floor';
   const rules = Math.min(rulesFareNgn, liftLimit);
