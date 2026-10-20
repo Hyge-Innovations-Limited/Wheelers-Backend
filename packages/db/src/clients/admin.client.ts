@@ -20,11 +20,11 @@ export const adminClient = {
 
   /**
    * Changes an admin's role, refusing to leave the dashboard with no owner:
-   * the last active owner cannot be made staff. Null when refused.
+   * the last active owner cannot be made staff or support. Null when refused.
    */
   setRole: (id: string, role: AdminRole) =>
     prisma.$transaction(async (tx) => {
-      if (role === 'STAFF') {
+      if (role !== 'OWNER') {
         const owners = await tx.adminUser.count({ where: { role: 'OWNER', active: true, id: { not: id } } });
         if (owners === 0) return null;
       }

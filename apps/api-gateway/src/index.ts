@@ -88,6 +88,7 @@ import {
 import {
   handleAdminLoginRoute,
   handleCreateAdminRoute,
+  supportDeskRefuses,
   extractAdminId,
 } from "./http/admin-auth.route";
 import {
@@ -127,6 +128,7 @@ import { handleAdminHealthRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
 import { startBusynessJob } from "./pricing/busyness";
 import { startSurgeJob } from "./pricing/surge";
+import { handleAdminDeskRoute } from "./http/admin-desk.route";
 import { startHourCurveJob } from "./pricing/hour-curve-job";
 import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
@@ -676,6 +678,12 @@ async function bootstrap(): Promise<void> {
       if (req.method === "OPTIONS") {
         res.statusCode = 204;
         res.end();
+        return;
+      }
+
+      // The support desk sees only its own pages: anything else is refused here, before any route runs.
+      if (url.pathname.startsWith("/admin/") && url.pathname !== "/admin/login" && await supportDeskRefuses(req, gatewayEnv.JWT_SECRET)) {
+        sendJson(res, 403, { error: "This is not part of the support desk." });
         return;
       }
 
@@ -1913,6 +1921,11 @@ async function bootstrap(): Promise<void> {
 
       // Who is signed in, the team, roles and the activity timeline.
       if (await handleAdminTeamRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // The support desk's look-ups: people and trips, with no money in them.
+      if (await handleAdminDeskRoute(req, res, adminDeps, url)) {
         return;
       }
 

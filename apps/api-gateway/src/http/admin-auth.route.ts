@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword, createLocalAccessToken, verifyLocalAccess
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { adminMarkCode, clientIp, recordAdminActivity, type AdminRoleName } from '../admin/activity';
+import { supportDeskAllows } from '../admin/support-desk';
 
 /** Who is asking: their ID (null for the bootstrap key), name and role. */
 export interface AdminAuth {
@@ -107,7 +108,8 @@ export async function handleCreateAdminRoute(
     const password = getString(rawBody, 'password');
     const name = getString(rawBody, 'name')?.trim();
     // New admins are staff unless the bootstrap call says otherwise.
-    const role: AdminRoleName = getString(rawBody, 'role') === 'OWNER' ? 'OWNER' : 'STAFF';
+    const asked = getString(rawBody, 'role');
+    const role: AdminRoleName = asked === 'OWNER' || asked === 'SUPPORT' ? asked : 'STAFF';
 
     if (!username || !password || !name) {
       sendJson(res, 400, { error: 'username, password, and name are required' });
@@ -168,6 +170,20 @@ export function extractAdminId(req: IncomingMessage, jwtSecret: string): string 
   }
 }
 
+const pathOf = (req: IncomingMessage) => new URL(req.url ?? '/', 'http://localhost').pathname;
+
+/**
+ * A support login asking the server for anything outside the support desk.
+ * Checked once at the door for every /admin path, so it is refused with 403
+ * (not 401, which would sign them out) before any route runs.
+ */
+export async function supportDeskRefuses(req: IncomingMessage, jwtSecret: string): Promise<boolean> {
+  const adminId = extractAdminId(req, jwtSecret);
+  if (!adminId) return false;
+  const admin = await adminClient.findById(adminId);
+  return Boolean(admin?.active && admin.role === 'SUPPORT' && !supportDeskAllows(req.method, pathOf(req)));
+}
+
 /**
  * Verifies the request is from an authenticated admin (JWT) or has the bootstrap API key.
  * Returns the admin's name for audit logging, or null if unauthorized.
@@ -181,6 +197,8 @@ export async function verifyAdminAuth(
   if (adminId) {
     const admin = await adminClient.findById(adminId);
     if (admin?.active) {
+      // Support only gets the support desk, whichever route asks.
+      if (admin.role === 'SUPPORT' && !supportDeskAllows(req.method, pathOf(req))) return null;
       return { adminId: admin.id, adminName: admin.name, role: admin.role };
     }
   }

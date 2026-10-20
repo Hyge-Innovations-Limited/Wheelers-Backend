@@ -5,6 +5,7 @@ import type { NotificationEvent } from '@wheleers/kafka-schemas';
 import { clientIp, recordAdminActivity } from '../admin/activity';
 import { getString, isRecord } from '../utils/object';
 import { verifyAdminAuth } from './admin-auth.route';
+import { maskEmail, maskPhone } from '../admin/support-desk';
 import { authenticateHttpToken, HttpAuthError } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
 
@@ -134,6 +135,9 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
     sendJson(res, 401, { error: 'Unauthorized' });
     return;
   }
+  // The support desk sees numbers and emails masked, and no fares.
+  const desk = auth.role === 'SUPPORT';
+  const phone = (value: string | null) => (desk ? maskPhone(value) : value);
 
   if (url.pathname === '/admin/support/conversations') {
     if (req.method !== 'GET') { sendJson(res, 405, { error: 'Method not allowed' }); return; }
@@ -152,7 +156,7 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         id: row.id,
         status: row.status === 'OPEN' ? 'open' : 'resolved',
         topic: row.topic,
-        person: { id: row.user.id, name: row.user.name ?? 'No name yet', phone: row.user.phone, role: row.user.role },
+        person: { id: row.user.id, name: row.user.name ?? 'No name yet', phone: phone(row.user.phone), role: row.user.role },
         rideId: row.rideId,
         onLiveTrip: Boolean(row.rideId && live.has(row.rideId)),
         lastMessageAt: row.lastMessageAt.toISOString(),
@@ -188,7 +192,7 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         assignedTo: conversation.assignedAdminName,
         createdAt: conversation.createdAt.toISOString(),
         resolvedAt: conversation.resolvedAt?.toISOString() ?? null,
-        person: { id: conversation.user.id, name: conversation.user.name ?? 'No name yet', phone: conversation.user.phone, email: conversation.user.email, role: conversation.user.role },
+        person: { id: conversation.user.id, name: conversation.user.name ?? 'No name yet', phone: phone(conversation.user.phone), email: desk ? maskEmail(conversation.user.email) : conversation.user.email, role: conversation.user.role },
       },
       messages: messages.map((message) => ({
         id: message.id,
@@ -203,13 +207,13 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         live: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'].includes(ride.status),
         pickupAddress: ride.pickupAddress,
         destAddress: ride.destAddress,
-        fareNgn: Number(ride.agreedFareNgn ?? ride.fareEstimateNgn ?? 0) || null,
+        fareNgn: desk ? null : Number(ride.agreedFareNgn ?? ride.fareEstimateNgn ?? 0) || null,
         startedAt: ride.startedAt?.toISOString() ?? null,
         createdAt: ride.createdAt.toISOString(),
-        rider: ride.rider ? { name: ride.rider.name, phone: ride.rider.phone } : null,
+        rider: ride.rider ? { name: ride.rider.name, phone: phone(ride.rider.phone) } : null,
         driver: ride.driver ? {
           name: ride.driver.user.name,
-          phone: ride.driver.user.phone,
+          phone: phone(ride.driver.user.phone),
           car: [ride.driver.vehicleMake, ride.driver.vehicleModel].filter(Boolean).join(' ') || null,
           plate: ride.driver.vehiclePlate,
         } : null,

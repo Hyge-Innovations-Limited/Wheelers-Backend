@@ -85,9 +85,9 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
   const roleMatch = path.match(/^\/admin\/team\/([^/]+)$/);
   if (roleMatch && req.method === 'PATCH' && !['activity', 'flags', 'trace'].includes(roleMatch[1]!)) {
     const body = ((await readJsonBody(req).catch(() => null)) ?? {}) as Record<string, unknown>;
-    const role = body.role === 'OWNER' || body.role === 'STAFF' ? body.role : null;
+    const role = body.role === 'OWNER' || body.role === 'STAFF' || body.role === 'SUPPORT' ? body.role : null;
     if (!role) {
-      sendJson(res, 400, { error: 'role must be OWNER or STAFF' });
+      sendJson(res, 400, { error: 'role must be OWNER, STAFF or SUPPORT' });
       return true;
     }
     const target = await adminClient.findById(roleMatch[1]!);

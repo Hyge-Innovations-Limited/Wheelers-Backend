@@ -754,6 +754,8 @@ model NotificationDevice {
 enum AdminRole {
   OWNER
   STAFF
+  /// The support desk: the inbox, people's app activity and trips. No money, bank details or identity documents.
+  SUPPORT
 }
 
 model AdminUser {

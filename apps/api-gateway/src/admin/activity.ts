@@ -9,7 +9,7 @@ import { clientIp as realClientIp } from '../utils/client-ip';
  * failure is logged and dropped.
  */
 
-export type AdminRoleName = 'OWNER' | 'STAFF';
+export type AdminRoleName = 'OWNER' | 'STAFF' | 'SUPPORT';
 
 /**
  * The admin's code in the hidden mark on every dashboard page: six letters
