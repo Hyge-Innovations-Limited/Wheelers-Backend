@@ -121,7 +121,9 @@ test('people and trips as support sees them: their number and email to reach the
   assert.equal(profile.body.trips[0].trip, `WH-${String(ride.tripNumber).padStart(5, '0')}`);
   assert.equal(profile.body.trips[0].driver.plate, 'LAG 123 XY');
   const text = JSON.stringify(profile.body);
-  for (const money of ['8800', '9000', '1200', 'fare', 'Fare', 'wallet', 'balance', 'fee', 'bank', 'deposit']) {
+  // Where they stand on asking to see the balance, never the balance itself.
+  assert.equal(profile.body.balanceAccess.status, 'none');
+  for (const money of ['8800', '9000', '1200', 'fare', 'Fare', 'wallet', 'balanceNgn', 'totalNgn', 'availableNgn', 'fee', 'bank', 'deposit']) {
     assert.ok(!text.includes(money), `no "${money}" in what support sees`);
   }
 
@@ -156,4 +158,72 @@ test('people and trips as support sees them: their number and email to reach the
   await new Promise((r) => setTimeout(r, 200));
   const recorded = await prisma.adminActivity.findFirst({ where: { adminId: supportId, kind: 'action' }, orderBy: { createdAt: 'desc' } });
   assert.equal(recorded?.detail?.what, 'messaged someone from their profile');
+});
+
+test('a wallet balance: support asks, an owner says yes, and support sees it for an hour; never before, never for anyone else', async () => {
+  const { handleAdminTeamRoute } = require('../apps/api-gateway/dist/http/admin-team.route.js');
+  const support = await admin('SUPPORT');
+  const supportId = made.admins[made.admins.length - 1];
+  const owner = await admin('OWNER');
+  const person = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Money Issue' } });
+  const other = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Someone Else' } });
+  made.users.push(person.id, other.id);
+  await prisma.wallet.create({ data: { userId: person.id, balanceNgn: 5000, lockedNgn: 1200 } });
+  const body = (token, method, path, json) => {
+    const r = { method, url: path, headers: { authorization: `Bearer ${token}` } };
+    const chunks = json ? [Buffer.from(JSON.stringify(json))] : [];
+    r[Symbol.asyncIterator] = async function* () { yield* chunks; };
+    return r;
+  };
+  try {
+    // Before asking: no balance, and the profile says so.
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}/balance`))).status, 403);
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}`))).body.balanceAccess.status, 'none');
+    // Asking needs a reason.
+    assert.equal((await call(handleAdminDeskRoute, body(support, 'POST', `/admin/desk/people/${person.id}/balance-request`, { reason: 'x' }))).status, 400);
+    const asked = await call(handleAdminDeskRoute, body(support, 'POST', `/admin/desk/people/${person.id}/balance-request`, { reason: 'Says a ₦5,000 deposit is not showing' }));
+    assert.equal(asked.status, 201);
+    assert.equal(asked.body.balanceAccess.status, 'pending');
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}/balance`))).status, 403, 'still waiting: no balance');
+    // Support cannot answer its own ask: the team pages are not on its desk.
+    assert.equal(await supportDeskRefuses(req(support, 'POST', '/admin/team/balance-requests/x/approve'), SECRET), true);
+
+    // The owner sees it waiting, and says yes.
+    const flags = await call(handleAdminTeamRoute, req(owner, 'GET', '/admin/team/flags'));
+    assert.ok(flags.body.balanceRequests >= 1);
+    const list = await call(handleAdminTeamRoute, req(owner, 'GET', '/admin/team/balance-requests'));
+    const mine = list.body.requests.find((r) => r.person.id === person.id);
+    assert.equal(mine.status, 'PENDING');
+    assert.equal(mine.reason, 'Says a ₦5,000 deposit is not showing');
+    const yes = await call(handleAdminTeamRoute, req(owner, 'POST', `/admin/team/balance-requests/${mine.id}/approve`));
+    assert.equal(yes.body.status, 'APPROVED');
+    assert.equal((await call(handleAdminTeamRoute, req(owner, 'POST', `/admin/team/balance-requests/${mine.id}/deny`))).status, 409, 'decided once');
+
+    const shown = await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}/balance`));
+    assert.equal(shown.status, 200);
+    assert.deepEqual([shown.body.balance.totalNgn, shown.body.balance.heldNgn, shown.body.balance.availableNgn], [5000, 1200, 3800]);
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${other.id}/balance`))).status, 403, 'that person only');
+
+    // An hour on, it closes again.
+    await prisma.balanceAccessRequest.update({ where: { id: mine.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}/balance`))).status, 403);
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${person.id}`))).body.balanceAccess.status, 'expired');
+
+    // Declined: no balance.
+    await call(handleAdminDeskRoute, body(support, 'POST', `/admin/desk/people/${other.id}/balance-request`, { reason: 'Asked for a refund of a cancelled trip' }));
+    const again = (await call(handleAdminTeamRoute, req(owner, 'GET', '/admin/team/balance-requests'))).body.requests.find((r) => r.person.id === other.id);
+    await call(handleAdminTeamRoute, req(owner, 'POST', `/admin/team/balance-requests/${again.id}/deny`));
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${other.id}`))).body.balanceAccess.status, 'denied');
+    assert.equal((await call(handleAdminDeskRoute, req(support, 'GET', `/admin/desk/people/${other.id}/balance`))).status, 403);
+
+    // Owners and staff see balances as they always have.
+    assert.equal((await call(handleAdminDeskRoute, req(owner, 'GET', `/admin/desk/people/${other.id}/balance`))).status, 200);
+    await new Promise((r) => setTimeout(r, 200));
+    const said = await prisma.adminActivity.findMany({ where: { adminId: supportId }, select: { detail: true } });
+    assert.ok(said.some((a) => a.detail?.what === 'asked to see a wallet balance'));
+    assert.ok(said.some((a) => a.detail?.what === 'saw a wallet balance'));
+  } finally {
+    await prisma.balanceAccessRequest.deleteMany({ where: { userId: { in: [person.id, other.id] } } });
+    await prisma.wallet.deleteMany({ where: { userId: person.id } });
+  }
 });

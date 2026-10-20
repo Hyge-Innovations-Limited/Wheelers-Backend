@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { adminActivityClient, adminClient } from '@wheleers/db';
+import { adminActivityClient, adminClient, prisma } from '@wheleers/db';
+import { BALANCE_ACCESS_MS } from './admin-desk.route';
 import { adminMarkCode, clientIp, recordAdminActivity } from '../admin/activity';
 import { verifyAdminAuth, type AdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
@@ -14,10 +15,12 @@ interface TeamDeps {
  *   GET   /admin/me                     who is signed in, their role and mark code
  *   POST  /admin/activity               the dashboard reports a page opened or a screenshot shortcut
  *   GET   /admin/team                   owners: every admin, role, last seen, flags
- *   PATCH /admin/team/:id               owners: { role: OWNER | STAFF }
+ *   PATCH /admin/team/:id               owners: { role: OWNER | STAFF | SUPPORT }
  *   GET   /admin/team/activity          owners: the timeline (?adminId&kind&flagged=1&before&limit)
- *   GET   /admin/team/flags             owners: flagged events in the last 24 hours (the sidebar badge)
+ *   GET   /admin/team/flags             owners: flagged events in the last 24 hours and balance requests waiting (the sidebar badge)
  *   GET   /admin/team/trace?code=       owners: whose mark is this
+ *   GET   /admin/team/balance-requests  owners: support asking to see someone's wallet balance
+ *   POST  /admin/team/balance-requests/:id/approve|deny   owners: yes (for an hour) or no
  * Returns false when the path is not one of these.
  */
 export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResponse, deps: TeamDeps, url: URL): Promise<boolean> {
@@ -83,7 +86,7 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
   }
 
   const roleMatch = path.match(/^\/admin\/team\/([^/]+)$/);
-  if (roleMatch && req.method === 'PATCH' && !['activity', 'flags', 'trace'].includes(roleMatch[1]!)) {
+  if (roleMatch && req.method === 'PATCH' && !['activity', 'flags', 'trace', 'balance-requests'].includes(roleMatch[1]!)) {
     const body = ((await readJsonBody(req).catch(() => null)) ?? {}) as Record<string, unknown>;
     const role = body.role === 'OWNER' || body.role === 'STAFF' || body.role === 'SUPPORT' ? body.role : null;
     if (!role) {
@@ -122,7 +125,62 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
   }
 
   if (path === '/admin/team/flags' && req.method === 'GET') {
-    sendJson(res, 200, { last24h: await adminActivityClient.flaggedSince(new Date(Date.now() - 86400_000)) });
+    const [last24h, balanceRequests] = await Promise.all([
+      adminActivityClient.flaggedSince(new Date(Date.now() - 86400_000)),
+      prisma.balanceAccessRequest.count({ where: { status: 'PENDING' } }),
+    ]);
+    sendJson(res, 200, { last24h, balanceRequests });
+    return true;
+  }
+
+  // Support asking to see someone's wallet balance: waiting first, then the last decided.
+  if (path === '/admin/team/balance-requests' && req.method === 'GET') {
+    const rows = await prisma.balanceAccessRequest.findMany({ orderBy: [{ status: 'desc' }, { createdAt: 'desc' }], take: 40 });
+    const people = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.userId))] } }, select: { id: true, name: true, phone: true } });
+    const who = new Map(people.map((p) => [p.id, p]));
+    sendJson(res, 200, {
+      requests: rows
+        .sort((a, b) => Number(b.status === 'PENDING') - Number(a.status === 'PENDING') || b.createdAt.getTime() - a.createdAt.getTime())
+        .map((r) => ({
+          id: r.id,
+          askedBy: r.adminName,
+          person: { id: r.userId, name: who.get(r.userId)?.name ?? 'No name yet', phone: who.get(r.userId)?.phone ?? null },
+          reason: r.reason,
+          status: r.status === 'APPROVED' && r.expiresAt && r.expiresAt.getTime() <= Date.now() ? 'EXPIRED' : r.status,
+          decidedBy: r.decidedByName,
+          askedAt: r.createdAt.toISOString(),
+          expiresAt: r.expiresAt?.toISOString() ?? null,
+        })),
+    });
+    return true;
+  }
+
+  const decide = path.match(/^\/admin\/team\/balance-requests\/([^/]+)\/(approve|deny)$/);
+  if (decide && req.method === 'POST') {
+    const request = await prisma.balanceAccessRequest.findUnique({ where: { id: decide[1]! } });
+    if (!request) {
+      sendJson(res, 404, { error: 'No such request' });
+      return true;
+    }
+    if (request.status !== 'PENDING') {
+      sendJson(res, 409, { error: `Already ${request.status === 'APPROVED' ? 'approved' : 'declined'} by ${request.decidedByName ?? 'an owner'}.` });
+      return true;
+    }
+    const approve = decide[2] === 'approve';
+    const now = new Date();
+    const updated = await prisma.balanceAccessRequest.update({
+      where: { id: request.id },
+      data: {
+        status: approve ? 'APPROVED' : 'DENIED',
+        decidedById: auth.adminId, decidedByName: auth.adminName, decidedAt: now,
+        expiresAt: approve ? new Date(now.getTime() + BALANCE_ACCESS_MS) : null,
+      },
+    });
+    recordAdminActivity({
+      adminId: auth.adminId, adminName: auth.adminName, kind: 'action', ip: clientIp(req),
+      detail: { what: approve ? 'let support see a wallet balance' : 'declined support seeing a wallet balance', for: request.adminName, userId: request.userId, reason: request.reason },
+    });
+    sendJson(res, 200, { id: updated.id, status: updated.status, expiresAt: updated.expiresAt?.toISOString() ?? null });
     return true;
   }
 

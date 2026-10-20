@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { prisma } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
-import { sendJson } from './utils';
+import { readJsonBody, sendJson } from './utils';
+import { clientIp, recordAdminActivity } from '../admin/activity';
+import type { AdminAuth } from './admin-auth.route';
 import { OUTCOME_FAILED, OUTCOME_OK } from '../analytics/user-outcomes';
 
 /**
@@ -15,12 +17,37 @@ import { OUTCOME_FAILED, OUTCOME_OK } from '../analytics/user-outcomes';
  *   GET  /admin/desk/people?q=&role=&page=  everyone, newest first, 50 a page; or by name, phone, email or username
  *   GET  /admin/desk/people/:id             one person: who they are, their trips, what they tried in the app, their chats
  *   GET  /admin/desk/trips/:ref             one trip by WH-01234 or its id: who, where, when and how it ended
+ *   POST /admin/desk/people/:id/balance-request { reason }   support asks an owner to see their wallet balance
+ *   GET  /admin/desk/people/:id/balance     the balance: owners and staff always; support once an owner said yes, for an hour
  *
  * Returns false when the path is not one of these.
  */
 interface DeskDeps {
   jwtSecret: string;
   adminApiKey: string;
+}
+
+/** How long an owner's yes lets support see one person's balance. */
+export const BALANCE_ACCESS_MS = 60 * 60_000;
+
+type BalanceAccess = {
+  /** always: owners and staff. none, pending, approved, denied or expired: support, for this person. */
+  status: 'always' | 'none' | 'pending' | 'approved' | 'denied' | 'expired';
+  reason?: string;
+  decidedBy?: string | null;
+  expiresAt?: string | null;
+};
+
+/** Whether this admin may see this person's balance now, and where their last ask stands. */
+async function balanceAccessFor(auth: AdminAuth, userId: string): Promise<BalanceAccess> {
+  if (auth.role !== 'SUPPORT') return { status: 'always' };
+  if (!auth.adminId) return { status: 'none' };
+  const last = await prisma.balanceAccessRequest.findFirst({ where: { adminId: auth.adminId, userId }, orderBy: { createdAt: 'desc' } });
+  if (!last) return { status: 'none' };
+  const base = { reason: last.reason, decidedBy: last.decidedByName, expiresAt: last.expiresAt?.toISOString() ?? null };
+  if (last.status === 'PENDING') return { status: 'pending', ...base };
+  if (last.status === 'DENIED') return { status: 'denied', ...base };
+  return last.expiresAt && last.expiresAt.getTime() > Date.now() ? { status: 'approved', ...base } : { status: 'expired', ...base };
 }
 
 /** People per page of the list. */
@@ -155,6 +182,62 @@ export async function handleAdminDeskRoute(req: IncomingMessage, res: ServerResp
         lastMessageAt: c.lastMessageAt.toISOString(),
         lastMessagePreview: c.lastMessagePreview,
       })),
+      balanceAccess: await balanceAccessFor(auth, id),
+    });
+    return true;
+  }
+
+  const askMatch = /^\/admin\/desk\/people\/([^/]+)\/balance-request$/.exec(path);
+  if (askMatch && req.method === 'POST') {
+    const userId = askMatch[1]!;
+    if (!auth.adminId) {
+      sendJson(res, 400, { error: 'Sign in with your own login to ask.' });
+      return true;
+    }
+    const body = ((await readJsonBody(req).catch(() => null)) ?? {}) as Record<string, unknown>;
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : '';
+    if (reason.length < 5) {
+      sendJson(res, 400, { error: 'Say what the money issue is, so the owner knows why.' });
+      return true;
+    }
+    if (!(await prisma.user.count({ where: { id: userId } }))) {
+      sendJson(res, 404, { error: 'No such person' });
+      return true;
+    }
+    const now = await balanceAccessFor(auth, userId);
+    if (now.status === 'pending' || now.status === 'approved') {
+      sendJson(res, 200, { balanceAccess: now });
+      return true;
+    }
+    await prisma.balanceAccessRequest.create({ data: { adminId: auth.adminId, adminName: auth.adminName, userId, reason } });
+    recordAdminActivity({
+      adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/desk/people/${userId}`,
+      detail: { what: 'asked to see a wallet balance', userId, reason }, ip: clientIp(req),
+    });
+    sendJson(res, 201, { balanceAccess: await balanceAccessFor(auth, userId) });
+    return true;
+  }
+
+  const balanceMatch = /^\/admin\/desk\/people\/([^/]+)\/balance$/.exec(path);
+  if (balanceMatch && req.method === 'GET') {
+    const userId = balanceMatch[1]!;
+    const access = await balanceAccessFor(auth, userId);
+    if (access.status !== 'always' && access.status !== 'approved') {
+      sendJson(res, 403, { error: 'An owner has to say yes before the balance is shown.', balanceAccess: access });
+      return true;
+    }
+    const wallet = await prisma.wallet.findUnique({ where: { userId }, select: { balanceNgn: true, lockedNgn: true, updatedAt: true } });
+    if (auth.role === 'SUPPORT') {
+      recordAdminActivity({
+        adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/desk/people/${userId}`,
+        detail: { what: 'saw a wallet balance', userId }, ip: clientIp(req),
+      });
+    }
+    const balance = Number(wallet?.balanceNgn ?? 0);
+    const held = Number(wallet?.lockedNgn ?? 0);
+    sendJson(res, 200, {
+      balance: { totalNgn: balance, heldNgn: held, availableNgn: Math.max(0, balance - held), updatedAt: wallet?.updatedAt?.toISOString() ?? null },
+      balanceAccess: access,
     });
     return true;
   }

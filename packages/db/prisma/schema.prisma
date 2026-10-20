@@ -771,6 +771,28 @@ model AdminUser {
   @@index([username])
 }
 
+/// Support asking to see one person's wallet balance, for a money issue, and
+/// an owner's answer. Approved, the balance is shown to that admin, for that
+/// person only, until expiresAt.
+model BalanceAccessRequest {
+  id            String    @id @default(uuid())
+  adminId       String
+  adminName     String
+  userId        String
+  /// What the money issue is, in support's words.
+  reason        String
+  /// "PENDING" | "APPROVED" | "DENIED"
+  status        String    @default("PENDING")
+  decidedById   String?
+  decidedByName String?
+  decidedAt     DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([adminId, userId, createdAt])
+}
+
 /// What admins did in the dashboard, for the owners' Team activity page:
 /// sign-ins, pages, searches, records opened, decisions, downloads and
 /// screenshot shortcuts (flagged). adminId is null for the bootstrap key and

@@ -6,7 +6,9 @@
  * Support reads and answers the inbox, reads what people tried in the app
  * (the Activity page), looks people and trips up with their phone numbers and
  * emails to reach them, and messages them. It never sees money (wallets,
- * fares, fees, Stellar, deposit accounts), bank details or identity documents.
+ * fares, fees, Stellar, deposit accounts), bank details or identity documents,
+ * except one person's wallet balance, for an hour, once an owner says yes to
+ * its asking (a money issue).
  */
 
 /** Where a support login lands. */
@@ -23,6 +25,8 @@ const ALLOWED: Array<[string, RegExp]> = [
   ['GET', /^\/admin\/desk\/people\/[^/]+$/],
   ['POST', /^\/admin\/support\/people\/[^/]+\/messages$/],
   ['GET', /^\/admin\/desk\/trips\/[^/]+$/],
+  ['POST', /^\/admin\/desk\/people\/[^/]+\/balance-request$/],
+  ['GET', /^\/admin\/desk\/people\/[^/]+\/balance$/],
 ];
 
 export function supportDeskAllows(method: string | undefined, path: string): boolean {
