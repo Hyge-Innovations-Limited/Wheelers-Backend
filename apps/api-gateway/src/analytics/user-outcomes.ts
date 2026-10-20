@@ -123,7 +123,7 @@ export function plainReason(status: number, shown: string | undefined): string {
   return said ?? 'The request was refused.';
 }
 
-type Noted = { shownError?: string; phone?: string };
+type Noted = { shownError?: string; phone?: string; detail?: string };
 const notes = new WeakMap<ServerResponse, Noted>();
 
 /** Remembered by `sendJson`: the sentence this response showed the person. */
@@ -134,6 +134,16 @@ export function noteShownError(res: ServerResponse, error: unknown): void {
 /** A route that knows whose request this is before they are signed in (their phone number) says so. */
 export function noteRequestPhone(res: ServerResponse, phone: string | null | undefined): void {
   if (phone) notes.set(res, { ...notes.get(res), phone });
+}
+
+/**
+ * What the person entered, where it says what went wrong better than the
+ * refusal alone ("DEJI" for a referral code nobody has). Shown after the
+ * action on the Activity page. Never a secret: no passwords, PINs or codes sent by SMS.
+ */
+export function noteRequestDetail(res: ServerResponse, detail: string | null | undefined): void {
+  const clean = typeof detail === 'string' ? detail.trim().slice(0, 60) : '';
+  if (clean) notes.set(res, { ...notes.get(res), detail: clean });
 }
 
 function userIdOf(req: IncomingMessage, jwtSecret: string): string | null {
@@ -179,6 +189,7 @@ export function outcomeOf(input: {
   shownError?: string;
   phone?: string;
   via?: string;
+  detail?: string;
 }): Outcome | null {
   const { method, path, status } = input;
   if (method === 'OPTIONS' || NEVER.test(path)) return null;
@@ -202,6 +213,7 @@ export function outcomeOf(input: {
     method,
     ...(input.phone ? { phone: input.phone } : {}),
     ...(input.via ? { via: input.via } : {}),
+    ...(input.detail ? { detail: input.detail } : {}),
     ...(failed ? { message: plainReason(status, input.shownError), fault: status >= 500 ? 'ours' : 'theirs' } : {}),
   };
   return { userId: input.userId ?? GUEST_USER_ID, eventType: failed ? OUTCOME_FAILED : OUTCOME_OK, metadata };
@@ -217,6 +229,7 @@ export function recordRequestOutcome(req: IncomingMessage, res: ServerResponse, 
     userId: userIdOf(req, jwtSecret),
     shownError: noted?.shownError,
     phone: noted?.phone,
+    detail: noted?.detail,
   });
   if (!outcome) return;
   if (outcome.eventType === OUTCOME_PROBE) {
@@ -228,7 +241,7 @@ export function recordRequestOutcome(req: IncomingMessage, res: ServerResponse, 
     return;
   }
   const who = outcome.userId === GUEST_USER_ID ? `guest:${noted?.phone ?? ''}` : outcome.userId;
-  if (saidLately(`${who}|${path}|${res.statusCode}|${outcome.metadata.message ?? ''}`, Date.now())) return;
+  if (saidLately(`${who}|${path}|${res.statusCode}|${outcome.metadata.message ?? ''}|${noted?.detail ?? ''}`, Date.now())) return;
   logActivity({ userId: outcome.userId, eventType: outcome.eventType, source: 'app', metadata: outcome.metadata });
 }
 

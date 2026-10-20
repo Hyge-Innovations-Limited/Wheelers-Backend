@@ -4,6 +4,7 @@ import { authenticateHttpUser } from "./authenticate";
 import { readJsonBody, sendJson } from "./utils";
 import { getNumber, getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
+import { noteRequestDetail } from "../analytics/user-outcomes";
 import { referralChatMessage, referralShareLink } from "../whatsapp/referral";
 
 interface ReferralRouteDeps {
@@ -155,6 +156,8 @@ export async function handleApplyReferralCodeRoute(
       sendJson(res, 400, { error: "code is required" });
       return;
     }
+    // The Activity page shows the code they entered, worked or not.
+    noteRequestDetail(res, referralClient.normalizeCode(code));
 
     const result = await referralClient.applyCode({
       referredUserId: user.id,

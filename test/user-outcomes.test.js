@@ -146,3 +146,24 @@ test('the admin page leaves probes out of people\'s problems, counts them on the
   assert.equal(january.range.from, '2026-01-10T00:00:00.000Z');
   assert.ok(!january.probes.paths.some((entry) => entry.name === `POST ${path}`), 'today\'s probe is not in January');
 });
+
+test('what the person entered is kept with the line: a referral code nobody has shows which code', async () => {
+  const outcome = outcomeOf({ method: 'POST', path: '/referrals/apply', status: 400, userId: randomUUID(), shownError: 'Referral code was not found.', detail: 'DEJI' });
+  assert.equal(outcome.eventType, OUTCOME_FAILED);
+  assert.equal(outcome.metadata.action, 'Entered a referral code');
+  assert.equal(outcome.metadata.detail, 'DEJI');
+  assert.equal(outcomeOf({ method: 'POST', path: '/referrals/apply', status: 400, userId: randomUUID(), shownError: 'x' }).metadata.detail, undefined);
+
+  const user = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: 'Code Typer' } });
+  made.users.push(user.id);
+  const marker = `Referral code was not found. ${randomUUID()}`;
+  const row = await activityClient.record({ userId: user.id, eventType: OUTCOME_FAILED, source: 'app', metadata: { action: 'Entered a referral code', detail: 'DEJI', message: marker, fault: 'theirs', method: 'POST', path: '/referrals/apply', status: 400 } });
+  made.events.push(row.id);
+  let sent;
+  const res = { setHeader() {}, end(body) { sent = JSON.parse(body); }, statusCode: 0 };
+  await handleAdminAppActivityRoute({ headers: { 'x-admin-key': 'test-key' } }, res, { adminApiKey: 'test-key', jwtSecret: 's' }, new URL(`http://x/admin/analytics/app-activity?outcome=failed&userId=${user.id}`));
+  const line = sent.rows.find((r) => r.message === marker);
+  assert.equal(line.action, 'Entered a referral code: DEJI');
+  const top = sent.summary.top.find((problem) => problem.message === marker);
+  if (top) assert.equal(top.action, 'Entered a referral code', 'counted by problem, not split by every code typed');
+});

@@ -268,7 +268,8 @@ export async function handleAdminAppActivityRoute(
         id: row.id,
         at: row.createdAt.toISOString(),
         ok: !failed,
-        action: text(meta.action) ?? eventWords(row.eventType),
+        // What they entered, after what they did: "Entered a referral code: DEJI".
+        action: [text(meta.action) ?? eventWords(row.eventType), text(meta.detail)].filter(Boolean).join(': '),
         message: failed ? (text(meta.message) ?? 'The request was refused.') : null,
         ourFault: meta.fault === 'ours',
         userId: user ? row.userId : null,
