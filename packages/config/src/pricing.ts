@@ -117,7 +117,8 @@ export const PERIOD_PREMIUM_MAX_NGN = 10_000;
 export type HourCurve = { weekday: number[]; weekend: number[] };
 /** Never under the other app's quiet-hour figures: the curve only ever lifts them. */
 export const HOUR_CURVE_MIN = 1;
-export const HOUR_CURVE_MAX = 1.6;
+/** At most this far above the quiet-hour figures, however many prices say otherwise: an hour can never run away. */
+export const HOUR_CURVE_MAX = 1.15;
 /** The live surge may never be set to lift a price past this, whatever is saved. */
 export const SURGE_MAX_LIMIT = 2;
 

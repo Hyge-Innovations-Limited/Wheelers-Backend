@@ -177,9 +177,10 @@ export const pricingClient = {
    * with none yet, from what the rush and quiet figures charge now). Saves nothing.
    */
   async learnHourCurve(settings: PricingSettings, now = new Date()): Promise<HourCurveFit & { previous: PricingSettings['hourCurve'] }> {
-    const previous = settings.hourCurve ?? seedHourCurve(settings);
+    const baseline = seedHourCurve(settings);
+    const previous = settings.hourCurve ?? baseline;
     const evidence = await pricingClient.curveEvidence(new Date(now.getTime() - CURVE_DAYS * 86_400_000), settings);
-    return { ...fitHourCurve(evidence, previous, now), previous };
+    return { ...fitHourCurve(evidence, previous, now, { baseline }), previous };
   },
 
   /**

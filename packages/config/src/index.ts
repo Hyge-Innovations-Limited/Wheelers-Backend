@@ -75,7 +75,7 @@ export {
   dayPeriodOf, premiumAt, premiumFor, DAY_PERIODS, PERIOD_PREMIUM_MAX_NGN,
   lagosClock, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, SURGE_MAX_LIMIT,
 } from './pricing';
-export { fitHourCurve } from './hour-curve';
+export { fitHourCurve, MIN_PRICES_FOR_AN_HOUR } from './hour-curve';
 export type { CurveEvidence, CurveEvidenceKind, HourCurveFit } from './hour-curve';
 export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';

@@ -15,7 +15,13 @@
  * neighbours count a little, the other kind of day a little less), newer
  * prices counting more, pulled toward the multiplier it has now while there
  * are few, and moved at most maxStep in one fit so a night's odd prices
- * cannot swing it. Never under HOUR_CURVE_MIN: the curve only ever lifts.
+ * cannot swing it.
+ *
+ * An hour moves only on enough of its own evidence: fewer than
+ * MIN_PRICES_FOR_AN_HOUR prices within an hour of it (on that kind of day),
+ * and it stays at the baseline, what the rush and quiet figures charge, so
+ * three evening prices cannot lift every evening. Never under HOUR_CURVE_MIN
+ * (the curve only ever lifts) nor over HOUR_CURVE_MAX (+15%).
  */
 import { HOUR_CURVE_MAX, HOUR_CURVE_MIN, lagosClock, type HourCurve } from './pricing';
 
@@ -47,6 +53,8 @@ const PRIOR_WEIGHT = 3;
 const NEIGHBOUR = [1, 0.5, 0.15];
 /** A weekday price counts this much toward a weekend hour, and the other way round. */
 const OTHER_KIND_OF_DAY = 0.3;
+/** Prices an hour needs within an hour either side, on its kind of day, before it moves off the baseline. */
+export const MIN_PRICES_FOR_AN_HOUR = 8;
 
 function weightedMedian(points: Array<{ value: number; weight: number }>): number {
   const sorted = [...points].sort((a, b) => a.value - b.value);
@@ -65,8 +73,10 @@ export function fitHourCurve(
   evidence: CurveEvidence[],
   previous: HourCurve,
   now: Date = new Date(),
-  options: { maxStep?: number } = {},
+  options: { maxStep?: number; baseline?: HourCurve } = {},
 ): HourCurveFit {
+  // Where an hour sits with too little of its own evidence: the rush and quiet figures, or where it is now.
+  const baseline = options.baseline ?? previous;
   const maxStep = options.maxStep ?? 0.15;
   const used: Record<CurveEvidenceKind, number> = { sample: 0, agreed: 0, bid: 0 };
   const points = evidence
@@ -80,6 +90,7 @@ export function fitHourCurve(
 
   const fitDay = (weekend: boolean) => {
     const before = weekend ? previous.weekend : previous.weekday;
+    const resting = weekend ? baseline.weekend : baseline.weekday;
     const curve: number[] = [];
     const counts: number[] = [];
     for (let hour = 0; hour < 24; hour++) {
@@ -91,12 +102,17 @@ export function fitHourCurve(
         if (gap <= 1 && p.weekend === weekend) count += 1;
         near.push({ value: p.log, weight: p.weight * NEIGHBOUR[gap]! * (p.weekend === weekend ? 1 : OTHER_KIND_OF_DAY) });
       }
+      counts.push(count);
+      if (count < MIN_PRICES_FOR_AN_HOUR) {
+        // Not enough to say this hour differs: back to the baseline, not wherever three prices pushed it.
+        curve.push(Math.round(clamp(resting[hour] ?? 1) * 100) / 100);
+        continue;
+      }
       const prior = Math.log(before[hour] ?? 1);
       const total = near.reduce((sum, p) => sum + p.weight, 0);
       const learned = total > 0 ? (total * weightedMedian(near) + PRIOR_WEIGHT * prior) / (total + PRIOR_WEIGHT) : prior;
       const stepped = Math.max(prior - Math.log(1 + maxStep), Math.min(prior + Math.log(1 + maxStep), learned));
       curve.push(Math.round(clamp(Math.exp(stepped)) * 100) / 100);
-      counts.push(count);
     }
     return { curve, counts };
   };

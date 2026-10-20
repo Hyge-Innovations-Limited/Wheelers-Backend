@@ -40,7 +40,9 @@ function solve(X, y) {
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const estimate = (f, s) => f.baseNgn + f.perKmNgn * s.km + f.perMinuteNgn * s.minutes;
 export const typicalMiss = (f, samples) => (samples.length ? Math.round(median(samples.map((s) => Math.abs(estimate(f, s) - s.priceNgn)))) : null);
-const sane = (f) => f.baseNgn >= 0 && f.baseNgn <= 3000 && f.perKmNgn >= 50 && f.perKmNgn <= 1500 && f.perMinuteNgn >= 0 && f.perMinuteNgn <= 200 && f.perMinuteNgn < f.perKmNgn;
+// What a Lagos ride app could really charge: a fit outside this (₦4 a minute, ₦1,500 a km) is
+// two trips' noise, not a price, and falls back to fitting less.
+const sane = (f) => f.baseNgn >= 0 && f.baseNgn <= 3000 && f.perKmNgn >= 120 && f.perKmNgn <= 600 && f.perMinuteNgn >= 15 && f.perMinuteNgn <= 150 && f.perMinuteNgn < f.perKmNgn;
 
 /**
  * Figures for one set of hours. `samples`: [{ km, minutes, priceNgn }]. `current`: what is saved now.

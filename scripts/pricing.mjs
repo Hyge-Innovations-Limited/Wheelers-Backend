@@ -281,9 +281,11 @@ async function samples() {
 async function fit() {
   // Prices go stale: only the last 60 days count.
   // City-wide figures only: a price from an outer area carries that area's factor, and is fitted by area-fit.
-  const rows = await prisma.marketSample.findMany({ where: { takenAt: { gte: new Date(Date.now() - 60 * 86400_000) }, area: null } });
   const { settings } = await pricingClient.loadSettings();
-  if (settings.hourCurveOn && settings.hourCurve) return fitShape(rows, settings);
+  // With the curve on, every price shapes the figures, an area's divided by its factor; otherwise city-wide prices only.
+  const shaped = settings.hourCurveOn && settings.hourCurve;
+  const rows = await prisma.marketSample.findMany({ where: { takenAt: { gte: new Date(Date.now() - 60 * 86400_000) }, ...(shaped ? {} : { area: null }) } });
+  if (shaped) return fitShape(rows, settings);
   const change = {};
   for (const hours of ['quiet', 'rush']) {
     const mine = rows.filter((r) => r.rush === (hours === 'rush')).map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) }));
@@ -313,7 +315,8 @@ async function fitShape(rows, settings) {
     const { hour, weekend } = config.lagosClock(at);
     return (weekend ? settings.hourCurve.weekend : settings.hourCurve.weekday)[hour];
   };
-  const mine = rows.map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) / hourOf(r.takenAt) }));
+  const areaOf = (r) => (r.area ? settings.areas[r.area]?.pickup ?? 1 : 1);
+  const mine = rows.map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) / hourOf(r.takenAt) / areaOf(r) }));
   const result = fitMarket(mine, settings.quiet);
   const f = result.figures;
   console.log(`Price by the clock is on: one shape for every hour, from all ${mine.length} price${mine.length === 1 ? '' : 's'} in the last 60 days, each with its hour's multiplier taken out.`);
@@ -327,7 +330,7 @@ async function fitShape(rows, settings) {
   const curve = await pricingClient.learnHourCurve(next);
   const guess = (r, quiet, c) => {
     const { hour, weekend } = config.lagosClock(r.takenAt);
-    return (quiet.baseNgn + quiet.perKmNgn * r.km + quiet.perMinuteNgn * r.minutes) * (weekend ? c.weekend : c.weekday)[hour];
+    return (quiet.baseNgn + quiet.perKmNgn * r.km + quiet.perMinuteNgn * r.minutes) * (weekend ? c.weekend : c.weekday)[hour] * areaOf(r);
   };
   console.log('\nEach price you collected, and what we would guess for it:');
   console.table(rows.map((r) => ({

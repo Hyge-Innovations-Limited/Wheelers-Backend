@@ -45,18 +45,18 @@ test('curve on: the other app is its quiet-hour figures times the hour; switchin
   assert.ok(Math.abs(on.marketFareNgn - off.marketFareNgn) / off.marketFareNgn < 0.01, `the seed prices the typical trip as rush did, to the rounding of its multiplier (${on.marketFareNgn} vs ${off.marketFareNgn})`);
   assert.equal(on.hourFactor, seed.weekday[18]);
 
-  const curve = flat(); curve.weekday[18] = 1.3;
+  const curve = flat(); curve.weekday[18] = 1.1;
   config.setPricingSettings({ ...floorOn, hourCurveOn: true, hourCurve: curve });
   const six = config.calculateSuggestedFare(15, { durationSeconds: 40 * 60, at: lagos(18) });
   const noon = config.calculateSuggestedFare(15, { durationSeconds: 40 * 60, at: lagos(12) });
-  assert.equal(Math.round(six.marketFareNgn), Math.round(config.quietMarketFareNgn(15, 40) * 1.3));
+  assert.equal(Math.round(six.marketFareNgn), Math.round(config.quietMarketFareNgn(15, 40) * 1.1));
   assert.equal(Math.round(noon.marketFareNgn), Math.round(config.quietMarketFareNgn(15, 40)));
 });
 
-test('a saved curve is made safe: 24 hours each, never under 1 or over 1.6', () => {
+test('a saved curve is made safe: 24 hours each, never under 1 or over 1.15', () => {
   const s = config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(0.7), weekend: Array(24).fill(9) } });
   assert.equal(s.hourCurve.weekday[0], 1);
-  assert.equal(s.hourCurve.weekend[0], 1.6);
+  assert.equal(s.hourCurve.weekend[0], 1.15, 'an hour that ran away is held at +15% the moment it is read');
   assert.equal(config.setPricingSettings({ hourCurve: { weekday: [1, 2], weekend: Array(24).fill(1) } }).hourCurve, null);
   assert.equal(config.setPricingSettings({ surgeMax: 50 }).surgeMax, 2);
   config.setPricingSettings({});
@@ -64,14 +64,15 @@ test('a saved curve is made safe: 24 hours each, never under 1 or over 1.6', () 
 
 test('the curve learns: inDrive dearer at 6pm lifts 6pm (15% a fit at most), not 3am; nothing pulls it under 1; wild prices are ignored', () => {
   const now = lagos(23);
-  const at6 = Array.from({ length: 12 }, (_, i) => ({ at: new Date(lagos(18).getTime() - i * 86_400_000 / 4), ratio: 1.3, weight: 3, kind: 'sample' }));
+  // Twelve evening prices, all around 6pm on weekdays: enough for that hour to move.
+  const at6 = Array.from({ length: 12 }, (_, i) => ({ at: new Date(lagos(18).getTime() - i * 5 * 60_000), ratio: 1.3, weight: 3, kind: 'sample' }));
   const fit = config.fitHourCurve(at6, flat(), now);
   assert.equal(fit.curve.weekday[18], 1.15, 'a step of 15% toward 1.3');
   assert.ok(fit.curve.weekday[17] > 1 && fit.curve.weekday[17] <= fit.curve.weekday[18], 'its neighbours a little');
   assert.equal(fit.curve.weekday[3], 1, 'a far hour untouched');
   assert.equal(fit.used.sample, 12);
   const again = config.fitHourCurve(at6, fit.curve, now);
-  assert.ok(again.curve.weekday[18] > 1.2, `fitted again it goes on toward 1.3 (${again.curve.weekday[18]})`);
+  assert.equal(again.curve.weekday[18], 1.15, 'fitted again, never past +15% however the prices lean');
 
   const cheap = Array.from({ length: 10 }, () => ({ at: lagos(14), ratio: 0.8, weight: 3, kind: 'sample' }));
   assert.equal(config.fitHourCurve(cheap, flat(), now).curve.weekday[14], 1, 'never cheaper than the quiet-hour figures');
@@ -83,9 +84,21 @@ test('the curve learns: inDrive dearer at 6pm lifts 6pm (15% a fit at most), not
 test('one price is pulled toward the curve it has; many move it', () => {
   const now = lagos(23);
   const one = config.fitHourCurve([{ at: lagos(9), ratio: 1.3, weight: 1, kind: 'agreed' }], flat(), now);
-  const many = config.fitHourCurve(Array.from({ length: 20 }, () => ({ at: lagos(9), ratio: 1.3, weight: 1, kind: 'agreed' })), flat(), now, { maxStep: 1 });
-  assert.ok(one.curve.weekday[9] < 1.1, `one agreed fare moves it a little (${one.curve.weekday[9]})`);
-  assert.ok(many.curve.weekday[9] >= 1.24, `twenty move it most of the way (${many.curve.weekday[9]})`);
+  const many = config.fitHourCurve(Array.from({ length: 20 }, () => ({ at: lagos(9), ratio: 1.12, weight: 1, kind: 'agreed' })), flat(), now, { maxStep: 1 });
+  assert.equal(one.curve.weekday[9], 1, 'one agreed fare is not enough to move an hour');
+  assert.ok(many.curve.weekday[9] >= 1.09, `twenty move it most of the way (${many.curve.weekday[9]})`);
+});
+
+test('three evening prices cannot lift every evening; an hour that ran ahead on too few goes back to the rush and quiet figures', () => {
+  const now = lagos(23);
+  const ranAhead = flat(); ranAhead.weekday[17] = 1.3; ranAhead.weekday[18] = 1.32; ranAhead.weekday[19] = 1.3;
+  const baseline = flat(); baseline.weekday[18] = 1.12;
+  const three = [7500, 8700, 9800].map((price, i) => ({ at: new Date(lagos(18).getTime() + i * 60_000), ratio: price / 6500, weight: 3, kind: 'sample' }));
+  const fit = config.fitHourCurve(three, ranAhead, now, { baseline });
+  assert.equal(fit.curve.weekday[18], 1.12, 'back to what the rush figures charge');
+  assert.equal(fit.curve.weekday[17], 1);
+  assert.equal(fit.counts.weekday[18], 3);
+  assert.equal(config.MIN_PRICES_FOR_AN_HOUR, 8);
 });
 
 test('surge: only with the switch on, only ever up, never past the most', () => {
