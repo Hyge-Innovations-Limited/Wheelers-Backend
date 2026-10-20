@@ -110,3 +110,23 @@ test('lift 1: traffic, a busy area and our own rate never take a price past the 
   assert.ok(lifted.suggestedFareNgn - lifted.marketFareNgn > 2000);
   config.setPricingSettings({});
 });
+
+test('extra: a flat amount on top of the final price, after everything else; the rest is untouched', () => {
+  const range = { minNgn: 800, maxNgn: 1500 };
+  const settings = { marketFloorOn: true, trafficOn: true, demandOn: true, liftCap: 1, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
+  for (const [km, minutes, hour] of [[3.2, 12, 19], [15.5, 47, 18], [15.5, 47, 14], [28, 60, 8]]) {
+    const trip = { durationSeconds: minutes * 60, trafficRatio: 1.4, at: lagos(hour), trialKey: `x${km}` };
+    config.setPricingSettings({ ...settings, extraNgn: 0 });
+    const before = config.calculateSuggestedFare(km, trip);
+    config.setPricingSettings({ ...settings, extraNgn: 800 });
+    const after = config.calculateSuggestedFare(km, trip);
+    assert.equal(after.suggestedFareNgn, before.suggestedFareNgn + 800, `${km} km at ${hour}:00`);
+    assert.equal(after.marketFareNgn, before.marketFareNgn, 'the other app\'s fare as the model worked it out');
+    assert.equal(after.floorFareNgn, before.floorFareNgn);
+    assert.deepEqual(after.premium, before.premium);
+    assert.equal(after.minOfferNgn, Math.max(after.suggestedFareNgn - 850, config.MIN_FARE_NGN), 'a rider bargains from the price shown (never under the minimum fare)');
+  }
+  assert.equal(config.setPricingSettings({ extraNgn: 830 }).extraNgn, 850, 'whole ₦50s');
+  assert.equal(config.setPricingSettings({ extraNgn: -5 }).extraNgn, 0);
+  config.setPricingSettings({});
+});

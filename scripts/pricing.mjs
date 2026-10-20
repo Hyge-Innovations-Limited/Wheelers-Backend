@@ -32,6 +32,8 @@
 //   npm run pricing surge on|off
 //   npm run pricing surge max 1.4            the most it may lift the other app's fare (at most 2)
 //
+//   npm run pricing extra 800                ₦800 on top of every price, after everything else (0: none);
+//                                            part of the fare, so the driver keeps it
 //   npm run pricing lift 1                   how far traffic and a busy area may lift a price past the floor
 //                                            (1: never past it, so never more than the other app + the premium; at most 3)
 //   npm run pricing trials 0.1               the share of trips shown a trial price (0 to switch off)
@@ -90,6 +92,7 @@ async function status() {
   const f = (x) => `base ${naira(x.baseNgn)}, ${naira(x.perKmNgn)} a km, ${naira(x.perMinuteNgn)} a minute`;
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
   console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${premiumText(settings, p)}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
+  console.log(`Flat extra on top of every price: ${settings.extraNgn > 0 ? naira(settings.extraNgn) : 'none'}`);
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
@@ -513,6 +516,9 @@ const commands = {
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
   curve,
   surge,
+  extra: () => save(() => ({ extraNgn: number(rest[0], 'the extra') }), (s) => (s.extraNgn > 0
+    ? `Every price now has ${naira(s.extraNgn)} on top, after everything else is worked out.`
+    : 'No extra on top any more.')),
   lift: () => save(() => ({ liftCap: number(rest[0], 'the lift') }), (s) => (s.liftCap <= 1
     ? 'Traffic and a busy area now move a price only inside the premium: never past the other app + the premium.'
     : `Traffic and a busy area may now lift a price to ${s.liftCap}× the floor.`)),
@@ -524,7 +530,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | lift N | curve [fit [save] | on | off] | surge [on | off | max N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

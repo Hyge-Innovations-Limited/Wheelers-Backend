@@ -194,6 +194,12 @@ export type PricingSettings = {
    * never learn whether another would have done better. 0 switches it off.
    */
   trialShare: number;
+  /**
+   * A flat amount added to every suggested price after everything else has
+   * worked it out (the floor, the curve, the surge, the premium, the model).
+   * Part of the fare, so the driver keeps it less the usual commission. 0: none.
+   */
+  extraNgn: number;
 };
 
 /** A cut is never more than this share of the fare. */
@@ -227,6 +233,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   minOfferGapNgn: 850,
   rideValueNgn: 500,
   trialShare: 0.1,
+  extraNgn: 0,
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
   areas: {
@@ -344,6 +351,8 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     minOfferGapNgn: finite(v.minOfferGapNgn, d.minOfferGapNgn, 0, 5_000),
     rideValueNgn: finite(v.rideValueNgn, d.rideValueNgn, 0, 10_000),
     trialShare: finite(v.trialShare, d.trialShare, 0, 0.5),
+    // Whole ₦50s, as every price is.
+    extraNgn: Math.round(finite(v.extraNgn, d.extraNgn, 0, 5_000) / 50) * 50,
     areas: areasFrom(v.areas, d.areas),
   };
 }
@@ -760,6 +769,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     const model = Math.min(modelFareNgn, liftLimit);
     if (model > suggestedFareNgn) { suggestedFareNgn = model; setBy = 'model'; }
   }
+  // Last of all: the flat extra, on top of whatever the above came to.
+  suggestedFareNgn += settings.extraNgn;
   const limits = offerLimitsNgn(suggestedFareNgn);
 
   return {
