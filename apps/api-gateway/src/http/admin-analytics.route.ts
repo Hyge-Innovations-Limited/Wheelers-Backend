@@ -3,7 +3,6 @@ import { activityClient, analyticsClient, userClient } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { sendJson } from './utils';
 import { GUEST_USER_ID, OUTCOME_FAILED, OUTCOME_OK, OUTCOME_PROBE } from '../analytics/user-outcomes';
-import { maskPhone } from '../admin/support-desk';
 
 interface AnalyticsDeps {
   adminApiKey: string;
@@ -275,7 +274,7 @@ export async function handleAdminAppActivityRoute(
         ourFault: meta.fault === 'ours',
         userId: user ? row.userId : null,
         name: user?.name ?? null,
-        phone: auth.role === 'SUPPORT' ? maskPhone(user?.phone ?? text(meta.phone)) : user?.phone ?? text(meta.phone),
+        phone: user?.phone ?? text(meta.phone),
         role: user?.role ?? null,
         signedIn: row.userId !== GUEST_USER_ID,
         where: row.source,

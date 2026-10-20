@@ -2,21 +2,19 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { prisma } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { sendJson } from './utils';
-import { clientIp, recordAdminActivity } from '../admin/activity';
-import { maskEmail, maskPhone } from '../admin/support-desk';
 import { OUTCOME_FAILED, OUTCOME_OK } from '../analytics/user-outcomes';
 
 /**
- * The support desk's look-ups: people and trips, with nothing about money
- * (wallets, fares, fees, deposit accounts), bank details or identity
- * documents, and phone numbers and emails masked. Anyone on the dashboard
- * may use them; they are all a SUPPORT login gets besides the inbox and
- * the Activity page.
+ * The support desk's look-ups: people, with the phone number and email to
+ * reach them, and trips; nothing about money (wallets, fares, fees, deposit
+ * accounts), bank details or identity documents. Anyone on the dashboard
+ * may use them; they are all a SUPPORT login gets besides the inbox (where
+ * it also messages people, /admin/support/people/:id/messages) and the
+ * Activity page.
  *
- *   GET  /admin/desk/people?q=         riders and drivers by name, phone, email or username
- *   GET  /admin/desk/people/:id        one person: who they are, their trips, what they tried in the app, their chats
- *   POST /admin/desk/people/:id/phone  their full number, to call them back; recorded on Team activity
- *   GET  /admin/desk/trips/:ref        one trip by WH-01234 or its id: who, where, when and how it ended
+ *   GET  /admin/desk/people?q=&role=&page=  everyone, newest first, 50 a page; or by name, phone, email or username
+ *   GET  /admin/desk/people/:id             one person: who they are, their trips, what they tried in the app, their chats
+ *   GET  /admin/desk/trips/:ref             one trip by WH-01234 or its id: who, where, when and how it ended
  *
  * Returns false when the path is not one of these.
  */
@@ -24,6 +22,9 @@ interface DeskDeps {
   jwtSecret: string;
   adminApiKey: string;
 }
+
+/** People per page of the list. */
+const PAGE = 50;
 
 const tripLabel = (n: number) => `WH-${String(n).padStart(5, '0')}`;
 const LIVE = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
@@ -41,7 +42,10 @@ export async function handleAdminDeskRoute(req: IncomingMessage, res: ServerResp
   if (path === '/admin/desk/people' && req.method === 'GET') {
     const q = (url.searchParams.get('q') ?? '').trim();
     const digits = q.replace(/\D/g, '');
-    const where = q.length < 2
+    const roleWanted = url.searchParams.get('role');
+    const page = Math.max(0, Number.parseInt(url.searchParams.get('page') ?? '0', 10) || 0);
+    const byRole = roleWanted === 'drivers' ? { driver: { isNot: null } } : roleWanted === 'riders' ? { driver: { is: null } } : {};
+    const byText = q.length < 2
       ? {}
       : {
           OR: [
@@ -52,37 +56,31 @@ export async function handleAdminDeskRoute(req: IncomingMessage, res: ServerResp
             ...(digits.length >= 4 ? [{ phone: { contains: digits.replace(/^0/, '').replace(/^234/, '') } }] : []),
           ],
         };
-    const people = await prisma.user.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-      select: { id: true, name: true, role: true, phone: true, createdAt: true, driver: { select: { status: true, kycStatus: true } } },
-    });
+    const where = { AND: [byRole, byText] };
+    const [people, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: page * PAGE,
+        take: PAGE,
+        select: { id: true, name: true, role: true, phone: true, email: true, createdAt: true, driver: { select: { status: true, kycStatus: true } } },
+      }),
+      prisma.user.count({ where }),
+    ]);
     sendJson(res, 200, {
+      total,
+      page,
+      pageSize: PAGE,
       people: people.map((p) => ({
         id: p.id,
         name: p.name ?? 'No name yet',
         role: p.role,
-        phone: maskPhone(p.phone),
+        phone: p.phone,
+        email: p.email,
         joinedAt: p.createdAt.toISOString(),
         driver: p.driver ? { online: p.driver.status !== 'OFFLINE', documents: p.driver.kycStatus } : null,
       })),
     });
-    return true;
-  }
-
-  const phoneMatch = /^\/admin\/desk\/people\/([^/]+)\/phone$/.exec(path);
-  if (phoneMatch && req.method === 'POST') {
-    const person = await prisma.user.findUnique({ where: { id: phoneMatch[1]! }, select: { id: true, name: true, phone: true } });
-    if (!person) {
-      sendJson(res, 404, { error: 'No such person' });
-      return true;
-    }
-    recordAdminActivity({
-      adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/desk/people/${person.id}`,
-      detail: { what: 'showed a phone number', userId: person.id, name: person.name }, ip: clientIp(req),
-    });
-    sendJson(res, 200, { phone: person.phone });
     return true;
   }
 
@@ -125,8 +123,8 @@ export async function handleAdminDeskRoute(req: IncomingMessage, res: ServerResp
         id: person.id,
         name: person.name ?? 'No name yet',
         role: person.role,
-        phone: maskPhone(person.phone),
-        email: maskEmail(person.email),
+        phone: person.phone,
+        email: person.email,
         joinedAt: person.createdAt.toISOString(),
       },
       driver: person.driver ? {

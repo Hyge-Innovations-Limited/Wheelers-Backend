@@ -53,6 +53,19 @@ export const supportClient = {
       return { conversation, message, started: !open };
     }),
 
+  /**
+   * Support writing first, to someone who may never have written in: into
+   * their open chat, or their last one (reopened), or a new one. What they
+   * see in the app is an ordinary message from support.
+   */
+  supportStart: async (input: { userId: string; content: string; adminId: string | null; adminName: string }) => {
+    const existing = await supportClient.currentFor(input.userId);
+    const conversation = existing ?? await prisma.supportConversation.create({
+      data: { userId: input.userId, topic: 'From Wheelers support', lastMessageAt: new Date(), unreadForSupport: 0 },
+    });
+    return supportClient.supportSend({ conversationId: conversation.id, content: input.content, adminId: input.adminId, adminName: input.adminName });
+  },
+
   /** A reply from support. The first admin to answer is the one it is assigned to. */
   supportSend: (input: { conversationId: string; content: string; adminId: string | null; adminName: string }) =>
     prisma.$transaction(async (tx) => {

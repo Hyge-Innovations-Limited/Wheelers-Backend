@@ -1,11 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
-import { supportClient } from '@wheleers/db';
+import { prisma, supportClient } from '@wheleers/db';
 import type { NotificationEvent } from '@wheleers/kafka-schemas';
 import { clientIp, recordAdminActivity } from '../admin/activity';
 import { getString, isRecord } from '../utils/object';
 import { verifyAdminAuth } from './admin-auth.route';
-import { maskEmail, maskPhone } from '../admin/support-desk';
 import { authenticateHttpToken, HttpAuthError } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
 
@@ -135,9 +134,8 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
     sendJson(res, 401, { error: 'Unauthorized' });
     return;
   }
-  // The support desk sees numbers and emails masked, and no fares.
+  // The support desk sees no fares.
   const desk = auth.role === 'SUPPORT';
-  const phone = (value: string | null) => (desk ? maskPhone(value) : value);
 
   if (url.pathname === '/admin/support/conversations') {
     if (req.method !== 'GET') { sendJson(res, 405, { error: 'Method not allowed' }); return; }
@@ -156,7 +154,7 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         id: row.id,
         status: row.status === 'OPEN' ? 'open' : 'resolved',
         topic: row.topic,
-        person: { id: row.user.id, name: row.user.name ?? 'No name yet', phone: phone(row.user.phone), role: row.user.role },
+        person: { id: row.user.id, name: row.user.name ?? 'No name yet', phone: row.user.phone, role: row.user.role },
         rideId: row.rideId,
         onLiveTrip: Boolean(row.rideId && live.has(row.rideId)),
         lastMessageAt: row.lastMessageAt.toISOString(),
@@ -192,7 +190,7 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         assignedTo: conversation.assignedAdminName,
         createdAt: conversation.createdAt.toISOString(),
         resolvedAt: conversation.resolvedAt?.toISOString() ?? null,
-        person: { id: conversation.user.id, name: conversation.user.name ?? 'No name yet', phone: phone(conversation.user.phone), email: desk ? maskEmail(conversation.user.email) : conversation.user.email, role: conversation.user.role },
+        person: { id: conversation.user.id, name: conversation.user.name ?? 'No name yet', phone: conversation.user.phone, email: conversation.user.email, role: conversation.user.role },
       },
       messages: messages.map((message) => ({
         id: message.id,
@@ -210,10 +208,10 @@ async function handleForAdmin(req: IncomingMessage, res: ServerResponse, deps: S
         fareNgn: desk ? null : Number(ride.agreedFareNgn ?? ride.fareEstimateNgn ?? 0) || null,
         startedAt: ride.startedAt?.toISOString() ?? null,
         createdAt: ride.createdAt.toISOString(),
-        rider: ride.rider ? { name: ride.rider.name, phone: phone(ride.rider.phone) } : null,
+        rider: ride.rider ? { name: ride.rider.name, phone: ride.rider.phone } : null,
         driver: ride.driver ? {
           name: ride.driver.user.name,
-          phone: phone(ride.driver.user.phone),
+          phone: ride.driver.user.phone,
           car: [ride.driver.vehicleMake, ride.driver.vehicleModel].filter(Boolean).join(' ') || null,
           plate: ride.driver.vehiclePlate,
         } : null,
@@ -260,5 +258,42 @@ export async function handleSupportChatRoute(req: IncomingMessage, res: ServerRe
     await handleForAdmin(req, res, deps, url);
     return true;
   }
+  const person = /^\/admin\/support\/people\/([^/]+)\/messages$/.exec(url.pathname);
+  if (person) {
+    await messagePerson(req, res, deps, person[1]!);
+    return true;
+  }
   return false;
+}
+
+/**
+ * POST /admin/support/people/:userId/messages { content }
+ * Support writing to someone first, from their profile: it lands in their
+ * support chat in the app (their open one, their last one reopened, or a new
+ * one) with the usual notification, and the chat is then in the inbox.
+ */
+async function messagePerson(req: IncomingMessage, res: ServerResponse, deps: SupportChatDeps, userId: string): Promise<void> {
+  const auth = await verifyAdminAuth(req, deps);
+  if (!auth) {
+    sendJson(res, 401, { error: 'Unauthorized' });
+    return;
+  }
+  if (req.method !== 'POST') { sendJson(res, 405, { error: 'Method not allowed' }); return; }
+  const body = await readJsonBody(req).catch(() => null);
+  const read = readSupportContent(isRecord(body) ? body['content'] : undefined);
+  if ('error' in read) {
+    sendJson(res, 400, read);
+    return;
+  }
+  if (!(await prisma.user.count({ where: { id: userId } }))) {
+    sendJson(res, 404, { error: 'No such person' });
+    return;
+  }
+  const sent = await supportClient.supportStart({ userId, content: read.content, adminId: auth.adminId, adminName: auth.adminName });
+  recordAdminActivity({
+    adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/desk/people/${userId}`,
+    detail: { what: 'messaged someone from their profile', conversationId: sent.conversation.id, userId }, ip: clientIp(req),
+  });
+  void tellPerson(deps, userId, sent.conversation.id, sent.message);
+  sendJson(res, 201, { conversationId: sent.conversation.id, message: messageView(sent.message) });
 }
