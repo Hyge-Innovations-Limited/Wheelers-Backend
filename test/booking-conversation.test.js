@@ -1905,14 +1905,14 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
 
   const low = await form('data_exchange', { action: 'update_price', new_price: '100' });
   assert.equal(low.screen, 'CHANGE_PRICE');
-  assert.match(low.data.error, /below the lowest price for this trip, ₦3,000\. It's in the box now/);
+  assert.match(low.data.error, /below the lowest price for this trip, ₦3,300\. It's in the box now/);
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
-  const updated = await form('data_exchange', { new_price: '3,200' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
+  const updated = await form('data_exchange', { new_price: '3,500' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it
   assert.equal(updated.screen, 'OFFERS', 'back on the live list, the news on it');
-  assert.match(updated.data.error, /Price updated to ₦3,200\. Every driver looking at your trip can see it/);
-  assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [3200]);
-  assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 3200);
+  assert.match(updated.data.error, /Price updated to ₦3,500\. Every driver looking at your trip can see it/);
+  assert.deepEqual(events('RIDE_RIDER_COUNTER_OFFER').map((e) => e.counterOfferNgn), [3500]);
+  assert.equal((await bidState.getRideMeta(redis, rideId)).offerNgn, 3500);
   assert.equal(sent.length, before, 'not one chat message');
 });
 
@@ -2426,11 +2426,11 @@ test('QUICK ACTIONS FORM · mid-search: Your current trip is the live offers lis
   const priceBox = await form('data_exchange', { action: 'offers_choice', choice: 'change_price' }, 'OFFERS');
   assert.equal(priceBox.screen, 'CHANGE_PRICE');
   assert.equal(priceBox.data.current_price, '2000');
-  const raised = await form('data_exchange', { action: 'update_price', new_price: '3000' }, 'CHANGE_PRICE');
+  const raised = await form('data_exchange', { action: 'update_price', new_price: '3500' }, 'CHANGE_PRICE');
   assert.equal(raised.screen, 'OFFERS');
-  assert.match(raised.data.error, /Price updated to ₦3,000/);
-  assert.match(raised.data.offer_line, /Your price: ₦3,000/);
-  assert.equal((await bidState.getRideMeta(at.redis, at.rideId)).offerNgn, 3000);
+  assert.match(raised.data.error, /Price updated to ₦3,500/);
+  assert.match(raised.data.offer_line, /Your price: ₦3,500/);
+  assert.equal((await bidState.getRideMeta(at.redis, at.rideId)).offerNgn, 3500);
 
   // A STATUS screen left open from before still works: its button waits a few seconds and lands on the offers.
   setTimeout(() => onlineDriver().then((driver) => bidState.addBid(at.redis, at.rideId, offerFrom(driver, 2400))), 300);

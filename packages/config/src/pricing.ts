@@ -53,7 +53,7 @@ export const MIN_OFFER_DISCOUNT = 1 - MIN_OFFER_SHARE;
  * Hard floor on what any ride can cost the rider, regardless of distance.
  * Short trips would otherwise leave the driver nothing for their time.
  */
-export const MIN_FARE_NGN = 3000;
+export const MIN_FARE_NGN = 3300;
 /** Fares shown to riders are rounded up to this. */
 export const FARE_ROUNDING_INCREMENT = 50;
 export const SERVICE_FEE_NGN = BOOKING_FEE_NGN; // the booking fee's old name

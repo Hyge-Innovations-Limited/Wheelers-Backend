@@ -24,7 +24,7 @@ test('10 km at ₦350/km: ₦3,500 + ₦262.50 VAT + ₦350 = ₦4,112.50, the r
   assert.equal(BOOKING_FEE_NGN, 350);
   assert.equal(fareFromRatePerKmNgn(350, 10), 4150);
   assert.equal(calculateSuggestedFare(10).suggestedFareNgn, 4400, 'recommended ₦375/km: 3,750 + 281.25 + 350 = 4,381.25 → 4,400');
-  assert.equal(calculateSuggestedFare(2).suggestedFareNgn, 3000, 'never under the minimum fare (₦3,000)');
+  assert.equal(calculateSuggestedFare(2).suggestedFareNgn, 3300, 'never under the minimum fare (₦3,300)');
 });
 
 test('a ₦4,150 fare taken apart: only commission and the levy come off the driver', () => {
