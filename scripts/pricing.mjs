@@ -32,6 +32,8 @@
 //   npm run pricing surge on|off
 //   npm run pricing surge max 1.4            the most it may lift the other app's fare (at most 2)
 //   npm run pricing surge min 0.9            the most it may take off when quiet (0.9 = 10%; 1 = never down; at least 0.8)
+//   npm run pricing simulate 19.9 25         a made-up day of our market, two minutes at a time, priced with the
+//                                            settings saved now: what riders would see and the least they could offer
 //
 //   npm run pricing extra 800                ₦800 on top of every price, after everything else (0: none);
 //                                            part of the fare, so the driver keeps it
@@ -156,6 +158,55 @@ async function curve() {
 }
 
 /** npm run pricing surge [on | off | max N]: the live surge, and what it reads. */
+/**
+ * npm run pricing simulate [KM] [MINUTES]: our own market through a made-up
+ * weekday, a reading every two minutes as the gateway takes them: a quiet
+ * night, riders arriving in the morning, a steady afternoon, the evening
+ * rush, a quiet late night. Each step is priced with the settings saved now,
+ * so it shows what the live surge does to what a rider sees. Saves nothing.
+ */
+async function simulate() {
+  const km = rest[0] ? number(rest[0], 'km') : 19.9;
+  const minutes = rest[1] ? number(rest[1], 'minutes') : 25;
+  const { settings } = await pricingClient.loadSettings();
+  config.setPricingSettings(settings);
+  const path = await import('node:path');
+  const { readSurge, stepSurge } = require(path.join(process.cwd(), 'apps/api-gateway/dist/pricing/surge.js'));
+
+  // [Lagos hour, minutes into it, what is going on, the signals the gateway would read]
+  const phases = [
+    [1, 'Late night: 5 drivers online, nobody booking', { rides: 0, drivers: 5, counter: null, noBidShare: null }, 6],
+    [7, 'Morning: riders arrive, drivers ask 15% more', { rides: 6, drivers: 3, counter: 1.15, noBidShare: 0.2 }, 6],
+    [13, 'Afternoon: steady, bids at the offer', { rides: 3, drivers: 6, counter: 1, noBidShare: 0 }, 4],
+    [18, 'Evening rush: 10 riders for 4 drivers, many unanswered', { rides: 10, drivers: 4, counter: 1.1, noBidShare: 0.6 }, 6],
+    [22, 'Late evening: quiet again, 6 drivers, 1 ride', { rides: 1, drivers: 6, counter: null, noBidShare: null }, 6],
+  ];
+  const weekday = new Date();
+  while ([0, 6].includes(weekday.getUTCDay())) weekday.setUTCDate(weekday.getUTCDate() + 1);
+  let factor = 1;
+  const rows = [];
+  for (const [hour, what, signals, steps] of phases) {
+    const read = readSurge(signals, settings.surgeMax, settings.surgeMin);
+    for (let i = 0; i < steps; i++) {
+      factor = settings.surgeOn ? stepSurge(factor, read.target, settings.surgeMin) : 1;
+      const at = new Date(Date.UTC(weekday.getUTCFullYear(), weekday.getUTCMonth(), weekday.getUTCDate(), hour - 1, i * 2));
+      const fare = config.calculateSuggestedFare(km, { durationSeconds: minutes * 60, trafficRatio: 1, at, surgeFactor: factor });
+      rows.push({
+        time: `${String(hour).padStart(2, '0')}:${String(i * 2).padStart(2, '0')}`,
+        happening: i === 0 ? what : '',
+        surge: `×${factor}`,
+        heading: i === 0 ? `×${read.target}` : '',
+        riderSees: naira(fare.suggestedFareNgn),
+        leastOffer: naira(fare.minOfferNgn),
+      });
+    }
+  }
+  console.log(`A made-up weekday for a ${km} km, ${minutes}-minute trip, priced with the settings saved now (surge ${settings.surgeOn ? 'ON' : 'off'}, from ×${settings.surgeMin} to ×${settings.surgeMax}):`);
+  console.table(rows);
+  if (!settings.surgeOn) console.log('The live surge is off, so nothing moves: "npm run pricing surge on".');
+  console.log('In real life the readings come from our own riders, drivers and bids every two minutes ("npm run pricing surge").');
+}
+
 async function surge() {
   const [word, value] = rest;
   if (word === 'on' || word === 'off') {
@@ -535,6 +586,7 @@ const commands = {
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
   curve,
   surge,
+  simulate,
   extra: () => save(() => ({ extraNgn: number(rest[0], 'the extra') }), (s) => (s.extraNgn > 0
     ? `Every price now has ${naira(s.extraNgn)} on top, after everything else is worked out.`
     : 'No extra on top any more.')),
@@ -549,7 +601,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }
