@@ -1,15 +1,20 @@
 /**
- * The parts of Lagos where a ride costs more to give: drivers are few there,
- * so one has to come from far, and a driver who drops a rider there drives
- * back empty. Each has a pickup factor and a drop-off factor in the pricing
- * settings (PricingSettings.areas); a trip takes the larger of its two.
+ * The parts of Lagos priced against the standard (Yaba and Lagos Island, and
+ * anywhere not named here). Each has a pickup factor and a drop-off factor in
+ * the pricing settings (PricingSettings.areas), 1 until real prices there say
+ * otherwise (npm run pricing sample … AREA, then area-fit); a trip takes the
+ * larger of its two.
  *
- * Outlines are the local government areas from OpenStreetMap (© OpenStreetMap
- * contributors, ODbL), simplified to about a hundred metres. Everywhere else
- * in Lagos has no area factor.
+ * The outer areas (Ikorodu, Epe, Ibeju-Lekki, Badagry), where drivers are few
+ * and come back empty: local government outlines from OpenStreetMap
+ * (© OpenStreetMap contributors, ODbL), simplified to about a hundred metres.
+ * The inner ones (Maryland, Ikeja, Surulere, Lekki, Ajah), where the other app
+ * charges more than in Yaba and on the Island: boxes drawn around the
+ * neighbourhood, kept off Yaba and the Island. The first area a point falls
+ * in is its area, so Maryland comes before the Ikeja around it.
  */
 
-export type PricingAreaKey = 'ikorodu' | 'epe' | 'ibeju-lekki' | 'badagry';
+export type PricingAreaKey = 'ikorodu' | 'epe' | 'ibeju-lekki' | 'badagry' | 'maryland' | 'ikeja' | 'surulere' | 'lekki' | 'ajah';
 
 export interface PricingArea {
   key: PricingAreaKey;
@@ -19,6 +24,10 @@ export interface PricingArea {
   /** [lat, lng] corners in order; the shape closes itself. */
   outline: ReadonlyArray<readonly [number, number]>;
 }
+
+/** A box from its south-west and north-east corners, as an outline. */
+const box = (south: number, west: number, north: number, east: number): PricingArea['outline'] =>
+  [[south, west], [north, west], [north, east], [south, east]];
 
 export const PRICING_AREAS: readonly PricingArea[] = [
   {
@@ -97,6 +106,42 @@ export const PRICING_AREAS: readonly PricingArea[] = [
       [6.45731, 2.79389], [6.45079, 2.78362], [6.44842, 2.77584], [6.44736, 2.75748], [6.44776, 2.74574], [6.45566, 2.73406],
       [6.45742, 2.71868], [6.45136, 2.70667],
     ],
+  },
+  // Inside Lagos: priced against Yaba and the Island, where the other app charges more.
+  {
+    // Maryland, Mende and Onigbongbo: inside Ikeja's box, so first.
+    key: 'maryland',
+    name: 'Maryland',
+    center: [6.5715, 3.3676],
+    outline: box(6.560, 3.355, 6.585, 3.385),
+  },
+  {
+    // Ikeja GRA, Allen, Alausa, Opebi, Oregun, Agidingbi, Ogba and the airport.
+    key: 'ikeja',
+    name: 'Ikeja',
+    center: [6.6018, 3.3515],
+    outline: box(6.565, 3.310, 6.655, 3.385),
+  },
+  {
+    // Surulere, Ojuelegba, Aguda, Itire, Masha, Adeniran Ogunsanya, up to Yaba.
+    key: 'surulere',
+    name: 'Surulere',
+    center: [6.5000, 3.3500],
+    outline: box(6.470, 3.325, 6.520, 3.362),
+  },
+  {
+    // Lekki Phase 1, Ikate, Agungi, Osapa, Chevron, Jakande, Ikota: from the toll gate.
+    key: 'lekki',
+    name: 'Lekki',
+    center: [6.4474, 3.4720],
+    outline: box(6.415, 3.455, 6.475, 3.550),
+  },
+  {
+    // Ajah, Badore, Addo, Sangotedo, Abraham Adesanya, up to where Ibeju-Lekki starts.
+    key: 'ajah',
+    name: 'Ajah',
+    center: [6.4670, 3.5710],
+    outline: box(6.415, 3.550, 6.500, 3.624),
   },
 ];
 

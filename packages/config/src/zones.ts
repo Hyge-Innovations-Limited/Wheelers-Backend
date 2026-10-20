@@ -39,6 +39,26 @@ export const LAUNCH_ZONES: LaunchZone[] = [
       [6.415, 3.375],
     ],
   },
+  {
+    // Ikeja, with Maryland: GRA, Allen, Alausa, Opebi, Oregun, Ogba and the airport.
+    name: 'Ikeja',
+    polygon: [
+      [6.655, 3.310],
+      [6.655, 3.385],
+      [6.560, 3.385],
+      [6.560, 3.310],
+    ],
+  },
+  {
+    // Surulere, Ojuelegba, Aguda, Itire, Masha, up to Yaba.
+    name: 'Surulere',
+    polygon: [
+      [6.520, 3.325],
+      [6.520, 3.362],
+      [6.470, 3.362],
+      [6.470, 3.325],
+    ],
+  },
 ];
 
 /** What the dashboard calls a place outside every launch zone. */

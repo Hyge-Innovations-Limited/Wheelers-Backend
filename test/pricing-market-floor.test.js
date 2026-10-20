@@ -380,9 +380,9 @@ test('the minimum offer sits a set amount under the suggested price: N850 unless
 test('a short trip never goes under the minimum fare, and the driver ceiling does not move with the gap', () => {
   const { offerLimitsNgn } = config;
   setPricingSettings({ ...DEFAULT_PRICING_SETTINGS });
-  assert.equal(offerLimitsNgn(2500).minOfferNgn, 2500, 'already at the minimum fare: nothing to bargain away');
-  assert.equal(offerLimitsNgn(3000).minOfferNgn, 2500);
-  assert.equal(offerLimitsNgn(3400).minOfferNgn, 2550);
+  assert.equal(offerLimitsNgn(2800).minOfferNgn, 2800, 'already at the minimum fare: nothing to bargain away');
+  assert.equal(offerLimitsNgn(3000).minOfferNgn, 2800);
+  assert.equal(offerLimitsNgn(3700).minOfferNgn, 2850);
   const withGap = offerLimitsNgn(6000).maxOfferNgn;
   setPricingSettings({ ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 0 });
   assert.equal(offerLimitsNgn(6000).maxOfferNgn, withGap);

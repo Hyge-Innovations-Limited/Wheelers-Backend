@@ -52,6 +52,8 @@
 //   npm run pricing sample 15.5 23 5800       a trip of 15.5 km and 23 minutes cost ₦5,800 just now
 //   npm run pricing sample 16 33 7200 rush    ...taken in rush hours (or "quiet"), when adding it later
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
+//   npm run pricing sample 9.5 28 5200 ikeja      ...a trip from or to an area inside Lagos (maryland, ikeja,
+//                                                 surulere, lekki, ajah): Yaba and the Island are the standard
 //   npm run pricing samples                   every price collected
 //   npm run pricing fit                       what figures they give, and how far off today's are (saves nothing)
 //   npm run pricing fit save                  use them
@@ -394,8 +396,13 @@ async function setArea() {
 }
 
 /** What the other app's prices from each area say its pickup factor should be: their price against our city-wide figures. */
+/** Inside Lagos: dearer both ways, so a fit sets the drop-off factor too. The outer areas keep theirs. */
+const INNER_AREAS = new Set(['maryland', 'ikeja', 'surulere', 'lekki', 'ajah']);
+
 async function areaFit() {
   const { settings } = await pricingClient.loadSettings();
+  // Against the guess as prices are made now: by the clock with the curve on.
+  config.setPricingSettings(settings);
   const rows = await prisma.marketSample.findMany({ where: { takenAt: { gte: new Date(Date.now() - 60 * 86400_000) }, area: { not: null } } });
   const change = { ...settings.areas };
   let any = false;
@@ -403,15 +410,17 @@ async function areaFit() {
     const mine = rows.filter((r) => r.area === area.key);
     if (mine.length === 0) { console.log(`${area.name}: no prices collected (now ×${settings.areas[area.key].pickup})`); continue; }
     const ratios = mine.map((r) => {
+      if (config.hourFactorAt(r.takenAt) !== null) return Number(r.priceNgn) / config.marketFareNgn(r.km, r.minutes * 60, r.takenAt);
       const f = r.rush ? settings.rush : settings.quiet;
       return Number(r.priceNgn) / (f.baseNgn + f.perKmNgn * r.km + f.perMinuteNgn * r.minutes);
     });
     const said = Math.round(Math.min(config.AREA_FACTOR_MAX, Math.max(1, median(ratios))) * 100) / 100;
-    console.log(`${area.name}: ${mine.length} price${mine.length === 1 ? '' : 's'} say ×${said} (now ×${settings.areas[area.key].pickup})${mine.length < 5 ? ' — few prices, take it as a hint' : ''}`);
-    change[area.key] = { ...change[area.key], pickup: said };
+    const inner = INNER_AREAS.has(area.key);
+    console.log(`${area.name}: ${mine.length} price${mine.length === 1 ? '' : 's'} say ×${said} (now ×${settings.areas[area.key].pickup}${inner ? `, ×${settings.areas[area.key].dropoff} into it` : ''})${mine.length < 5 ? ' — few prices, take it as a hint' : ''}`);
+    change[area.key] = inner ? { pickup: said, dropoff: said } : { ...change[area.key], pickup: said };
     any = true;
   }
-  if (rest[0] !== 'save') { console.log('\nNothing saved. "npm run pricing area-fit save" to use these pickup factors.'); return; }
+  if (rest[0] !== 'save') { console.log('\nNothing saved. "npm run pricing area-fit save" to use these factors (inside Lagos both ways; outer areas the pickup).'); return; }
   if (!any) { console.log('Nothing to save.'); return; }
   await pricingClient.saveSettings({ ...settings, areas: change }, 'server');
   console.log('Saved. New prices follow within a minute.');

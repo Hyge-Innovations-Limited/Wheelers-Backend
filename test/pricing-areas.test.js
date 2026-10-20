@@ -18,13 +18,20 @@ const price = (km, minutes, ends) => config.calculateSuggestedFare(km, { duratio
 
 test.beforeEach(() => config.setPricingSettings({}));
 
-test('the four outer areas are where they should be, and the city is in none', () => {
+test('the outer areas and the dearer ones inside Lagos are where they should be; Yaba and the Island are the standard', () => {
   assert.equal(config.pricingAreaOf(IKORODU.lat, IKORODU.lng)?.key, 'ikorodu');
   assert.equal(config.pricingAreaOf(ILEMERE.lat, ILEMERE.lng)?.key, 'ikorodu');
   assert.equal(config.pricingAreaOf(EPE.lat, EPE.lng)?.key, 'epe');
   assert.equal(config.pricingAreaOf(6.43, 3.75)?.key, 'ibeju-lekki');
   assert.equal(config.pricingAreaOf(6.415, 2.8813)?.key, 'badagry');
-  for (const p of [YABA, LEKKI_PHASE_1, { lat: 6.6018, lng: 3.3515 }]) assert.equal(config.pricingAreaOf(p.lat, p.lng), null);
+  // Inside Lagos, priced against Yaba and the Island.
+  assert.equal(config.pricingAreaOf(LEKKI_PHASE_1.lat, LEKKI_PHASE_1.lng)?.key, 'lekki');
+  assert.equal(config.pricingAreaOf(6.6018, 3.3515)?.key, 'ikeja');
+  assert.equal(config.pricingAreaOf(6.5715, 3.3676)?.key, 'maryland', 'Maryland, though inside Ikeja\'s box');
+  assert.equal(config.pricingAreaOf(6.495, 3.355)?.key, 'surulere');
+  assert.equal(config.pricingAreaOf(6.467, 3.571)?.key, 'ajah');
+  // The standard: Yaba, Unilag, Victoria Island, Ikoyi.
+  for (const p of [YABA, { lat: 6.5158, lng: 3.3896 }, { lat: 6.428, lng: 3.42 }, { lat: 6.452, lng: 3.435 }]) assert.equal(config.pricingAreaOf(p.lat, p.lng), null);
 });
 
 test('a trip from Ikorodu takes the pickup factor; one into Ikorodu the drop-off factor; the larger wins', () => {

@@ -53,7 +53,7 @@ export const MIN_OFFER_DISCOUNT = 1 - MIN_OFFER_SHARE;
  * Hard floor on what any ride can cost the rider, regardless of distance.
  * Short trips would otherwise leave the driver nothing for their time.
  */
-export const MIN_FARE_NGN = 2500;
+export const MIN_FARE_NGN = 2800;
 /** Fares shown to riders are rounded up to this. */
 export const FARE_ROUNDING_INCREMENT = 50;
 export const SERVICE_FEE_NGN = BOOKING_FEE_NGN; // the booking fee's old name
@@ -241,6 +241,12 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
     epe: { pickup: 1.7, dropoff: 1.5 },
     'ibeju-lekki': { pickup: 1.5, dropoff: 1.35 },
     badagry: { pickup: 1.7, dropoff: 1.5 },
+    // Inside Lagos: the standard until real prices there say otherwise (npm run pricing sample … AREA, area-fit).
+    maryland: { pickup: 1, dropoff: 1 },
+    ikeja: { pickup: 1, dropoff: 1 },
+    surulere: { pickup: 1, dropoff: 1 },
+    lekki: { pickup: 1, dropoff: 1 },
+    ajah: { pickup: 1, dropoff: 1 },
   },
 };
 
