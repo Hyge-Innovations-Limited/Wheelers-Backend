@@ -21,7 +21,7 @@
  * MIN_PRICES_FOR_AN_HOUR prices within an hour of it (on that kind of day),
  * and it stays at the baseline, what the rush and quiet figures charge, so
  * three evening prices cannot lift every evening. Never under HOUR_CURVE_MIN
- * (the curve only ever lifts) nor over HOUR_CURVE_MAX (+15%).
+ * (−10%: a cheaper hour may come down) nor over HOUR_CURVE_MAX (+15%).
  */
 import { HOUR_CURVE_MAX, HOUR_CURVE_MIN, lagosClock, type HourCurve } from './pricing';
 

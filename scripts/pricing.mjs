@@ -27,10 +27,11 @@
 //   npm run pricing curve on                 price by the curve (in place of rush/quiet); relearned at 03:00 each night
 //   npm run pricing curve off                back to the rush and quiet figures
 //
-// The live surge, from our own riders, drivers and bids (only ever lifts a price):
+// The live surge, from our own riders, drivers and bids: up when busy, down when quiet:
 //   npm run pricing surge                    the surge in each zone and the city now, and why
 //   npm run pricing surge on|off
 //   npm run pricing surge max 1.4            the most it may lift the other app's fare (at most 2)
+//   npm run pricing surge min 0.9            the most it may take off when quiet (0.9 = 10%; 1 = never down; at least 0.8)
 //
 //   npm run pricing extra 800                ₦800 on top of every price, after everything else (0: none);
 //                                            part of the fare, so the driver keeps it
@@ -99,7 +100,7 @@ async function status() {
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
   console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.lagosClock(new Date()).weekend ? settings.hourCurve.weekend[config.lagosClock(new Date()).hour] : settings.hourCurve.weekday[config.lagosClock(new Date()).hour]}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
-  console.log(`Live surge: ${on(settings.surgeOn)}, at most ×${settings.surgeMax}${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}`);
+  console.log(`Live surge: ${on(settings.surgeOn)}, from ×${settings.surgeMin} when quiet to ×${settings.surgeMax} when busy${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}`);
   console.log(`Traffic: ${on(settings.trafficOn)}   Busy area: ${on(settings.demandOn)}`);
   console.log(`Outer areas (pickup / drop-off): ${config.PRICING_AREAS.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ')}`);
   console.log(`Model: ${on(settings.modelOn)}`);
@@ -165,8 +166,13 @@ async function surge() {
   if (word === 'max') {
     return save(() => ({ surgeMax: number(value, 'the most') }), (s) => `The live surge may now lift the other app's fare up to ×${s.surgeMax}.`);
   }
+  if (word === 'min') {
+    return save(() => ({ surgeMin: number(value, 'the least') }), (s) => (s.surgeMin >= 1
+      ? 'The live surge now only ever lifts: a quiet market takes nothing off.'
+      : `A quiet market may now take up to ${Math.round((1 - s.surgeMin) * 100)}% off the other app's fare (×${s.surgeMin}).`));
+  }
   const { settings } = await pricingClient.loadSettings();
-  console.log(`Live surge: ${settings.surgeOn ? 'ON' : 'off'}, at most ×${settings.surgeMax}`);
+  console.log(`Live surge: ${settings.surgeOn ? 'ON' : 'off'}, from ×${settings.surgeMin} when quiet to ×${settings.surgeMax} when busy`);
   const path = await import('node:path');
   const { RedisClient } = require(path.join(process.cwd(), 'apps/api-gateway/dist/redis/client.js'));
   const redis = new RedisClient(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
@@ -184,6 +190,7 @@ async function surge() {
       drivers: a.drivers,
       driversAsk: a.counter === null ? '—' : `${a.counter >= 1 ? '+' : ''}${Math.round((a.counter - 1) * 100)}%`,
       noBid: a.noBidShare === null ? '—' : `${Math.round(a.noBidShare * 100)}%`,
+      why: a.why ?? '—',
       reads: a.fromCity ? 'the city (few rides here)' : 'its own rides',
     })));
     if (!settings.surgeOn) console.log('Off: these are what it would do. "npm run pricing surge on" to use them.');
@@ -542,7 +549,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

@@ -115,12 +115,18 @@ export const PERIOD_PREMIUM_MAX_NGN = 10_000;
  * for weekends.
  */
 export type HourCurve = { weekday: number[]; weekend: number[] };
-/** Never under the other app's quiet-hour figures: the curve only ever lifts them. */
-export const HOUR_CURVE_MIN = 1;
+/**
+ * At most this far under the other app's quiet-hour figures: an hour really
+ * cheaper there (late at night, say) may come down, but only on enough prices
+ * (hour-curve.ts) and never more than 10%.
+ */
+export const HOUR_CURVE_MIN = 0.9;
 /** At most this far above the quiet-hour figures, however many prices say otherwise: an hour can never run away. */
 export const HOUR_CURVE_MAX = 1.15;
 /** The live surge may never be set to lift a price past this, whatever is saved. */
 export const SURGE_MAX_LIMIT = 2;
+/** Nor to take more than this off, whatever is saved: a quiet market lowers a price, it never gives rides away. */
+export const SURGE_MIN_LIMIT = 0.8;
 
 export type PricingSettings = {
   /** Never suggest less than the market fare + the premium. */
@@ -148,11 +154,14 @@ export type PricingSettings = {
   hourCurveFittedAt: string | null;
   /**
    * The live surge: our own riders against our own drivers, and how drivers
-   * bid, lift the other app's fare (never lower it), up to surgeMax times.
-   * The gateway measures it every two minutes (npm run pricing surge).
+   * bid, move the other app's fare: up to surgeMax times when busy, down to
+   * surgeMin times when quiet (drivers online and idle, nobody asking, or
+   * drivers bidding under offers). The gateway measures it every two
+   * minutes (npm run pricing surge). surgeMin 1: it only ever lifts.
    */
   surgeOn: boolean;
   surgeMax: number;
+  surgeMin: number;
   trafficOn: boolean;
   demandOn: boolean;
   /** Off: the model's number is only recorded beside each quote (shadow). On: it may lift the fare. */
@@ -224,6 +233,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   hourCurveFittedAt: null,
   surgeOn: false,
   surgeMax: 1.4,
+  surgeMin: 0.9,
   trafficOn: false,
   demandOn: false,
   modelOn: false,
@@ -348,6 +358,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     hourCurveFittedAt: typeof v.hourCurveFittedAt === 'string' ? v.hourCurveFittedAt.slice(0, 40) : null,
     surgeOn: v.surgeOn === true,
     surgeMax: finite(v.surgeMax, d.surgeMax, 1, SURGE_MAX_LIMIT),
+    surgeMin: finite(v.surgeMin, d.surgeMin, SURGE_MIN_LIMIT, 1),
     trafficOn: v.trafficOn === true,
     demandOn: v.demandOn === true,
     modelOn: v.modelOn === true,
@@ -568,11 +579,11 @@ function demandFactorOf(factors: RateFactors): number {
     : 1;
 }
 
-/** The live surge for a trip: 1 with the switch off, never under 1, never past surgeMax. */
+/** The live surge for a trip: 1 with the switch off or nothing measured, never under surgeMin, never past surgeMax. */
 export function surgeFactorOf(factors: RateFactors): number {
   if (!pricingSettings.surgeOn) return 1;
   const s = factors.surgeFactor;
-  return s !== undefined && Number.isFinite(s) ? Math.min(pricingSettings.surgeMax, Math.max(1, s)) : 1;
+  return s !== undefined && Number.isFinite(s) && s > 0 ? Math.min(pricingSettings.surgeMax, Math.max(pricingSettings.surgeMin, s)) : 1;
 }
 
 /** The demand multiplier a requests-to-drivers ratio comes to (1 = normal), whatever the switch says. */

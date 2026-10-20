@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const config = require('@wheleers/config');
 const { prisma, pricingClient } = require('@wheleers/db');
-const { surgeTarget, stepSurge } = require('../apps/api-gateway/dist/pricing/surge.js');
+const { surgeTarget, stepSurge, readSurge } = require('../apps/api-gateway/dist/pricing/surge.js');
 
 // A Wednesday, at an hour Lagos time (UTC+1); and a Saturday.
 const lagos = (hour, day = 21) => new Date(Date.UTC(2026, 9, day, hour - 1));
@@ -53,16 +53,16 @@ test('curve on: the other app is its quiet-hour figures times the hour; switchin
   assert.equal(Math.round(noon.marketFareNgn), Math.round(config.quietMarketFareNgn(15, 40)));
 });
 
-test('a saved curve is made safe: 24 hours each, never under 1 or over 1.15', () => {
+test('a saved curve is made safe: 24 hours each, never under 0.9 or over 1.15', () => {
   const s = config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(0.7), weekend: Array(24).fill(9) } });
-  assert.equal(s.hourCurve.weekday[0], 1);
+  assert.equal(s.hourCurve.weekday[0], 0.9, 'never more than 10% under');
   assert.equal(s.hourCurve.weekend[0], 1.15, 'an hour that ran away is held at +15% the moment it is read');
   assert.equal(config.setPricingSettings({ hourCurve: { weekday: [1, 2], weekend: Array(24).fill(1) } }).hourCurve, null);
   assert.equal(config.setPricingSettings({ surgeMax: 50 }).surgeMax, 2);
   config.setPricingSettings({});
 });
 
-test('the curve learns: inDrive dearer at 6pm lifts 6pm (15% a fit at most), not 3am; nothing pulls it under 1; wild prices are ignored', () => {
+test('the curve learns: inDrive dearer at 6pm lifts 6pm (15% a fit at most), not 3am; cheaper hours come down at most 10%; wild prices are ignored', () => {
   const now = lagos(23);
   // Twelve evening prices, all around 6pm on weekdays: enough for that hour to move.
   const at6 = Array.from({ length: 12 }, (_, i) => ({ at: new Date(lagos(18).getTime() - i * 5 * 60_000), ratio: 1.3, weight: 3, kind: 'sample' }));
@@ -75,7 +75,8 @@ test('the curve learns: inDrive dearer at 6pm lifts 6pm (15% a fit at most), not
   assert.equal(again.curve.weekday[18], 1.15, 'fitted again, never past +15% however the prices lean');
 
   const cheap = Array.from({ length: 10 }, () => ({ at: lagos(14), ratio: 0.8, weight: 3, kind: 'sample' }));
-  assert.equal(config.fitHourCurve(cheap, flat(), now).curve.weekday[14], 1, 'never cheaper than the quiet-hour figures');
+  assert.equal(config.fitHourCurve(cheap, flat(), now).curve.weekday[14], 0.9, 'a cheaper hour comes down, never more than 10%');
+  assert.equal(config.fitHourCurve(cheap.slice(0, 3), flat(), now).curve.weekday[14], 1, 'and not on three prices');
   const wild = [{ at: lagos(10), ratio: 9, weight: 3, kind: 'sample' }];
   assert.equal(config.fitHourCurve(wild, flat(), now).curve.weekday[10], 1);
   assert.equal(config.fitHourCurve(wild, flat(), now).used.sample, 0);
@@ -101,7 +102,7 @@ test('three evening prices cannot lift every evening; an hour that ran ahead on 
   assert.equal(config.MIN_PRICES_FOR_AN_HOUR, 8);
 });
 
-test('surge: only with the switch on, only ever up, never past the most', () => {
+test('surge: only with the switch on, between the least and the most; a quiet discount never goes under the minimum fare', () => {
   config.setPricingSettings({ ...floorOn });
   const plain = config.calculateSuggestedFare(15, { durationSeconds: 40 * 60, at: lagos(12), surgeFactor: 1.3 });
   assert.equal(plain.surgeFactor, 1, 'off: no surge');
@@ -110,8 +111,17 @@ test('surge: only with the switch on, only ever up, never past the most', () => 
   assert.equal(surged.surgeFactor, 1.3);
   assert.equal(Math.round(surged.marketFareNgn), Math.round(plain.marketFareNgn * 1.3));
   assert.ok(surged.suggestedFareNgn > plain.suggestedFareNgn);
-  assert.equal(config.calculateSuggestedFare(15, { durationSeconds: 2400, at: lagos(12), surgeFactor: 0.6 }).suggestedFareNgn, plain.suggestedFareNgn, 'never a discount');
+  const quiet = config.calculateSuggestedFare(15, { durationSeconds: 2400, at: lagos(12), surgeFactor: 0.6 });
+  assert.equal(quiet.surgeFactor, 0.9, 'no more than 10% off, whatever is measured');
+  assert.ok(quiet.suggestedFareNgn < plain.suggestedFareNgn);
+  assert.ok(quiet.minOfferNgn <= quiet.suggestedFareNgn);
+  assert.equal(config.calculateSuggestedFare(1, { durationSeconds: 240, at: lagos(12), surgeFactor: 0.9 }).suggestedFareNgn, config.MIN_FARE_NGN, 'a short trip stays at the minimum fare');
   assert.equal(config.calculateSuggestedFare(15, { durationSeconds: 2400, at: lagos(12), surgeFactor: 3 }).surgeFactor, 1.4);
+  assert.equal(config.calculateSuggestedFare(15, { durationSeconds: 2400, at: lagos(12), surgeFactor: NaN }).surgeFactor, 1, 'nothing measured is no surge');
+  config.setPricingSettings({ ...floorOn, surgeOn: true, surgeMax: 1.4, surgeMin: 1 });
+  assert.equal(config.calculateSuggestedFare(15, { durationSeconds: 2400, at: lagos(12), surgeFactor: 0.9 }).surgeFactor, 1, 'surgeMin 1: only ever up');
+  assert.equal(config.setPricingSettings({ surgeMin: 0.3 }).surgeMin, 0.8, 'never set to give rides away');
+  assert.equal(config.setPricingSettings({ surgeMin: 1.5 }).surgeMin, 1);
   config.setPricingSettings({});
 });
 
@@ -190,4 +200,27 @@ test('evidence: inDrive samples, a bargained fare, a fare taken as shown and an 
     await prisma.driver.delete({ where: { id: driver.id } });
     await prisma.user.deleteMany({ where: { id: { in: [rider.id, driverUser.id] } } });
   }
+});
+
+test('a quiet market brings the price down, gently, and only with drivers there to take the ride', () => {
+  const read = (signals, min = 0.9) => readSurge({ counter: null, noBidShare: null, ...signals }, 1.15, min);
+  assert.deepEqual(read({ rides: 0, drivers: 4 }), { target: 0.9, why: 'quiet: 4 drivers online, no rides' });
+  assert.equal(read({ rides: 1, drivers: 4 }).target, 0.95, 'one ride: halfway');
+  assert.equal(read({ rides: 0, drivers: 2 }).target, 1, 'two drivers is not a quiet market: nothing off');
+  assert.deepEqual(read({ rides: 0, drivers: 0 }), { target: 1, why: 'no drivers online' });
+  assert.equal(read({ rides: 4, drivers: 20, counter: 1 }).target, 0.95, 'four rides for twenty drivers');
+  assert.equal(read({ rides: 4, drivers: 6, counter: 0.9 }).target, 0.95, 'drivers bidding 10% under the offer: 5% off');
+  assert.ok(read({ rides: 4, drivers: 0, counter: 0.9 }).target > 1, 'riders and no driver online: busy, never a discount');
+  assert.equal(read({ rides: 4, drivers: 20, counter: 1.2 }).target, 1.15, 'anything pushing up wins');
+  assert.equal(read({ rides: 4, drivers: 6, counter: 1, noBidShare: 0.8 }).target > 1, true, 'drivers online yet nobody bidding is too cheap, never quiet');
+  assert.equal(read({ rides: 0, drivers: 9 }, 1).target, 1, 'surgeMin 1: never down');
+  assert.equal(read({ rides: 4, drivers: 6, counter: 1 }).why, 'steady');
+  // Down 0.03 a pass, back up 0.05: from 1 to 0.9 in four passes (8 minutes), never under the least.
+  let f = 1;
+  const path = [];
+  for (let i = 0; i < 5; i++) { f = stepSurge(f, 0.9, 0.9); path.push(f); }
+  assert.deepEqual(path, [0.97, 0.94, 0.91, 0.9, 0.9]);
+  assert.equal(stepSurge(0.9, 1.1, 0.9), 0.95, 'riders back: up at once');
+  assert.equal(stepSurge(0.9, 0.5, 0.9), 0.9);
+  assert.equal(stepSurge(0.85, 1, 1), 1, 'with the least back at 1, a saved discount goes at once');
 });
