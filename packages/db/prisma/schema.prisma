@@ -135,6 +135,7 @@ model Driver {
   kycSubmission        DriverKycSubmission?
   kycReviews           DriverKycReview[]
   documents            DriverDocument[]
+  checks               DriverCheck[]
   rides                Ride[]                @relation("DriverRides")
   bids                 DriverBid[]           @relation("DriverBids")
   interstateDepartures InterstateDeparture[] @relation("DriverInterstateDepartures")
@@ -1523,6 +1524,38 @@ model DriverDocument {
   @@unique([driverId, type])
   @@index([status, uploadedAt])
   @@index([expiresOn])
+}
+
+/// A check of a driver's licence or car: one Prembly ran from the admin, or
+/// one an admin did by hand on a government site and recorded. Key fields
+/// only: never the licence photo.
+model DriverCheck {
+  id         String   @id @default(uuid())
+  driverId   String
+  /// "licence" | "licenceFace" | "plate" | "insurance" | "manual"
+  kind       String
+  /// The DriverPaperType it is about, when it is about one (insurance, a manual check).
+  paperType  String?
+  /// "prembly" | "autoreg" | "dvis" | "niid" | "other"
+  source     String
+  /// What was checked: the licence number, the plate, the policy number.
+  input      String?
+  /// "verified" | "mismatch" | "not_found" | "failed" | "error"
+  outcome    String
+  /// What did not agree with what the driver gave us, in words.
+  mismatches String[] @default([])
+  /// The key fields that came back (names, dates, make, colour, policy status).
+  found      Json?
+  /// Prembly's reference for the check.
+  reference  String?
+  note       String?
+  byId       String?
+  byName     String
+  createdAt  DateTime @default(now())
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, createdAt])
+  @@index([source, createdAt])
 }
 
 enum SupportConversationStatus {

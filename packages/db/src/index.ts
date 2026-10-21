@@ -40,6 +40,8 @@ export { adminClient }          from './clients/admin.client';
 export { adminActivityClient }  from './clients/admin-activity.client';
 export { pricingClient }        from './clients/pricing.client';
 export { driverPaperClient }    from './clients/driver-paper.client';
+export { driverCheckClient }    from './clients/driver-check.client';
+export type { DriverCheckInput } from './clients/driver-check.client';
 export { supportClient }        from './clients/support.client';
 export type { PricingQuoteInput } from './clients/pricing.client';
 export type { AdminActivityInput } from './clients/admin-activity.client';

@@ -75,6 +75,8 @@ import {
 } from "./http/driver-kyc.route";
 import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
 import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
+import { handleAdminDriverChecksRoute } from "./http/admin-driver-checks.route";
+import { premblyConfigFromEnv } from "./verification/prembly";
 import { handleDriverPhoneRoute } from "./http/driver-phone.route";
 import { handleSupportChatRoute } from "./http/support-chat.route";
 import { startPaperReminderJob } from "./drivers/paper-notify";
@@ -1455,6 +1457,16 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         kycStorage: driverKycStorage,
       });
+      return;
+    }
+
+    // Checking a driver's licence and car: Prembly (owners), and checks done by hand on government sites.
+    if (await handleAdminDriverChecksRoute(req, res, {
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      kycStorage: driverKycStorage,
+      prembly: premblyConfigFromEnv(),
+    }, url)) {
       return;
     }
 

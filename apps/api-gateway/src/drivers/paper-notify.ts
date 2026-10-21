@@ -41,6 +41,34 @@ export async function notifyPaperDecision(
   );
 }
 
+/**
+ * The driver is told everything an admin decided in one go, in ONE message:
+ * what to send again and why, numbered, and how many were approved. Nothing
+ * when nothing was decided.
+ */
+export async function notifyPaperDecisions(
+  deps: PaperNotifyDeps,
+  driverUserId: string,
+  decided: { approved: string[]; sentBack: Array<{ type: string; reason: string }> },
+): Promise<void> {
+  const { approved, sentBack } = decided;
+  if (sentBack.length === 0 && approved.length === 0) return;
+  if (sentBack.length === 0) {
+    const labels = approved.map(labelOf);
+    await tell(
+      deps, driverUserId,
+      approved.length === 1 ? `${labels[0]} approved` : `${approved.length} papers approved`,
+      approved.length === 1 ? `Your ${labels[0]!.toLowerCase()} has been checked and approved.` : `Checked and approved: ${labels.join(', ')}.`,
+      'paper_approved',
+    );
+    return;
+  }
+  const list = sentBack.map((p, i) => `${sentBack.length > 1 ? `${i + 1}) ` : ''}${labelOf(p.type)}: ${p.reason}`).join('\n');
+  const title = sentBack.length === 1 ? `${labelOf(sentBack[0]!.type)}: please send it again` : `Please send ${sentBack.length} papers again`;
+  const good = approved.length === 0 ? '' : approved.length === 1 ? `\n${labelOf(approved[0]!)} is approved.` : `\n${approved.length} others are approved.`;
+  await tell(deps, driverUserId, title, `${list}${good}\nOpen Your papers to send ${sentBack.length === 1 ? 'a new one' : 'new ones'}.`, 'paper_rejected');
+}
+
 /** How many days ahead each reminder goes out; 0 is the day after it has run out. */
 export const REMINDER_DAYS = [30, 14, 3, 0] as const;
 const DAY_MS = 86_400_000;

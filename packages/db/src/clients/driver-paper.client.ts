@@ -29,6 +29,13 @@ export const driverPaperClient = {
       data: { status: decision.status, rejectionReason: decision.status === 'REJECTED' ? decision.reason : null, reviewedAt: new Date(), reviewedBy: decision.by.slice(0, 120) },
     }),
 
+  /** These papers, each with whose it is: what a decision across several drivers works from. */
+  findMany: (pairs: Array<{ driverId: string; type: string }>) =>
+    pairs.length === 0 ? Promise.resolve([]) : prisma.driverDocument.findMany({
+      where: { OR: pairs.map((p) => ({ driverId: p.driverId, type: p.type })) },
+      include: { driver: { select: { userId: true } } },
+    }),
+
   details: (driverId: string) =>
     prisma.driver.findUnique({ where: { id: driverId }, select: { legalName: true, licenceNumber: true, licenceExpiresOn: true } }),
 
