@@ -46,8 +46,15 @@ type Raw = {
 };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-/** A refusal about our account, not about the driver: never "not found". */
-const ACCOUNT_TROUBLE = /balance|wallet|fund|unauthori[sz]|forbidden|permission|api.?key|app.?id|inactive|not enabled|not activated|subscription|limit/i;
+/**
+ * Prembly saying the record does not exist. Only this is "not found": any
+ * other refusal ("could not be processed at the moment", a balance, a key, a
+ * source that is down) says nothing about the driver and is an error, tried
+ * again rather than kept. Prembly answered an insurance check on 21 Oct 2026
+ * with "Verification 'insurance_policy' could not be processed at the moment",
+ * and that was shown as Not found.
+ */
+const NOT_FOUND = /not\s*found|no\s+(record|data|match|result)s?\b|does\s*n[o']t\s+exist|could\s*not\s+be\s+found|cannot\s+be\s+found|unable\s+to\s+find|invalid\s+(licen[cs]e|plate|vehicle|policy|number|nin|bvn|id)|not\s+a\s+valid/i;
 
 /** One POST to Prembly, read into found / not found / error. Never throws. */
 export async function premblyPost(config: PremblyConfig, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch = fetch): Promise<PremblyAnswer> {
@@ -93,8 +100,8 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
       : null;
     return { kind: 'found', data, reference, detail, face };
   }
-  if (ACCOUNT_TROUBLE.test(detail) || (res.status >= 400 && ![400, 404, 422].includes(res.status))) return { kind: 'error', detail };
-  return { kind: 'not_found', detail, reference };
+  if (NOT_FOUND.test(detail) && [200, 400, 404, 422].includes(res.status)) return { kind: 'not_found', detail, reference };
+  return { kind: 'error', detail };
 }
 
 export const prembly = {

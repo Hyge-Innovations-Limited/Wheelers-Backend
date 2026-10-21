@@ -142,6 +142,11 @@ test("Prembly's answers are read as found, not found, or trouble on our side", a
   assert.equal(found.kind, 'found'); assert.equal(found.reference, 'ref-1');
   const missing = await premblyPost(config, '/x', {}, reply({ status: false, detail: 'Record not found', response_code: '01' }));
   assert.equal(missing.kind, 'not_found');
+  const busy = await premblyPost(config, '/x', {}, reply({ status: false, detail: "Verification 'insurance_policy' could not be processed at the moment" }));
+  assert.equal(busy.kind, 'error', 'a source that is down is not the policy missing');
+  assert.equal((await premblyPost(config, '/x', {}, reply({ status: false, detail: 'No record found for this plate number' }))).kind, 'not_found');
+  assert.equal((await premblyPost(config, '/x', {}, reply({ status: false, detail: 'Invalid licence number' }))).kind, 'not_found');
+  assert.equal((await premblyPost(config, '/x', {}, reply({ status: false, detail: 'Something went wrong' }))).kind, 'error', 'unknown refusals are errors, not not-found');
   const broke = await premblyPost(config, '/x', {}, reply({ status: false, detail: 'Insufficient wallet balance' }));
   assert.equal(broke.kind, 'error', 'our empty balance is not the driver having no licence');
   const key = await premblyPost(config, '/x', {}, reply({ detail: 'Invalid API key' }, 401));
