@@ -20,19 +20,20 @@ export function premblyConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Prem
     apiKey,
     appId: env.PREMBLY_APP_ID?.trim() || null,
     baseUrl: (env.PREMBLY_BASE_URL?.trim() || 'https://api.prembly.com').replace(/\/+$/, ''),
-    // Government records behind Prembly (FRSC, NIID) can take most of a minute; kept under the
-    // usual 60-second proxy limit so the admin gets our answer, not a gateway timeout.
-    timeoutMs: 55_000,
+    // Prembly itself gives up on a slow government source after about 60 seconds, then says
+    // so ("currently unavailable", not charged): wait past that to hear it. The admin's
+    // request does not wait on this: the check runs in the background (see the route).
+    timeoutMs: 90_000,
   };
 }
 
 export type PremblyAnswer =
   /** Found: the record, Prembly's reference, and for a face check whether the faces match. */
-  | { kind: 'found'; data: Record<string, unknown>; reference: string | null; detail: string; face: { match: boolean; confidence: number | null; message: string } | null }
+  | { kind: 'found'; data: Record<string, unknown>; reference: string | null; detail: string; face: { match: boolean; confidence: number | null; message: string } | null; charged: boolean | null }
   /** Prembly answered: there is no such record. */
-  | { kind: 'not_found'; detail: string; reference: string | null }
-  /** Prembly could not be reached or refused us (key, balance): nothing was learned about the driver. */
-  | { kind: 'error'; detail: string };
+  | { kind: 'not_found'; detail: string; reference: string | null; charged: boolean | null }
+  /** Prembly could not be reached, refused us (key, balance), or its source is down: nothing was learned about the driver. */
+  | { kind: 'error'; detail: string; charged: boolean | null };
 
 type Raw = {
   status?: unknown;
@@ -43,6 +44,8 @@ type Raw = {
   frsc_data?: unknown;
   verification?: { status?: unknown; reference?: unknown } | null;
   face_data?: { status?: unknown; message?: unknown; confidence?: unknown } | null;
+  /** Whether this call cost us anything: { was_charged: false, amount: "40.00", note: "No charges" }. */
+  billing_info?: { was_charged?: unknown } | null;
 };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -76,18 +79,20 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
     return {
       kind: 'error',
       detail: timedOut
-        ? `No answer from Prembly in ${Math.round(config.timeoutMs / 1000)} seconds: the government records behind it are slow or down. Try again in a few minutes; see Verification Reports on Prembly for whether it ran.`
+        ? `No answer from Prembly in ${Math.round(config.timeoutMs / 1000)} seconds: the government records behind it are slow or down. Try again later; see Verification Reports on Prembly for whether it ran.`
         : 'Could not reach Prembly.',
+      charged: null,
     };
   }
 
   let raw: Raw | null = null;
   try { raw = (await res.json()) as Raw; } catch { raw = null; }
   const detail = String((raw && (raw.detail ?? raw.message)) ?? '').trim() || `Prembly answered ${res.status}.`;
+  const charged = raw?.billing_info && typeof raw.billing_info.was_charged === 'boolean' ? raw.billing_info.was_charged : null;
 
-  if (res.status === 401 || res.status === 403) return { kind: 'error', detail: `Prembly refused our key: ${detail}` };
-  if (res.status === 402) return { kind: 'error', detail: `Prembly balance: ${detail}` };
-  if (res.status >= 500 || !raw) return { kind: 'error', detail };
+  if (res.status === 401 || res.status === 403) return { kind: 'error', detail: `Prembly refused our key: ${detail}`, charged };
+  if (res.status === 402) return { kind: 'error', detail: `Prembly balance: ${detail}`, charged };
+  if (res.status >= 500 || !raw) return { kind: 'error', detail, charged };
 
   const reference = raw.verification && raw.verification.reference != null ? String(raw.verification.reference) : null;
   const verified = String(raw.verification?.status ?? '').toUpperCase() === 'VERIFIED';
@@ -98,10 +103,10 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
     const face = isObject(f)
       ? { match: f.status === true, confidence: typeof f.confidence === 'number' ? f.confidence : f.confidence != null && Number.isFinite(Number(f.confidence)) ? Number(f.confidence) : null, message: String(f.message ?? '') }
       : null;
-    return { kind: 'found', data, reference, detail, face };
+    return { kind: 'found', data, reference, detail, face, charged };
   }
-  if (NOT_FOUND.test(detail) && [200, 400, 404, 422].includes(res.status)) return { kind: 'not_found', detail, reference };
-  return { kind: 'error', detail };
+  if (NOT_FOUND.test(detail) && [200, 400, 404, 422].includes(res.status)) return { kind: 'not_found', detail, reference, charged };
+  return { kind: 'error', detail, charged };
 }
 
 export const prembly = {

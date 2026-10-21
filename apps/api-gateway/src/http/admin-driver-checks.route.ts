@@ -22,6 +22,8 @@ interface AdminChecksDeps {
   /** Null when PREMBLY_API_KEY is not set: the paid checks are off, the hand checks still work. */
   prembly: PremblyConfig | null;
   fetchImpl?: typeof fetch;
+  /** Tests: told of each background check, to wait for it. */
+  onFinished?: (done: Promise<void>) => void;
 }
 
 /** The same check on the same number within this long gives back the saved answer, not a new (paid) one, unless forced. */
@@ -31,6 +33,16 @@ const PAID_KINDS = ['licence', 'plate', 'insurance'] as const;
 /** A licence photo read in the last hour is not read again: opening a driver twice costs one reading. Kept in memory only. */
 const READ_TTL_MS = 60 * 60_000;
 const readings = new Map<string, { at: number; reading: LicenceReading }>();
+/**
+ * A Prembly check runs in the background and the page asks for it until it
+ * is in: the government records behind Prembly can take a minute, longer
+ * than a web request should hang. One still running after this long never
+ * got its answer (the server restarted) and becomes an error.
+ */
+const RUNNING_FOR_MS = 3 * 60_000;
+/** The FRSC photo of a licence check just in, for the page to show: in memory for ten minutes, never saved. */
+const PHOTO_TTL_MS = 10 * 60_000;
+const photos = new Map<string, { at: number; photo: string }>();
 type PaidKind = (typeof PAID_KINDS)[number];
 const MANUAL_KEYS: readonly string[] = MANUAL_SOURCES.map((s) => s.key);
 const labelOf = (type: string | null) => (type ? DRIVER_PAPERS.find((p) => p.type === type)?.label ?? type : null);
@@ -52,6 +64,7 @@ const view = (c: CheckRow) => ({
   note: c.note,
   by: c.byName,
   at: c.createdAt.toISOString(),
+  ...(photos.has(c.id) && Date.now() - photos.get(c.id)!.at < PHOTO_TTL_MS ? { photo: photos.get(c.id)!.photo } : {}),
 });
 
 /** The first of the month, Lagos time: what "this month" counts from. */
@@ -70,6 +83,8 @@ function monthStart(now = new Date()): Date {
  *
  * A Prembly check costs money, so only owners run one, and the same check on
  * the same number within 30 days gives back the saved answer unless `force`.
+ * It runs in the background: the POST answers 202 with the check "pending",
+ * the page asks GET until it is in. Pressing again while it runs joins it.
  * What comes back is kept as key fields (names, dates, make, colour, policy
  * status) with what does not agree with what the driver gave us; the licence
  * photo is shown in the answer once and never kept.
@@ -114,6 +129,7 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
   const vehicleModel = driver.vehicleModel ?? submission?.vehicleModel ?? null;
 
   if (action === null) {
+    await driverCheckClient.expireRunning(driverId, new Date(Date.now() - RUNNING_FOR_MS), 'No answer came back (the server restarted while it ran). Try again.').catch(() => null);
     const storage = deps.kycStorage;
     const sign = (key: string, pdf = false) =>
       storage ? storage.getSignedUrl(key, 3600, pdf ? 'application/pdf' : undefined).catch(() => null) : Promise.resolve(null);
@@ -300,30 +316,44 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
     }
   }
 
-  const answer = await call();
-  const reading = answer.kind === 'found' ? read(answer.data, answer.face) : null;
-  const outcome = answer.kind === 'error' ? 'error' : answer.kind === 'not_found' ? 'not_found' : reading!.mismatches.length ? 'mismatch' : 'verified';
-  const check = await driverCheckClient.record({
-    driverId, kind: checkKind, paperType, source: 'prembly', input, outcome,
-    mismatches: reading?.mismatches ?? [],
-    found: reading?.found ?? null,
-    reference: answer.kind === 'error' ? null : answer.reference,
-    note: answer.kind === 'found' ? null : clean(answer.detail),
+  const running = await driverCheckClient.running(driverId, checkKind, input, new Date(Date.now() - RUNNING_FOR_MS));
+  if (running) {
+    sendJson(res, 202, { check: view(running), reused: false, pending: true });
+    return true;
+  }
+
+  const pending = await driverCheckClient.record({
+    driverId, kind: checkKind, paperType, source: 'prembly', input, outcome: 'pending',
     byId: auth.adminId, byName: auth.adminName,
   });
-  recordAdminActivity({
-    adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/dashboard/drivers/${driverId}`,
-    detail: { what: 'ran a Prembly check', check: checkKind, outcome, driverId },
-    ip: clientIp(req),
+  const ip = clientIp(req);
+  const finished = (async () => {
+    const answer = await call();
+    const reading = answer.kind === 'found' ? read(answer.data, answer.face) : null;
+    const outcome = answer.kind === 'error' ? 'error' : answer.kind === 'not_found' ? 'not_found' : reading!.mismatches.length ? 'mismatch' : 'verified';
+    const notCharged = answer.charged === false ? ' Not charged.' : '';
+    await driverCheckClient.finish(pending.id, {
+      outcome,
+      mismatches: reading?.mismatches ?? [],
+      found: reading?.found ?? null,
+      reference: answer.kind === 'error' ? null : answer.reference,
+      note: answer.kind === 'found' ? null : `${clean(answer.detail, 280)}${notCharged}`,
+    });
+    // The licence photo, for the admin to look at now: in memory, never saved.
+    if (answer.kind === 'found' && kind === 'licence' && typeof answer.data.photo === 'string' && answer.data.photo.length > 100) {
+      for (const [k, v] of photos) if (Date.now() - v.at > PHOTO_TTL_MS) photos.delete(k);
+      photos.set(pending.id, { at: Date.now(), photo: answer.data.photo });
+    }
+    recordAdminActivity({
+      adminId: auth.adminId, adminName: auth.adminName, kind: 'action', page: `/admin/dashboard/drivers/${driverId}`,
+      detail: { what: 'ran a Prembly check', check: checkKind, outcome, driverId }, ip,
+    });
+  })().catch(async (error) => {
+    console.warn('[driver-checks] Prembly check failed', { id: pending.id, error: error instanceof Error ? error.message : String(error) });
+    await driverCheckClient.finish(pending.id, { outcome: 'error', note: 'Something went wrong on our side. Try again.' }).catch(() => null);
   });
+  deps.onFinished?.(finished);
 
-  // The licence photo, for the admin to look at now: in this answer only, never saved.
-  const photo = answer.kind === 'found' && (kind === 'licence') && typeof answer.data.photo === 'string' && answer.data.photo.length > 100 ? answer.data.photo : null;
-  sendJson(res, answer.kind === 'error' ? 502 : 200, {
-    check: view(check),
-    reused: false,
-    ...(photo ? { photo } : {}),
-    ...(answer.kind === 'error' ? { error: answer.detail } : {}),
-  });
+  sendJson(res, 202, { check: view(pending), reused: false, pending: true });
   return true;
 }

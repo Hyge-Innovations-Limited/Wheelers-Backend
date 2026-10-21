@@ -40,6 +40,7 @@ const storageStub = {
 };
 const config = { apiKey: 'test-key', appId: null, baseUrl: 'https://prembly.test', timeoutMs: 5000 };
 const made = { users: [], admins: [] };
+const inflight = [];
 let server; let base;
 const inDays = (n) => new Date(lagosToday().getTime() + n * 86_400_000);
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -64,12 +65,22 @@ const call = async (token, method, path, body) => {
   const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   return { status: res.status, body: await res.json() };
 };
+/** A Prembly check: started (202, pending), then read back once its background run is in, as the page does. */
+async function runPrembly(token, driverId, body) {
+  const started = await call(token, 'POST', `/admin/drivers/${driverId}/checks/prembly`, body);
+  if (started.status !== 202) return started;
+  assert.equal(started.body.check.outcome, 'pending');
+  await Promise.all(inflight.splice(0));
+  const list = await call(token, 'GET', `/admin/drivers/${driverId}/checks`);
+  const check = list.body.checks.find((c) => c.id === started.body.check.id);
+  return { status: started.status, body: { ...started.body, check, photo: check.photo } };
+}
 
 test.before(async () => {
   server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     void (async () => {
-      if (await handleAdminDriverChecksRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: storageStub, prembly: config, fetchImpl, llm }, url)) return;
+      if (await handleAdminDriverChecksRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: storageStub, prembly: config, fetchImpl, llm, onFinished: (p) => inflight.push(p) }, url)) return;
       if (await handleAdminDriverPapersRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: null, publisher }, url)) return;
       res.statusCode = 404; res.end('{}');
     })();
@@ -168,13 +179,13 @@ test('only an owner runs a Prembly check; it needs the date of birth; the same o
   assert.equal(seen.body.inputs.plate, 'KJA 123 AB');
   assert.deepEqual(seen.body.documents, { licence: null, selfieUrl: null, papers: [] }, 'nothing sent yet');
 
-  assert.equal((await call(staff, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence', dob: '1990-01-01' })).body.code, 'OWNERS_ONLY');
-  assert.equal((await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence' })).body.code, 'DOB_NEEDED');
+  assert.equal((await runPrembly(staff, d.id, { kind: 'licence', dob: '1990-01-01' })).body.code, 'OWNERS_ONLY');
+  assert.equal((await runPrembly(owner, d.id, { kind: 'licence' })).body.code, 'DOB_NEEDED');
 
   calls.length = 0;
   answer = { status: true, detail: 'ok', data: { firstName: 'Oluwalere', lastName: 'Ajayi', expiryDate: iso(inDays(400)), stateOfIssue: 'Lagos', photo: 'p'.repeat(300) }, verification: { status: 'VERIFIED', reference: 'ref-licence' } };
-  const ran = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence', dob: '12/03/1990' });
-  assert.equal(ran.status, 200, JSON.stringify(ran.body));
+  const ran = await runPrembly(owner, d.id, { kind: 'licence', dob: '12/03/1990' });
+  assert.equal(ran.status, 202, JSON.stringify(ran.body));
   assert.equal(ran.body.check.outcome, 'verified');
   assert.equal(ran.body.photo.length, 300, 'the photo is shown once');
   assert.equal(calls.length, 1);
@@ -184,27 +195,27 @@ test('only an owner runs a Prembly check; it needs the date of birth; the same o
   const row = await prisma.driverCheck.findUnique({ where: { id: ran.body.check.id } });
   assert.equal(JSON.stringify(row.found).includes('ppp'), false, 'the photo is not saved');
 
-  const again = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence', dob: '1990-03-12' });
+  const again = await runPrembly(owner, d.id, { kind: 'licence', dob: '1990-03-12' });
   assert.equal(again.body.reused, true);
   assert.equal(calls.length, 1, 'not paid for again');
-  const forced = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence', dob: '1990-03-12', force: true });
+  const forced = await runPrembly(owner, d.id, { kind: 'licence', dob: '1990-03-12', force: true });
   assert.equal(forced.body.reused, false);
   assert.equal(calls.length, 2);
 
   answer = { status: true, detail: 'ok', data: { policy_status: 'Active', reg_number: 'LND555XY', vehicle_make: 'TOYOTA', expiry_date: iso(inDays(200)) }, verification: { status: 'VERIFIED', reference: 'ref-ins' } };
-  assert.equal((await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'insurance' })).status, 400, 'no policy number on file');
+  assert.equal((await runPrembly(owner, d.id, { kind: 'insurance' })).status, 400, 'no policy number on file');
   await paper(d.id, 'insurance', { number: 'PM2607151199', expiresOn: inDays(200) });
-  const ins = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'insurance' });
+  const ins = await runPrembly(owner, d.id, { kind: 'insurance' });
   assert.equal(ins.body.check.outcome, 'mismatch');
   assert.match(ins.body.check.mismatches[0], /plate LND555XY, not the driver's KJA 123 AB/);
   assert.deepEqual(calls.at(-1).body, { channel: 'Policy', number: 'PM2607151199' });
 
-  answer = { status: false, detail: 'Insufficient wallet balance' };
-  const broke = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'plate' });
-  assert.equal(broke.status, 502);
+  answer = { status: false, response_code: '02', detail: 'Plate Number Verification verification is currently unavailable', billing_info: { was_charged: false, amount: '40.00' } };
+  const broke = await runPrembly(owner, d.id, { kind: 'plate' });
   assert.equal(broke.body.check.outcome, 'error');
+  assert.equal(broke.body.check.note, 'Plate Number Verification verification is currently unavailable Not charged.');
   answer = { status: true, detail: 'ok', data: { vehicle_number: 'KJA123AB', vehicle_name: 'Toyota', vehicle_color: 'Silver' }, verification: { status: 'VERIFIED', reference: 'ref-plate' } };
-  const plate = await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'plate' });
+  const plate = await runPrembly(owner, d.id, { kind: 'plate' });
   assert.equal(plate.body.reused, false, 'a failed call is tried again, not reused');
   assert.equal(plate.body.check.outcome, 'verified');
 
@@ -342,4 +353,26 @@ test('a short rate limit is waited out once; a long one is not', async () => {
   asked = 0;
   assert.equal(await readLicencePhoto(limited(60), Buffer.from('x'), 'image/jpeg', async (ms) => { waits.push(ms); }), null);
   assert.equal(asked, 1, 'a minute is too long to hold the admin');
+});
+
+test('a check runs in the background: pressing again while it runs joins it; one left running by a restart becomes an error', async () => {
+  const d = await driver();
+  const owner = await admin('OWNER');
+  calls.length = 0;
+  answer = { status: true, detail: 'ok', data: { vehicle_number: 'KJA123AB', vehicle_name: 'Toyota' }, verification: { status: 'VERIFIED', reference: 'ref-slow' } };
+  // Two presses at once: the second joins the first (or, if it is already in, gets the saved answer).
+  const [started, again] = await Promise.all([
+    call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'plate' }),
+    new Promise((r) => setTimeout(r, 30)).then(() => call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'plate' })),
+  ]);
+  assert.equal(started.status, 202);
+  assert.ok(again.body.check.id === started.body.check.id || again.body.reused === true, 'joined or the saved answer, never a second paid call');
+  await Promise.all(inflight.splice(0));
+  assert.equal(calls.length, 1, 'Prembly asked once');
+
+  const stale = await prisma.driverCheck.create({ data: { driverId: d.id, kind: 'insurance', source: 'prembly', input: 'X1', outcome: 'pending', byName: 'Timi Owner', createdAt: new Date(Date.now() - 4 * 60_000) } });
+  const list = await call(owner, 'GET', `/admin/drivers/${d.id}/checks`);
+  const gone = list.body.checks.find((c) => c.id === stale.id);
+  assert.equal(gone.outcome, 'error');
+  assert.match(gone.note, /server restarted/);
 });

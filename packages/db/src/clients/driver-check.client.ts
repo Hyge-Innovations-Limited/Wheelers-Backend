@@ -39,11 +39,38 @@ export const driverCheckClient = {
   listForDriver: (driverId: string, limit = 50) =>
     prisma.driverCheck.findMany({ where: { driverId }, orderBy: { createdAt: 'desc' }, take: limit }),
 
-  /** The newest answer for this check on this input since `since`, not counting ones that failed to reach the provider. */
+  /** The newest answer for this check on this input since `since`, not counting ones that failed or are still running. */
   recent: (driverId: string, kind: string, input: string, since: Date) =>
     prisma.driverCheck.findFirst({
-      where: { driverId, kind, input, createdAt: { gte: since }, outcome: { not: 'error' } },
+      where: { driverId, kind, input, createdAt: { gte: since }, outcome: { notIn: ['error', 'pending'] } },
       orderBy: { createdAt: 'desc' },
+    }),
+
+  /** This check on this input still running, started since `since`: pressing again joins it instead of paying twice. */
+  running: (driverId: string, kind: string, input: string, since: Date) =>
+    prisma.driverCheck.findFirst({
+      where: { driverId, kind, input, outcome: 'pending', createdAt: { gte: since } },
+      orderBy: { createdAt: 'desc' },
+    }),
+
+  /** A running check's answer. */
+  finish: (id: string, answer: { outcome: string; mismatches?: string[]; found?: Prisma.InputJsonValue | null; reference?: string | null; note?: string | null }) =>
+    prisma.driverCheck.update({
+      where: { id },
+      data: {
+        outcome: answer.outcome,
+        mismatches: answer.mismatches ?? [],
+        ...(answer.found ? { found: answer.found } : {}),
+        reference: answer.reference ?? null,
+        note: answer.note ?? null,
+      },
+    }),
+
+  /** Checks still running from before `before` never got their answer (the server restarted): they become errors. */
+  expireRunning: (driverId: string, before: Date, note: string) =>
+    prisma.driverCheck.updateMany({
+      where: { driverId, outcome: 'pending', createdAt: { lt: before } },
+      data: { outcome: 'error', note },
     }),
 
   /** Checks from one source since a date: what has been spent on Prembly this month. */
