@@ -4,7 +4,9 @@ import { driverCheckClient, driverClient, driverPaperClient } from '@wheleers/db
 import { clientIp, recordAdminActivity } from '../admin/activity';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import { isRecord, getString } from '../utils/object';
-import { MANUAL_SOURCES, readDay, readInsurance, readLicence, readPlate, type Reading } from '../verification/driver-checks';
+import type { LlmClient } from '../LLM/llm';
+import { MANUAL_SOURCES, namesAgree, plateKey, readDay, readInsurance, readLicence, readPlate, type Reading } from '../verification/driver-checks';
+import { readLicencePhoto, type LicenceReading } from '../verification/licence-reader';
 import { prembly, type PremblyAnswer, type PremblyConfig } from '../verification/prembly';
 import { verifyAdminAuth } from './admin-auth.route';
 import { lagosToday } from './driver-papers.route';
@@ -14,7 +16,9 @@ interface AdminChecksDeps {
   adminApiKey: string;
   jwtSecret: string;
   /** For the selfie a face check sends, and the links to the driver's papers. Null when storage is not configured: face checks are off, papers do not open. */
-  kycStorage: Pick<DriverKycStorage, 'getImageAsBase64' | 'getSignedUrl' | 'fileTypeOf'> | null;
+  kycStorage: Pick<DriverKycStorage, 'getImageAsBase64' | 'getSignedUrl' | 'fileTypeOf' | 'getFile'> | null;
+  /** Reads the licence photo for the form. Null: no model set up, the admin types it. */
+  llm?: LlmClient | null;
   /** Null when PREMBLY_API_KEY is not set: the paid checks are off, the hand checks still work. */
   prembly: PremblyConfig | null;
   fetchImpl?: typeof fetch;
@@ -24,6 +28,9 @@ interface AdminChecksDeps {
 const REUSE_DAYS = 30;
 const DAY_MS = 86_400_000;
 const PAID_KINDS = ['licence', 'plate', 'insurance'] as const;
+/** A licence photo read in the last hour is not read again: opening a driver twice costs one reading. Kept in memory only. */
+const READ_TTL_MS = 60 * 60_000;
+const readings = new Map<string, { at: number; reading: LicenceReading }>();
 type PaidKind = (typeof PAID_KINDS)[number];
 const MANUAL_KEYS: readonly string[] = MANUAL_SOURCES.map((s) => s.key);
 const labelOf = (type: string | null) => (type ? DRIVER_PAPERS.find((p) => p.type === type)?.label ?? type : null);
@@ -59,6 +66,7 @@ function monthStart(now = new Date()): Date {
  *                                            the driver's licence photo, selfie and each paper (link, number, dates) to check against
  *   POST /admin/drivers/:id/checks/prembly   owners: { kind: "licence" | "plate" | "insurance", dob?, number?, firstName?, lastName?, withFace?, channel?, force? }
  *   POST /admin/drivers/:id/checks/manual    { paperType, source: "autoreg" | "dvis" | "niid" | "other", outcome: "verified" | "failed", note? }
+ *   POST /admin/drivers/:id/checks/read-licence   { again? }   AI reads the licence photo: number, names, date of birth, dates
  *
  * A Prembly check costs money, so only owners run one, and the same check on
  * the same number within 30 days gives back the saved answer unless `force`.
@@ -69,10 +77,15 @@ function monthStart(now = new Date()): Date {
  * A hand check is one an admin did on a government site (AutoReg, DVIS,
  * NIID) or by other means, recorded with a note: failing one needs the note.
  * Neither approves or sends back a paper: that stays the admin's decision.
+ *
+ * Reading the licence fills the licence check's form (the date of birth
+ * above all, which FRSC needs and we do not keep) and says where the photo
+ * disagrees with what the driver typed. It is a suggestion to look at against
+ * the photo, never saved: kept in memory for an hour so it is read once.
  * Returns false when the path is not one of these.
  */
 export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: ServerResponse, deps: AdminChecksDeps, url: URL): Promise<boolean> {
-  const match = /^\/admin\/drivers\/([^/]+)\/checks(?:\/(prembly|manual))?$/.exec(url.pathname);
+  const match = /^\/admin\/drivers\/([^/]+)\/checks(?:\/(prembly|manual|read-licence))?$/.exec(url.pathname);
   if (!match) return false;
   const action = match[2] ?? null;
 
@@ -159,6 +172,39 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body)) {
     sendJson(res, 400, { error: 'Body must be a JSON object' });
+    return true;
+  }
+
+  if (action === 'read-licence') {
+    const key = submission?.licenceImageKey ?? null;
+    if (!key) { sendJson(res, 404, { error: 'This driver has not sent a licence photo.', code: 'NO_LICENCE' }); return true; }
+    if (!deps.llm?.configured || !deps.kycStorage) {
+      sendJson(res, 503, { error: 'Reading photos is not set up on this server: type it from the photo.', code: 'READER_OFF' });
+      return true;
+    }
+    let saved = readings.get(key);
+    if (saved && (Date.now() - saved.at > READ_TTL_MS || body.again === true)) { readings.delete(key); saved = undefined; }
+    let reading = saved?.reading ?? null;
+    if (!reading) {
+      const file = await deps.kycStorage.getFile(key);
+      if (!file) { sendJson(res, 502, { error: 'Could not open the licence photo.' }); return true; }
+      reading = await readLicencePhoto(deps.llm, file.bytes, file.type);
+      if (!reading) { sendJson(res, 502, { error: 'Could not read the licence photo just now: type it from the photo.', code: 'NOT_READ' }); return true; }
+      for (const [k, v] of readings) if (Date.now() - v.at > READ_TTL_MS || readings.size > 500) readings.delete(k);
+      readings.set(key, { at: Date.now(), reading });
+    }
+    // Where the photo and what the driver typed disagree: worth a look before paying for the FRSC check.
+    const differs: string[] = [];
+    const typedName = driver.legalName ?? driver.user?.name ?? null;
+    const photoName = [reading.firstName, reading.middleName, reading.lastName].filter(Boolean).join(' ') || null;
+    if (reading.licenceNumber && driver.licenceNumber && plateKey(reading.licenceNumber) !== plateKey(driver.licenceNumber)) {
+      differs.push(`The photo shows licence number ${reading.licenceNumber}; the driver typed ${driver.licenceNumber}.`);
+    }
+    if (photoName && typedName && !namesAgree(photoName, typedName)) differs.push(`The photo shows ${photoName}; the driver typed ${typedName}.`);
+    const typedExpiry = day(driver.licenceExpiresOn);
+    if (reading.expiresOn && typedExpiry && reading.expiresOn !== typedExpiry) differs.push(`The photo shows it expires ${reading.expiresOn}; the driver typed ${typedExpiry}.`);
+    if (reading.expiresOn && reading.expiresOn < day(lagosToday())!) differs.push(`The photo shows it expired on ${reading.expiresOn}.`);
+    sendJson(res, 200, { reading, differs, cached: Boolean(saved) });
     return true;
   }
 

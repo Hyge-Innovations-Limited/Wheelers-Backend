@@ -139,7 +139,7 @@ import { startHoldSweeper } from "./payments/hold-sweeper";
 import { createRateProvider } from "./stellar/rates";
 import { handleStellarRoute } from "./stellar/routes";
 import { createTripWhatsapp } from "./trip-chat/whatsapp";
-import { describeLlm } from "./LLM/llm";
+import { createLlm, describeLlm } from "./LLM/llm";
 import {
   handleLiveDriversRoute,
   handleLiveDriverDetailRoute,
@@ -527,6 +527,8 @@ async function bootstrap(): Promise<void> {
         prefix: 'drivers/kyc',
       })
     : null;
+  // Reads the driver's licence photo for the admin's licence check (Gemini, Groq as backup).
+  const licenceReader = createLlm({ groqApiKey: gatewayEnv.GROQ_API_KEY, groqModel: gatewayEnv.GROQ_MODEL, timeoutMs: Math.max(gatewayEnv.GROQ_TIMEOUT_MS, 30_000) });
 
   const registry = new SocketRegistry({
     instanceId: `${sharedEnv.KAFKA_CLIENT_ID}-${process.pid}-${Math.random()
@@ -1466,6 +1468,7 @@ async function bootstrap(): Promise<void> {
       jwtSecret: gatewayEnv.JWT_SECRET,
       kycStorage: driverKycStorage,
       prembly: premblyConfigFromEnv(),
+      llm: licenceReader,
     }, url)) {
       return;
     }

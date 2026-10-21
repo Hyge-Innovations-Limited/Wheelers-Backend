@@ -85,6 +85,38 @@ export class DriverKycStorage {
   }
 
   /**
+   * A stored file as it is, for reading what is written on it: a photo is
+   * brought down to 1600 pixels wide at most (still sharp enough for small
+   * print), a PDF is left alone. Null when it cannot be read or is over
+   * `maxBytes`.
+   */
+  async getFile(key: string, maxBytes = 10 * 1024 * 1024): Promise<{ bytes: Buffer; type: KycFileType } | null> {
+    try {
+      const response = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      if (!response.Body) return null;
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+        size += chunk.length;
+        if (size > maxBytes) return null;
+        chunks.push(chunk);
+      }
+      const bytes = Buffer.concat(chunks);
+      const type = sniffKycFileType(bytes);
+      if (type === 'application/pdf') return { bytes, type };
+      try {
+        const image = await Jimp.read(bytes);
+        if (image.getWidth() > 1600) image.resize(1600, Jimp.AUTO);
+        return { bytes: (await image.quality(85).getBufferAsync(Jimp.MIME_JPEG)) as Buffer, type: 'image/jpeg' };
+      } catch {
+        return { bytes, type };
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * WhatsApp Flow Image components take RAW base64 (a data: URI renders as a
    * broken placeholder) and reject large images (~300KB cap per screen), so
    * camera-sized KYC photos must be downscaled before embedding.

@@ -18,6 +18,7 @@ const { handleAdminDriverPapersRoute } = require('../apps/api-gateway/dist/http/
 const { lagosToday } = require('../apps/api-gateway/dist/http/driver-papers.route.js');
 const { readDay, namesAgree, makesAgree, plateKey, readLicence, readInsurance, readPlate } = require('../apps/api-gateway/dist/verification/driver-checks.js');
 const { premblyPost } = require('../apps/api-gateway/dist/verification/prembly.js');
+const { cleanReading } = require('../apps/api-gateway/dist/verification/licence-reader.js');
 
 const SECRET = 'test-secret-for-the-driver-checks';
 const told = [];
@@ -27,6 +28,15 @@ let answer = null;
 const fetchImpl = async (url, init) => {
   calls.push({ url, body: JSON.parse(init.body), headers: init.headers });
   return new Response(JSON.stringify(answer), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+let llmCalls = 0;
+let llmAnswer = null;
+const llm = { configured: true, completeVisionJson: async (prompt, bytes, mime) => { llmCalls += 1; assert.equal(mime, 'image/jpeg'); assert.ok(Buffer.isBuffer(bytes)); return llmAnswer; } };
+const storageStub = {
+  getSignedUrl: async (key) => `https://files.test/${key}`,
+  fileTypeOf: async () => 'image/jpeg',
+  getImageAsBase64: async () => 'c2VsZmll',
+  getFile: async () => ({ bytes: Buffer.from('a licence photo'), type: 'image/jpeg' }),
 };
 const config = { apiKey: 'test-key', appId: null, baseUrl: 'https://prembly.test', timeoutMs: 5000 };
 const made = { users: [], admins: [] };
@@ -59,7 +69,7 @@ test.before(async () => {
   server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     void (async () => {
-      if (await handleAdminDriverChecksRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: null, prembly: config, fetchImpl }, url)) return;
+      if (await handleAdminDriverChecksRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: storageStub, prembly: config, fetchImpl, llm }, url)) return;
       if (await handleAdminDriverPapersRoute(req, res, { adminApiKey: 'unused-key', jwtSecret: SECRET, kycStorage: null, publisher }, url)) return;
       res.statusCode = 404; res.end('{}');
     })();
@@ -72,6 +82,7 @@ test.after(async () => {
   server.close();
   await prisma.driverCheck.deleteMany({ where: { driver: { userId: { in: made.users } } } });
   await prisma.driverDocument.deleteMany({ where: { driver: { userId: { in: made.users } } } });
+  await prisma.driverKycSubmission.deleteMany({ where: { driver: { userId: { in: made.users } } } });
   await prisma.driver.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.adminActivity.deleteMany({ where: { adminId: { in: made.admins } } }).catch(() => {});
   await prisma.adminUser.deleteMany({ where: { id: { in: made.admins } } });
@@ -275,4 +286,36 @@ test("approving many drivers' papers at once: waiting and in date only, one mess
   const push = told.filter((e) => e.eventType === 'PUSH_SEND');
   assert.deepEqual(push.map((p) => p.title).sort(), ['2 papers approved', "Owner's letter approved"]);
   assert.equal((await call(staff, 'POST', '/admin/driver-papers/approve', { items: [] })).status, 400);
+});
+
+test('what the AI reads off a licence is cleaned: day-first dates, the number without spaces, a misread birth date dropped', () => {
+  const r = cleanReading({ readable: true, licenceNumber: 'krd 52734 aa02', firstName: 'OLUWALERE', lastName: 'AJAYI', dateOfBirth: '14/05/1991', issuedOn: '2022-04-16', expiresOn: '16-04-2027', note: 'null' });
+  assert.deepEqual(r, { readable: true, licenceNumber: 'KRD52734AA02', firstName: 'OLUWALERE', middleName: null, lastName: 'AJAYI', dateOfBirth: '1991-05-14', issuedOn: '2022-04-16', expiresOn: '2027-04-16', note: null });
+  assert.equal(cleanReading({ readable: true, dateOfBirth: '2020-01-01' }).dateOfBirth, null, 'a four-year-old does not drive');
+  assert.equal(cleanReading({ readable: true }).readable, false, 'nothing read is unreadable');
+});
+
+test('the licence photo is read for the form, once an hour, with where it disagrees with what the driver typed', async () => {
+  const d = await driver();
+  const staff = await admin('STAFF');
+  assert.equal((await call(staff, 'POST', `/admin/drivers/${d.id}/checks/read-licence`, {})).body.code, 'NO_LICENCE');
+  await prisma.driverKycSubmission.create({ data: { driverId: d.id, licenceImageKey: `mem/${d.id}/licence.jpg` } });
+
+  llmCalls = 0;
+  llmAnswer = { readable: true, licenceNumber: 'AAD23208212299', firstName: 'Oluwalere', lastName: 'Ajayi', dateOfBirth: '12-03-1990', expiresOn: iso(inDays(400)).split('-').reverse().join('-') };
+  const read = await call(staff, 'POST', `/admin/drivers/${d.id}/checks/read-licence`, {});
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.reading.dateOfBirth, '1990-03-12');
+  assert.deepEqual(read.body.differs, ['The photo shows licence number AAD23208212299; the driver typed AAD23208212298.']);
+  assert.equal(read.body.cached, false);
+
+  const again = await call(staff, 'POST', `/admin/drivers/${d.id}/checks/read-licence`, {});
+  assert.equal(again.body.cached, true);
+  assert.equal(llmCalls, 1, 'read once');
+  await call(staff, 'POST', `/admin/drivers/${d.id}/checks/read-licence`, { again: true });
+  assert.equal(llmCalls, 2, 'read again when asked');
+
+  const seen = await call(staff, 'GET', `/admin/drivers/${d.id}/checks`);
+  assert.equal(seen.body.documents.licence.url, `https://files.test/mem/${d.id}/licence.jpg`);
+  assert.equal(await prisma.driverCheck.count({ where: { driverId: d.id } }), 0, 'a reading is never saved as a check');
 });
