@@ -9,6 +9,8 @@ type KycDocumentKeys = {
   ninImageKey?:      string;
   licenceImageKey?:  string;
   selfieKey?:        string;
+  /** How that selfie was taken (sent with it): passed, skipped, unavailable; null from older apps. */
+  selfieCheck?:      string | null;
   vehicleImageKeys?: string[];
 };
 

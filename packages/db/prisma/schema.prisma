@@ -155,6 +155,10 @@ model DriverKycSubmission {
   ninImageKey      String?
   licenceImageKey  String?
   selfieKey        String?
+  /// How the selfie was taken: "passed" (the phone's face check), "skipped"
+  /// (went on without it), "unavailable" (the app or phone could not run it).
+  /// Null: sent from an app made before the check.
+  selfieCheck      String?
   vehicleImageKeys String[]  @default([])
   vehicleMake      String?
   vehicleModel     String?

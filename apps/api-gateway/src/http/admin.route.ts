@@ -121,6 +121,8 @@ export async function handleAdminGetDriverRoute(
       licenceImageUrl: licenceUrl,
       licenceFileType,
       selfieUrl,
+      // How the selfie was taken: "passed", "skipped", "unavailable", or null (an older app).
+      selfieCheck: submission.selfieCheck ?? null,
       vehicleImageUrls,
       rejectionReason: submission.rejectionReason,
       rejectedFields: submission.status === 'REJECTED' ? (submission.rejectedFields ?? []) : [],

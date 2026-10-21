@@ -286,6 +286,29 @@ test('the queue lists drivers waiting to fix something', async () => {
   assert.equal(pending.body.drivers.some((x) => x.driverId === d.driverId), false);
 });
 
+test('how the selfie was taken is kept with it, and shown to the reviewer; a new selfie never keeps the old one\'s', async () => {
+  const d = await newDriver();
+  assert.equal((await call('POST', '/drivers/kyc/submit', { token: d.token, body: { ...fullApplication(), selfieCheck: 'passed' } })).status, 200);
+  assert.equal((await submission(d.driverId)).selfieCheck, 'passed');
+  const detail = await call('GET', `/admin/drivers/${d.driverId}`, { admin: true });
+  assert.equal(detail.body.submission.selfieCheck, 'passed');
+
+  // An older app sends none; nonsense is not kept either.
+  const old = await newDriver();
+  await call('POST', '/drivers/kyc/submit', { token: old.token, body: { ...fullApplication(), selfieCheck: 'trust me' } });
+  assert.equal((await submission(old.driverId)).selfieCheck, null);
+
+  // Sent back for the selfie: the new one says how it was taken; the licence resent alone leaves it as it was.
+  const back = await rejectedFor(['selfie'], { selfie: 'your face is not in the photo' });
+  await prisma.driverKycSubmission.update({ where: { driverId: back.driverId }, data: { selfieCheck: 'passed' } });
+  assert.equal((await call('POST', '/drivers/kyc/resubmit', { token: back.token, body: { selfieImage: JPEG, selfieCheck: 'skipped' } })).status, 200);
+  assert.equal((await submission(back.driverId)).selfieCheck, 'skipped');
+  const lic = await rejectedFor(['licence']);
+  await prisma.driverKycSubmission.update({ where: { driverId: lic.driverId }, data: { selfieCheck: 'passed' } });
+  await call('POST', '/drivers/kyc/resubmit', { token: lic.token, body: { licenceImage: JPEG } });
+  assert.equal((await submission(lic.driverId)).selfieCheck, 'passed');
+});
+
 test('reasons read as sentences, never internal keys', () => {
   assert.equal(
     fields.readableRejection(['licence', 'vehiclePhotos'], { licence: 'expired.', vehiclePhotos: 'plate not visible' }, 'licence: expired'),

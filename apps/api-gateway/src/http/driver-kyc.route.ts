@@ -35,6 +35,8 @@ type KycInput = {
   ninImage?: string;
   licenceImage?: string;
   selfieImage?: string;
+  /** How the app took the selfie; anything else is not recorded. */
+  selfieCheck?: 'passed' | 'skipped' | 'unavailable';
   vehicleImages: string[];
   vehicle?: { vehicleMake: string; vehicleModel: string; vehiclePlate: string; vehicleYear: number };
   phone?: string;
@@ -52,6 +54,7 @@ function readKycInput(body: Record<string, unknown>): KycInput {
     ninImage: getString(body, 'ninImage') ?? undefined,
     licenceImage: getString(body, 'licenceImage') ?? undefined,
     selfieImage: getString(body, 'selfieImage') ?? undefined,
+    selfieCheck: (['passed', 'skipped', 'unavailable'] as const).find((value) => value === body.selfieCheck),
     vehicleImages,
     vehicle: vehicleMake && vehicleModel && vehiclePlate && vehicleYear
       ? { vehicleMake, vehicleModel, vehiclePlate, vehicleYear }
@@ -87,7 +90,8 @@ async function uploadKycFields(deps: DriverKycDeps, driverId: string, input: Kyc
   return {
     ...(ninImageKey ? { ninImageKey } : {}),
     ...(licenceImageKey ? { licenceImageKey } : {}),
-    ...(selfieKey ? { selfieKey } : {}),
+    // A new selfie carries how it was taken; from an older app, nothing (null), never the last photo's.
+    ...(selfieKey ? { selfieKey, selfieCheck: input.selfieCheck ?? null } : {}),
     ...(vehicleImageKeys ? { vehicleImageKeys } : {}),
     ...(has('vehicle') && input.vehicle ? input.vehicle : {}),
   };
