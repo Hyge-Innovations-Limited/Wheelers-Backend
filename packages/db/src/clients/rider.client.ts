@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { CURRENT_PRICING_VERSION, pricingVersionOf, type PricingVersion } from '@wheleers/config';
 import { driverPresence } from './driver-presence';
 import { prisma } from '../prisma';
 import type { RidePaymentMethod, RideStatus, RideStopStatus, RideStopType } from '@prisma/client';
@@ -70,9 +71,9 @@ export const rideClient = {
    * that cannot be found (a group seat has no Ride row yet) is priced by the
    * current rules.
    */
-  pricingVersionOf: async (rideId: string): Promise<1 | 2> => {
+  pricingVersionOf: async (rideId: string): Promise<PricingVersion> => {
     const row = await prisma.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } }).catch(() => null);
-    return row?.pricingVersion === 1 ? 1 : 2;
+    return row ? pricingVersionOf(row.pricingVersion) : CURRENT_PRICING_VERSION;
   },
 
   /** The ride's short trip number (shown as WH-01234), or null if there is no such ride. */
@@ -287,7 +288,8 @@ export const rideClient = {
   }) =>
     prisma.$transaction(async (tx) => {
       const { stops, ...rideData } = data;
-      const ride = await tx.ride.create({ data: rideData });
+      // Stamped with the rules it is priced under now, so it settles by them whenever it ends.
+      const ride = await tx.ride.create({ data: { pricingVersion: CURRENT_PRICING_VERSION, ...rideData } });
       await tx.rideStop.createMany({
         data: buildRouteStops({
           rideId: data.id,

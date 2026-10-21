@@ -30,7 +30,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { prisma, pricingClient } = require('@wheleers/db');
-const { tripFareNgn } = require('../packages/config/dist/index.js');
+const { tripFareNgn, pricingVersionOf, CURRENT_PRICING_VERSION } = require('../packages/config/dist/index.js');
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
@@ -126,13 +126,13 @@ async function main() {
 
   const X = []; const y = []; const quotedRate = [];
   for (const r of rows) {
-    const rate = tripFareNgn(r.fare, r.version === 1 ? 1 : 2) / r.km;
+    const rate = tripFareNgn(r.fare, pricingVersionOf(r.version)) / r.km;
     if (!(rate > 50 && rate < 5000)) continue;
     const lagos = new Date(new Date(r.at).getTime() + 3600_000);
     const hour = lagos.getUTCHours(); const day = lagos.getUTCDay();
     X.push([1, Math.log(r.km), r.secs / 60 / r.km, Math.log(Math.max(1, r.demand)), r.rush ? 1 : 0, hour >= 22 || hour < 5 ? 1 : 0, day === 0 || day === 6 ? 1 : 0]);
     y.push(Math.log(rate));
-    quotedRate.push(tripFareNgn(r.quoted, 2) / r.km);
+    quotedRate.push(tripFareNgn(r.quoted, CURRENT_PRICING_VERSION) / r.km);
   }
 
   // Made-up trips, when asked for and still needed: together they weigh as

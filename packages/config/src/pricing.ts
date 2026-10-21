@@ -30,8 +30,19 @@
 import { candidateFares, chooseFare, getPricingMlModel, steadyDraw } from './pricing-ml';
 import { PRICING_AREAS, pricingAreaOf, type PricingAreaKey } from './pricing-areas';
 
-export type PricingVersion = 1 | 2;
-export const CURRENT_PRICING_VERSION: PricingVersion = 2;
+export type PricingVersion = 1 | 2 | 3;
+export const CURRENT_PRICING_VERSION: PricingVersion = 3;
+
+/**
+ * A ride's pricing version as stored or sent (a number, a string, or
+ * nothing): 1, 2 or 3. A ride with none was priced before versions were
+ * kept, the version 2 rules; anything unknown is today's.
+ */
+export function pricingVersionOf(value: unknown): PricingVersion {
+  if (value === null || value === undefined || value === '') return 2;
+  const n = Number(value);
+  return n === 1 || n === 2 || n === 3 ? n : CURRENT_PRICING_VERSION;
+}
 
 /** The recommended rate per km on a free road. */
 export const RATE_PER_KM_NGN = 375;
@@ -57,9 +68,15 @@ export const MIN_FARE_NGN = 3300;
 /** Fares shown to riders are rounded up to this. */
 export const FARE_ROUNDING_INCREMENT = 50;
 export const SERVICE_FEE_NGN = BOOKING_FEE_NGN; // the booking fee's old name
-/** 10% of the trip fare, from the driver. */
-export const COMMISSION_RATE = 0.1;
+/** 5% of the trip fare, from the driver (version 3, from 21 Oct 2026). */
+export const COMMISSION_RATE = 0.05;
 export const PLATFORM_FEE_RATE = COMMISSION_RATE; // old name
+/** Version 2 (10 to 21 Oct 2026): 10% of the trip fare. */
+const V2_COMMISSION_RATE = 0.1;
+/** Version 3: a flat ₦300 from the driver on every ride, the WhatsApp fee. */
+export const WHATSAPP_FEE_NGN = 300;
+const commissionRateOf = (version: PricingVersion) => (version === 1 ? V1_COMMISSION_RATE : version === 2 ? V2_COMMISSION_RATE : COMMISSION_RATE);
+const whatsappFeeOf = (version: PricingVersion) => (version === 3 ? WHATSAPP_FEE_NGN : 0);
 /** 7.5% of the trip fare, added to the rider's fare. */
 export const VAT_RATE = 0.075;
 export const LAGOS_STATE_FEE_NGN = 30; // ₦30 flat per ride, from the driver
@@ -767,7 +784,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
       ml,
       { km: distanceKm, minutes, hour, weekend, rush: isRushHour(at), demand: demandFactorOf(factors), marketEstNgn },
       range,
-      { serviceChargeNgn: BOOKING_FEE_NGN, commissionRate: COMMISSION_RATE, vatRate: VAT_RATE, rideValueNgn: settings.rideValueNgn },
+      // What Wheelers keeps of a ride: the booking fee and the WhatsApp fee flat, and the commission.
+      { serviceChargeNgn: BOOKING_FEE_NGN + WHATSAPP_FEE_NGN, commissionRate: COMMISSION_RATE, vatRate: VAT_RATE, rideValueNgn: settings.rideValueNgn },
     );
     modelFare = Math.max(MIN_FARE_NGN, choice.fareNgn);
     if (settings.modelOn && modelFare !== suggestedFareNgn) { suggestedFareNgn = modelFare; setBy = 'model'; }
@@ -941,12 +959,14 @@ export type RideFeeBreakdown = {
   driverShareNgn: number;
   /** Same figure under its new name. */
   tripFareNgn: number;
-  /** 10% of the trip fare, from the driver. (Version 1: 4%.) */
+  /** 5% of the trip fare, from the driver. (Version 2: 10%; version 1: 4%.) */
   commissionNgn: number;
+  /** ₦300 flat from the driver on every ride. (Versions 1 and 2: none.) */
+  whatsappFeeNgn: number;
   /** 7.5% of the trip fare, paid by the rider inside the fare. (Version 1: taken from the driver.) */
   vatNgn: number;
   stateLevyNgn: number;
-  /** Everything that is not the driver's: booking fee + commission + VAT + levy. */
+  /** Everything that is not the driver's: booking fee + commission + WhatsApp fee + VAT + levy. */
   platformTotalNgn: number;
   driverPayoutNgn: number;
   /** What the rider pays: the fare, nothing on top. */
@@ -958,11 +978,12 @@ export type RideFeeBreakdown = {
 };
 
 /**
- * fareNgn = the agreed fare: what the rider pays. Version 2 (now): the
- * booking fee comes off; the rest is trip fare + its 7.5% VAT; the driver is
- * paid the trip fare less 10% commission and the ₦30 levy. Version 1 (rides
- * requested before 2026-10-10): booking fee off, then 4% commission, 7.5% VAT
- * and the levy all from the driver's share.
+ * fareNgn = the agreed fare: what the rider pays. Version 3 (now, from
+ * 2026-10-21): the booking fee comes off; the rest is trip fare + its 7.5%
+ * VAT; the driver is paid the trip fare less 5% commission, the ₦300
+ * WhatsApp fee and the ₦30 levy. Version 2 (2026-10-10 to 21): the same with
+ * 10% commission and no WhatsApp fee. Version 1 (before 2026-10-10): booking
+ * fee off, then 4% commission, 7.5% VAT and the levy all from the driver's share.
  */
 export function calculateRideFees(fareNgn: number, version: PricingVersion = CURRENT_PRICING_VERSION): RideFeeBreakdown {
   const fare = round2(fareNgn);
@@ -973,6 +994,7 @@ export function calculateRideFees(fareNgn: number, version: PricingVersion = CUR
   let commissionNgn: number;
   let vatNgn: number;
   let stateLevyNgn = LAGOS_STATE_FEE_NGN;
+  let whatsappFeeNgn = whatsappFeeOf(version);
   /** What the driver's own deductions come out of. */
   let driverBase: number;
   /** The deductions that are the driver's, in the order they shrink on a fare too small to carry them. */
@@ -987,22 +1009,24 @@ export function calculateRideFees(fareNgn: number, version: PricingVersion = CUR
   } else {
     share = round2(afterFee / (1 + VAT_RATE));
     vatNgn = round2(afterFee - share); // the two always add up to what is left after the booking fee
-    commissionNgn = round2(share * COMMISSION_RATE);
+    commissionNgn = round2(share * commissionRateOf(version));
     driverBase = share;
-    driverLines = round2(commissionNgn + stateLevyNgn);
+    driverLines = round2(commissionNgn + whatsappFeeNgn + stateLevyNgn);
   }
 
   // A fare too small to carry every line (a ride settled short) must never
-  // make the driver pay to work: the levy, then the commission, then (in
-  // version 1) VAT shrink until the lines fit and the payout is zero.
+  // make the driver pay to work: the levy, then the WhatsApp fee, then the
+  // commission, then (in version 1) VAT shrink until the lines fit and the
+  // payout is zero.
   let over = round2(driverLines - driverBase);
   if (over > 0) { const cut = Math.min(stateLevyNgn, over); stateLevyNgn = round2(stateLevyNgn - cut); over = round2(over - cut); }
+  if (over > 0) { const cut = Math.min(whatsappFeeNgn, over); whatsappFeeNgn = round2(whatsappFeeNgn - cut); over = round2(over - cut); }
   if (over > 0) { const cut = Math.min(commissionNgn, over); commissionNgn = round2(commissionNgn - cut); over = round2(over - cut); }
   if (over > 0 && version === 1) { const cut = Math.min(vatNgn, over); vatNgn = round2(vatNgn - cut); }
 
   const driverPayoutNgn = version === 1
     ? Math.max(0, round2(share - commissionNgn - vatNgn - stateLevyNgn))
-    : Math.max(0, round2(share - commissionNgn - stateLevyNgn));
+    : Math.max(0, round2(share - commissionNgn - whatsappFeeNgn - stateLevyNgn));
   const platformTotalNgn = round2(fare - driverPayoutNgn);
   return {
     fareNgn: fare,
@@ -1010,6 +1034,7 @@ export function calculateRideFees(fareNgn: number, version: PricingVersion = CUR
     driverShareNgn: share,
     tripFareNgn: share,
     commissionNgn,
+    whatsappFeeNgn,
     vatNgn,
     stateLevyNgn,
     platformTotalNgn,

@@ -1,7 +1,7 @@
 import { prisma }   from '../prisma';
 import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
-import { calculateRideFees, splitDeposit } from '@wheleers/config';
+import { calculateRideFees, pricingVersionOf, splitDeposit } from '@wheleers/config';
 import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
 import { takeFromBalance } from './wallet-balance';
 
@@ -456,7 +456,7 @@ export const walletClient = {
         // By the rules the ride was priced under: a ride agreed before the
         // pricing change still pays its driver what was agreed then.
         const priced = await tx.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
-        const fees = calculateRideFees(effectiveFareNgn, priced?.pricingVersion === 1 ? 1 : 2);
+        const fees = calculateRideFees(effectiveFareNgn, pricingVersionOf(priced?.pricingVersion));
         const riderTotalNgn = fees.totalNgn;
         const platformFeeNgn = fees.platformTotalNgn;
         const driverPayoutNgn = fees.driverPayoutNgn;
@@ -520,11 +520,13 @@ export const walletClient = {
             balanceAfterNgn: platformWallet.balanceNgn,
             referenceId: rideId,
             // Tells ride fees apart from deposit fees (kind 'deposit_fee') in the same ledger type,
-            // with every line of it: booking fee, commission, VAT, levy.
+            // with every line of it: booking fee, commission, WhatsApp fee, VAT, levy.
             metadata: {
               kind: 'ride_fee',
+              pricingVersion: fees.pricingVersion,
               bookingFeeNgn: fees.bookingFeeNgn,
               commissionNgn: fees.commissionNgn,
+              whatsappFeeNgn: fees.whatsappFeeNgn,
               vatNgn: fees.vatNgn,
               stateLevyNgn: fees.stateLevyNgn,
               // Old name of the booking fee, for readers of older rows.
@@ -557,6 +559,7 @@ export const walletClient = {
             serviceFeeNgn: fees.bookingFeeNgn,
             vatNgn: fees.vatNgn,
             stateLevyNgn: fees.stateLevyNgn,
+            whatsappFeeNgn: fees.pricingVersion === 3 ? fees.whatsappFeeNgn : null,
             feeSplitEstimated: false,
           },
         });
@@ -583,7 +586,7 @@ export const walletClient = {
       const driverTxn = await findExistingTransaction(driverWallet.id, 'DRIVER_PAYOUT', 'CREDIT', rideId);
 
       const priced = await prisma.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
-      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn), priced?.pricingVersion === 1 ? 1 : 2);
+      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn), pricingVersionOf(priced?.pricingVersion));
       return {
         riderWallet,
         driverWallet,

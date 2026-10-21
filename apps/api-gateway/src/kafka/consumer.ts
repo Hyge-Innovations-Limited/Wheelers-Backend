@@ -918,11 +918,12 @@ export async function handleRideEvent(
       vehicleModel: event.vehicleModel,
       etaSeconds: event.etaSeconds,
       agreedFareNgn: event.agreedFareNgn,
-      // The driver's breakdown: booking fee first, then commission and VAT on their share, then the levy.
+      // The driver's breakdown: booking fee first, then commission and VAT on their share, the WhatsApp fee, then the levy.
       bookingFeeNgn: matchFees.bookingFeeNgn,
       driverShareNgn: matchFees.driverShareNgn,
       pricingVersion: matchFees.pricingVersion,
       commissionNgn: matchFees.commissionNgn,
+      whatsappFeeNgn: matchFees.whatsappFeeNgn,
       vatNgn: matchFees.vatNgn,
       // (Old names, for apps not yet updated: commission, booking fee.)
       platformFeeNgn: matchFees.platformFeeNgn,
@@ -1086,6 +1087,7 @@ export async function handleRideEvent(
       driverShareNgn: completionFees.driverShareNgn,
       pricingVersion: completionFees.pricingVersion,
       commissionNgn: completionFees.commissionNgn,
+      whatsappFeeNgn: completionFees.whatsappFeeNgn,
       vatNgn: completionFees.vatNgn,
       platformFeeNgn: completionFees.platformFeeNgn,
       stateLevyNgn: completionFees.stateLevyNgn,

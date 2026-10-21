@@ -105,8 +105,9 @@ function kpiRows(current: Kpis, previous: Kpis): Array<Record<string, unknown>> 
     line('GMV (fares of completed trips)', 'gmvNgn', 'naira'),
     line('Average fare', 'avgFareNgn', 'naira'),
     line('Median fare', 'medianFareNgn', 'naira'),
-    line('Commission (10% of the trip fare; 4% before 10 Oct 2026)', 'commissionNgn', 'naira'),
-    line('Booking fee (₦375 a ride)', 'serviceFeeNgn', 'naira'),
+    line('Commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before)', 'commissionNgn', 'naira'),
+    line('WhatsApp fee (₦300 a ride from 21 Oct 2026)', 'whatsappFeeNgn', 'naira'),
+    line('Booking fee (₦350 a ride; ₦375 before 10 Oct 2026)', 'serviceFeeNgn', 'naira'),
     line('Deposit fees', 'depositFeesNgn', 'naira'),
     line('Withdrawal fees', 'withdrawalFeesNgn', 'naira'),
     line('Platform revenue', 'platformRevenueNgn', 'naira'),
@@ -225,11 +226,12 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
     { header: 'Trip fare', key: 'tripFareNgn', format: NAIRA, note: "What the driver priced (rate per km × distance). Commission is taken from this." },
     { header: 'Booking fee', key: 'serviceFeeNgn', format: NAIRA },
     { header: 'VAT', key: 'vatNgn', format: NAIRA, note: '7.5% of the trip fare. Since 10 Oct 2026 it is added to the rider\'s fare; before, it came out of the driver\'s share.' },
-    { header: 'Commission', key: 'commissionNgn', format: NAIRA, note: '10% of the trip fare since 10 Oct 2026; 4% before.' },
+    { header: 'Commission', key: 'commissionNgn', format: NAIRA, note: '5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before.' },
+    { header: 'WhatsApp fee', key: 'whatsappFeeNgn', format: NAIRA, note: '₦300 from the driver on every ride from 21 Oct 2026.' },
     { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
     { header: 'Platform total', key: 'platformTotalNgn', format: NAIRA },
     { header: 'Driver payout', key: 'driverPayoutNgn', format: NAIRA },
-    { header: 'Pricing', key: 'pricingVersion', format: WHOLE, width: 9, note: '1: 4% commission, VAT from the driver. 2: 10% commission, VAT added to the fare.' },
+    { header: 'Pricing', key: 'pricingVersion', format: WHOLE, width: 9, note: '1: 4% commission, VAT from the driver. 2: 10% commission, VAT added to the fare. 3: 5% commission and the ₦300 WhatsApp fee.' },
     { header: 'Split estimated', key: 'feeSplitEstimated', width: 15 },
     { header: 'Distance km', key: 'distanceKm', format: '#,##0.0' },
     { header: 'Trip minutes', key: 'minutes', format: WHOLE },
@@ -376,7 +378,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Withdrawal transfers', key: 'transfers', format: WHOLE, width: 20 },
     { header: 'Withdrawals that paid the fee', key: 'feeWithdrawals', format: WHOLE, width: 26 },
     { header: 'Commission, estimated split', key: 'estimatedCommissionNgn', format: NAIRA, width: 26 },
-  ], points, 'Income is commission (10% of the trip fare; 4% before 10 Oct 2026), the ₦375 booking fee, the ₦30 deposit fee and the withdrawal fee. The state levy (for Lagos State) and VAT (7.5% of the trip fare) are collected and owed, so they are not income.');
+  ], points, 'Income is commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before), the ₦300 WhatsApp fee, the booking fee, the ₦30 deposit fee and the withdrawal fee. The state levy (for Lagos State) and VAT (7.5% of the trip fare) are collected and owed, so they are not income.');
 
   const { items, total } = await all((offset) => adminAnalyticsClient.feeLedger(f, null, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
   addSheet(book, 'Fee ledger', [
@@ -436,8 +438,9 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       metric, current: t[key], previous: p[key], change: p[key] ? ((t[key] as number) - (p[key] as number)) / Math.abs(p[key] as number) : null, kind,
     });
     summarySheet(book, 'Wheelers fees', f, bucket, fees.previous, [
-      line('Commission (10% of the trip fare; 4% before 10 Oct 2026)', 'commissionNgn'),
-      line('Booking fee (₦375 a ride)', 'serviceFeeNgn'),
+      line('Commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before)', 'commissionNgn'),
+      line('WhatsApp fee (₦300 a ride from 21 Oct 2026)', 'whatsappFeeNgn'),
+      line('Booking fee (₦350 a ride; ₦375 before 10 Oct 2026)', 'serviceFeeNgn'),
       line('Deposit fees', 'depositFeesNgn'),
       line('Withdrawal fees', 'withdrawalFeesNgn'),
       line('Income', 'incomeNgn'),

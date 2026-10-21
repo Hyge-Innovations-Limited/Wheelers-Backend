@@ -1,4 +1,4 @@
-import { formatTripId, LAUNCH_ZONES, OUTSIDE_ZONES_LABEL, parseTripId } from '@wheleers/config';
+import { formatTripId, LAUNCH_ZONES, OUTSIDE_ZONES_LABEL, parseTripId, pricingVersionOf, type PricingVersion } from '@wheleers/config';
 import { prisma } from '../prisma';
 import { PLATFORM_USER_ID } from './platform-wallet';
 
@@ -170,6 +170,8 @@ export interface Kpis {
   medianFareNgn: number | null;
   distanceKm: number;
   commissionNgn: number;
+  /** The flat ₦300 from the driver on version 3 rides. */
+  whatsappFeeNgn: number;
   serviceFeeNgn: number;
   stateLevyNgn: number;
   /** 7.5% of the driver's share, since 2026-10-01. Owed to the government: not revenue. */
@@ -228,6 +230,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
       percentile_cont(0.5) WITHIN GROUP (ORDER BY f.fare_ngn) FILTER (WHERE ${done})   AS median_fare,
       sum(f.distance_km) FILTER (WHERE ${done})                                         AS distance,
       sum(f.commission_ngn) FILTER (WHERE ${done})                                      AS commission,
+      sum(f.whatsapp_fee_ngn) FILTER (WHERE ${done})                                    AS whatsapp_fee,
       sum(f.service_fee_ngn) FILTER (WHERE ${done})                                     AS service_fee,
       sum(f.state_levy_ngn) FILTER (WHERE ${done})                                      AS state_levy,
       sum(f.vat_ngn) FILTER (WHERE ${done})                                             AS vat,
@@ -291,6 +294,7 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
   const requests = num(ride?.requests);
   const completed = num(ride?.completed);
   const commissionNgn = num(ride?.commission);
+  const whatsappFeeNgn = num(ride?.whatsapp_fee);
   const serviceFeeNgn = num(ride?.service_fee);
   const depositFeesNgn = num(money?.deposit_fees);
   const withdrawalFeesNgn = num(money?.withdrawal_fees);
@@ -310,12 +314,13 @@ async function kpis(f: AnalyticsFilters): Promise<Kpis> {
     medianFareNgn: ride?.median_fare == null ? null : num(ride.median_fare),
     distanceKm: num(ride?.distance),
     commissionNgn,
+    whatsappFeeNgn,
     serviceFeeNgn,
     stateLevyNgn: num(ride?.state_levy),
     vatNgn: num(ride?.vat),
     depositFeesNgn,
     withdrawalFeesNgn,
-    platformRevenueNgn: num(commissionNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn + withdrawalFeesNgn)),
+    platformRevenueNgn: num(commissionNgn + whatsappFeeNgn + serviceFeeNgn + (hasRideFilters(f) ? 0 : depositFeesNgn + withdrawalFeesNgn)),
     driverPayoutsNgn: num(ride?.payouts),
     activeDrivers: num(ride?.active_drivers),
     activeRiders: num(ride?.active_riders),
@@ -417,7 +422,7 @@ async function timeseries(f: AnalyticsFilters, bucket: Bucket): Promise<SeriesPo
       ${where([...rideConditions(q, f), between(q, 'f.created_day', f)])} GROUP BY 1
     ),
     comp AS (
-      SELECT f.completed_day AS d, count(*) AS n, sum(f.fare_ngn) AS gmv, sum(f.commission_ngn) AS commission,
+      SELECT f.completed_day AS d, count(*) AS n, sum(f.fare_ngn) AS gmv, sum(f.commission_ngn) AS commission, sum(f.whatsapp_fee_ngn) AS whatsapp_fee,
              sum(f.service_fee_ngn) AS service_fee, sum(f.state_levy_ngn) AS state_levy, sum(f.vat_ngn) AS vat
       FROM ride_facts f
       ${where([...rideConditions(q, f), `f.status = 'COMPLETED'`, between(q, 'f.completed_day', f)])} GROUP BY 1
@@ -458,6 +463,7 @@ async function timeseries(f: AnalyticsFilters, bucket: Bucket): Promise<SeriesPo
     cancelled: num(r.cancelled),
     gmvNgn: num(r.gmv),
     commissionNgn: num(r.commission),
+    whatsappFeeNgn: num(r.whatsapp_fee),
     serviceFeeNgn: num(r.service_fee),
     stateLevyNgn: num(r.state_levy),
     vatNgn: num(r.vat),
@@ -582,9 +588,11 @@ export interface TripRow {
    * pricing version 2, without the VAT added on top. Commission is a share of this.
    */
   tripFareNgn: number | null;
-  /** 1: 4% commission, VAT from the driver. 2 (since 10 Oct 2026): 10% commission, VAT in the rider's fare. */
-  pricingVersion: 1 | 2;
+  /** 1: 4% commission, VAT from the driver. 2 (10 Oct 2026): 10% commission, VAT in the rider's fare. 3 (21 Oct 2026): 5% commission and the ₦300 WhatsApp fee. */
+  pricingVersion: PricingVersion;
   commissionNgn: number | null;
+  /** Version 3 rides: the flat ₦300 from the driver. */
+  whatsappFeeNgn: number | null;
   serviceFeeNgn: number | null;
   stateLevyNgn: number | null;
   vatNgn: number | null;
@@ -665,7 +673,7 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
     items: result.map((r) => {
       const fare = optNum(r.fare_ngn);
       const platformTotal = optNum(r.platform_total_ngn);
-      const pricingVersion = Number(r.pricing_version) === 1 ? 1 : 2;
+      const pricingVersion = pricingVersionOf(r.pricing_version);
       const serviceFee = optNum(r.service_fee_ngn);
       const vat = optNum(r.vat_ngn);
       return {
@@ -697,9 +705,10 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
         negotiateSeconds: r.negotiate_secs == null ? null : Math.max(0, Math.round(Number(r.negotiate_secs))),
         messagesToBook: r.messages_to_book == null ? null : Number(r.messages_to_book),
         fareNgn: fare,
-        tripFareNgn: fare != null && serviceFee != null && vat != null ? num(fare - serviceFee - (pricingVersion === 2 ? vat : 0)) : null,
+        tripFareNgn: fare != null && serviceFee != null && vat != null ? num(fare - serviceFee - (pricingVersion !== 1 ? vat : 0)) : null,
         pricingVersion,
         commissionNgn: optNum(r.commission_ngn),
+        whatsappFeeNgn: optNum(r.whatsapp_fee_ngn),
         serviceFeeNgn: serviceFee,
         stateLevyNgn: optNum(r.state_levy_ngn),
         vatNgn: vat,
@@ -923,6 +932,8 @@ async function riders(f: AnalyticsFilters, t: TableQuery, maxLimit = 200): Promi
 
 export interface FeeTotals {
   commissionNgn: number;
+  /** The flat ₦300 from the driver on version 3 rides. */
+  whatsappFeeNgn: number;
   serviceFeeNgn: number;
   depositFeesNgn: number;
   /** Wheelers' ₦45 (or whatever it is set to) on each withdrawal that reached the bank. */
@@ -978,7 +989,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
       SELECT d::date AS day FROM generate_series(${q.p(f.from)}::date, ${q.p(f.to)}::date, interval '1 day') d
     ),
     rides AS (
-      SELECT f.completed_day AS d, count(*) AS n, sum(f.commission_ngn) AS commission, sum(f.service_fee_ngn) AS service_fee,
+      SELECT f.completed_day AS d, count(*) AS n, sum(f.commission_ngn) AS commission, sum(f.whatsapp_fee_ngn) AS whatsapp_fee, sum(f.service_fee_ngn) AS service_fee,
              sum(f.state_levy_ngn) AS levy, sum(f.vat_ngn) AS vat, sum(f.commission_ngn) FILTER (WHERE f.fee_split_estimated) AS estimated
       FROM ride_facts f
       ${where([...rideConditions(q, f), `f.status = 'COMPLETED'`, `f.platform_total_ngn IS NOT NULL`, between(q, 'f.completed_day', f)])}
@@ -1014,10 +1025,11 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
     GROUP BY 1 ORDER BY 1`);
   return result.map((r) => {
     const commissionNgn = num(r.commission);
+    const whatsappFeeNgn = num(r.whatsapp_fee);
     const serviceFeeNgn = num(r.service_fee);
     const depositFeesNgn = num(r.deposit_fees);
     const withdrawalFeesNgn = num(r.withdrawal_fees);
-    const incomeNgn = num(commissionNgn + serviceFeeNgn + depositFeesNgn + withdrawalFeesNgn);
+    const incomeNgn = num(commissionNgn + whatsappFeeNgn + serviceFeeNgn + depositFeesNgn + withdrawalFeesNgn);
     const depositProviderCostNgn = num(r.deposit_cost);
     const transferCostNgn = num(r.transfer_cost);
     const otherProviderCostNgn = num(r.other_cost);
@@ -1025,6 +1037,7 @@ async function feePoints(f: AnalyticsFilters, bucket: Bucket): Promise<FeePointF
     return {
       bucket: String(r.bucket),
       commissionNgn,
+      whatsappFeeNgn,
       serviceFeeNgn,
       depositFeesNgn,
       withdrawalFeesNgn,
@@ -1049,6 +1062,7 @@ function totalOf(points: FeePointFull[]): FeeTotals {
   const sum = (key: keyof FeeTotals) => num(points.reduce((acc, p) => acc + Number(p[key as keyof typeof p] ?? 0), 0));
   return {
     commissionNgn: sum('commissionNgn'),
+    whatsappFeeNgn: sum('whatsappFeeNgn'),
     serviceFeeNgn: sum('serviceFeeNgn'),
     depositFeesNgn: sum('depositFeesNgn'),
     withdrawalFeesNgn: sum('withdrawalFeesNgn'),
@@ -1102,6 +1116,8 @@ export interface FeeLedgerRow {
   amountNgn: number;
   referenceId: string | null;
   commissionNgn: number | null;
+  /** Version 3 rides: the flat ₦300 from the driver. */
+  whatsappFeeNgn: number | null;
   serviceFeeNgn: number | null;
   stateLevyNgn: number | null;
   vatNgn: number | null;
@@ -1123,7 +1139,7 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
   const sort = orderBy({ createdAt: 't."createdAt"', amount: 't."amountNgn"', kind: 'kind' }, t, 't."createdAt"');
   const result = await rows<Record<string, unknown>>(q, `
     SELECT t.id, t."createdAt" AS created_at, ${kindExpr} AS kind, t.direction::text AS direction, t."amountNgn" AS amount,
-           t."referenceId" AS reference_id, r."commissionNgn" AS commission, r."serviceFeeNgn" AS service_fee, r."stateLevyNgn" AS levy,
+           t."referenceId" AS reference_id, r."commissionNgn" AS commission, r."whatsappFeeNgn" AS whatsapp_fee, r."serviceFeeNgn" AS service_fee, r."stateLevyNgn" AS levy,
            r."vatNgn" AS vat, count(*) OVER () AS total
     FROM "Transaction" t
     JOIN "Wallet" w ON w.id = t."walletId" AND w."userId" = ${q.p(PLATFORM_USER_ID)}
@@ -1144,6 +1160,7 @@ async function feeLedger(f: AnalyticsFilters, kind: FeeKind | null, t: TableQuer
         amountNgn: num(r.amount),
         referenceId: (r.reference_id as string | null) ?? null,
         commissionNgn: optNum(r.commission),
+        whatsappFeeNgn: optNum(r.whatsapp_fee),
         serviceFeeNgn: optNum(r.service_fee),
         stateLevyNgn: optNum(r.levy),
         vatNgn: optNum(r.vat),
@@ -1495,7 +1512,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       (SELECT n FROM view_done) AS done_view,
       (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled) AS ride_fee_total,
       (SELECT coalesce(sum(fee), 0) FROM ledger) AS ledger_fee_total,
-      (SELECT coalesce(sum("commissionNgn" + "serviceFeeNgn" + "stateLevyNgn" + coalesce("vatNgn", 0)), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_sum,
+      (SELECT coalesce(sum("commissionNgn" + "serviceFeeNgn" + "stateLevyNgn" + coalesce("vatNgn", 0) + coalesce("whatsappFeeNgn", 0)), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_sum,
       (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_total,
       (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn")), 0) FROM settled) AS fare_total,
       (SELECT coalesce(sum(paid), 0) FROM ledger) AS paid_total,
@@ -1527,7 +1544,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
   return [
     check('completed', 'Completed trips: dashboard view vs ride table', ['ride_facts view', x?.done_view], ['Ride table', x?.done_raw]),
     check('fees', 'Platform fees: ride rows vs ledger', ['Sum of ride platform fees', x?.ride_fee_total], ['PLATFORM_FEE ledger rows', x?.ledger_fee_total]),
-    check('split', 'Fee split adds up to the fee', ['Commission + service + levy', x?.split_sum], ['Platform fee on the same rides', x?.split_total]),
+    check('split', 'Fee split adds up to the fee', ['Commission + service + WhatsApp fee + levy', x?.split_sum], ['Platform fee on the same rides', x?.split_total]),
     check('fares', 'Fares: ride rows vs what riders paid', ['Fares of settled trips', x?.fare_total], ['RIDE_PAYMENT ledger rows', x?.paid_total]),
     check('payouts', 'Driver payouts: fare minus fees vs ledger', ['Fare minus platform fee', x?.payout_expected], ['DRIVER_PAYOUT ledger rows', x?.payout_total]),
     check('withdrawals', 'Withdrawals: requests vs ledger', ['Settled withdrawal requests', w?.requested], ['WITHDRAWAL ledger rows', w?.ledger]),

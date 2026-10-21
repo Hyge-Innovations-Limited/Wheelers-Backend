@@ -1,7 +1,8 @@
-// Pricing since 2026-10-10 (version 2): drivers price per km. The rider's
+// Pricing since 2026-10-21 (version 3): drivers price per km. The rider's
 // fare is the trip fare (rate × distance) + 7.5% VAT + the ₦350 service charge,
-// rounded up to ₦50 and shown as one number. The driver gives up 10%
-// commission and the ₦30 levy, nothing else. A rider may offer no less than
+// rounded up to ₦50 and shown as one number. The driver gives up 5%
+// commission, the flat ₦300 WhatsApp fee and the ₦30 levy, nothing else.
+// Version 2 (10 to 21 Oct 2026) was the same with 10% and no WhatsApp fee. A rider may offer no less than
 // the fare at 90% of the recommended rate; a driver may ask no more than the
 // fare at 150%. Rides priced before the change (version 1) settle as they
 // were agreed. Against the local Postgres.
@@ -27,14 +28,18 @@ test('10 km at ₦350/km: ₦3,500 + ₦262.50 VAT + ₦350 = ₦4,112.50, the r
   assert.equal(calculateSuggestedFare(2).suggestedFareNgn, 3300, 'never under the minimum fare (₦3,300)');
 });
 
-test('a ₦4,150 fare taken apart: only commission and the levy come off the driver', () => {
+test('a ₦4,150 fare taken apart: 5% commission, the ₦300 WhatsApp fee and the levy come off the driver', () => {
   const f = calculateRideFees(4150);
+  assert.equal(f.pricingVersion, 3);
   assert.deepEqual(
-    { booking: f.bookingFeeNgn, trip: f.tripFareNgn, vat: f.vatNgn, commission: f.commissionNgn, levy: f.stateLevyNgn, paid: f.driverPayoutNgn },
-    { booking: 350, trip: 3534.88, vat: 265.12, commission: 353.49, levy: 30, paid: 3151.39 },
+    { booking: f.bookingFeeNgn, trip: f.tripFareNgn, vat: f.vatNgn, commission: f.commissionNgn, whatsapp: f.whatsappFeeNgn, levy: f.stateLevyNgn, paid: f.driverPayoutNgn },
+    { booking: 350, trip: 3534.88, vat: 265.12, commission: 176.74, whatsapp: 300, levy: 30, paid: 3028.14 },
   );
   assert.equal(f.totalNgn, 4150, 'the rider pays the fare, nothing on top');
-  assert.equal(f.driverPayoutNgn, Math.round((f.tripFareNgn - f.commissionNgn - f.stateLevyNgn) * 100) / 100, 'no VAT off the driver');
+  assert.equal(f.driverPayoutNgn, Math.round((f.tripFareNgn - f.commissionNgn - f.whatsappFeeNgn - f.stateLevyNgn) * 100) / 100, 'no VAT off the driver');
+  // Version 2 rides (10 to 21 Oct 2026) keep 10% and no WhatsApp fee.
+  const v2 = calculateRideFees(4150, 2);
+  assert.deepEqual([v2.commissionNgn, v2.whatsappFeeNgn, v2.driverPayoutNgn], [353.49, 0, 3151.39]);
   assert.equal(driverRatePerKmNgn(4150, 10), 353.5, 'the price as a rate per km');
 });
 
@@ -43,7 +48,7 @@ test('the books add up to the fare, to the kobo, at every distance and rate', ()
     for (let rate = 300; rate <= 620; rate += 13) {
       const fare = fareFromRatePerKmNgn(rate, km);
       const f = calculateRideFees(fare);
-      const sum = Math.round((f.driverPayoutNgn + f.bookingFeeNgn + f.commissionNgn + f.vatNgn + f.stateLevyNgn) * 100);
+      const sum = Math.round((f.driverPayoutNgn + f.bookingFeeNgn + f.commissionNgn + f.whatsappFeeNgn + f.vatNgn + f.stateLevyNgn) * 100);
       assert.equal(sum, Math.round(fare * 100), `${km} km at ₦${rate}`);
       assert.equal(fare % 50, 0, 'riders see fares in ₦50 steps');
       assert.ok(f.tripFareNgn >= Math.min(rate * km, f.tripFareNgn), 'rounding never takes from the driver');
@@ -115,15 +120,26 @@ async function settledRide(fareNgn, pricingVersion) {
   };
 }
 
-test('a new ride settles by the new rules: the rider pays the fare, the driver the trip fare less 10% and the levy', async () => {
+test('a new ride settles by the new rules: the rider pays the fare, the driver the trip fare less 5%, the ₦300 WhatsApp fee and the levy', async () => {
   const { row, riderLeft, driverGot } = await settledRide(4150);
-  assert.equal(row.pricingVersion, 2, 'new rides are version 2 without being told');
+  assert.equal(row.pricingVersion, 3, 'new rides are version 3 without being told');
   assert.equal(riderLeft, 10_000 - 4150);
-  assert.equal(driverGot, 3151.39);
+  assert.equal(driverGot, 3028.14);
   assert.equal(Number(row.serviceFeeNgn), 350, 'service charge');
-  assert.equal(Number(row.commissionNgn), 353.49);
+  assert.equal(Number(row.commissionNgn), 176.74);
+  assert.equal(Number(row.whatsappFeeNgn), 300);
   assert.equal(Number(row.vatNgn), 265.12);
   assert.equal(Number(row.stateLevyNgn), 30);
+  assert.equal(Number(row.platformFeeNgn), 1121.86);
+  const fee = await prisma.transaction.findFirst({ where: { referenceId: row.id, type: 'PLATFORM_FEE' } });
+  assert.equal(fee.metadata.whatsappFeeNgn, 300, 'the ledger row carries the WhatsApp fee line');
+});
+
+test('a ride booked under version 2 (10 to 21 Oct 2026) and ending after the change still settles at 10% with no WhatsApp fee', async () => {
+  const { row, driverGot } = await settledRide(4150, 2);
+  assert.equal(driverGot, 3151.39);
+  assert.equal(Number(row.commissionNgn), 353.49);
+  assert.equal(row.whatsappFeeNgn, null);
   assert.equal(Number(row.platformFeeNgn), 998.61);
 });
 
