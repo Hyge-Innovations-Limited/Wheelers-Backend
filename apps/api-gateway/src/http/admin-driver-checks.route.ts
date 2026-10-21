@@ -302,7 +302,7 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
   } else {
     paperType = 'insurance';
     input = clean(getString(body, 'number') ?? insurancePaper?.number, 60).toUpperCase();
-    const channel = clean(getString(body, 'channel') ?? 'Policy', 30) || 'Policy';
+    const channel = clean(getString(body, 'channel') ?? 'policy', 30) || 'policy';
     if (!input) { sendJson(res, 400, { error: 'No policy number: the driver has not typed one. Type it from the certificate.' }); return true; }
     call = () => prembly.insurance(config, { number: input, channel }, deps.fetchImpl);
     read = (data) => readInsurance(data, { plate, vehicleMake, vehicleModel, paperExpiresOn: day(insurancePaper?.expiresOn) }, today);

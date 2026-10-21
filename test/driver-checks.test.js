@@ -208,7 +208,7 @@ test('only an owner runs a Prembly check; it needs the date of birth; the same o
   const ins = await runPrembly(owner, d.id, { kind: 'insurance' });
   assert.equal(ins.body.check.outcome, 'mismatch');
   assert.match(ins.body.check.mismatches[0], /plate LND555XY, not the driver's KJA 123 AB/);
-  assert.deepEqual(calls.at(-1).body, { channel: 'Policy', number: 'PM2607151199' });
+  assert.deepEqual(calls.at(-1).body, { channel: 'policy', number: 'PM2607151199' });
 
   answer = { status: false, response_code: '02', detail: 'Plate Number Verification verification is currently unavailable', billing_info: { was_charged: false, amount: '40.00' } };
   const broke = await runPrembly(owner, d.id, { kind: 'plate' });
