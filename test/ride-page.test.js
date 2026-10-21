@@ -512,6 +512,87 @@ test('cancel stops the search; once a driver is confirmed the page sends them to
   assert.equal(refused.body.code, 'ALREADY_CONFIRMED');
 });
 
+test('cancel says why: one of the app\'s reasons, or Other in their own words', async () => {
+  const { deps, redis, events } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Because' })).body.code, 'REASON_INVALID');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Other reason', detail: ' ' })).body.code, 'REASON_NEEDED');
+  const done = await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Other reason', detail: 'My friend is   driving me' });
+  assert.equal(done.body.phase, 'idle');
+  assert.equal(events.at(-1).eventType, 'RIDE_CANCELLED');
+  assert.equal(events.at(-1).reason, 'Other: My friend is driving me');
+
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+  await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'The prices are too high' });
+  assert.equal(events.at(-1).reason, 'The prices are too high');
+});
+
+/* ── changing the trip ────────────────────────────────────────────────── */
+
+const PLACE_A = { lat: 6.5244, lng: 3.3792, address: 'Yaba Market, Yaba, Lagos' };
+const PLACE_B = { lat: 6.4541, lng: 3.3947, address: 'Tafawa Balewa Square, Lagos Island' };
+
+test('the trip is changed on the page before a price: planned again, new suggested price, the same checks as the chat', async () => {
+  const { deps, redis } = world();
+  const planned = [];
+  deps.routePlanner = { planRoute: async (input) => { planned.push(input); return { distanceKm: 8.2, durationSeconds: 1500, suggestedFareNgn: 4100, minOfferNgn: 3700, ratePerKmNgn: 350, geometry: { coordinates: [{ lat: 6.5244, lng: 3.3792 }, { lat: 6.4541, lng: 3.3947 }], bounds: { northEast: { lat: 6.5244, lng: 3.3947 }, southWest: { lat: 6.4541, lng: 3.3792 } } } }; } };
+  deps.googleMapsApiKey = 'test-key';
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+
+  const before = await call(deps, rider, 'GET', '/ride-page/state');
+  assert.equal(before.body.canEditTrip, true);
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_A, destination: { lat: 51.5, lng: -0.12, address: 'London' } })).body.code, 'PLACE_INVALID');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_A, destination: { ...PLACE_A, address: 'Yaba' } })).body.code, 'SAME_PLACE');
+
+  const changed = await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_A, destination: PLACE_B });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  assert.equal(changed.body.phase, 'price');
+  assert.equal(changed.body.route.pickupAddress, PLACE_A.address);
+  assert.equal(changed.body.route.suggestedFareNgn, 4100);
+  assert.equal(changed.body.minOfferNgn, 3700);
+  assert.equal(planned.length, 1);
+  assert.equal((await bidState.getPendingRoute(redis, rider)).confirmed, true);
+
+  // The same trip again plans nothing.
+  await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_A, destination: PLACE_B });
+  assert.equal(planned.length, 1);
+
+  // Not while drivers are looking: going back stops the search first.
+  await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 4100 });
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_B, destination: PLACE_A })).body.code, 'ALREADY_SEARCHING');
+});
+
+test('going back from the search to change the trip stops the search and brings the trip back, price and all; the chat is not told it was cancelled', async () => {
+  const { deps, redis, events, chat } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const searching = (await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6800 })).body;
+  assert.equal(searching.phase, 'offers');
+  const chatBefore = chat.length;
+
+  const back = await call(deps, rider, 'POST', '/ride-page/edit-trip');
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.equal(back.body.phase, 'price');
+  assert.equal(back.body.route.destAddress, QUOTE.destAddress);
+  assert.equal(back.body.lastOfferNgn, 6800, 'the price they had named, to start from');
+  assert.equal(events.at(-1).eventType, 'RIDE_CANCELLED');
+  assert.equal(events.at(-1).rideId, searching.rideId);
+  assert.equal(events.at(-1).reason, 'Changed the trip on the offers page');
+  assert.equal(chat.length, chatBefore, 'no "search cancelled" in the chat');
+
+  // And a price from there starts a new search.
+  const again = (await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6800 })).body;
+  assert.equal(again.phase, 'offers');
+  assert.notEqual(again.rideId, searching.rideId);
+  await bidState.setRideState(redis, again.rideId, 'confirmed');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/edit-trip')).body.code, 'ALREADY_CONFIRMED');
+});
+
 /* ── the chat stays quiet while the page is open ──────────────────────── */
 
 test('every request from the page says "still here"; silence means they left', async () => {

@@ -1095,6 +1095,9 @@ async function bootstrap(): Promise<void> {
         publisher,
         paymentsClient,
         notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
+        // Changing the trip on the page: the chat's place lookup and route planner.
+        googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+        routePlanner,
         // Paying with XLM (testnet): only when Stellar is on.
         stellar: stellar ?? null,
       }, url);

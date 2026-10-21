@@ -135,6 +135,8 @@
     W.show(W.$('sheet-offer'), false);
     W.show(W.$('sheet-pay'), false);
     W.show(W.$('sheet-confirm'), false);
+    W.show(W.$('sheet-trip'), false);
+    W.show(W.$('sheet-cancel'), false);
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
   }
@@ -177,11 +179,18 @@
 
   function drawPrice(s) {
     drawRoute(s.route);
-    var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + s.route.suggestedFareNgn;
+    W.show(W.$('route-edit'), Boolean(s.canEditTrip));
+    var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + (s.route.stopAddresses || []).join('|') + '|' + s.route.suggestedFareNgn;
     if (priceDrawnFor !== signature) {           // a fresh quote — not every poll, or typing would be wiped
+      // The trip changed while they were here: the box starts again from the new suggested price.
+      var changed = priceDrawnFor !== null;
       priceDrawnFor = signature;
       W.$('price-suggested').textContent = W.naira(s.route.suggestedFareNgn);
-      if (!W.$('price-input').value) W.$('price-input').value = Number(s.route.suggestedFareNgn).toLocaleString('en-NG');
+      if (!W.$('price-input').value || changed) {
+        // Back from a search: the price they had named. Otherwise the suggested one.
+        var start = s.lastOfferNgn && s.lastOfferNgn >= s.minOfferNgn ? s.lastOfferNgn : s.route.suggestedFareNgn;
+        W.$('price-input').value = Number(start).toLocaleString('en-NG');
+      }
     }
     syncPrice();
   }
@@ -472,19 +481,41 @@
 
   /* change the bid */
 
-  W.$('change-offer').addEventListener('click', function () {
+  /** The change-price sheet, starting at the current offer plus `raiseBy` (as the app's + ₦200 / + ₦500 / Other). */
+  function openChangePrice(raiseBy) {
     if (!state || state.phase !== 'offers') return;
-    W.$('offer-input').value = Number(state.offerNgn).toLocaleString('en-NG');
+    W.$('offer-input').value = Number(state.offerNgn + (raiseBy || 0)).toLocaleString('en-NG');
+    W.$('offer-current').textContent = 'Current ' + W.naira(state.offerNgn);
     W.show(W.$('offer-err'), false);
-    drawChips('offer-chips', 'offer-input', state.route.suggestedFareNgn, state.minOfferNgn, function () {
-      markChips('offer-chips', W.parseAmount(W.$('offer-input').value));
-    });
-    markChips('offer-chips', state.offerNgn);
+    drawChips('offer-chips', 'offer-input', state.route.suggestedFareNgn, state.minOfferNgn, syncOfferSheet);
+    syncOfferSheet();
     openSheet('sheet-offer');
+  }
+  /** The chips and the button follow the figure: "Update price to ₦X". */
+  function syncOfferSheet() {
+    var amount = W.parseAmount(W.$('offer-input').value);
+    markChips('offer-chips', amount);
+    W.$('offer-save').textContent = amount > 0 && state && amount !== state.offerNgn ? 'Update price to ' + W.naira(amount) : 'Update price';
+  }
+  W.$('change-offer').addEventListener('click', function () { openChangePrice(0); });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-raise]'), function (button) {
+    button.addEventListener('click', function () { openChangePrice(Number(button.getAttribute('data-raise')) || 0); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function (button) {
+    button.addEventListener('click', function () {
+      var amount = W.parseAmount(W.$('offer-input').value) || (state ? state.offerNgn : 0);
+      W.$('offer-input').value = Number(amount + Number(button.getAttribute('data-add'))).toLocaleString('en-NG');
+      syncOfferSheet();
+    });
+  });
+  W.$('offer-reset').addEventListener('click', function () {
+    if (!state) return;
+    W.$('offer-input').value = Number(Math.max(state.minOfferNgn || 0, state.offerNgn)).toLocaleString('en-NG');
+    syncOfferSheet();
   });
   W.$('offer-input').addEventListener('input', function () {
     W.formatAmountInput(this);
-    markChips('offer-chips', W.parseAmount(this.value));
+    syncOfferSheet();
   });
 
   W.$('offer-save').addEventListener('click', function () {
@@ -505,30 +536,222 @@
     }).then(function () { busy = false; button.className = 'btn primary'; });
   });
 
-  /* cancel */
+  /* cancel: why, as the app asks (app/rider-cancel.tsx) — nothing chosen for them */
+
+  var CANCEL_REASONS = [
+    "It's taking too long to find a driver",
+    'The prices are too high',
+    'Wrong pickup or destination',
+    'I found another ride',
+    'My plans changed',
+    'Other reason'
+  ];
+  var OTHER = 'Other reason';
+  var cancelReason = null;
+
+  function drawReasons() {
+    var holder = W.$('cancel-reasons');
+    holder.innerHTML = '';
+    CANCEL_REASONS.forEach(function (reason) {
+      var chosen = cancelReason === reason;
+      var row = el('button', 'reason' + (chosen ? ' on' : ''));
+      row.type = 'button';
+      row.setAttribute('role', 'radio');
+      row.setAttribute('aria-checked', String(chosen));
+      row.appendChild(el('span', 'radio'));
+      row.appendChild(el('span', 'reason-text', reason));
+      row.addEventListener('click', function () {
+        cancelReason = reason;
+        drawReasons();
+        W.show(W.$('cancel-other'), reason === OTHER);
+        if (reason === OTHER) setTimeout(function () { W.$('cancel-other').focus(); }, 30);
+        syncCancel();
+      });
+      holder.appendChild(row);
+    });
+  }
+  function syncCancel() {
+    var words = W.$('cancel-other').value.trim();
+    W.$('cancel-yes').disabled = !cancelReason || (cancelReason === OTHER && words.length < 3);
+    W.show(W.$('cancel-err'), false);
+  }
+  W.$('cancel-other').addEventListener('input', syncCancel);
 
   W.$('cancel-search').addEventListener('click', function () {
     if (busy) return;
-    ask({
-      title: 'Stop looking for a driver?',
-      text: 'Nothing has been charged. You can book again from the chat any time.',
-      yes: 'Cancel search',
-      no: 'Keep looking'
-    }).then(function (yes) { if (yes) cancelSearch(); });
+    cancelReason = null;
+    W.$('cancel-other').value = '';
+    W.show(W.$('cancel-other'), false);
+    drawReasons();
+    syncCancel();
+    openSheet('sheet-cancel');
   });
 
-  function cancelSearch() {
-    if (busy) return;
+  W.$('cancel-yes').addEventListener('click', function () {
+    if (busy || !cancelReason) return;
+    var button = this;
     busy = true;
-    W.api('POST', '/ride-page/cancel').then(function (next) {
+    button.className = 'btn danger busy';
+    var body = { reason: cancelReason };
+    if (cancelReason === OTHER) body.detail = W.$('cancel-other').value.trim();
+    W.api('POST', '/ride-page/cancel', body).then(function (next) {
+      closeSheets();
       apply(next);
       W.$('idle-title').textContent = 'Search cancelled';
       W.$('idle-text').textContent = 'Nothing was charged. Message Wheelers whenever you need a ride.';
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
-      say(error.message, 'bad');
-    }).then(function () { busy = false; });
+      W.$('cancel-err').textContent = error.message;
+      W.show(W.$('cancel-err'), true);
+    }).then(function () { busy = false; button.className = 'btn danger'; });
+  });
+
+  /* back from the search, to change the trip or the price */
+
+  W.$('offers-back').addEventListener('click', function () {
+    if (busy || !state || state.phase !== 'offers') return;
+    var count = (state.offers || []).length;
+    ask({
+      title: 'Change your trip?',
+      text: (count ? 'The ' + (count === 1 ? 'offer' : count + ' offers') + ' you have go away and drivers' : 'Drivers') + ' stop seeing this request. You set the trip and your price again. Nothing is charged.',
+      yes: 'Change trip',
+      no: 'Keep looking'
+    }).then(function (yes) {
+      if (!yes) return;
+      busy = true;
+      W.api('POST', '/ride-page/edit-trip').then(function (next) {
+        apply(next);
+        if (next.phase === 'price') say('Search stopped. Change your trip or your price, then find drivers again.', 'good');
+      }).catch(function (error) {
+        if (error.status === 401) return W.fatal(error.message);
+        say(error.message, 'bad');
+      }).then(function () { busy = false; });
+    });
+  });
+
+  /* change the trip: type a place, pick it from the list (the chat's own lookup) */
+
+  var trip = null;          // { pickup, destination, stops: [] } — each { lat, lng, address }, null while being typed
+  var searchTimer = null;
+  var searchFor = null;     // the field whose list is showing
+  var searchSeq = 0;
+
+  function openTrip() {
+    if (!state || state.phase !== 'price' || !state.places) return;
+    trip = {
+      pickup: state.places.pickup,
+      destination: state.places.destination,
+      stops: (state.places.stops || []).slice()
+    };
+    W.$('trip-pickup').value = trip.pickup.address;
+    W.$('trip-dest').value = trip.destination.address;
+    drawTripStops();
+    clearPlaces();
+    W.show(W.$('trip-err'), false);
+    syncTrip();
+    openSheet('sheet-trip');
   }
+  W.$('route-edit').addEventListener('click', openTrip);
+
+  /** The stops on the way: each can be taken off (adding one is done in the chat). */
+  function drawTripStops() {
+    var holder = W.$('trip-stops');
+    holder.innerHTML = '';
+    trip.stops.forEach(function (stop, index) {
+      var row = el('div', 'trip-field stop-row');
+      row.appendChild(el('span', 'trip-dot mid'));
+      row.appendChild(el('span', 'stop-text', 'Stop ' + (index + 1) + ': ' + stop.address));
+      var remove = el('button', 'stop-remove', '×');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', 'Remove stop ' + (index + 1));
+      remove.addEventListener('click', function () {
+        trip.stops.splice(index, 1);
+        drawTripStops();
+        syncTrip();
+      });
+      row.appendChild(remove);
+      holder.appendChild(row);
+    });
+  }
+
+  function syncTrip() {
+    W.$('trip-save').disabled = !(trip && trip.pickup && trip.destination);
+  }
+
+  function clearPlaces() {
+    searchFor = null;
+    W.$('place-list').innerHTML = '';
+  }
+
+  function onTripTyping() {
+    var input = this;
+    var field = input.getAttribute('data-field');
+    trip[field] = null;              // typed over: not a place until one is picked
+    syncTrip();
+    W.show(W.$('trip-err'), false);
+    clearTimeout(searchTimer);
+    var query = input.value.trim();
+    if (query.length < 3) { clearPlaces(); return; }
+    searchTimer = setTimeout(function () { findPlaces(field, query); }, 350);
+  }
+  W.$('trip-pickup').addEventListener('input', onTripTyping);
+  W.$('trip-dest').addEventListener('input', onTripTyping);
+
+  function findPlaces(field, query) {
+    var seq = ++searchSeq;
+    searchFor = field;
+    var holder = W.$('place-list');
+    holder.innerHTML = '';
+    var looking = el('div', 'place-status');
+    looking.appendChild(el('span', 'spinner'));
+    looking.appendChild(document.createTextNode('Looking for places…'));
+    holder.appendChild(looking);
+    W.api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
+      if (seq !== searchSeq) return;   // a newer search is on its way
+      holder.innerHTML = '';
+      var places = (answer && answer.places) || [];
+      if (!places.length) {
+        holder.appendChild(el('div', 'place-status', 'No place found. Add the area or a landmark, e.g. "Shoprite, Ikeja".'));
+        return;
+      }
+      places.forEach(function (place) {
+        var option = el('button', 'place');
+        option.type = 'button';
+        option.setAttribute('role', 'option');
+        option.appendChild(el('strong', '', place.name || place.address));
+        if (place.area) option.appendChild(el('span', '', place.area));
+        option.addEventListener('click', function () {
+          trip[field] = { lat: place.lat, lng: place.lng, address: place.address };
+          W.$(field === 'pickup' ? 'trip-pickup' : 'trip-dest').value = place.address;
+          clearPlaces();
+          syncTrip();
+        });
+        holder.appendChild(option);
+      });
+    }).catch(function (error) {
+      if (seq !== searchSeq) return;
+      if (error.status === 401) return W.fatal(error.message);
+      holder.innerHTML = '';
+      holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
+    });
+  }
+
+  W.$('trip-save').addEventListener('click', function () {
+    if (busy || !trip || !trip.pickup || !trip.destination) return;
+    var button = this;
+    busy = true;
+    button.className = 'btn primary busy';
+    button.textContent = 'Working out the new price…';
+    W.api('POST', '/ride-page/route', { pickup: trip.pickup, destination: trip.destination, stops: trip.stops }).then(function (next) {
+      closeSheets();
+      apply(next);
+      say('Trip changed. The suggested price is ' + W.naira(next.route ? next.route.suggestedFareNgn : 0) + '.', 'good');
+    }).catch(function (error) {
+      if (error.status === 401) return W.fatal(error.message);
+      W.$('trip-err').textContent = error.message;
+      W.show(W.$('trip-err'), true);
+    }).then(function () { busy = false; button.className = 'btn primary'; button.textContent = 'Save trip'; });
+  });
 
   /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
 
@@ -678,6 +901,8 @@
       W.show(idleBack, Boolean(next.chatUrl));
       if (next.chatUrl) idleBack.setAttribute('href', next.chatUrl);
     }
+    // Back from a search to change the trip: the box holds the price they had out (raised or not).
+    if (before === 'offers' && next.phase === 'price' && next.lastOfferNgn) W.$('price-input').value = Number(next.lastOfferNgn).toLocaleString('en-NG');
     if (next.phase === 'price') drawPrice(next);
     else if (next.phase === 'offers') drawSent(next);
     else if (next.phase === 'confirmed') drawConfirmed(next);

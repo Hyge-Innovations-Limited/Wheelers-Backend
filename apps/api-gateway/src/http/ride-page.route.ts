@@ -11,7 +11,10 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute } from '../whatsapp-flows/bid-state';
+import { getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
+import type { GoogleMapsRoutePlanner } from '@wheleers/config';
+import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import {
   cancelWhatsappRide,
@@ -37,7 +40,11 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/offer        { amountNgn }  change the bid
  *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
  *   POST /ride-page/decline-all                 decline every offer; the search goes on
- *   POST /ride-page/cancel                      stop the search
+ *   POST /ride-page/cancel        { reason, detail? }   stop the search, saying why (the app's reasons)
+ *   GET  /ride-page/places?q=&field=            places matching what the rider types (the chat's lookup)
+ *   POST /ride-page/route         { pickup, destination, stops? }   change the trip before pricing it
+ *   POST /ride-page/edit-trip                   go back from the search to the trip: the search stops,
+ *                                               the trip comes back to Set your price to change
  *   GET  /ride-page/topup?amount=            what to send for ₦amount to land
  *
  * The page polls /state every few seconds, and that poll is also how we know
@@ -57,6 +64,9 @@ export interface RidePageRouteDeps {
   redisClient: RedisClient;
   publisher: GatewayPublisher;
   paymentsClient: PaymentsClient;
+  /** Looking places up and planning a changed trip. Absent: the trip cannot be changed on the page. */
+  googleMapsApiKey?: string;
+  routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'>;
   /** Tells the chat what happened on the page (search started, ride confirmed). Absent in tests. */
   notifyChat?: (event: RidePageChatEvent) => Promise<void>;
   /** Stellar (testnet): paying with XLM. Absent when Stellar is off — the page then offers naira only. */
@@ -297,6 +307,15 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
         suggestedFareNgn: quote.suggestedFareNgn,
       },
       minOfferNgn: quote.minOfferNgn,
+      // Back from a search to change the trip: the price they had named, to start from.
+      ...(quote.offerNgn ? { lastOfferNgn: quote.offerNgn } : {}),
+      // The page can change the trip (place search and route planning are set up), starting from these places.
+      canEditTrip: Boolean(deps.googleMapsApiKey && deps.routePlanner),
+      places: {
+        pickup: { lat: quote.pickupLat, lng: quote.pickupLng, address: quote.pickupAddress },
+        destination: { lat: quote.destLat, lng: quote.destLng, address: quote.destAddress },
+        stops: quote.stops ?? [],
+      },
       chatUrl: CHAT_URL,
     };
   }
@@ -441,8 +460,33 @@ async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps:
 
 /* ── POST /ride-page/cancel ───────────────────────────────────────────── */
 
+/** Why a rider stops a search: the app's own list (app/rider-cancel.tsx), so both say the same. */
+export const SEARCH_CANCEL_REASONS = [
+  "It's taking too long to find a driver",
+  'The prices are too high',
+  'Wrong pickup or destination',
+  'I found another ride',
+  'My plans changed',
+  'Other reason',
+] as const;
+const OTHER_REASON = 'Other reason';
+
+/** The reason as it is saved on the ride: one of the list, or "Other: their own words". Null: none given. */
+async function readCancelReason(req: IncomingMessage): Promise<string | null> {
+  const body = await readJsonBody(req).catch(() => null);
+  if (!isRecord(body) || typeof body.reason !== 'string') return null;
+  const reason = body.reason.trim();
+  if (!(SEARCH_CANCEL_REASONS as readonly string[]).includes(reason)) throw new PageError('Pick why you are cancelling.', 400, 'REASON_INVALID');
+  if (reason !== OTHER_REASON) return reason;
+  const words = (typeof body.detail === 'string' ? body.detail : '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (words.length < 3) throw new PageError('Tell us in a few words why you are cancelling.', 400, 'REASON_NEEDED');
+  return `Other: ${words}`;
+}
+
 async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
+  // A page opened before reasons were asked sends none: it still cancels.
+  const reason = await readCancelReason(req);
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (rideId) {
     const state = await getRideState(deps.redisClient, rideId);
@@ -450,11 +494,129 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: Rid
       // A driver is on the way: that cancellation has reasons and may carry a fee. The chat handles it.
       throw new PageError('Your driver is already confirmed. To cancel this trip, reply "cancel" in the chat.', 409, 'ALREADY_CONFIRMED');
     }
-    await cancelWhatsappRide(deps, userId, rideId, 'Cancelled on the offers page');
-    logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: {} });
+    await cancelWhatsappRide(deps, userId, rideId, reason ?? 'Cancelled on the offers page');
+    logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: reason ? { reason } : {} });
     const user = await userClient.findById(userId);
     await deps.notifyChat?.({ kind: 'search_cancelled', userId, phone: user?.phone ?? '' }).catch(() => undefined);
   }
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/* ── GET /ride-page/places?q=&field= ──────────────────────────────────── */
+
+/** The rider's search box: places matching what they typed, near the other end of the trip. */
+async function handlePlaces(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
+  const userId = authenticate(req, deps);
+  if (!deps.googleMapsApiKey) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
+  const query = (url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (query.length < 3) return sendJson(res, 200, { places: [] });
+  const trip = await getPendingRoute(deps.redisClient, userId);
+  const field = url.searchParams.get('field');
+  // Looking for a pickup: near the destination, and the other way round.
+  const near = trip ? (field === 'pickup' ? { lat: trip.destLat, lng: trip.destLng } : { lat: trip.pickupLat, lng: trip.pickupLng }) : undefined;
+  const matches = await findPlaceOptions(deps.googleMapsApiKey, query, { ...(near ? { near } : {}), limit: 6 }).catch(() => []);
+  sendJson(res, 200, {
+    places: matches.slice(0, 6).map((match) => {
+      const [name, ...rest] = match.formattedAddress.split(',');
+      return { lat: match.lat, lng: match.lng, address: match.formattedAddress, name: (name ?? match.formattedAddress).trim(), area: rest.join(',').trim() };
+    }),
+  });
+}
+
+/* ── POST /ride-page/route ────────────────────────────────────────────── */
+
+function readPlace(value: unknown, label: string): RouteStop {
+  const place = isRecord(value) ? value : null;
+  const lat = Number(place?.lat);
+  const lng = Number(place?.lng);
+  const address = typeof place?.address === 'string' ? place.address.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+  // Nigeria, roughly: a place from anywhere else is a mistake (or a made-up request).
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 3 || lat > 14.5 || lng < 2 || lng > 15 || !address) {
+    throw new PageError(`Pick the ${label} from the list.`, 400, 'PLACE_INVALID');
+  }
+  return { lat, lng, address };
+}
+
+/**
+ * The trip changed on the page, before a price is named: planned again, the
+ * suggested price with it, and saved as the trip the chat knows too. The same
+ * checks the chat's trip form makes (another city, two places the same).
+ */
+async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  if (!deps.routePlanner) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
+  if (await getActiveRide(deps.redisClient, userId)) throw new PageError('Drivers are already looking at this trip. Go back to change it.', 409, 'ALREADY_SEARCHING');
+  const trip = await getPendingRoute(deps.redisClient, userId);
+  if (!trip) throw new PageError('This quote has expired. Send your trip to the Wheelers bot again for a fresh one.', 409, 'QUOTE_EXPIRED');
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
+  const pickup = readPlace(body.pickup, 'pickup');
+  const destination = readPlace(body.destination, 'destination');
+  const stops = (Array.isArray(body.stops) ? body.stops : []).slice(0, MAX_CHAT_STOPS).map((stop, index) => readPlace(stop, `stop ${index + 1}`));
+
+  const far = [{ label: 'destination', place: destination }, ...stops.map((place, index) => ({ label: `stop ${index + 1}`, place }))]
+    .find(({ place }) => kmBetween(pickup, place) > SAME_CITY_KM);
+  if (far) throw new PageError(`That ${far.label} is about ${Math.round(kmBetween(pickup, far.place)).toLocaleString()} km from your pickup. Pick a place in Lagos.`, 400, 'TOO_FAR');
+  const named = [{ label: 'pickup', place: pickup }, ...stops.map((place, index) => ({ label: `stop ${index + 1}`, place })), { label: 'destination', place: destination }];
+  for (let a = 0; a < named.length; a++) {
+    for (let b = a + 1; b < named.length; b++) {
+      if (kmBetween(named[a]!.place, named[b]!.place) < SAME_PLACE_KM) {
+        throw new PageError(`Your ${named[a]!.label} and your ${named[b]!.label} are the same place. Change one of them.`, 400, 'SAME_PLACE');
+      }
+    }
+  }
+
+  const before = trip.stops ?? [];
+  const unchanged = trip.pickupAddress === pickup.address && trip.destAddress === destination.address
+    && before.length === stops.length && stops.every((stop, index) => stop.address === before[index]!.address);
+  if (!unchanged) {
+    const planned = await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
+    if (!planned) throw new PageError('We could not find a driving route through those places. Check them and try again.', 422, 'NO_ROUTE');
+    const next: PendingRouteData = {
+      pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
+      destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
+      stops,
+      distanceKm: planned.distanceKm,
+      durationSeconds: planned.durationSeconds,
+      suggestedFareNgn: planned.suggestedFareNgn,
+      minOfferNgn: planned.minOfferNgn,
+      ratePerKmNgn: planned.ratePerKmNgn,
+      route: planned.geometry,
+      // Looked at and changed on the page itself: the price is the next step.
+      confirmed: true,
+    };
+    await storePendingRoute(deps.redisClient, userId, next);
+    await setBookingStage(deps.redisClient, userId, 'awaiting_price');
+    logActivity({ userId, eventType: 'ride_trip_changed', source: 'ride_page', metadata: { distanceKm: planned.distanceKm, stops: stops.length } });
+  }
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/* ── POST /ride-page/edit-trip ────────────────────────────────────────── */
+
+/**
+ * Back from the search to the trip, to change it: the search stops (no driver
+ * is waiting on it), and the trip it was for comes back to Set your price.
+ * The chat is not told it was cancelled: the rider has not given up.
+ */
+async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  if (!rideId) return sendJson(res, 200, await buildState(deps, userId));
+  const state = await getRideState(deps.redisClient, rideId);
+  if (state === 'confirmed' || state === 'in_progress') {
+    throw new PageError('Your driver is already confirmed. To change this trip, reply in the chat.', 409, 'ALREADY_CONFIRMED');
+  }
+  const last = await getLastRoute(deps.redisClient, userId);
+  await cancelWhatsappRide(deps, userId, rideId, 'Changed the trip on the offers page');
+  if (last) {
+    await storePendingRoute(deps.redisClient, userId, { ...last, route: last.route, confirmed: true });
+    await setBookingStage(deps.redisClient, userId, 'awaiting_price');
+  }
+  logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: { reason: 'Changed the trip' } });
   sendJson(res, 200, await buildState(deps, userId));
 }
 
@@ -497,6 +659,9 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/accept': { method: 'POST', run: handleAccept },
   '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
+  '/ride-page/places': { method: 'GET', run: handlePlaces },
+  '/ride-page/route': { method: 'POST', run: handleRoute },
+  '/ride-page/edit-trip': { method: 'POST', run: handleEditTrip },
   '/ride-page/topup': { method: 'GET', run: handleTopup },
 };
 
