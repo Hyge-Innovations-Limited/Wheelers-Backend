@@ -1,3 +1,4 @@
+import { rateLimitWaitMs } from '../LLM/groq.client';
 import type { LlmClient } from '../LLM/llm';
 import { readDay } from './driver-checks';
 
@@ -61,12 +62,29 @@ export function cleanReading(raw: Record<string, unknown>): LicenceReading {
   };
 }
 
-/** Null when no model is set up or it gave no answer. Never throws. */
-export async function readLicencePhoto(llm: LlmClient, bytes: Buffer, mimeType: string): Promise<LicenceReading | null> {
+/** The longest a rate limit is waited out: the admin is looking at a spinner. */
+const MAX_WAIT_MS = 15_000;
+
+/**
+ * Null when no model is set up or it gave no answer. Never throws. A rate
+ * limit that names a short wait (Groq's free tier: about three photos a
+ * minute) is waited out once.
+ */
+export async function readLicencePhoto(llm: LlmClient, bytes: Buffer, mimeType: string, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<LicenceReading | null> {
   if (!llm.configured) return null;
-  try {
+  const ask = async () => {
     const raw = await llm.completeVisionJson(PROMPT, bytes, mimeType);
     return raw ? cleanReading(raw) : null;
+  };
+  try {
+    try {
+      return await ask();
+    } catch (error) {
+      const wait = rateLimitWaitMs(error);
+      if (wait === null || wait > MAX_WAIT_MS) throw error;
+      await sleep(wait + 250);
+      return await ask();
+    }
   } catch (error) {
     console.warn('[licence-reader] could not read the licence', { error: error instanceof Error ? error.message : String(error) });
     return null;

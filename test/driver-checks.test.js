@@ -18,7 +18,7 @@ const { handleAdminDriverPapersRoute } = require('../apps/api-gateway/dist/http/
 const { lagosToday } = require('../apps/api-gateway/dist/http/driver-papers.route.js');
 const { readDay, namesAgree, makesAgree, plateKey, readLicence, readInsurance, readPlate } = require('../apps/api-gateway/dist/verification/driver-checks.js');
 const { premblyPost } = require('../apps/api-gateway/dist/verification/prembly.js');
-const { cleanReading } = require('../apps/api-gateway/dist/verification/licence-reader.js');
+const { cleanReading, readLicencePhoto } = require('../apps/api-gateway/dist/verification/licence-reader.js');
 
 const SECRET = 'test-secret-for-the-driver-checks';
 const told = [];
@@ -318,4 +318,23 @@ test('the licence photo is read for the form, once an hour, with where it disagr
   const seen = await call(staff, 'GET', `/admin/drivers/${d.id}/checks`);
   assert.equal(seen.body.documents.licence.url, `https://files.test/mem/${d.id}/licence.jpg`);
   assert.equal(await prisma.driverCheck.count({ where: { driverId: d.id } }), 0, 'a reading is never saved as a check');
+});
+
+test('a short rate limit is waited out once; a long one is not', async () => {
+  let asked = 0;
+  const waits = [];
+  const limited = (seconds) => ({
+    configured: true,
+    completeVisionJson: async () => {
+      asked += 1;
+      if (asked === 1) throw new Error(`Rate limit reached for model x. Please try again in ${seconds}s. Need more tokens?`);
+      return { readable: true, dateOfBirth: '1991-05-14' };
+    },
+  });
+  const r = await readLicencePhoto(limited(8.78), Buffer.from('x'), 'image/jpeg', async (ms) => { waits.push(ms); });
+  assert.equal(r.dateOfBirth, '1991-05-14');
+  assert.deepEqual(waits, [9030]);
+  asked = 0;
+  assert.equal(await readLicencePhoto(limited(60), Buffer.from('x'), 'image/jpeg', async (ms) => { waits.push(ms); }), null);
+  assert.equal(asked, 1, 'a minute is too long to hold the admin');
 });
