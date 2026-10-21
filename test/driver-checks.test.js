@@ -150,6 +150,7 @@ test('only an owner runs a Prembly check; it needs the date of birth; the same o
   assert.equal(seen.body.prembly.canRun, false);
   assert.equal(seen.body.inputs.licenceNumber, 'AAD23208212298');
   assert.equal(seen.body.inputs.plate, 'KJA 123 AB');
+  assert.deepEqual(seen.body.documents, { licence: null, selfieUrl: null, papers: [] }, 'nothing sent yet');
 
   assert.equal((await call(staff, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence', dob: '1990-01-01' })).body.code, 'OWNERS_ONLY');
   assert.equal((await call(owner, 'POST', `/admin/drivers/${d.id}/checks/prembly`, { kind: 'licence' })).body.code, 'DOB_NEEDED');
@@ -192,6 +193,7 @@ test('only an owner runs a Prembly check; it needs the date of birth; the same o
   assert.equal(plate.body.check.outcome, 'verified');
 
   const list = await call(staff, 'GET', `/admin/drivers/${d.id}/checks`);
+  assert.deepEqual(list.body.documents.papers.map((p) => [p.type, p.number, p.expiresOn, p.daysLeft]), [['insurance', 'PM2607151199', iso(inDays(200)), 200]], 'each paper with its number and dates');
   assert.deepEqual(list.body.checks.map((c) => c.outcome), ['verified', 'error', 'mismatch', 'verified', 'verified']);
   assert.ok(list.body.prembly.thisMonth >= 4, 'errors are not counted as spent');
 });

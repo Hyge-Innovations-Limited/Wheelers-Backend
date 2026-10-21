@@ -20,7 +20,9 @@ export function premblyConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Prem
     apiKey,
     appId: env.PREMBLY_APP_ID?.trim() || null,
     baseUrl: (env.PREMBLY_BASE_URL?.trim() || 'https://api.prembly.com').replace(/\/+$/, ''),
-    timeoutMs: 30_000,
+    // Government records behind Prembly (FRSC, NIID) can take most of a minute; kept under the
+    // usual 60-second proxy limit so the admin gets our answer, not a gateway timeout.
+    timeoutMs: 55_000,
   };
 }
 
@@ -64,7 +66,12 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
     });
   } catch (error) {
     const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-    return { kind: 'error', detail: timedOut ? 'Prembly took too long to answer.' : 'Could not reach Prembly.' };
+    return {
+      kind: 'error',
+      detail: timedOut
+        ? `No answer from Prembly in ${Math.round(config.timeoutMs / 1000)} seconds: the government records behind it are slow or down. Try again in a few minutes; see Verification Reports on Prembly for whether it ran.`
+        : 'Could not reach Prembly.',
+    };
   }
 
   let raw: Raw | null = null;

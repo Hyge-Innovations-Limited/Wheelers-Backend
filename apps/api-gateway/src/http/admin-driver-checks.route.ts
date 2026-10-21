@@ -13,8 +13,8 @@ import { readJsonBody, sendJson } from './utils';
 interface AdminChecksDeps {
   adminApiKey: string;
   jwtSecret: string;
-  /** For the selfie a face check sends. Null when storage is not configured: face checks are off. */
-  kycStorage: Pick<DriverKycStorage, 'getImageAsBase64'> | null;
+  /** For the selfie a face check sends, and the links to the driver's papers. Null when storage is not configured: face checks are off, papers do not open. */
+  kycStorage: Pick<DriverKycStorage, 'getImageAsBase64' | 'getSignedUrl' | 'fileTypeOf'> | null;
   /** Null when PREMBLY_API_KEY is not set: the paid checks are off, the hand checks still work. */
   prembly: PremblyConfig | null;
   fetchImpl?: typeof fetch;
@@ -55,7 +55,8 @@ function monthStart(now = new Date()): Date {
 
 /**
  * Checking a driver's licence and car, for the admin:
- *   GET  /admin/drivers/:id/checks           every check so far, what a new one would send, and whether Prembly is on
+ *   GET  /admin/drivers/:id/checks           every check so far, what a new one would send, whether Prembly is on, and
+ *                                            the driver's licence photo, selfie and each paper (link, number, dates) to check against
  *   POST /admin/drivers/:id/checks/prembly   owners: { kind: "licence" | "plate" | "insurance", dob?, number?, firstName?, lastName?, withFace?, channel?, force? }
  *   POST /admin/drivers/:id/checks/manual    { paperType, source: "autoreg" | "dvis" | "niid" | "other", outcome: "verified" | "failed", note? }
  *
@@ -100,7 +101,36 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
   const vehicleModel = driver.vehicleModel ?? submission?.vehicleModel ?? null;
 
   if (action === null) {
-    const checks = await driverCheckClient.listForDriver(driverId);
+    const storage = deps.kycStorage;
+    const sign = (key: string, pdf = false) =>
+      storage ? storage.getSignedUrl(key, 3600, pdf ? 'application/pdf' : undefined).catch(() => null) : Promise.resolve(null);
+    const today = lagosToday();
+    const licenceKey = submission?.licenceImageKey ?? null;
+    const licencePdf = licenceKey && storage ? (await storage.fileTypeOf(licenceKey).catch(() => null)) === 'application/pdf' : false;
+    const [checks, papers, licenceUrl, selfieUrl] = await Promise.all([
+      driverCheckClient.listForDriver(driverId),
+      driverPaperClient.listForDriver(driverId),
+      licenceKey ? sign(licenceKey, licencePdf) : Promise.resolve(null),
+      submission?.selfieKey ? sign(submission.selfieKey) : Promise.resolve(null),
+    ]);
+    const documents = {
+      licence: licenceUrl ? { url: licenceUrl, isPdf: licencePdf } : null,
+      selfieUrl,
+      // Every paper sent, in the order the app lists them: what each check is set against, with its dates.
+      papers: await Promise.all(
+        [...papers].sort((a, b) => DRIVER_PAPERS.findIndex((p) => p.type === a.type) - DRIVER_PAPERS.findIndex((p) => p.type === b.type)).map(async (doc) => ({
+          type: doc.type,
+          label: labelOf(doc.type),
+          number: doc.number,
+          status: doc.status,
+          uploadedAt: doc.uploadedAt.toISOString(),
+          expiresOn: day(doc.expiresOn),
+          daysLeft: doc.expiresOn ? Math.round((doc.expiresOn.getTime() - today.getTime()) / DAY_MS) : null,
+          isPdf: doc.fileType === 'application/pdf',
+          url: await sign(doc.fileKey, doc.fileType === 'application/pdf'),
+        })),
+      ),
+    };
     sendJson(res, 200, {
       prembly: {
         on: Boolean(deps.prembly),
@@ -120,6 +150,7 @@ export async function handleAdminDriverChecksRoute(req: IncomingMessage, res: Se
         hasSelfie: Boolean(submission?.selfieKey && deps.kycStorage),
       },
       manualSources: MANUAL_SOURCES,
+      documents,
       checks: checks.map(view),
     });
     return true;
