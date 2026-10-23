@@ -23,9 +23,15 @@ function buildDatasourceUrl(): string | undefined {
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log: shouldLogPrismaQueries()
-      ? ['query', 'warn', 'error']
-      : ['warn', 'error'],
+    // Queries are always emitted as events: how long Postgres itself took for
+    // each, so the Health page can tell a slow query from one waiting for a
+    // free connection (query-timing.ts). Printed too with PRISMA_LOG_QUERIES.
+    log: [
+      { emit: 'event', level: 'query' },
+      ...(shouldLogPrismaQueries() ? [{ emit: 'stdout' as const, level: 'query' as const }] : []),
+      { emit: 'stdout', level: 'warn' },
+      { emit: 'stdout', level: 'error' },
+    ],
     datasourceUrl: buildDatasourceUrl(),
   });
 

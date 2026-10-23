@@ -15,7 +15,7 @@ export { driverBidClient }      from './clients/driver-bid.client';
 export { scheduledRideClient }  from './clients/scheduled-ride.client';
 export { outboxClient }         from './clients/outbox.client';
 export { healthClient }         from './clients/health.client';
-export { onPrismaQuery }        from './query-timing';
+export { onPrismaQuery, onPrismaExecution } from './query-timing';
 export type { QueryListener }   from './query-timing';
 export { walletClient }         from './clients/wallet.client';
 export { takeFromBalance }      from './clients/wallet-balance';

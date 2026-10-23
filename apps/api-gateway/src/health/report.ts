@@ -3,7 +3,7 @@ import { serviceUsage } from '../usage/service-usage';
 import { overallStatus, readInstances, type ComponentCheck, type HealthStatus } from './checks';
 import { SAMPLES_KEY, type HealthSample } from './jobs';
 import {
-  HOUR, MINUTE, QUARTER, emptyTotals, hgetall, mergeTotals, opsKey, percentileMs, totalsFromHash, totalsKey,
+  BUCKET_BOUNDS, HOUR, MINUTE, QUARTER, emptyTotals, hgetall, mergeTotals, opsKey, percentileMs, routesKey, totalsFromHash, totalsKey,
   type StatTotals,
 } from './stats';
 
@@ -88,11 +88,12 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
   // Counts per point, for both processes together.
   const totals = await Promise.all(Array.from({ length: count }, async (_, i) => {
     const slot = firstSlot + i;
-    const [http, db] = await Promise.all([
+    const [http, db, dbexec] = await Promise.all([
       hgetall(redis, totalsKey('http', size, slot)).catch(() => ({})),
       hgetall(redis, totalsKey('db', size, slot)).catch(() => ({})),
+      hgetall(redis, totalsKey('dbexec', size, slot)).catch(() => ({})),
     ]);
-    return { at: slot * size, http: totalsFromHash(http), db: totalsFromHash(db) };
+    return { at: slot * size, http: totalsFromHash(http), db: totalsFromHash(db), dbexec: totalsFromHash(dbexec) };
   }));
 
   // The minute checks in the period.
@@ -176,6 +177,46 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
       ops.set(name, op);
     }
   }
+  // Where API time goes, per endpoint: the slowest by total time first.
+  type RouteSum = { count: number; errors: number; slow: number; sumMs: number; dbMs: number; dbQueries: number; extMs: number; extCalls: number; buckets: number[] };
+  const routeSums = new Map<string, RouteSum>();
+  for (const hour of hours) {
+    const hash = await hgetall(redis, routesKey(hour)).catch(() => ({} as Record<string, string>));
+    for (const [field, value] of Object.entries(hash)) {
+      const tab = field.lastIndexOf('\t');
+      if (tab <= 0) continue;
+      const route = field.slice(0, tab);
+      const metric = field.slice(tab + 1);
+      const r = routeSums.get(route) ?? { count: 0, errors: 0, slow: 0, sumMs: 0, dbMs: 0, dbQueries: 0, extMs: 0, extCalls: 0, buckets: BUCKET_BOUNDS.map(() => 0) };
+      const n = Number(value) || 0;
+      if (/^b\d+$/.test(metric)) r.buckets[Number(metric.slice(1))] = (r.buckets[Number(metric.slice(1))] ?? 0) + n;
+      else if (metric in r) (r as unknown as Record<string, number>)[metric] += n;
+      routeSums.set(route, r);
+    }
+  }
+  const endpoints = [...routeSums.entries()]
+    .map(([route, r]) => {
+      const avgMs = r.count ? r.sumMs / r.count : 0;
+      const dbMs = r.count ? r.dbMs / r.count : 0;
+      const extMs = r.count ? r.extMs / r.count : 0;
+      return {
+        route,
+        count: r.count,
+        errors: r.errors,
+        slow: r.slow,
+        totalMs: Math.round(r.sumMs),
+        avgMs: Math.round(avgMs),
+        p95Ms: percentileMs({ count: r.count, errors: r.errors, sumMs: r.sumMs, slow: r.slow, buckets: r.buckets }),
+        dbMs: Math.round(dbMs),
+        queriesPerRequest: r.count ? Math.round((r.dbQueries / r.count) * 10) / 10 : 0,
+        externalMs: Math.round(extMs),
+        externalCallsPerRequest: r.count ? Math.round((r.extCalls / r.count) * 10) / 10 : 0,
+        ownMs: Math.max(0, Math.round(avgMs - dbMs - extMs)),
+      };
+    })
+    .sort((a, b) => b.totalMs - a.totalMs)
+    .slice(0, 25);
+
   const queries = [...ops.entries()]
     .map(([name, op]) => ({ name, ...op, avgMs: op.count ? Math.round(op.sumMs / op.count) : 0 }))
     .sort((a, b) => b.sumMs - a.sumMs)
@@ -188,6 +229,9 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
   };
   const http = sum((t) => t.http);
   const db = sum((t) => t.db);
+  const dbexec = sum((t) => t.dbexec);
+  const dbAvg = db.count ? db.sumMs / db.count : null;
+  const execAvg = dbexec.count ? dbexec.sumMs / dbexec.count : null;
 
   const [instances, services] = await Promise.all([
     readInstances(redis, now).catch(() => []),
@@ -210,7 +254,13 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
       dbP95: percentileMs(db),
       dbAvgMs: db.count ? Math.round(db.sumMs / db.count) : null,
       slowQueries: db.slow,
+      // The same queries timed by Postgres alone: the gap is time spent waiting for a free connection.
+      dbRunAvgMs: execAvg === null ? null : Math.round(execAvg * 10) / 10,
+      dbRunP95: percentileMs(dbexec),
+      dbSlowRuns: dbexec.slow,
+      dbWaitAvgMs: dbAvg === null || execAvg === null ? null : Math.max(0, Math.round((dbAvg - execAvg) * 10) / 10),
     },
+    endpoints,
     points,
     spikes: findSpikes(points, size),
     incidents: incidents.slice(0, 20),

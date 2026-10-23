@@ -121,12 +121,13 @@ import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { stellarConfigFromEnv } from "./stellar/config";
-import { onPrismaQuery } from "@wheleers/db";
+import { onPrismaExecution, onPrismaQuery } from "@wheleers/db";
+import { addDbTime, currentTiming, routeKey, runWithTiming } from "./health/request-timing";
 import { createStatsRecorder } from "./health/stats";
 import { startHealthJobs } from "./health/jobs";
 import { configureMapsCache } from "./maps/shared-cache";
 import { CachedRoutePlanner } from "./maps/cached-route-planner";
-import { handleAdminHealthRoute } from "./http/admin-health.route";
+import { handleAdminHealthRoute, handleAdminHealthSqlRoute } from "./http/admin-health.route";
 import { handleAdminTeamRoute } from "./http/admin-team.route";
 import { startBusynessJob } from "./pricing/busyness";
 import { startSurgeJob } from "./pricing/surge";
@@ -660,12 +661,20 @@ async function bootstrap(): Promise<void> {
 
   // Every API request and database query, counted per minute for the admin Health page.
   const healthStats = createStatsRecorder();
-  onPrismaQuery(healthStats.db);
+  onPrismaQuery((name, ms, failed) => {
+    healthStats.db(name, ms, failed);
+    addDbTime(ms);
+  });
+  // Postgres's own time per query: the rest of a query's time was the wait for a free connection.
+  onPrismaExecution(healthStats.dbExec);
 
-  const server = createServer(async (req, res) => {
+  // Each request runs inside its own timing: the database and outside services add to it (health/request-timing.ts).
+  const server = createServer((req, res) => runWithTiming(async () => {
     const startedAt = Date.now();
+    const timing = currentTiming();
     res.once("finish", () => {
       healthStats.http(Date.now() - startedAt, res.statusCode);
+      healthStats.route(routeKey(req.method, url.pathname), Date.now() - startedAt, res.statusCode, timing);
       // What people tried in the app and how it went, for the admin Activity page.
       recordRequestOutcome(req, res, url.pathname, gatewayEnv.JWT_SECRET);
       // Admins' searches, records opened and changes, for the owners' Team activity page.
@@ -1953,6 +1962,11 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      // The database's own figures: slowest SQL, and table scans and dead rows.
+      if (await handleAdminHealthSqlRoute(req, res, { ...adminDeps, redis: redisCommandClient }, url)) {
+        return;
+      }
+
       if (url.pathname === "/admin/health") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
@@ -2550,7 +2564,7 @@ async function bootstrap(): Promise<void> {
 
       res.destroy(error instanceof Error ? error : undefined);
     }
-  });
+  }));
 
   createGatewayWebSocketServer({
     server,

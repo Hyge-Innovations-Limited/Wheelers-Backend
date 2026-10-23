@@ -1,3 +1,4 @@
+import { addExternalTime } from '../health/request-timing';
 import type { RedisClient } from '../redis/client';
 
 /**
@@ -74,9 +75,16 @@ export function meterOutboundCalls(redis: RedisClient): typeof fetch {
   const metered: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const service = classify(url);
-    if (!service) return original(input, init);
-
     const started = Date.now();
+    if (!service) {
+      // Not a billed service (Prembly, Horizon, storage…), but still time a request spent waiting outside.
+      try {
+        return await original(input, init);
+      } finally {
+        addExternalTime(Date.now() - started);
+      }
+    }
+
     let failed = false;
     try {
       const response = await original(input, init);
@@ -86,6 +94,7 @@ export function meterOutboundCalls(redis: RedisClient): typeof fetch {
       failed = true;
       throw error;
     } finally {
+      addExternalTime(Date.now() - started);
       // Fire and forget: the count must never slow or break the call it is counting.
       void record(redis, service.key, failed, Date.now() - started).catch(() => undefined);
     }

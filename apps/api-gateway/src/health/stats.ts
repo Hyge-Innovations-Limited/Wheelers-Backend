@@ -13,7 +13,7 @@ export const BUCKET_BOUNDS = [25, 50, 100, 250, 500, 1000, 2500, Infinity] as co
 export const SLOW_QUERY_MS = 500;
 const KEEP_SECONDS = 8 * 24 * 3600;
 
-export type StatKind = 'http' | 'db';
+export type StatKind = 'http' | 'db' | 'dbexec';
 
 export interface StatTotals {
   count: number;
@@ -57,6 +57,26 @@ export const QUARTER = 15 * MINUTE;
 export const HOUR = 60 * MINUTE;
 export const totalsKey = (kind: StatKind, size: number, slot: number) => `health:${kind}:${size / MINUTE}m:${slot}`;
 export const opsKey = (hourSlot: number) => `health:dbops:${hourSlot}`;
+/** Per endpoint, per hour: count, time, the database and outside-service share, and a latency histogram. */
+export const routesKey = (hourSlot: number) => `health:routes:${hourSlot}`;
+/** A request slower than this counts as slow on the Health page. */
+export const SLOW_REQUEST_MS = 1000;
+/** Endpoints kept per process per minute: a flood of odd paths cannot fill Redis. */
+const MAX_ROUTES_PER_MINUTE = 200;
+
+export interface RouteTotals {
+  count: number;
+  errors: number;
+  slow: number;
+  sumMs: number;
+  dbMs: number;
+  dbQueries: number;
+  extMs: number;
+  extCalls: number;
+  buckets: number[];
+}
+
+const emptyRoute = (): RouteTotals => ({ count: 0, errors: 0, slow: 0, sumMs: 0, dbMs: 0, dbQueries: 0, extMs: 0, extCalls: 0, buckets: BUCKET_BOUNDS.map(() => 0) });
 
 function fieldsOf(t: StatTotals): Array<[string, number]> {
   const fields: Array<[string, number]> = [
@@ -82,13 +102,20 @@ export async function hgetall(redis: RedisClient, key: string): Promise<Record<s
 
 /** This process's counts, by minute, until written. */
 export function createStatsRecorder(now: () => number = Date.now) {
-  const minutes = new Map<number, { http: StatTotals; db: StatTotals; ops: Map<string, { count: number; sumMs: number; slow: number; errors: number }> }>();
+  const minutes = new Map<number, {
+    http: StatTotals;
+    db: StatTotals;
+    /** The same queries timed by Postgres alone (no wait for a connection). */
+    dbExec: StatTotals;
+    ops: Map<string, { count: number; sumMs: number; slow: number; errors: number }>;
+    routes: Map<string, RouteTotals>;
+  }>();
 
   function slot(at: number) {
     const minute = Math.floor(at / MINUTE);
     let entry = minutes.get(minute);
     if (!entry) {
-      entry = { http: emptyTotals(), db: emptyTotals(), ops: new Map() };
+      entry = { http: emptyTotals(), db: emptyTotals(), dbExec: emptyTotals(), ops: new Map(), routes: new Map() };
       minutes.set(minute, entry);
     }
     return entry;
@@ -98,6 +125,31 @@ export function createStatsRecorder(now: () => number = Date.now) {
     /** An API request finished: 5xx counts as an error. */
     http(ms: number, status: number): void {
       addSample(slot(now()).http, ms, status >= 500, 1000);
+    },
+
+    /** One request's time, split (health/request-timing.ts). */
+    route(key: string, ms: number, status: number, split: { dbMs: number; dbQueries: number; externalMs: number; externalCalls: number } | undefined): void {
+      const entry = slot(now());
+      let r = entry.routes.get(key);
+      if (!r) {
+        if (entry.routes.size >= MAX_ROUTES_PER_MINUTE) return;
+        r = emptyRoute();
+        entry.routes.set(key, r);
+      }
+      r.count += 1;
+      if (status >= 500) r.errors += 1;
+      if (ms >= SLOW_REQUEST_MS) r.slow += 1;
+      r.sumMs += ms;
+      r.dbMs += split?.dbMs ?? 0;
+      r.dbQueries += split?.dbQueries ?? 0;
+      r.extMs += split?.externalMs ?? 0;
+      r.extCalls += split?.externalCalls ?? 0;
+      r.buckets[BUCKET_BOUNDS.findIndex((bound) => ms <= bound)] += 1;
+    },
+
+    /** How long Postgres itself took for a query (Prisma's query event): the rest of a query's time was waiting. */
+    dbExec(ms: number): void {
+      addSample(slot(now()).dbExec, ms, false, SLOW_QUERY_MS);
     },
 
     /** A database query finished. */
@@ -119,8 +171,8 @@ export function createStatsRecorder(now: () => number = Date.now) {
         if (minute >= current) continue;
         minutes.delete(minute);
         const at = minute * MINUTE;
-        for (const kind of ['http', 'db'] as const) {
-          const fields = fieldsOf(entry[kind]);
+        for (const kind of ['http', 'db', 'dbexec'] as const) {
+          const fields = fieldsOf(kind === 'dbexec' ? entry.dbExec : entry[kind]);
           if (fields.length === 0) continue;
           for (const size of [MINUTE, QUARTER, HOUR]) {
             const key = totalsKey(kind, size, Math.floor(at / size));
@@ -135,6 +187,18 @@ export function createStatsRecorder(now: () => number = Date.now) {
             await redis.send('HINCRBY', key, `${name}\tsumMs`, String(Math.round(op.sumMs)));
             if (op.slow) await redis.send('HINCRBY', key, `${name}\tslow`, String(op.slow));
             if (op.errors) await redis.send('HINCRBY', key, `${name}\terrors`, String(op.errors));
+          }
+          await redis.send('EXPIRE', key, String(KEEP_SECONDS));
+        }
+        if (entry.routes.size > 0) {
+          const key = routesKey(Math.floor(at / HOUR));
+          for (const [route, r] of entry.routes) {
+            const metrics: Array<[string, number]> = [
+              ['count', r.count], ['errors', r.errors], ['slow', r.slow], ['sumMs', r.sumMs], ['dbMs', r.dbMs],
+              ['dbQueries', r.dbQueries], ['extMs', r.extMs], ['extCalls', r.extCalls],
+              ...r.buckets.map((n, i): [string, number] => [`b${i}`, n]),
+            ];
+            for (const [metric, n] of metrics) if (n > 0) await redis.send('HINCRBY', key, `${route}\t${metric}`, String(Math.round(n)));
           }
           await redis.send('EXPIRE', key, String(KEEP_SECONDS));
         }
