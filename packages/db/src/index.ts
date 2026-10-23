@@ -42,6 +42,8 @@ export { pricingClient }        from './clients/pricing.client';
 export { driverPaperClient }    from './clients/driver-paper.client';
 export { driverCheckClient }    from './clients/driver-check.client';
 export { ridePageEventClient }  from './clients/ride-page-event.client';
+export { excelInsightsClient }  from './clients/excel-insights.client';
+export type { InsightFilters } from './clients/excel-insights.client';
 export type { RidePageEventInput } from './clients/ride-page-event.client';
 export type { DriverCheckInput } from './clients/driver-check.client';
 export { supportClient }        from './clients/support.client';

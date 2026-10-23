@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { adminAnalyticsClient, CHANNEL_LABELS, tripActivityClient } from '@wheleers/db';
+import { adminAnalyticsClient, CHANNEL_LABELS, excelInsightsClient, tripActivityClient } from '@wheleers/db';
 import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
 import { cleanName, cleanText } from './clean-text';
 
@@ -32,7 +32,7 @@ interface Column {
   note?: string;
 }
 
-function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows: readonly object[], note?: string): void {
+function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows: readonly object[], note?: string): ExcelJS.Worksheet {
   const sheet = book.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
   sheet.columns = columns.map((c) => ({ header: c.header, key: c.key, width: c.width ?? Math.max(12, c.header.length + 4) }));
   const header = sheet.getRow(1);
@@ -51,6 +51,7 @@ function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows:
     at.getCell(1).value = note;
     at.getCell(1).font = { italic: true, color: { argb: 'FF786F68' } };
   }
+  return sheet;
 }
 
 /** Every page of a paged query, up to MAX_ROWS. */
@@ -569,7 +570,281 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Cancelled', key: 'cancelled', format: WHOLE },
       { header: 'GMV', key: 'gmvNgn', format: NAIRA },
     ], breakdownRows);
+
+    // Where riders stop, and why.
+    await whySheets(book, f);
   }
 
   return Buffer.from(await book.xlsx.writeBuffer());
+}
+
+/* ── where riders stop, and why ─────────────────────────────────────── */
+
+const day = (value: unknown) => (value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? '').slice(0, 10));
+const share = (part: unknown, whole: unknown) => {
+  const w = Number(whole) || 0;
+  return w > 0 ? (Number(part) || 0) / w : null;
+};
+const STAGE_WORDS: Record<string, string> = {
+  '1_searching': 'Searching, no offer yet',
+  '2_offers_received': 'Had offers',
+  '3_driver_assigned': 'Driver assigned',
+  '4_driver_arrived': 'Driver arrived',
+  '5_trip_started': 'Trip started',
+  '6_completed': 'Completed',
+};
+const STEP_WORDS: Record<string, string> = {
+  '0_opened': 'Only opened the page',
+  '1_saw_price': 'Saw the price',
+  '2_searched': 'Searched',
+  '3_got_offers': 'Got offers',
+  '4_tapped_accept': 'Tapped Accept',
+  '5_driver_confirmed': 'Driver confirmed',
+};
+const MINUTES = '#,##0.0';
+
+/** Shades a column's cells from calm (low) to orange (high): the slow or busy spots stand out. */
+function heat(sheet: ExcelJS.Worksheet, column: number, rows: number, highIsBad = true): void {
+  if (rows < 2) return;
+  const letter = sheet.getColumn(column).letter;
+  const calm = { argb: 'FFE3F8F0' };
+  const hot = { argb: 'FFFFB27A' };
+  sheet.addConditionalFormatting({
+    ref: `${letter}2:${letter}${rows + 1}`,
+    rules: [{ type: 'colorScale', priority: 1, cfvo: [{ type: 'min' }, { type: 'max' }], color: highIsBad ? [calm, hot] : [hot, calm] }],
+  });
+}
+
+/** Bars inside the cells of a count column. */
+function bars(sheet: ExcelJS.Worksheet, column: number, rows: number): void {
+  if (rows < 1) return;
+  const letter = sheet.getColumn(column).letter;
+  sheet.addConditionalFormatting({
+    ref: `${letter}2:${letter}${rows + 1}`,
+    rules: [{ type: 'dataBar', priority: 1, cfvo: [{ type: 'min' }, { type: 'max' }], color: { argb: 'FFFF9A5C' } } as unknown as ExcelJS.ConditionalFormattingRule],
+  });
+}
+
+async function whySheets(book: ExcelJS.Workbook, f: AnalyticsFilters): Promise<void> {
+  const filters = { from: f.from, to: f.to, zone: f.zone ?? null, channel: f.channel ?? null };
+  const c = excelInsightsClient;
+  const [funnel, stopped, quotes, page, pageLeft, offerBands, bidBands, raises, speed, supply, riderCohorts, driverCohorts, riderTypes, rideCounts, drivers, money] =
+    await Promise.all([
+      c.funnel(filters), c.stopped(filters), c.quotes(filters), c.page(filters), c.pageLeft(filters), c.offerBands(filters),
+      c.bidBands(filters), c.raises(filters), c.speed(filters), c.supply(filters), c.cohorts(filters, 'rider'), c.cohorts(filters, 'driver'),
+      c.riderTypes(filters), c.rideCounts(filters), c.drivers(filters), c.money(filters),
+    ]);
+
+  // 1 · Funnel: each step's share of requests, and the biggest drop between two steps.
+  const steps: Array<[string, string]> = [['requested', 'Requested'], ['got_offer', 'Got an offer'], ['driver_assigned', 'Driver assigned'], ['driver_arrived', 'Driver arrived'], ['trip_started', 'Trip started'], ['completed', 'Completed']];
+  const funnelSheet = addSheet(book, 'Funnel', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Channel', key: 'channel', width: 11 },
+    { header: 'Requested', key: 'requested', format: WHOLE },
+    { header: 'Got an offer', key: 'got_offer', format: WHOLE },
+    { header: '% got an offer', key: 'p_offer', format: PERCENT },
+    { header: 'Driver assigned', key: 'driver_assigned', format: WHOLE },
+    { header: '% driver', key: 'p_driver', format: PERCENT },
+    { header: 'Driver arrived', key: 'driver_arrived', format: WHOLE },
+    { header: 'Trip started', key: 'trip_started', format: WHOLE },
+    { header: 'Completed', key: 'completed', format: WHOLE },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+    { header: 'No driver in time', key: 'no_driver', format: WHOLE, width: 17 },
+    { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+    { header: 'Biggest drop', key: 'drop', width: 34, note: 'The two steps between which the most rides were lost that day' },
+  ], funnel.map((r) => {
+    let drop = '';
+    let worst = 0;
+    for (let i = 1; i < steps.length; i++) {
+      const before = Number(r[steps[i - 1]![0]]) || 0;
+      const after = Number(r[steps[i]![0]]) || 0;
+      if (before > 0 && (before - after) / before > worst) {
+        worst = (before - after) / before;
+        drop = `${steps[i - 1]![1]} → ${steps[i]![1]} (−${Math.round(worst * 100)}%)`;
+      }
+    }
+    return {
+      ...r, day: day(r.day), channel: channel(String(r.channel) as RideChannelName),
+      p_offer: share(r.got_offer, r.requested), p_driver: share(r.driver_assigned, r.requested), p_completed: share(r.completed, r.requested), drop,
+    };
+  }), 'Requests exclude searches replaced by a newer one. Every step counts the rides that got at least that far.');
+  heat(funnelSheet, 11, funnel.length, false);
+
+  // 2 · Where rides stopped: the 10 biggest reasons at each stage, the rest as Other.
+  const byStage = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of stopped) byStage.set(String(r.stage), [...(byStage.get(String(r.stage)) ?? []), r]);
+  const stoppedRows: Array<Record<string, unknown>> = [];
+  for (const [stage, rows] of byStage) {
+    rows.slice(0, 10).forEach((r) => stoppedRows.push({ stage: STAGE_WORDS[stage] ?? stage, reason: r.reason, rides: r.rides, median: r.median_minutes_searched }));
+    const rest = rows.slice(10);
+    if (rest.length) stoppedRows.push({ stage: STAGE_WORDS[stage] ?? stage, reason: `Other (${rest.length} reasons)`, rides: rest.reduce((n, r) => n + (Number(r.rides) || 0), 0), median: null });
+  }
+  const stoppedSheet = addSheet(book, 'Where rides stopped', [
+    { header: 'Stopped at', key: 'stage', width: 24 },
+    { header: 'Reason', key: 'reason', width: 44 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: 'Median minutes before it ended', key: 'median', format: MINUTES, width: 30 },
+  ], stoppedRows, 'Cancelled rides and searches nobody took. "Other: …" reasons are the rider\'s own words.');
+  bars(stoppedSheet, 3, stoppedRows.length);
+
+  // 3 · Shown a price.
+  addSheet(book, 'Shown a price', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Where', key: 'source', width: 11 },
+    { header: 'Riders shown a price', key: 'riders_shown_a_price', format: WHOLE, width: 20 },
+    { header: 'Confirmed the trip (WhatsApp)', key: 'confirmed_the_trip', format: WHOLE, width: 28 },
+    { header: 'Searched', key: 'searched', format: WHOLE },
+    { header: '% searched', key: 'p_searched', format: PERCENT },
+    { header: 'Completed a ride', key: 'completed_a_ride', format: WHOLE, width: 16 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], quotes.map((r) => ({ ...r, day: day(r.day), source: r.source === 'app' ? 'App' : 'WhatsApp', p_searched: share(r.searched, r.riders_shown_a_price), p_completed: share(r.completed_a_ride, r.riders_shown_a_price) })),
+  'Per rider and day. Recorded from 23 Oct 2026; the zone filter does not apply here.');
+
+  // 4 · The WhatsApp ride page.
+  addSheet(book, 'WhatsApp page', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Visits', key: 'visits', format: WHOLE },
+    { header: 'Saw the price', key: 'saw_price', format: WHOLE },
+    { header: 'Searched', key: 'searched', format: WHOLE },
+    { header: 'Got offers', key: 'got_offers', format: WHOLE },
+    { header: 'Tapped Accept', key: 'tapped_accept', format: WHOLE },
+    { header: 'Booked', key: 'booked', format: WHOLE },
+    { header: '% booked', key: 'p_booked', format: PERCENT },
+    { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+    { header: 'Asked to add money', key: 'asked_to_add_money', format: WHOLE, width: 18 },
+    { header: 'Seconds on the page (average)', key: 'avg_seconds_on_page', format: WHOLE, width: 28 },
+  ], page.map((r) => ({ ...r, day: day(r.day), p_booked: share(r.booked, r.visits) })), 'One row per visit to the ride page WhatsApp opens. Recorded from 23 Oct 2026.');
+  const leftSheet = addSheet(book, 'WhatsApp - where they left', [
+    { header: 'Got as far as', key: 'step', width: 22 },
+    { header: 'The last thing they did', key: 'last', width: 30 },
+    { header: 'Visits', key: 'visits', format: WHOLE },
+  ], pageLeft.map((r) => ({ step: STEP_WORDS[String(r.furthest_step)] ?? r.furthest_step, last: String(r.last_event).replace(/_/g, ' '), visits: r.visits })), 'Visits that did not book.');
+  bars(leftSheet, 3, pageLeft.length);
+
+  // 5 · Price and booking.
+  addSheet(book, 'Price vs booking', [
+    { header: "Rider's offer, against the suggested price", key: 'band', width: 40 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: '% got an offer', key: 'p_offer', format: PERCENT },
+    { header: '% got a driver', key: 'p_driver', format: PERCENT },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], offerBands.map((r) => ({ band: String(r.band).slice(2), rides: r.rides, p_offer: share(r.got_offer, r.rides), p_driver: share(r.driver_assigned, r.rides), p_completed: share(r.completed, r.rides) })));
+  addSheet(book, 'Driver counter-offers', [
+    { header: "Driver's offer, against the rider's price", key: 'band', width: 40 },
+    { header: 'Offers', key: 'offers', format: WHOLE },
+    { header: 'Chosen by the rider', key: 'chosen', format: WHOLE, width: 18 },
+    { header: '% chosen', key: 'p_chosen', format: PERCENT },
+    { header: 'Minutes after the request (average)', key: 'avg_minutes_after_request', format: '#,##0.00', width: 32 },
+  ], bidBands.map((r) => ({ ...r, band: String(r.band).slice(2), p_chosen: share(r.chosen, r.offers) })));
+  addSheet(book, 'Raising the price', [
+    { header: 'While searching on WhatsApp', key: 'what_they_did', width: 30 },
+    { header: 'Visits that searched', key: 'visits_that_searched', format: WHOLE, width: 20 },
+    { header: '% got offers', key: 'p_offers', format: PERCENT },
+    { header: '% booked', key: 'p_booked', format: PERCENT },
+  ], raises.map((r) => ({ ...r, p_offers: share(r.got_offers, r.visits_that_searched), p_booked: share(r.booked, r.visits_that_searched) })), 'Recorded from 23 Oct 2026.');
+
+  // 6 · Speed of service, by zone and hour.
+  const speedSheet = addSheet(book, 'Speed of service', [
+    { header: 'Pickup zone', key: 'zone', width: 18 },
+    { header: 'Hour (Lagos)', key: 'hour', format: '00":00"', width: 12 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: 'Minutes to first offer (median)', key: 'median_to_first_offer', format: MINUTES, width: 28 },
+    { header: 'Slowest 10% to first offer', key: 'slowest10_to_first_offer', format: MINUTES, width: 26 },
+    { header: 'Minutes to a driver (median)', key: 'median_to_driver', format: MINUTES, width: 27 },
+    { header: 'Driver to pickup, minutes (median)', key: 'median_driver_to_pickup', format: MINUTES, width: 32 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], speed.map((r) => ({ ...r, p_completed: (Number(r.pct_completed) || 0) / 100 })));
+  heat(speedSheet, 4, speed.length);
+  heat(speedSheet, 6, speed.length);
+  heat(speedSheet, 7, speed.length);
+
+  // 7 · Supply against demand.
+  const supplySheet = addSheet(book, 'Supply vs demand', [
+    { header: 'Hour (Lagos)', key: 'hour', format: '00":00"', width: 12 },
+    { header: 'Days', key: 'days', width: 10 },
+    { header: 'Requests per hour (average)', key: 'avg_requests_per_hour', format: '#,##0.00', width: 26 },
+    { header: 'Drivers online (average)', key: 'avg_drivers_online', format: '#,##0.0', width: 23 },
+    { header: 'Requests per driver online', key: 'requests_per_driver_online', format: '#,##0.00', width: 25 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], supply.map((r) => ({ ...r, p_completed: r.pct_completed === null ? null : (Number(r.pct_completed) || 0) / 100 })), 'Drivers online is city-wide (a shift has no zone). Many requests per driver online means riders waited.');
+  heat(supplySheet, 5, supply.length);
+
+  // 8 · Cohorts.
+  const cohortColumns = (who: string): Column[] => [
+    { header: 'First trip, week of', key: 'first_week', width: 18 },
+    { header: who, key: 'people', format: WHOLE },
+    ...Array.from({ length: 8 }, (_, i) => ({ header: `Week ${i + 1}`, key: `w${i + 1}`, format: PERCENT, width: 9 })),
+  ];
+  const cohortRows = (rows: Array<Record<string, unknown>>) => rows.map((r) => ({
+    first_week: day(r.first_week), people: r.people,
+    ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`w${i + 1}`, share(r[`week_${i + 1}`], r.people)])),
+  }));
+  const riderCohortSheet = addSheet(book, 'Rider cohorts', cohortColumns('Riders'), cohortRows(riderCohorts), 'The share of each week\'s new riders who completed a trip again 1, 2 … 8 weeks later. Weeks still to come show 0%.');
+  for (let col = 3; col <= 10; col++) heat(riderCohortSheet, col, riderCohorts.length, false);
+  const driverCohortSheet = addSheet(book, 'Driver cohorts', cohortColumns('Drivers'), cohortRows(driverCohorts), 'The share of each week\'s new drivers who completed a trip again 1, 2 … 8 weeks later.');
+  for (let col = 3; col <= 10; col++) heat(driverCohortSheet, col, driverCohorts.length, false);
+
+  // 9 · Rider types.
+  addSheet(book, 'Rider types', [
+    { header: 'Week of', key: 'week', width: 12 },
+    { header: 'Riders with a trip', key: 'riders', format: WHOLE, width: 18 },
+    { header: 'Trips', key: 'rides', format: WHOLE },
+    { header: 'New', key: 'new_riders', format: WHOLE },
+    { header: 'Returning', key: 'returning', format: WHOLE },
+    { header: 'Back after a gap', key: 'back_after_a_gap', format: WHOLE, width: 16 },
+    { header: '% new', key: 'p_new', format: PERCENT },
+  ], riderTypes.map((r) => ({ ...r, week: day(r.week), p_new: share(r.new_riders, r.riders) })), 'Returning: rode in the 28 days before the week. Back after a gap: rode before, but not in those 28 days.');
+  addSheet(book, 'Trips per rider', [
+    { header: 'Riders with', key: 'riders_with', width: 46 },
+    { header: 'Riders', key: 'riders', format: WHOLE },
+  ], rideCounts, 'Completed trips in the period. At risk is counted at the end of the period.');
+
+  // 10 · Driver quality.
+  addSheet(book, 'Driver quality', [
+    { header: 'Driver ID', key: 'driver_id', width: 38 },
+    { header: 'Driver', key: 'driver', width: 22 },
+    { header: 'Rating', key: 'rating', format: '0.0', width: 8 },
+    { header: 'Offers made', key: 'offers', format: WHOLE },
+    { header: '% chosen', key: 'p_chosen', format: PERCENT },
+    { header: 'Minutes to offer (median)', key: 'median_minutes_to_offer', format: '#,##0.00', width: 24 },
+    { header: 'Trips completed', key: 'completed', format: WHOLE, width: 16 },
+    { header: 'Cancelled after accepting', key: 'cancelled_after_assigned', format: WHOLE, width: 24 },
+    { header: 'Minutes to pickup (average)', key: 'avg_minutes_to_pickup', format: MINUTES, width: 25 },
+    { header: 'Hours online', key: 'online_hours', format: '#,##0.0' },
+    { header: 'Fares', key: 'fares_ngn', format: NAIRA },
+    { header: 'Fares per online hour', key: 'fares_per_online_hour', format: NAIRA, width: 20 },
+  ], drivers.map((r) => ({ ...r, driver: cleanName(r.driver as string | null, 'Unnamed driver'), p_chosen: share(r.chosen, r.offers) })), 'The 500 drivers with the most completed trips in the period.');
+
+  // 11 · The money journey.
+  addSheet(book, 'Money journey', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Asked to add money (WhatsApp)', key: 'asked_to_add_money', format: WHOLE, width: 28 },
+    { header: 'Deposited within 30 minutes', key: 'deposited_within_30_min', format: WHOLE, width: 26 },
+    { header: 'Then booked', key: 'then_booked', format: WHOLE },
+    { header: 'Trips completed', key: 'completed_trips', format: WHOLE, width: 16 },
+    { header: 'Paid in XLM', key: 'completed_paid_in_xlm', format: WHOLE },
+    { header: '% in XLM', key: 'p_xlm', format: PERCENT },
+  ], money.map((r) => ({ ...r, day: day(r.day), p_xlm: share(r.completed_paid_in_xlm, r.completed_trips) })), 'Asked to add money is recorded from 23 Oct 2026.');
+
+  // 12 · What each new sheet means.
+  addSheet(book, 'About these sheets', [
+    { header: 'Sheet', key: 'sheet', width: 26 },
+    { header: 'What it answers', key: 'what', width: 110 },
+  ], [
+    { sheet: 'Funnel', what: 'Each day and channel: how many requests got an offer, a driver, a pickup, a trip and a finish, and where the most were lost.' },
+    { sheet: 'Where rides stopped', what: 'Rides that ended without a trip: the stage they reached, the reason, and how long the rider had waited.' },
+    { sheet: 'Shown a price', what: 'Riders shown a price (WhatsApp or the app) and how many then searched and rode: those who saw the price and left.' },
+    { sheet: 'WhatsApp page', what: 'Visits to the ride page WhatsApp opens, step by step, with time on the page.' },
+    { sheet: 'WhatsApp - where they left', what: 'For visits that did not book: how far they got and the very last thing they did.' },
+    { sheet: 'Price vs booking', what: "Does offering under or over the suggested price change whether a ride happens?" },
+    { sheet: 'Driver counter-offers', what: "How much drivers ask over the rider's price, and how often riders take it." },
+    { sheet: 'Raising the price', what: 'On WhatsApp, riders who raised their price while searching, against those who kept it.' },
+    { sheet: 'Speed of service', what: 'By pickup zone and hour: minutes to the first offer, to a driver and to the pickup. Orange is slow.' },
+    { sheet: 'Supply vs demand', what: 'By hour, weekdays and weekends: requests against drivers online. Orange is short of drivers.' },
+    { sheet: 'Rider cohorts / Driver cohorts', what: "Of each week's new riders (drivers), the share still riding (driving) 1 to 8 weeks later." },
+    { sheet: 'Rider types / Trips per rider', what: 'New, returning and back-after-a-gap riders each week; how many trips riders take; riders at risk of leaving.' },
+    { sheet: 'Driver quality', what: 'Per driver: offers, how often chosen, reliability, speed to pickup, hours online and fares per hour.' },
+    { sheet: 'Money journey', what: 'Riders told to add money: did they deposit and book? And how many trips were paid in XLM.' },
+    { sheet: 'All of them', what: 'Times are Lagos time. The period, zone and channel filters apply as on the screen. Row-by-row data for Power BI or Python: admin → Data → Download CSV.' },
+  ]);
 }
