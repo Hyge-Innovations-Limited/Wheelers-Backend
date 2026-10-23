@@ -334,7 +334,17 @@ test('EXCEL · the overview workbook has every sheet, formatted, with the filter
   assert.match(res.headers['content-disposition'], /wheelers-overview-2024-03-04-to-2024-03-10\.xlsx/);
   const book = new ExcelJS.Workbook();
   await book.xlsx.load(res.body);
-  assert.deepEqual(book.worksheets.map((s) => s.name), ['Summary', 'Daily', 'Hours', 'Weekdays', 'Hours by weekday', 'Trips', 'Calls', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown']);
+  assert.deepEqual(book.worksheets.map((s) => s.name), [
+    'Summary', 'Daily', 'Hours', 'Weekdays', 'Hours by weekday', 'Trips', 'Calls', 'Drivers', 'Riders', 'Fees', 'Fee ledger', 'Deposits', 'Withdrawals', 'Breakdown',
+    // Where riders stop, and why.
+    'Funnel', 'Where rides stopped', 'Shown a price', 'WhatsApp page', 'WhatsApp - where they left', 'Price vs booking', 'Driver counter-offers',
+    'Raising the price', 'Speed of service', 'Supply vs demand', 'Rider cohorts', 'Driver cohorts', 'Rider types', 'Trips per rider', 'Driver quality',
+    'Money journey', 'About these sheets',
+  ]);
+  // The funnel counts the same requests as the rest of the workbook, under the same filters.
+  const funnel = book.getWorksheet('Funnel');
+  assert.equal(funnel.getRow(1).getCell(3).value, 'Requested');
+  assert.equal(funnel.getColumn(5).numFmt, '0.0%');
   const trips = book.getWorksheet('Trips');
   assert.equal(trips.rowCount - 1, 6, 'one row per ride in the week');
   assert.equal(trips.getRow(1).font.bold, true);
