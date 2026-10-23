@@ -542,6 +542,7 @@ model DriverBid {
   driver       Driver          @relation("DriverBids", fields: [driverId], references: [id])
 
   @@unique([rideId, driverId])
+  @@index([rideId, createdAt])
   @@index([driverId, createdAt])
   @@index([rideId, status])
 }
@@ -1171,6 +1172,31 @@ model UserActivityEvent {
 
   @@index([userId, createdAt])
   @@index([eventType, createdAt])
+}
+
+/// What a rider does on the WhatsApp ride page, step by step, sent by the page
+/// itself: one row per thing done, numbered (seq) within the visit (sessionId).
+/// Read through the ride_page_events and ride_page_sessions views.
+model RidePageEvent {
+  id        String   @id @default(uuid())
+  sessionId String
+  userId    String
+  rideId    String?
+  /// page_opened, phase_shown, price_changed, find_tapped, offer_received, accept_tapped, cancel_confirmed...
+  event     String
+  /// The page's phase when it happened: price | offers | confirmed | idle.
+  phase     String?
+  seq       Int
+  props     Json?
+  /// The phone's clock (within the visit); createdAt is the server's.
+  clientAt  DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, seq])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([event, createdAt])
+  @@index([rideId])
 }
 
 // ─── Interstate travel ──────────────────────────────────────────────────────

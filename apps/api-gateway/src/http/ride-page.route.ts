@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { rideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { rideClient, ridePageEventClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
@@ -45,6 +45,9 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/route         { pickup, destination, stops? }   change the trip before pricing it
  *   POST /ride-page/edit-trip                   go back from the search to the trip: the search stops,
  *                                               the trip comes back to Set your price to change
+ *   POST /ride-page/events        { sessionId, events: [{ seq, event, phase?, rideId?, at, props? }] }
+ *                                               what the rider did on the page, step by step, for analytics
+ *                                               (RidePageEvent; the ride_page_sessions view)
  *   GET  /ride-page/topup?amount=            what to send for ₦amount to land
  *
  * The page polls /state every few seconds, and that poll is also how we know
@@ -620,6 +623,72 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
   sendJson(res, 200, await buildState(deps, userId));
 }
 
+/* ── POST /ride-page/events ───────────────────────────────────────────── */
+
+/**
+ * The steps the page may report. Anything else is dropped: the table is for
+ * analysis, so it holds only names an analyst can rely on.
+ */
+export const RIDE_PAGE_EVENTS = [
+  'page_opened', 'phase_shown', 'page_hidden', 'page_visible', 'page_left',
+  'price_changed', 'find_tapped', 'find_failed',
+  'trip_edit_opened', 'place_searched', 'place_picked', 'stop_removed', 'trip_saved', 'trip_save_failed',
+  'offer_received', 'raise_tapped', 'price_sheet_opened', 'price_updated', 'price_update_failed',
+  'offer_declined', 'decline_all',
+  'accept_tapped', 'accept_failed', 'pay_method_chosen', 'wallet_short_shown', 'account_copied', 'pay_sheet_closed',
+  'cancel_opened', 'cancel_reason_picked', 'cancel_confirmed', 'cancel_failed', 'cancel_kept',
+  'edit_trip_back_tapped', 'edit_trip_back_confirmed', 'edit_trip_back_kept',
+  'chat_link_tapped', 'call_driver_tapped', 'chat_driver_tapped', 'map_recentred',
+] as const;
+const EVENT_NAMES = new Set<string>(RIDE_PAGE_EVENTS);
+const PHASES = new Set(['loading', 'fatal', 'idle', 'price', 'offers', 'confirmed']);
+const SESSION_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const RIDE_ID = /^[0-9A-Za-z-]{8,64}$/;
+const MAX_EVENTS = 50;
+const DAY_MS = 86_400_000;
+
+/** A step's details: a flat object of short strings, numbers and true/false, at most 20 of them. */
+function cleanProps(value: unknown): Record<string, string | number | boolean> | null {
+  if (!isRecord(value)) return null;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 20)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(key)) continue;
+    if (typeof raw === 'string') out[key] = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+    else if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+    else if (typeof raw === 'boolean') out[key] = raw;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * What the rider did on the page, sent in small batches (and once more as they
+ * leave). Never fails the page: bad steps are dropped, and the answer is 202
+ * whatever was kept. Does not count as "the rider is looking" (the poll does).
+ */
+async function handleEvents(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const body = await readJsonBody(req).catch(() => null);
+  const sessionId = isRecord(body) && typeof body.sessionId === 'string' ? body.sessionId : '';
+  if (!SESSION_ID.test(sessionId) || !isRecord(body) || !Array.isArray(body.events)) {
+    throw new PageError('sessionId and events are needed.', 400, 'BAD_REQUEST');
+  }
+  const now = Date.now();
+  const rows = body.events.slice(0, MAX_EVENTS).flatMap((raw) => {
+    if (!isRecord(raw) || typeof raw.event !== 'string' || !EVENT_NAMES.has(raw.event)) return [];
+    const seq = Number(raw.seq);
+    if (!Number.isInteger(seq) || seq < 1 || seq > 100_000) return [];
+    const at = Date.parse(String(raw.at ?? ''));
+    // The phone's clock, within the visit; a clock a day out is replaced by ours.
+    const clientAt = new Date(Number.isFinite(at) && Math.abs(at - now) < DAY_MS ? at : now);
+    const phase = typeof raw.phase === 'string' && PHASES.has(raw.phase) ? raw.phase : null;
+    const rideId = typeof raw.rideId === 'string' && RIDE_ID.test(raw.rideId) ? raw.rideId : null;
+    return [{ sessionId, userId, rideId, event: raw.event, phase, seq, props: cleanProps(raw.props), clientAt }];
+  });
+  await ridePageEventClient.recordMany(rows).catch((error) =>
+    console.warn(`${TAG} page events not kept`, { error: error instanceof Error ? error.message : String(error) }));
+  sendJson(res, 202, { ok: true, kept: rows.length });
+}
+
 /* ── GET /ride-page/topup?amount= ─────────────────────────────────────── */
 
 async function depositAccountFor(deps: RidePageRouteDeps, userId: string) {
@@ -662,6 +731,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/places': { method: 'GET', run: handlePlaces },
   '/ride-page/route': { method: 'POST', run: handleRoute },
   '/ride-page/edit-trip': { method: 'POST', run: handleEditTrip },
+  '/ride-page/events': { method: 'POST', run: handleEvents },
   '/ride-page/topup': { method: 'GET', run: handleTopup },
 };
 

@@ -6,7 +6,7 @@ import {
   rideClient,
   tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner, RIDE, formatTripId } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -216,10 +216,18 @@ export async function handleRideEstimateRoute(
       destination,
     });
 
+    // For analytics: an app rider shown a price (the app's ride_quoted); with the ride that follows, where they stopped.
     logActivity({
       userId: user.id,
       eventType: "ride_estimate_requested",
-      metadata: { distanceKm: plannedRoute.distanceKm },
+      source: "app",
+      metadata: {
+        distanceKm: plannedRoute.distanceKm,
+        suggestedFareNgn: plannedRoute.suggestedFareNgn,
+        minOfferNgn: plannedRoute.minOfferNgn,
+        stops: stops.length,
+        pickupZone: zoneFor(pickup.lat, pickup.lng) ?? "outside",
+      },
     });
 
     sendJson(res, 200, {

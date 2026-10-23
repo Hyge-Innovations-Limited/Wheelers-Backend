@@ -234,6 +234,7 @@ import { applyCorsHeaders, sendJson } from "./http/utils";
 import { driverPresence, pricingClient } from "@wheleers/db";
 import { createLeaderLock } from "./cluster/leader";
 import { handleAdminInsightsRoute } from "./http/admin-insights.route";
+import { handleAdminDataRoute } from "./http/admin-data.route";
 import { handleAdminSecurityRoute } from "./http/admin-security.route";
 import { startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
@@ -1929,6 +1930,11 @@ async function bootstrap(): Promise<void> {
 
       // Home analytics and the Fees page: /admin/insights/* and /admin/fees/*.
       if (await handleAdminInsightsRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // Where riders stop: datasets to download for Power BI or Python, and the funnel.
+      if (await handleAdminDataRoute(req, res, adminDeps, url)) {
         return;
       }
 

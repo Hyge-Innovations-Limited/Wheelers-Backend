@@ -1,3 +1,5 @@
+import { zoneFor } from '@wheleers/config';
+import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
 export type RideState = 'setup' | 'searching' | 'bidding' | 'confirmed' | 'in_progress' | 'completed';
@@ -603,6 +605,21 @@ export async function storePendingRoute(
   data: PendingRouteData,
 ): Promise<void> {
   await redis.set(pendingRouteKey(userId), JSON.stringify(data), PENDING_ROUTE_TTL);
+  // For analytics: a WhatsApp rider shown a price for a trip (ride_quoted), or saying the trip is right
+  // (ride_trip_confirmed). With the search that follows (ride_search_started), where they stopped.
+  logActivity({
+    userId,
+    eventType: data.confirmed ? 'ride_trip_confirmed' : 'ride_quoted',
+    source: 'whatsapp',
+    metadata: {
+      distanceKm: data.distanceKm,
+      suggestedFareNgn: data.suggestedFareNgn,
+      minOfferNgn: data.minOfferNgn,
+      stops: data.stops?.length ?? 0,
+      pickupZone: zoneFor(data.pickupLat, data.pickupLng) ?? 'outside',
+      ...(data.offerNgn ? { offerNgn: data.offerNgn } : {}),
+    },
+  });
 }
 
 export async function getPendingRoute(
