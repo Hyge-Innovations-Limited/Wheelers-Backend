@@ -16,6 +16,7 @@ import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
+import { overLimit } from '../trip-chat/limits';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
@@ -492,17 +493,35 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: Rid
   const reason = await readCancelReason(req);
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (rideId) {
-    const state = await getRideState(deps.redisClient, rideId);
-    if (state === 'confirmed' || state === 'in_progress') {
-      // A driver is on the way: that cancellation has reasons and may carry a fee. The chat handles it.
-      throw new PageError('Your driver is already confirmed. To cancel this trip, reply "cancel" in the chat.', 409, 'ALREADY_CONFIRMED');
-    }
-    await cancelWhatsappRide(deps, userId, rideId, reason ?? 'Cancelled on the offers page');
+    await whileNotConfirming(deps, rideId, async () => {
+      const state = await getRideState(deps.redisClient, rideId);
+      if (state === 'confirmed' || state === 'in_progress') {
+        // A driver is on the way: that cancellation has reasons and may carry a fee. The chat handles it.
+        throw new PageError('Your driver is already confirmed. To cancel this trip, reply "cancel" in the chat.', 409, 'ALREADY_CONFIRMED');
+      }
+      await cancelWhatsappRide(deps, userId, rideId, reason ?? 'Cancelled on the offers page');
+    });
     logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: reason ? { reason } : {} });
     const user = await userClient.findById(userId);
     await deps.notifyChat?.({ kind: 'search_cancelled', userId, phone: user?.phone ?? '' }).catch(() => undefined);
   }
   sendJson(res, 200, await buildState(deps, userId));
+}
+
+/**
+ * Runs `work` holding the ride's confirming lock (the one confirmRideWithOffer
+ * takes), so a search is never cancelled while a driver is being confirmed on
+ * it: a deposit landing or an Accept in the chat in the same second.
+ */
+async function whileNotConfirming(deps: RidePageRouteDeps, rideId: string, work: () => Promise<void>): Promise<void> {
+  const key = `whatsapp:ride:${rideId}:confirming`;
+  const mine = await deps.redisClient.setIfNotExists(key, '1', 20).catch(() => true);
+  if (!mine) throw new PageError('A driver is being confirmed for this trip right now. Give it a moment.', 409, 'CONFIRMING');
+  try {
+    await work();
+  } finally {
+    await deps.redisClient.del(key).catch(() => undefined);
+  }
 }
 
 /* ── GET /ride-page/places?q=&field= ──────────────────────────────────── */
@@ -513,6 +532,10 @@ async function handlePlaces(req: IncomingMessage, res: ServerResponse, deps: Rid
   if (!deps.googleMapsApiKey) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
   const query = (url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (query.length < 3) return sendJson(res, 200, { places: [] });
+  // Every lookup is billed by Google: plenty for typing, not for a script.
+  if (await overLimit(deps.redisClient, `ride-page:places:${userId}`, 40, 60)) {
+    throw new PageError('Too many searches at once. Wait a moment and try again.', 429, 'TOO_MANY');
+  }
   const trip = await getPendingRoute(deps.redisClient, userId);
   const field = url.searchParams.get('field');
   // Looking for a pickup: near the destination, and the other way round.
@@ -609,16 +632,22 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) return sendJson(res, 200, await buildState(deps, userId));
-  const state = await getRideState(deps.redisClient, rideId);
-  if (state === 'confirmed' || state === 'in_progress') {
-    throw new PageError('Your driver is already confirmed. To change this trip, reply in the chat.', 409, 'ALREADY_CONFIRMED');
-  }
-  const last = await getLastRoute(deps.redisClient, userId);
-  await cancelWhatsappRide(deps, userId, rideId, 'Changed the trip on the offers page');
-  if (last) {
-    await storePendingRoute(deps.redisClient, userId, { ...last, route: last.route, confirmed: true });
-    await setBookingStage(deps.redisClient, userId, 'awaiting_price');
-  }
+  const [last, meta] = await Promise.all([getLastRoute(deps.redisClient, userId), getRideMeta(deps.redisClient, rideId)]);
+  // The trip to bring back must be this search's trip. Some searches (the chat's
+  // forms, a group seat) do not remember one, and an older trip is the wrong one.
+  const sameTrip = last && meta && meta.riderId === userId
+    && last.pickupAddress === meta.pickupAddress && last.destAddress === meta.destinationAddress
+    && (last.stops ?? []).length === (meta.stops ?? []).length;
+  if (!sameTrip) throw new PageError('This trip can not be changed here. Reply "cancel" in the chat, then send the new trip.', 409, 'EDIT_NOT_HERE');
+  await whileNotConfirming(deps, rideId, async () => {
+    const state = await getRideState(deps.redisClient, rideId);
+    if (state === 'confirmed' || state === 'in_progress') {
+      throw new PageError('Your driver is already confirmed. To change this trip, reply in the chat.', 409, 'ALREADY_CONFIRMED');
+    }
+    await cancelWhatsappRide(deps, userId, rideId, 'Changed the trip on the offers page');
+  });
+  await storePendingRoute(deps.redisClient, userId, { ...last, route: last.route, confirmed: true });
+  await setBookingStage(deps.redisClient, userId, 'awaiting_price');
   logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: { reason: 'Changed the trip' } });
   sendJson(res, 200, await buildState(deps, userId));
 }
@@ -668,6 +697,8 @@ function cleanProps(value: unknown): Record<string, string | number | boolean> |
 async function handleEvents(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   const body = await readJsonBody(req).catch(() => null);
+  // The page sends a batch every few seconds; far more than that is not a person. Dropped, never refused.
+  if (await overLimit(deps.redisClient, `ride-page:events:${userId}`, 60, 60)) return sendJson(res, 202, { ok: true, kept: 0 });
   const sessionId = isRecord(body) && typeof body.sessionId === 'string' ? body.sessionId : '';
   if (!SESSION_ID.test(sessionId) || !isRecord(body) || !Array.isArray(body.events)) {
     throw new PageError('sessionId and events are needed.', 400, 'BAD_REQUEST');

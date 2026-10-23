@@ -593,6 +593,27 @@ test('going back from the search to change the trip stops the search and brings 
   assert.equal((await call(deps, rider, 'POST', '/ride-page/edit-trip')).body.code, 'ALREADY_CONFIRMED');
 });
 
+test('going back or cancelling waits while a driver is being confirmed, and never brings back a different trip', async () => {
+  const { deps, redis, events } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const searching = (await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6800 })).body;
+  const published = events.length;
+
+  // A deposit or the chat is confirming a driver on this search right now.
+  await redis.setIfNotExists(`whatsapp:ride:${searching.rideId}:confirming`, '1', 20);
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/edit-trip')).body.code, 'CONFIRMING');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'The prices are too high' })).body.code, 'CONFIRMING');
+  assert.equal(events.length, published, 'nothing cancelled');
+  await redis.del(`whatsapp:ride:${searching.rideId}:confirming`);
+
+  // The remembered trip is an older one (this search came from elsewhere): not brought back, search kept.
+  await bidState.storeLastRoute(redis, rider, { ...QUOTE, pickupAddress: 'Somewhere else', offerNgn: 5000 });
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/edit-trip')).body.code, 'EDIT_NOT_HERE');
+  assert.equal(await bidState.getActiveRide(redis, rider), searching.rideId);
+  assert.equal(events.length, published);
+});
+
 /* ── the chat stays quiet while the page is open ──────────────────────── */
 
 test('every request from the page says "still here"; silence means they left', async () => {
