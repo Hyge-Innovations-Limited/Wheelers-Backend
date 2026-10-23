@@ -674,7 +674,7 @@ async function bootstrap(): Promise<void> {
     const timing = currentTiming();
     res.once("finish", () => {
       healthStats.http(Date.now() - startedAt, res.statusCode);
-      healthStats.route(routeKey(req.method, url.pathname), Date.now() - startedAt, res.statusCode, timing);
+      healthStats.route(routeKey(req.method, url.pathname, res.statusCode), Date.now() - startedAt, res.statusCode, timing);
       // What people tried in the app and how it went, for the admin Activity page.
       recordRequestOutcome(req, res, url.pathname, gatewayEnv.JWT_SECRET);
       // Admins' searches, records opened and changes, for the owners' Team activity page.

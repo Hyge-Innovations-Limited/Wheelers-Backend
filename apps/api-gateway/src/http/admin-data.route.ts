@@ -56,10 +56,12 @@ export function csvCell(value: unknown): string {
   if (typeof value === 'bigint') return value.toString();
   if (typeof value === 'object') {
     // Prisma decimals print as numbers; anything else as JSON.
-    const text = 'toFixed' in (value as object) ? String(value) : JSON.stringify(value);
-    return csvCell(text);
+    if ('toFixed' in (value as object)) return String(value);
+    return csvCell(JSON.stringify(value));
   }
-  const text = String(value);
+  // Text a rider typed can start like a formula (=HYPERLINK...): Excel would run
+  // it, so it is kept as text. Numbers keep their minus sign.
+  const text = typeof value === 'string' && /^[=+\-@\t\r]/.test(value) ? `'${value}` : String(value);
   return /[",\r\n]/.test(text) || /^\s|\s$/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

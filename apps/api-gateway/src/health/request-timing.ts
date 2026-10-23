@@ -50,12 +50,18 @@ const ID_SEGMENT = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * row: GET /admin/drivers/9eda…/papers → GET /admin/drivers/:id/papers.
  * Static files (the pages WhatsApp opens) are one row each kind.
  */
-export function routeKey(method: string | undefined, pathname: string): string {
-  if (pathname.startsWith('/widget/')) return `${method ?? 'GET'} /widget/*`;
+const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+
+export function routeKey(method: string | undefined, pathname: string, status?: number): string {
+  const verb = method && METHODS.has(method) ? method : 'OTHER';
+  // Paths nobody serves are one row: anyone can make up a new one each request,
+  // and each would be its own row in Redis.
+  if (status === 404) return `${verb} (not found)`;
+  if (pathname.startsWith('/widget/')) return `${verb} /widget/*`;
   const path = pathname
     .split('/')
     .map((segment) => (segment && ID_SEGMENT.test(segment) ? ':id' : segment))
     .join('/')
     .slice(0, 120);
-  return `${method ?? 'GET'} ${path || '/'}`;
+  return `${verb} ${path || '/'}`;
 }

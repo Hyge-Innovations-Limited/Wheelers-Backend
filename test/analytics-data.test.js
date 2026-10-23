@@ -67,6 +67,10 @@ test('CSV cells: commas, quotes, new lines, dates and numbers come out as Excel 
   assert.equal(csvCell('two\nlines'), '"two\nlines"');
   assert.equal(csvCell(null), '');
   assert.equal(csvCell(4100), '4100');
+  // A rider's text that starts like a formula stays text in Excel; numbers keep their sign.
+  assert.equal(csvCell('=HYPERLINK("http://x","y")'), '"\'=HYPERLINK(""http://x"",""y"")"');
+  assert.equal(csvCell('@SUM(A1)'), "'@SUM(A1)");
+  assert.equal(csvCell(-250), '-250');
   assert.equal(csvCell(new Date('2026-10-23T08:00:00Z')), '2026-10-23T08:00:00.000Z');
   assert.equal(toCsv([{ a: 1, b: 'x,y' }, { a: 2, b: null }]), 'a,b\r\n1,"x,y"\r\n2,\r\n');
 });

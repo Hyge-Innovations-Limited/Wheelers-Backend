@@ -134,6 +134,9 @@ test('an endpoint is one row whatever the ids in its path', () => {
   assert.equal(timing.routeKey('GET', '/admin/trips/WH-00216'), 'GET /admin/trips/:id');
   assert.equal(timing.routeKey('GET', '/widget/ride/ride.js'), 'GET /widget/*');
   assert.equal(timing.routeKey('GET', '/ride-page/state'), 'GET /ride-page/state');
+  // Made-up paths and methods are one row each, never one row per path.
+  assert.equal(timing.routeKey('GET', '/wp-admin/x1y2', 404), 'GET (not found)');
+  assert.equal(timing.routeKey('PROPFIND', '/ride-page/state', 200), 'OTHER /ride-page/state');
 });
 
 test('database and outside time are added to the request they happen in, and to no other', async () => {

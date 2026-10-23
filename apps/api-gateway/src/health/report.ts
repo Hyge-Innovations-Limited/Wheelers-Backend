@@ -230,7 +230,6 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
   const http = sum((t) => t.http);
   const db = sum((t) => t.db);
   const dbexec = sum((t) => t.dbexec);
-  const dbAvg = db.count ? db.sumMs / db.count : null;
   const execAvg = dbexec.count ? dbexec.sumMs / dbexec.count : null;
 
   const [instances, services] = await Promise.all([
@@ -254,11 +253,14 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
       dbP95: percentileMs(db),
       dbAvgMs: db.count ? Math.round(db.sumMs / db.count) : null,
       slowQueries: db.slow,
-      // The same queries timed by Postgres alone: the gap is time spent waiting for a free connection.
+      // The same queries timed by Postgres alone, per SQL statement (one Prisma
+      // call can run several: an include, a transaction's BEGIN and COMMIT).
       dbRunAvgMs: execAvg === null ? null : Math.round(execAvg * 10) / 10,
       dbRunP95: percentileMs(dbexec),
       dbSlowRuns: dbexec.slow,
-      dbWaitAvgMs: dbAvg === null || execAvg === null ? null : Math.max(0, Math.round((dbAvg - execAvg) * 10) / 10),
+      // The wait for a free connection, per Prisma call: all the calls' time
+      // less all of Postgres's own time (totals: the two count different things).
+      dbWaitAvgMs: !db.count || !dbexec.count ? null : Math.max(0, Math.round(((db.sumMs - dbexec.sumMs) / db.count) * 10) / 10),
     },
     endpoints,
     points,

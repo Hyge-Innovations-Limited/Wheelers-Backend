@@ -47,7 +47,7 @@ Join keys: `rider_id`/`user_id` (a person), `ride_id`, `session_id` (one page vi
 | payment_method | WALLET, XLM… |
 | offers, drivers_offering, lowest_offer_ngn, highest_offer_ngn | driver offers on it |
 | status | the ride's status now |
-| outcome | completed, cancelled, no_driver (nobody took it in time), replaced_by_new_request (the rider searched again: not a loss), disputed, open |
+| outcome | completed, cancelled, no_driver (nobody took it in time), replaced_by_new_request (the rider searched again, or stopped the search on the WhatsApp page to change the trip: not a loss), disputed, open |
 | stage_reached (1–6), furthest_stage | how far it got |
 | stopped_at_stage | for cancelled or disputed rides: where it stopped |
 | cancel_stage | BEFORE_MATCH, AFTER_MATCH, DRIVER_EN_ROUTE, ACTIVE_TRIP |
@@ -66,7 +66,7 @@ Join keys: `rider_id`/`user_id` (a person), `ride_id`, `session_id` (one page vi
 | got_offers, most_offers_seen, minutes_to_first_offer | offers |
 | raises_tapped, price_updates, offers_declined, declined_all | while searching |
 | tapped_accept, minutes_offer_to_accept, wallet_was_short | choosing a driver; wallet_was_short = asked to add money |
-| driver_confirmed | booked |
+| driver_confirmed | booked on this visit (the page moved to the confirmed screen; opening the link again during a trip does not count) |
 | went_back_to_edit | stopped the search to change the trip |
 | opened_cancel, cancelled, cancel_reason, cancel_detail | cancelling and why |
 | last_event, last_phase | the last thing they did, and on which screen |

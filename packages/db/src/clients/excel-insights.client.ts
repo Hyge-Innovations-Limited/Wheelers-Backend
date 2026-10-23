@@ -100,9 +100,10 @@ export const excelInsightsClient = {
         SELECT e.day, e.user_id FROM rider_events e
         WHERE ${days(q, f, 'e.day')} AND e.event = 'ride_trip_confirmed' GROUP BY 1, 2
       ), rides AS (
-        SELECT f.requested_day AS day, f.rider_id AS user_id, bool_or(f.outcome = 'completed') AS completed
+        -- By channel too: a price shown on WhatsApp counts a ride booked on WhatsApp, not one in the app.
+        SELECT f.requested_day AS day, f.rider_id AS user_id, lower(f.channel) AS source, bool_or(f.outcome = 'completed') AS completed
         FROM ride_funnel f WHERE ${days(q, f, 'f.requested_day')} AND f.outcome <> 'replaced_by_new_request'
-        GROUP BY 1, 2
+        GROUP BY 1, 2, 3
       )
       SELECT qt.day, qt.source,
         count(*) AS riders_shown_a_price,
@@ -111,7 +112,7 @@ export const excelInsightsClient = {
         count(*) FILTER (WHERE r.completed) AS completed_a_ride
       FROM quoted qt
       LEFT JOIN confirmed c ON c.day = qt.day AND c.user_id = qt.user_id AND qt.source = 'whatsapp'
-      LEFT JOIN rides r ON r.day = qt.day AND r.user_id = qt.user_id
+      LEFT JOIN rides r ON r.day = qt.day AND r.user_id = qt.user_id AND r.source = qt.source
       GROUP BY 1, 2 ORDER BY 1, 2`);
   },
 
@@ -214,14 +215,27 @@ export const excelInsightsClient = {
     const rides = rideWhere(q, f);
     return run(q, `
       WITH hours AS (
+        -- Lagos 00:00 of the first day to Lagos 23:00 of the last, in UTC.
         SELECT h FROM generate_series(
           (${from}::date::timestamp - interval '1 hour'),
-          (${to}::date::timestamp + interval '23 hours'),
+          (${to}::date::timestamp + interval '22 hours'),
           interval '1 hour') AS h
+      ), shift_hours AS (
+        -- Each shift once, as the hours it covers inside the period (joining
+        -- every hour to every shift grew as hours x shifts).
+        SELECT DISTINCT g.h, s."driverId"
+        FROM "DriverShift" s
+        CROSS JOIN LATERAL generate_series(
+          GREATEST(date_trunc('hour', s."startedAt"), ${from}::date::timestamp - interval '1 hour'),
+          LEAST(COALESCE(s."endedAt", now()), ${to}::date::timestamp + interval '22 hours'),
+          interval '1 hour') AS g(h)
+        WHERE s."startedAt" < ${to}::date::timestamp + interval '23 hours'
+          AND COALESCE(s."endedAt", now()) > ${from}::date::timestamp - interval '1 hour'
+          AND g.h < COALESCE(s."endedAt", now())
       ), online AS (
-        SELECT hrs.h, count(DISTINCT s."driverId") AS drivers
+        SELECT hrs.h, count(sh."driverId") AS drivers
         FROM hours hrs
-        LEFT JOIN "DriverShift" s ON s."startedAt" < hrs.h + interval '1 hour' AND COALESCE(s."endedAt", now()) > hrs.h
+        LEFT JOIN shift_hours sh ON sh.h = hrs.h
         GROUP BY hrs.h
       ), slots AS (
         SELECT extract(hour FROM (o.h AT TIME ZONE 'UTC') AT TIME ZONE 'Africa/Lagos')::int AS hour,

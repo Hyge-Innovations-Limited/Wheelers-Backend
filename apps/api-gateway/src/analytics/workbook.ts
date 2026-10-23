@@ -845,6 +845,6 @@ async function whySheets(book: ExcelJS.Workbook, f: AnalyticsFilters): Promise<v
     { sheet: 'Rider types / Trips per rider', what: 'New, returning and back-after-a-gap riders each week; how many trips riders take; riders at risk of leaving.' },
     { sheet: 'Driver quality', what: 'Per driver: offers, how often chosen, reliability, speed to pickup, hours online and fares per hour.' },
     { sheet: 'Money journey', what: 'Riders told to add money: did they deposit and book? And how many trips were paid in XLM.' },
-    { sheet: 'All of them', what: 'Times are Lagos time. The period, zone and channel filters apply as on the screen. Row-by-row data for Power BI or Python: admin → Data → Download CSV.' },
+    { sheet: 'All of them', what: 'Times are Lagos time. The period applies to every sheet. Zone and channel apply to Funnel, Where rides stopped, Price vs booking, Speed of service, Supply vs demand, Trips per rider (not its riders at risk) and the trips in Driver quality; channel also to Shown a price. The WhatsApp sheets, Driver counter-offers, Raising the price, the cohorts, Rider types and Money journey cover every zone and channel. Ride type, driver and rider filters do not apply to these sheets. Row-by-row data for Power BI or Python: admin → Data → Download CSV.' },
   ]);
 }
