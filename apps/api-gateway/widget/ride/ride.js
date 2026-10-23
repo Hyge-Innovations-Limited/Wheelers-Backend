@@ -123,6 +123,51 @@
     }
   }
 
+  /* ── analytics: what the rider does here, step by step ─────────────────── */
+
+  // Each step goes to /ride-page/events (the ride_page_* views): a few at a time,
+  // every few seconds, and what is left as the rider leaves. Never in the way:
+  // a step that cannot be sent is dropped, and nothing waits for it.
+  var visitId = 'v' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+  var stepNo = 0;
+  var unsent = [];
+  var sendTimer = null;
+  var openedAt = Date.now();
+
+  function track(event, props) {
+    try {
+      unsent.push({
+        seq: ++stepNo,
+        event: event,
+        phase: state ? state.phase : null,
+        rideId: state && state.rideId ? state.rideId : null,
+        at: new Date().toISOString(),
+        props: props || undefined
+      });
+      if (unsent.length >= 20) sendSteps(false);
+      else if (!sendTimer) sendTimer = setTimeout(function () { sendSteps(false); }, 4000);
+    } catch (e) { /* analytics never breaks the page */ }
+  }
+
+  function sendSteps(leaving) {
+    clearTimeout(sendTimer);
+    sendTimer = null;
+    if (!unsent.length || !window.__wheelersToken) return;
+    var batch = unsent.splice(0, 50);
+    try {
+      fetch('/ride-page/events', {
+        method: 'POST',
+        // keepalive: the last steps still arrive when the page is being closed.
+        keepalive: Boolean(leaving),
+        headers: { Authorization: 'Bearer ' + window.__wheelersToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: visitId, events: batch })
+      }).catch(function () { /* dropped */ });
+    } catch (e) { /* dropped */ }
+    if (unsent.length) sendSteps(leaving);
+  }
+
+  function secondsHere() { return Math.round((Date.now() - openedAt) / 1000); }
+
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
   function openSheet(id) {
@@ -168,9 +213,14 @@
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape' && !W.$('overlay').hidden) W.$('overlay').click();
   });
-  W.$('overlay').addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
+  /** A sheet put away without finishing it: worth knowing for paying and cancelling. */
+  function noteSheetLeft() {
+    if (!W.$('sheet-pay').hidden || !W.$('sheet-paywith').hidden) track('pay_sheet_closed');
+    if (!W.$('sheet-cancel').hidden) track('cancel_kept');
+  }
+  W.$('overlay').addEventListener('click', function () { noteSheetLeft(); closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (button) {
-    button.addEventListener('click', function () { closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
+    button.addEventListener('click', function () { noteSheetLeft(); closeSheets(); paying = null; if (state && state.phase === 'offers') drawSent(state); });
   });
 
   /* ── 1 · name your price ──────────────────────────────────────────────── */
@@ -223,10 +273,18 @@
     var next = up ? amount + (100 - (amount % 100)) : Math.max(state.minOfferNgn, amount - (amount % 100 || 100));
     W.$('price-input').value = Number(next).toLocaleString('en-NG');
     syncPrice();
+    track('price_changed', { method: up ? 'plus' : 'minus', amountNgn: next });
   }
   W.$('price-down').addEventListener('click', function () { stepPrice(false); });
   W.$('price-up').addEventListener('click', function () { stepPrice(true); });
-  W.$('price-input').addEventListener('input', function () { W.formatAmountInput(this); syncPrice(); });
+  var typedTimer = null;
+  W.$('price-input').addEventListener('input', function () {
+    W.formatAmountInput(this);
+    syncPrice();
+    // A price typed is one step once they stop typing, not one per key.
+    clearTimeout(typedTimer);
+    typedTimer = setTimeout(function () { track('price_changed', { method: 'typed', amountNgn: W.parseAmount(W.$('price-input').value) }); }, 1200);
+  });
 
   W.$('find').addEventListener('click', function () {
     var button = this;
@@ -234,12 +292,14 @@
     busy = true;
     button.className = 'btn primary busy';
     button.textContent = 'Asking drivers…';
+    track('find_tapped', { amountNgn: W.parseAmount(W.$('price-input').value), suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0 });
     W.api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
       seenOffers = null;
       apply(next);
       say('Your price is out. Offers will show up here.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
+      track('find_failed', { code: error.code || String(error.status) });
       W.$('price-err').textContent = error.message;
       W.show(W.$('price-err'), true);
     }).then(function () {
@@ -273,6 +333,9 @@
     W.$('finding-route').textContent = W.$('offers-route').textContent;
     W.$('finding-offer').textContent = W.naira(s.offerNgn);
     W.show(W.$('offers-sub'), list.length > 0);
+    if (count > (seenOffers === null ? 0 : seenOffers)) {
+      track('offer_received', { count: count, lowestNgn: offers.length ? Math.min.apply(null, offers.map(function (o) { return o.priceNgn; })) : 0 });
+    }
     if (seenOffers !== null && count > seenOffers && !paying) say(count - seenOffers === 1 ? 'New offer' : (count - seenOffers) + ' new offers', 'good');
     seenOffers = count;
 
@@ -343,6 +406,7 @@
         decline.type = 'button';
         decline.disabled = Boolean(paying) || busy;
         decline.addEventListener('click', function () {
+          track('offer_declined', { priceNgn: offer.priceNgn, rank: index + 1 });
           dismissed[offer.key] = true;
           drawnOffers = null;
           if (state && state.phase === 'offers') drawSent(state);
@@ -365,6 +429,9 @@
    */
   function acceptOffer(offer) {
     if (busy || paying) return;
+    var list = (state && state.offers) || [];
+    var rank = list.map(function (o) { return o.key; }).indexOf(offer.key) + 1;
+    track('accept_tapped', { priceNgn: offer.priceNgn, rank: rank, offers: list.length });
     if (state && state.xlm) return openPayWith(offer, state.xlm);
     payFor(offer, 'ngn');
   }
@@ -410,6 +477,7 @@
     if (!payWith) return;
     var chosen = payWith;
     payWith = null;
+    track('pay_method_chosen', { method: chosen.method });
     closeSheets();
     payFor(chosen.offer, chosen.method);
   });
@@ -426,7 +494,11 @@
       apply(next);
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
-      if (error.code === 'WALLET_SHORT') return openPay(offer, error.body);
+      if (error.code === 'WALLET_SHORT') {
+        track('wallet_short_shown', { shortNgn: error.body && error.body.shortNgn ? error.body.shortNgn : 0 });
+        return openPay(offer, error.body);
+      }
+      track('accept_failed', { code: error.code || String(error.status) });
       paying = null;
       say(error.message, 'bad');
       if (state) drawSent(state);
@@ -445,6 +517,7 @@
     W.$('pay-name').textContent = account ? account.accountName : '—';
     W.$('pay-copy').onclick = function () {
       if (!account) return;
+      track('account_copied');
       W.copy(account.accountNumber).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
     };
     W.$('pay-note').textContent = first + ' is booked the moment it lands. You don’t need to tap anything again.';
@@ -470,6 +543,7 @@
     var shownOffers = (state.offers || []).slice();
     W.api('POST', '/ride-page/decline-all').then(function (next) {
       declined = { offers: shownOffers, until: Date.now() + 1800 };
+      track('decline_all', { count: shownOffers.length });
       declinedOnce = true;
       apply(next);
       setTimeout(function () { if (state) drawSent(state); }, 1900);
@@ -497,9 +571,13 @@
     markChips('offer-chips', amount);
     W.$('offer-save').textContent = amount > 0 && state && amount !== state.offerNgn ? 'Update price to ' + W.naira(amount) : 'Update price';
   }
-  W.$('change-offer').addEventListener('click', function () { openChangePrice(0); });
+  W.$('change-offer').addEventListener('click', function () { track('price_sheet_opened', { from: 'change_my_price' }); openChangePrice(0); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-raise]'), function (button) {
-    button.addEventListener('click', function () { openChangePrice(Number(button.getAttribute('data-raise')) || 0); });
+    button.addEventListener('click', function () {
+      var by = Number(button.getAttribute('data-raise')) || 0;
+      track('raise_tapped', { by: by });
+      openChangePrice(by);
+    });
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function (button) {
     button.addEventListener('click', function () {
@@ -525,12 +603,15 @@
     if (state && amount === state.offerNgn) return closeSheets();
     busy = true;
     button.className = 'btn primary busy';
+    var before = state ? state.offerNgn : 0;
     W.api('POST', '/ride-page/offer', { amountNgn: amount }).then(function (next) {
       closeSheets();
       apply(next);
+      track('price_updated', { fromNgn: before, toNgn: amount });
       say('Offer updated to ' + W.naira(amount) + '. Drivers notified.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
+      track('price_update_failed', { code: error.code || String(error.status) });
       W.$('offer-err').textContent = error.message;
       W.show(W.$('offer-err'), true);
     }).then(function () { busy = false; button.className = 'btn primary'; });
@@ -561,6 +642,7 @@
       row.appendChild(el('span', 'radio'));
       row.appendChild(el('span', 'reason-text', reason));
       row.addEventListener('click', function () {
+        track('cancel_reason_picked', { reason: reason });
         cancelReason = reason;
         drawReasons();
         W.show(W.$('cancel-other'), reason === OTHER);
@@ -584,6 +666,7 @@
     W.show(W.$('cancel-other'), false);
     drawReasons();
     syncCancel();
+    track('cancel_opened');
     openSheet('sheet-cancel');
   });
 
@@ -595,12 +678,14 @@
     var body = { reason: cancelReason };
     if (cancelReason === OTHER) body.detail = W.$('cancel-other').value.trim();
     W.api('POST', '/ride-page/cancel', body).then(function (next) {
+      track('cancel_confirmed', body);
       closeSheets();
       apply(next);
       W.$('idle-title').textContent = 'Search cancelled';
       W.$('idle-text').textContent = 'Nothing was charged. Message Wheelers whenever you need a ride.';
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
+      track('cancel_failed', { code: error.code || String(error.status) });
       W.$('cancel-err').textContent = error.message;
       W.show(W.$('cancel-err'), true);
     }).then(function () { busy = false; button.className = 'btn danger'; });
@@ -611,12 +696,14 @@
   W.$('offers-back').addEventListener('click', function () {
     if (busy || !state || state.phase !== 'offers') return;
     var count = (state.offers || []).length;
+    track('edit_trip_back_tapped', { offers: count });
     ask({
       title: 'Change your trip?',
       text: (count ? 'The ' + (count === 1 ? 'offer' : count + ' offers') + ' you have go away and drivers' : 'Drivers') + ' stop seeing this request. You set the trip and your price again. Nothing is charged.',
       yes: 'Change trip',
       no: 'Keep looking'
     }).then(function (yes) {
+      track(yes ? 'edit_trip_back_confirmed' : 'edit_trip_back_kept');
       if (!yes) return;
       busy = true;
       W.api('POST', '/ride-page/edit-trip').then(function (next) {
@@ -649,6 +736,7 @@
     clearPlaces();
     W.show(W.$('trip-err'), false);
     syncTrip();
+    track('trip_edit_opened');
     openSheet('sheet-trip');
   }
   W.$('route-edit').addEventListener('click', openTrip);
@@ -665,6 +753,7 @@
       remove.type = 'button';
       remove.setAttribute('aria-label', 'Remove stop ' + (index + 1));
       remove.addEventListener('click', function () {
+        track('stop_removed');
         trip.stops.splice(index, 1);
         drawTripStops();
         syncTrip();
@@ -710,6 +799,7 @@
       if (seq !== searchSeq) return;   // a newer search is on its way
       holder.innerHTML = '';
       var places = (answer && answer.places) || [];
+      track('place_searched', { field: field, letters: query.length, results: places.length });
       if (!places.length) {
         holder.appendChild(el('div', 'place-status', 'No place found. Add the area or a landmark, e.g. "Shoprite, Ikeja".'));
         return;
@@ -721,6 +811,7 @@
         option.appendChild(el('strong', '', place.name || place.address));
         if (place.area) option.appendChild(el('span', '', place.area));
         option.addEventListener('click', function () {
+          track('place_picked', { field: field });
           trip[field] = { lat: place.lat, lng: place.lng, address: place.address };
           W.$(field === 'pickup' ? 'trip-pickup' : 'trip-dest').value = place.address;
           clearPlaces();
@@ -745,9 +836,11 @@
     W.api('POST', '/ride-page/route', { pickup: trip.pickup, destination: trip.destination, stops: trip.stops }).then(function (next) {
       closeSheets();
       apply(next);
+      track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
       say('Trip changed. The suggested price is ' + W.naira(next.route ? next.route.suggestedFareNgn : 0) + '.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
+      track('trip_save_failed', { code: error.code || String(error.status) });
       W.$('trip-err').textContent = error.message;
       W.show(W.$('trip-err'), true);
     }).then(function () { busy = false; button.className = 'btn primary'; button.textContent = 'Save trip'; });
@@ -831,7 +924,12 @@
     if (!position) { W.show(stale, true); stale.textContent = 'Waiting for your driver’s location…'; }
   }
 
+  W.$('d-call').addEventListener('click', function () { track('call_driver_tapped'); });
+  W.$('d-chat').addEventListener('click', function () { track('chat_driver_tapped'); });
+  W.$('back-to-chat').addEventListener('click', function () { track('chat_link_tapped', { from: 'offers' }); });
+  W.$('idle-back').addEventListener('click', function () { track('chat_link_tapped', { from: 'ended' }); });
   W.$('map-recentre').addEventListener('click', function () {
+    track('map_recentred');
     followCar = true;
     if (map && carMarker) map.setView(carMarker.getLatLng(), Math.max(map.getZoom(), 15), { animate: true });
   });
@@ -884,6 +982,7 @@
     // Switch the view FIRST: the map measures its box when it is created, and a
     // hidden box measures zero.
     if (before !== next.phase) {
+      track('phase_shown', { from: before || 'none' });
       if (next.phase !== 'offers') closeSheets();
       if (before === 'offers' && next.phase === 'idle') {
         W.$('idle-title').textContent = 'Search ended';
@@ -924,10 +1023,21 @@
       refresh().then(loop);
     }, wait);
   }
+  track('page_opened');
   refresh().then(loop);
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) return;
+    if (document.hidden) {
+      track('page_hidden', { secondsOnPage: secondsHere() });
+      sendSteps(true);
+      return;
+    }
+    track('page_visible', { secondsOnPage: secondsHere() });
     refresh();
     if (map) setTimeout(function () { map.invalidateSize(); }, 50);   // the map was sized while hidden
+  });
+  // Closing the tab, or WhatsApp closing its browser: the last steps go with keepalive.
+  window.addEventListener('pagehide', function () {
+    track('page_left', { secondsOnPage: secondsHere() });
+    sendSteps(true);
   });
 })();
