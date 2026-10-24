@@ -28,14 +28,17 @@ export function referralCodeIn(text: string): string | null {
 /** What a referral link puts in the chat box, ready to send. */
 export const referralChatMessage = (code: string) => `Hi Wheelers. My referral code is ${code}`;
 
+/** The Wheelers WhatsApp number when WHATSAPP_BOT_NUMBER is not set (the website's too). */
+const WHEELERS_NUMBER = '2348141979106';
+
 /**
- * A person's referral link, what their QR code holds: the website's page for
- * the code (Wheelers-Frontend, app/r/[code]). It names who invited them and
- * offers the app (Play Store, App Store) or a chat with Wheelers with the code
- * already typed. One link that works wherever it is shared.
+ * A person's referral link, what their QR code holds: a chat with Wheelers
+ * with "My referral code is CODE" already typed; the bot adds the code when
+ * the friend sends it.
  */
-export function referralShareLink(code: string, base = process.env['REFERRAL_LINK_BASE'] || 'https://wheelersng.com/r'): string {
-  return `${base.replace(/\/+$/, '')}/${encodeURIComponent(code)}`;
+export function referralShareLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] || WHEELERS_NUMBER): string {
+  const digits = botNumber.replace(/\D/g, '') || WHEELERS_NUMBER;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(referralChatMessage(code))}`;
 }
 
 const NEXT = 'To book a ride, tell me where you are going, or reply *menu*.';

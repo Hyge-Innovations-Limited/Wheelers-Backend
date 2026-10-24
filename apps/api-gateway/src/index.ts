@@ -225,7 +225,6 @@ import {
   handleListReferralCashbackRoute,
   handleListReferralReferralsRoute,
   handlePreviewReferralRideCashbackRoute,
-  handleReferralCodeOwnerRoute,
   handleSetReferralCodeRoute,
 } from "./http/referral.route";
 import {
@@ -922,16 +921,6 @@ async function bootstrap(): Promise<void> {
       await handleGetReferralSummaryRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
       });
-      return;
-    }
-
-    if (url.pathname.startsWith("/referrals/codes/")) {
-      if (req.method !== "GET") {
-        sendMethodNotAllowed(res);
-        return;
-      }
-
-      await handleReferralCodeOwnerRoute(res, decodeURIComponent(url.pathname.slice("/referrals/codes/".length)));
       return;
     }
 

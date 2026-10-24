@@ -86,8 +86,8 @@ export async function handleGetReferralSummaryRoute(
     const user = await authenticateHttpUser(req, deps.jwtSecret);
     const summary = await referralClient.findSummary(user.id);
 
-    // The link a referral QR code holds: the website's page for the code,
-    // which opens the app, the store or a chat with Wheelers.
+    // The link a referral QR code holds: it opens a chat with Wheelers with
+    // the code already typed.
     sendJson(res, 200, {
       ...summary,
       shareLink: summary.code ? referralShareLink(summary.code) : null,
@@ -102,28 +102,6 @@ export async function handleGetReferralSummaryRoute(
           ? error.message
           : "Could not load referral summary.",
     });
-  }
-}
-
-/**
- * GET /referrals/codes/:code, no sign-in: what the page a referral link opens
- * shows ("Ada invited you"). The code and its owner's first name; 404 for a
- * code nobody has.
- */
-export async function handleReferralCodeOwnerRoute(
-  res: ServerResponse,
-  code: string,
-): Promise<void> {
-  try {
-    const owner = await referralClient.findCodeOwner(code);
-    if (!owner) {
-      sendJson(res, 404, { error: "No one has that referral code." });
-      return;
-    }
-    res.setHeader("Cache-Control", "public, max-age=300");
-    sendJson(res, 200, owner);
-  } catch {
-    sendJson(res, 500, { error: "Could not look up that code." });
   }
 }
 

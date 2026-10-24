@@ -163,8 +163,8 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
  * way to open an account number for a rider who has none yet.
  */
 /**
- * What a rider forwards to a friend: the code, and their link (the page that
- * opens the app, the store or a chat with Wheelers with the code typed).
+ * What a rider forwards to a friend: the code, and the link that opens a chat
+ * with Wheelers with it already typed (the bot reads it and adds it).
  */
 export function referralShareMessage(code: string, link: string | null = referralShareLink(code)): string {
   return link

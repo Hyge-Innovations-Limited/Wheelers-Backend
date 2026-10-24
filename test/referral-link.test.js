@@ -1,6 +1,5 @@
-// Referral links and QR codes: the link opens the website's page for the code,
-// whose WhatsApp button opens a chat with Wheelers with the code already
-// typed; the bot reads the code out of that message (and out of
+// Referral links and QR codes: the link opens a chat with Wheelers with the
+// code already typed; the bot reads the code out of that message (and out of
 // a message that is only the code), adds it to the rider's account, and says
 // in plain words when it cannot. Against the local Postgres.
 //
@@ -65,12 +64,12 @@ test('ordinary messages are not mistaken for a code', () => {
   assert.equal(referralCodeIn(''), null);
 });
 
-test('the link is the website\'s page for the code, and what its WhatsApp button types is read back as the code', () => {
-  assert.equal(referralShareLink('TIMI'), 'https://wheelersng.com/r/TIMI');
-  assert.equal(referralShareLink('TIMI', 'https://staging.wheelersng.com/r/'), 'https://staging.wheelersng.com/r/TIMI');
-  // The page's "Ride on WhatsApp" opens wa.me with this message typed (Wheelers-Frontend, app/r/[code]).
-  assert.equal(referralCodeIn(referralChatMessage('TIMI')), 'TIMI');
-  assert.equal(referralCodeIn(referralChatMessage('WHLAB2CD3')), 'WHLAB2CD3');
+test('the link opens a chat with the Wheelers number with the code typed, the Wheelers number when none is set', () => {
+  const link = referralShareLink('WHLAB2CD3', '+234 814 197 9106');
+  assert.ok(link.startsWith('https://wa.me/2348141979106?text='));
+  assert.equal(referralCodeIn(decodeURIComponent(link.split('text=')[1])), 'WHLAB2CD3', 'what the link sends is read back as the code');
+  assert.ok(referralShareLink('TIMI', '').startsWith('https://wa.me/2348141979106?text='), 'never empty: the app always has a link and QR code');
+  assert.ok(referralShareLink('TIMI', '2348000000001').startsWith('https://wa.me/2348000000001?text='));
 });
 
 /** A code this person created for themselves, as the app has them do. */
@@ -244,7 +243,8 @@ test('QUICK ACTIONS · the chat gets a line to read and a message to forward, wh
   assert.match(said(0), /Your referral code is \*TIMI\*/);
   assert.match(said(0), /Forward the next message/);
   assert.match(said(1), /Use my code \*TIMI\*/);
-  assert.match(said(1), /https:\/\/wheelersng\.com\/r\/TIMI/, 'the friend gets the link to the page');
+  const link = said(1).match(/https:\/\/wa\.me\/[^"\s\\]+/)[0];
+  assert.equal(referralCodeIn(decodeURIComponent(link.split('text=')[1])), 'TIMI', 'the friend\'s tap sends the code to the bot');
   assert.doesNotMatch(said(0) + said(1), /cashback/i, 'nothing is promised');
 
   assert.match(referralShareMessage('TIMI', null), /say: My referral code is TIMI/);

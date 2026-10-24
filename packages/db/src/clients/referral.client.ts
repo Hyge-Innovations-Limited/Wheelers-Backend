@@ -236,22 +236,6 @@ export const referralClient = {
     }
   },
 
-  /**
-   * Who a code belongs to, for the page a referral link opens: the code and
-   * the first word of their name, nothing else. Null for a code nobody has.
-   */
-  async findCodeOwner(code: string): Promise<{ code: string; firstName: string | null } | null> {
-    const normalized = normalizeReferralCode(code);
-    if (normalized.length < CUSTOM_CODE_MIN || normalized.length > CUSTOM_CODE_MAX) return null;
-    const row = await prisma.referralCode.findFirst({
-      where: { code: normalized, isActive: true },
-      select: { code: true, user: { select: { name: true } } },
-    });
-    if (!row) return null;
-    const firstName = row.user.name?.trim().split(/\s+/)[0] ?? '';
-    return { code: row.code, firstName: firstName || null };
-  },
-
   /** The code this person created for themselves; null until they create one. */
   async findOwnCode(userId: string): Promise<string | null> {
     const row = await prisma.referralCode.findUnique({ where: { userId }, select: { code: true } });

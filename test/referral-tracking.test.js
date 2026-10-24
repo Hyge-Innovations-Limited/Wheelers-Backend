@@ -1,18 +1,15 @@
 // Referrals, recorded and followed with nothing paid: a friend who joins with a
 // code is counted, and marked when they ride, but no cashback is given (for a
 // ride, for no ride, or by unfreezing old cashback) unless REFERRAL_REWARDS=on.
-// The friend who rode is found however many others are still waiting, and the
-// page a link opens learns only the code and a first name. Against the local
-// Postgres, with a built tree.
+// The friend who rode is found however many others are still waiting.
+// Against the local Postgres, with a built tree.
 //
 //   node scripts/run-with-env.cjs node --test --test-force-exit test/referral-tracking.test.js
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { prisma, referralClient } = require('@wheleers/db');
-const { handleReferralCodeOwnerRoute } = require('../apps/api-gateway/dist/http/referral.route.js');
 
 const users = [];
 const rides = [];
@@ -113,24 +110,4 @@ test('a friend who rode is found however many others are still waiting (it read 
   await completedRide(friend.id, new Date(Date.UTC(2002, 0, 3)));
   await referralClient.settleQualifiedRideRewards(new Date(), 5);
   assert.equal((await prisma.referral.findUnique({ where: { id: referral.id } })).status, 'QUALIFIED_RIDE');
-});
-
-test('the page a link opens learns the code and a first name, nothing else; an unknown code is 404', async () => {
-  const owner = await person('  Ada   Okafor ');
-  const own = await referralClient.setCustomCode(owner.id, code());
-  assert.deepEqual(await referralClient.findCodeOwner(own.code.toLowerCase()), { code: own.code, firstName: 'Ada' });
-  assert.equal(await referralClient.findCodeOwner('NOSUCHCODE1'), null);
-  assert.equal(await referralClient.findCodeOwner('AB'), null, 'too short to be a code');
-
-  const server = http.createServer((req, res) => void handleReferralCodeOwnerRoute(res, decodeURIComponent(req.url.slice(1))));
-  await new Promise((resolve) => server.listen(0, resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  try {
-    const found = await fetch(`${base}/${own.code}`);
-    assert.equal(found.status, 200);
-    assert.deepEqual(await found.json(), { code: own.code, firstName: 'Ada' });
-    assert.equal((await fetch(`${base}/NOSUCHCODE1`)).status, 404);
-  } finally {
-    server.close();
-  }
 });
