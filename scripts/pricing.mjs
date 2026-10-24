@@ -99,6 +99,8 @@ async function status() {
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
   console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${premiumText(settings, p)}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
   console.log(`Flat extra on top of every price: ${settings.extraNgn > 0 ? naira(settings.extraNgn) : 'none'}`);
+  console.log(`Margin that grows with the fare: ${settings.marginPercent > 0 ? `${settings.marginPercent}% of the other app's fare` : 'none'}  (npm run pricing margin N)`);
+  console.log(`Never under inDrive's high end: ×${settings.marketHigh} our guess${settings.marketHighFittedAt ? `, learned ${lagosTime(new Date(settings.marketHighFittedAt))}` : ' (until 5 of its prices teach it)'}`);
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
@@ -148,6 +150,9 @@ async function curve() {
       lift(fit.weekendLift, fit.liftPrices.weekend, 'Weekends and holidays, every hour'),
       lift(fit.nightLift, fit.liftPrices.night, 'Nights 22:00–05:00'),
       lift(fit.rainLift, fit.liftPrices.rain, `Rain (now ×${settings.rainLift})`),
+      fit.marketHigh === null
+        ? `inDrive's high end: not yet (${fit.marketHighPrices} of ${config.MARKET_HIGH_MIN_PRICES} prices); read at ×${settings.marketHigh}`
+        : `inDrive's high end: ×${fit.marketHigh} over our guess, from ${fit.marketHighPrices} prices (now ×${settings.marketHigh}, moves 15% a night)`,
     ].join('\n'));
     console.log('Each hour moves at most 15% in one go; run it again (or let the night do it) to go further.\n');
     console.table(Array.from({ length: 24 }, (_, h) => ({
@@ -674,6 +679,9 @@ const commands = {
   holiday,
   rain,
   simulate,
+  margin: () => save(() => ({ marginPercent: number(rest[0], 'the margin in %') }), (s) => (s.marginPercent > 0
+    ? `Every price now has ${s.marginPercent}% of the other app's fare on top (with the flat ${naira(s.extraNgn)}): it grows as the fare grows.`
+    : 'No percentage margin any more (the flat extra stays).')),
   extra: () => save(() => ({ extraNgn: number(rest[0], 'the extra') }), (s) => (s.extraNgn > 0
     ? `Every price now has ${naira(s.extraNgn)} on top, after everything else is worked out.`
     : 'No extra on top any more.')),
@@ -688,7 +696,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | margin PERCENT | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

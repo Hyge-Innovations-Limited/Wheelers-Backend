@@ -155,6 +155,22 @@ export const isNightHour = (hour: number) => hour >= 22 || hour < 5;
 /** Where a night hour starts before prices teach it: the other apps charge more at night, so it never starts at the quiet rate. */
 export const NIGHT_START = 1.15;
 
+/** The high-end reading of the other app: at most this far over our guess, and learned from this many of its prices. */
+export const MARKET_HIGH_MAX = 1.3;
+export const MARKET_HIGH_MIN_PRICES = 5;
+
+/**
+ * The high end of the other app's prices, from how far each sat from our
+ * guess (price ÷ guess): the top tenth (nearest rank), never under 1 nor over
+ * MARKET_HIGH_MAX. Null with fewer than MARKET_HIGH_MIN_PRICES.
+ */
+export function marketHighFrom(ratios: number[]): number | null {
+  const ok = ratios.filter((r) => Number.isFinite(r) && r > 0.4 && r < 3).sort((a, b) => a - b);
+  if (ok.length < MARKET_HIGH_MIN_PRICES) return null;
+  const top = ok[Math.min(ok.length - 1, Math.ceil(0.9 * ok.length) - 1)]!;
+  return Math.round(Math.min(MARKET_HIGH_MAX, Math.max(1, top)) * 100) / 100;
+}
+
 export type Rain = 'none' | 'light' | 'heavy';
 /** Where the rain lift starts, and the most it may be learned to. */
 export const RAIN_START = 1.15;
@@ -266,6 +282,24 @@ export type PricingSettings = {
    * Part of the fare, so the driver keeps it less the usual commission. 0: none.
    */
   extraNgn: number;
+  /**
+   * A share of the other app's fare added on top (5 = 5%), with the flat
+   * extra: it grows as the fare grows (traffic, the hour, a weekend, rain,
+   * the surge), so we stay ahead of a rising market instead of by a fixed
+   * amount. 0: none.
+   */
+  marginPercent: number;
+  /**
+   * The other app's high end, as a share of our guess: the same trip costs
+   * different amounts there minute to minute (₦7,500 to ₦8,800 for one 20 km
+   * trip). No price is ever suggested under it: a floor, not a lift, so with
+   * the margin and the extra already above it nothing changes. Learned each
+   * night (pricing.client, learnHourCurve) as the top tenth of how far its
+   * real prices sat from our guess, from MARKET_HIGH_MIN_PRICES of them; 1
+   * until then; at most MARKET_HIGH_MAX; 15% a night.
+   */
+  marketHigh: number;
+  marketHighFittedAt: string | null;
 };
 
 /** A cut is never more than this share of the fare. */
@@ -306,6 +340,9 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   rideValueNgn: 500,
   trialShare: 0.1,
   extraNgn: 0,
+  marginPercent: 0,
+  marketHigh: 1,
+  marketHighFittedAt: null,
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
   areas: {
@@ -445,6 +482,9 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     trialShare: finite(v.trialShare, d.trialShare, 0, 0.5),
     // Whole ₦50s, as every price is.
     extraNgn: Math.round(finite(v.extraNgn, d.extraNgn, 0, 5_000) / 50) * 50,
+    marginPercent: Math.round(finite(v.marginPercent, d.marginPercent, 0, 50) * 10) / 10,
+    marketHigh: Math.round(finite(v.marketHigh, d.marketHigh, 1, MARKET_HIGH_MAX) * 100) / 100,
+    marketHighFittedAt: typeof v.marketHighFittedAt === 'string' ? v.marketHighFittedAt.slice(0, 40) : null,
     areas: areasFrom(v.areas, d.areas),
   };
 }
@@ -754,6 +794,10 @@ export type SuggestedFare = {
   surgeFactor: number;
   /** The rain lift applied (1 = dry, or rain off). */
   rainFactor: number;
+  /** The percentage margin on the other app's fare (1.03 = 3%; 1 = none). */
+  marginFactor: number;
+  /** The other app's high end for this trip: never suggested under it. Null with the floor off. */
+  highEndNgn: number | null;
   /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
   premium: TripPremium | null;
 };
@@ -845,9 +889,11 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor * lift
     : null;
   const premium = premiumFor(factors, areaFactor);
+  // A share of the other app's fare on top, growing with it; then the premium.
+  const marginFactor = 1 + settings.marginPercent / 100;
   const floorFareNgn = marketFare === null
     ? null
-    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + premium.premiumNgn, FARE_ROUNDING_INCREMENT));
+    : Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare * marginFactor + premium.premiumNgn, FARE_ROUNDING_INCREMENT));
 
   // The rules and the model may only lift it, and only so far: at most
   // liftCap × the floor (or × our own plain rate, where that is the higher).
@@ -914,6 +960,12 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   }
   // Last of all: the flat extra, on top of whatever the above came to.
   suggestedFareNgn += settings.extraNgn;
+  // Never under the other app's high end (a trial price excepted: it is never above today's anyway).
+  const highEndNgn = marketFare === null ? null : roundUpToIncrement(marketFare * settings.marketHigh, FARE_ROUNDING_INCREMENT);
+  if (highEndNgn !== null && suggestedFareNgn < highEndNgn && setBy !== 'trial') {
+    suggestedFareNgn = highEndNgn;
+    setBy = 'floor';
+  }
   const limits = offerLimitsNgn(suggestedFareNgn);
 
   return {
@@ -932,6 +984,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     hourFactor: hourFactorAt(factors.at ?? new Date()),
     surgeFactor: marketFare === null ? 1 : surgeFactor,
     rainFactor: marketFare === null ? 1 : rainFactor,
+    marginFactor: marketFare === null ? 1 : Math.round(marginFactor * 1000) / 1000,
+    highEndNgn,
     premium: marketFare === null ? null : premium,
   };
 }

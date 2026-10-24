@@ -3,6 +3,8 @@ import {
   areaFactorOf,
   fitHourCurve,
   getPricingSettings,
+  lagosClock,
+  marketHighFrom,
   normalizePricingSettings,
   quietMarketFareNgn,
   seedHourCurve,
@@ -214,11 +216,26 @@ export const pricingClient = {
     return rows.map((r) => ({ ...r, rain: r.rain as WeatherReadingInput['rain'] }));
   },
 
-  async learnHourCurve(settings: PricingSettings, now = new Date()): Promise<HourCurveFit & { previous: PricingSettings['hourCurve'] }> {
+  async learnHourCurve(settings: PricingSettings, now = new Date()): Promise<HourCurveFit & {
+    previous: PricingSettings['hourCurve'];
+    /** The other app's high end against our guess with tonight's curve (null with too few of its prices), and from how many. */
+    marketHigh: number | null;
+    marketHighPrices: number;
+  }> {
     const baseline = seedHourCurve(settings);
     const previous = settings.hourCurve ?? baseline;
     const evidence = await pricingClient.curveEvidence(new Date(now.getTime() - CURVE_DAYS * 86_400_000), settings);
-    return { ...fitHourCurve(evidence, previous, now, { baseline }), previous };
+    const fit = fitHourCurve(evidence, previous, now, { baseline });
+    // Each price read off the other app against what we would have guessed for it with tonight's curve
+    // (and the rain lift, if it rained): its high end is where we read the other app from.
+    const ratios = evidence
+      .filter((e) => e.kind === 'sample')
+      .map((e) => {
+        const { hour, weekend } = lagosClock(e.at);
+        const curve = (weekend ? fit.curve.weekend : fit.curve.weekday)[hour] ?? 1;
+        return e.ratio / (curve * (e.rain ? settings.rainLift : 1));
+      });
+    return { ...fit, previous, marketHigh: marketHighFrom(ratios), marketHighPrices: ratios.length };
   },
 
   /**

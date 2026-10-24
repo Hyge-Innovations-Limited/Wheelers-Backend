@@ -73,7 +73,7 @@ export {
   getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
   marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
   dayPeriodOf, premiumAt, premiumFor, DAY_PERIODS, PERIOD_PREMIUM_MAX_NGN,
-  lagosClock, isNightHour, NIGHT_START, rainFactorOf, RAIN_START, RAIN_LIFT_MAX, COMBINED_LIFT_MAX, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, WEEKEND_HOUR_CURVE_MAX, hourCurveMax, SURGE_MAX_LIMIT, SURGE_MIN_LIMIT,
+  lagosClock, isNightHour, NIGHT_START, rainFactorOf, marketHighFrom, MARKET_HIGH_MAX, MARKET_HIGH_MIN_PRICES, RAIN_START, RAIN_LIFT_MAX, COMBINED_LIFT_MAX, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, WEEKEND_HOUR_CURVE_MAX, hourCurveMax, SURGE_MAX_LIMIT, SURGE_MIN_LIMIT,
 } from './pricing';
 export { easterSunday, holidaysFor, holidayOn, upcomingHolidays } from './calendar';
 export type { Holiday } from './calendar';

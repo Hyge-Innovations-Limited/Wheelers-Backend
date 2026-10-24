@@ -10,15 +10,21 @@ import { pricingClient } from '@wheleers/db';
 const HOUR = 3;
 
 /**
- * What a night's learning saves: the curve, and the rain lift moved toward
- * what prices in the rain said, at most 15% a night like the hours (it stays
- * where it is with too few rain prices).
+ * What a night's learning saves: the curve, the rain lift moved toward what
+ * prices in the rain said, and the other app's high end moved toward what its
+ * prices said, each at most 15% a night like the hours (each stays where it
+ * is with too few prices).
  */
-export function curveUpdate(settings: PricingSettings, fit: HourCurveFit, now: Date): Partial<PricingSettings> {
+export function curveUpdate(settings: PricingSettings, fit: HourCurveFit & { marketHigh?: number | null }, now: Date): Partial<PricingSettings> {
+  const toward = (from: number, to: number) => Math.round(Math.min(from * 1.15, Math.max(from / 1.15, to)) * 100) / 100;
   const rain = fit.rainLift === null
     ? {}
-    : { rainLift: Math.round(Math.min(settings.rainLift * 1.15, Math.max(settings.rainLift / 1.15, fit.rainLift)) * 100) / 100, rainLiftFittedAt: now.toISOString() };
-  return { hourCurve: fit.curve, hourCurveFittedAt: now.toISOString(), ...rain };
+    : { rainLift: toward(settings.rainLift, fit.rainLift), rainLiftFittedAt: now.toISOString() };
+  // The other app's high end: the same 15% a night; too few of its prices, and it stays where it is.
+  const high = fit.marketHigh === null || fit.marketHigh === undefined
+    ? {}
+    : { marketHigh: toward(settings.marketHigh, fit.marketHigh), marketHighFittedAt: now.toISOString() };
+  return { hourCurve: fit.curve, hourCurveFittedAt: now.toISOString(), ...rain, ...high };
 }
 
 /** Learn and save tonight's curve, unless it is not time yet or it was done today. Exported for the test. */
@@ -31,7 +37,7 @@ export async function learnTonight(now = new Date()): Promise<boolean> {
   if (last === today) return false;
   const fit = await pricingClient.learnHourCurve(settings, now);
   await pricingClient.saveSettings({ ...settings, ...curveUpdate(settings, fit, now) }, 'nightly curve');
-  console.info('[pricing] hour curve learned', { used: fit.used, weekendLift: fit.weekendLift, nightLift: fit.nightLift, rainLift: fit.rainLift, liftPrices: fit.liftPrices });
+  console.info('[pricing] hour curve learned', { used: fit.used, weekendLift: fit.weekendLift, nightLift: fit.nightLift, rainLift: fit.rainLift, marketHigh: fit.marketHigh, liftPrices: fit.liftPrices });
   return true;
 }
 
