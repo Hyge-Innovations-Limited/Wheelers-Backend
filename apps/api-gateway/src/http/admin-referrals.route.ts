@@ -9,6 +9,8 @@ import { sendJson } from './utils';
  * cashback it earned.
  *
  *   GET /admin/referrals?from=&to=&status=&q=&limit=&offset=
+ *   GET /admin/referrals/codes?q=&sort=referred|newest|cashback&limit=&offset=   everyone with a code, all time
+ *   GET /admin/referrals/people/:userId                                          one person: code, friends, cashback
  *
  * from and to are Lagos days, both included (default: the last 30 days), and
  * count referrals by the day the code was used. q is a name, phone number or
@@ -49,7 +51,8 @@ function filters(url: URL) {
 }
 
 export async function handleAdminReferralsRoute(req: IncomingMessage, res: ServerResponse, deps: Deps, url: URL): Promise<boolean> {
-  if (url.pathname !== '/admin/referrals') return false;
+  const person = /^\/admin\/referrals\/people\/([0-9a-f-]{36})$/i.exec(url.pathname);
+  if (url.pathname !== '/admin/referrals' && url.pathname !== '/admin/referrals/codes' && !person) return false;
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Method not allowed' });
     return true;
@@ -66,6 +69,29 @@ export async function handleAdminReferralsRoute(req: IncomingMessage, res: Serve
   res.setHeader('Cache-Control', 'no-store');
 
   try {
+    if (person) {
+      const found = await adminReferralsClient.person(person[1]!);
+      if (!found) {
+        sendJson(res, 404, { error: 'No such person.', code: 'NOT_FOUND' });
+        return true;
+      }
+      sendJson(res, 200, { rules: REFERRAL_RULES, ...found });
+      return true;
+    }
+    if (url.pathname === '/admin/referrals/codes') {
+      const sort = url.searchParams.get('sort');
+      const int = (key: string, fallback: number) => {
+        const n = Number.parseInt(url.searchParams.get(key) ?? '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+      };
+      sendJson(res, 200, await adminReferralsClient.codes({
+        q: (url.searchParams.get('q') ?? '').trim().slice(0, 60) || null,
+        sort: sort === 'newest' || sort === 'cashback' ? sort : 'referred',
+        limit: Math.min(int('limit', 50), 200),
+        offset: int('offset', 0),
+      }));
+      return true;
+    }
     const f = filters(url);
     const [overview, referrals] = await Promise.all([adminReferralsClient.overview(f), adminReferralsClient.list(f)]);
     sendJson(res, 200, {

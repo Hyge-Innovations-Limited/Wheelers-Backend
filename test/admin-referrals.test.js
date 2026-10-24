@@ -20,7 +20,7 @@ const TO = '2024-06-08';
 const lagos = (day, hh = 12) => new Date(`${day}T${String(hh).padStart(2, '0')}:00:00+01:00`);
 
 const seeded = { users: [], rides: [], admins: [] };
-let server, base, owner, support;
+let server, base, owner, support, ids = {};
 
 async function person(name, phone) {
   const u = await prisma.user.create({ data: { privyDid: `test:referrals:${randomUUID()}`, name, role: 'RIDER', phone } });
@@ -67,11 +67,15 @@ test.before(async () => {
   const bayo = await person('Bayo Referrer', '+2348031110002');
   await prisma.referralCode.create({ data: { userId: ada.id, code: 'ADA2024' } });
   await prisma.referralCode.create({ data: { userId: bayo.id, code: 'BAYO24' } });
+  // Chidi has a code and nobody has used it yet: still listed.
+  const chidi = await person('Chidi Nocode', '+2348031110003');
+  await prisma.referralCode.create({ data: { userId: chidi.id, code: 'CHIDI24' } });
   const f1 = await person('Friend One', '+2348039990001');
   const f2 = await person('Friend Two', '+2348039990002');
   const f3 = await person('Friend Three', '+2348039990003');
   const f4 = await person('Friend Four', '+2348039990004');
   const early = await person('Friend Early', '+2348039990005');
+  ids = { ada: ada.id, bayo: bayo.id, chidi: chidi.id, f1: f1.id };
 
   // Friend One rode on day 2 (₦3,000), so Ada earned ₦1,000; Friend Two never rode (₦500); Three is waiting.
   const ride1 = await completedRide(f1.id, lagos('2024-06-04', 15), 3000);
@@ -153,4 +157,39 @@ test('bad input is refused, and the support desk cannot see it', async () => {
   assert.equal((await get(`/admin/referrals?from=${TO}&to=${FROM}`)).status, 400);
   assert.equal((await get(`/admin/referrals?from=${FROM}&to=${TO}&status=WON`)).status, 400);
   assert.notEqual((await get(`/admin/referrals?from=${FROM}&to=${TO}`, support)).status, 200);
+});
+
+test('every code, used or not: with each person\'s friends and cashback of all time; search and sort', async () => {
+  const q = (params) => get(`/admin/referrals/codes?${new URLSearchParams(params)}`);
+  const ours = (await q({ q: 'Referrer' })).body;
+  assert.deepEqual(ours.rows.map((r) => [r.name, r.referred, r.rode, r.earnedNgn]), [['Ada Referrer', 4, 1, 1500], ['Bayo Referrer', 1, 0, 0]]);
+  const chidi = (await q({ q: 'CHIDI24' })).body.rows;
+  assert.deepEqual(chidi.map((r) => [r.name, r.referred, r.lastReferredAt]), [['Chidi Nocode', 0, null]], 'a code nobody used is listed too');
+  assert.equal((await q({ q: '08031110002' })).body.rows[0].code, 'BAYO24');
+  const newest = (await q({ q: 'nocode', sort: 'newest' })).body;
+  assert.equal(newest.total, 1);
+});
+
+test('one person: their code, who brought them, every friend and how far they got, and every naira of cashback', async () => {
+  const { status, body } = await get(`/admin/referrals/people/${ids.ada}`);
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(body.code.code, 'ADA2024');
+  assert.equal(body.broughtBy, null);
+  assert.deepEqual(
+    [body.summary.referred, body.summary.rode, body.summary.waiting, body.summary.noRide, body.summary.earnedNgn, body.summary.friendTrips],
+    [4, 1, 2, 1, 1500, 2],
+    'all time: the friend from before the week counts here',
+  );
+  assert.deepEqual(body.friends.map((f) => f.friend.name), ['Friend Three', 'Friend Two', 'Friend One', 'Friend Early'], 'newest first');
+  const one = body.friends.find((f) => f.friend.name === 'Friend One');
+  assert.deepEqual([one.status, one.firstRide.fareNgn, one.friendTrips, one.cashback.amountNgn], ['QUALIFIED_RIDE', 3000, 2, 1000]);
+  assert.deepEqual(body.cashback.map((c) => [c.type, c.amountNgn, c.forFriend.name]).sort(), [['NO_RIDE_EXPIRED', 500, 'Friend Two'], ['RIDE_QUALIFIED', 1000, 'Friend One']]);
+  assert.equal(body.rules.rideRewardNgn, 1000);
+
+  const friend = (await get(`/admin/referrals/people/${ids.f1}`)).body;
+  assert.deepEqual([friend.broughtBy.referrer.name, friend.broughtBy.code, friend.code], ['Ada Referrer', 'ADA2024', null]);
+  const empty = (await get(`/admin/referrals/people/${ids.chidi}`)).body;
+  assert.deepEqual([empty.summary.referred, empty.friends.length, empty.code.code], [0, 0, 'CHIDI24']);
+  assert.equal((await get('/admin/referrals/people/00000000-0000-4000-8000-000000000000')).status, 404);
+  assert.notEqual((await get(`/admin/referrals/people/${ids.ada}`, support)).status, 200);
 });

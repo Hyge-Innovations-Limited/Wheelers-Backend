@@ -156,6 +156,197 @@ export const adminReferralsClient = {
     };
   },
 
+  /**
+   * Everyone who has a referral code, whether or not anyone used it yet: their
+   * code and, of all time, friends brought, how many rode, cashback given and
+   * what they have left. Most friends first; search by name, phone or code.
+   */
+  async codes(f: { q?: string | null; sort?: 'referred' | 'newest' | 'cashback'; limit?: number; offset?: number }) {
+    const where: Prisma.Sql[] = [Prisma.sql`true`];
+    const q = f.q?.trim();
+    if (q) {
+      const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      const digits = q.replace(/\D/g, '');
+      const phone = digits.length >= 4 ? `%${digits.replace(/^0/, '')}%` : null;
+      where.push(Prisma.sql`(k."code" ILIKE ${like} OR u."name" ILIKE ${like} OR u."username" ILIKE ${like}
+        ${phone ? Prisma.sql`OR u."phone" LIKE ${phone}` : Prisma.empty})`);
+    }
+    const condition = Prisma.join(where, ' AND ');
+    const order = f.sort === 'newest'
+      ? Prisma.sql`k."createdAt" DESC`
+      : f.sort === 'cashback'
+        ? Prisma.sql`earned_ngn DESC, referred DESC, k."createdAt" DESC`
+        : Prisma.sql`referred DESC, rode DESC, k."createdAt" DESC`;
+    const limit = Math.min(Math.max(f.limit ?? 50, 1), 200);
+    const offset = Math.max(f.offset ?? 0, 0);
+
+    const [counted, rows] = await Promise.all([
+      prisma.$queryRaw<Row[]>`SELECT count(*) AS total FROM "ReferralCode" k JOIN "User" u ON u."id" = k."userId" WHERE ${condition}`,
+      prisma.$queryRaw<Row[]>`
+        SELECT k."userId" AS user_id, u."name", u."phone", u."role"::text AS role, k."code", k."isActive" AS is_active, k."createdAt" AS code_created_at,
+          COALESCE(r.referred, 0) AS referred, COALESCE(r.rode, 0) AS rode, COALESCE(r.waiting, 0) AS waiting, COALESCE(r.no_ride, 0) AS no_ride,
+          r.last_referred_at,
+          COALESCE(c.earned_ngn, 0) AS earned_ngn, COALESCE(c.available_ngn, 0) AS available_ngn
+        FROM "ReferralCode" k
+        JOIN "User" u ON u."id" = k."userId"
+        LEFT JOIN LATERAL (
+          SELECT count(*) AS referred,
+            count(*) FILTER (WHERE x."status" = 'QUALIFIED_RIDE') AS rode,
+            count(*) FILTER (WHERE x."status" = 'PENDING') AS waiting,
+            count(*) FILTER (WHERE x."status" = 'EXPIRED_NO_RIDE') AS no_ride,
+            max(x."appliedAt") AS last_referred_at
+          FROM "Referral" x WHERE x."referrerId" = k."userId"
+        ) r ON true
+        LEFT JOIN LATERAL (
+          SELECT sum(c."amountNgn") AS earned_ngn,
+            sum(c."remainingAmountNgn") FILTER (WHERE c."status" = 'AVAILABLE' AND c."freezesAt" > now()) AS available_ngn
+          FROM "ReferralCashback" c WHERE c."userId" = k."userId"
+        ) c ON true
+        WHERE ${condition}
+        ORDER BY ${order}
+        LIMIT ${limit} OFFSET ${offset}`,
+    ]);
+
+    return {
+      total: Number(plain(counted)[0]?.total ?? 0),
+      limit,
+      offset,
+      rows: plain(rows).map((r) => ({
+        userId: String(r.user_id),
+        name: (r.name as string | null) ?? null,
+        phone: (r.phone as string | null) ?? null,
+        role: String(r.role),
+        code: String(r.code),
+        active: Boolean(r.is_active),
+        codeCreatedAt: (r.code_created_at as Date).toISOString(),
+        referred: Number(r.referred),
+        rode: Number(r.rode),
+        waiting: Number(r.waiting),
+        noRide: Number(r.no_ride),
+        lastReferredAt: r.last_referred_at ? (r.last_referred_at as Date).toISOString() : null,
+        earnedNgn: Number(r.earned_ngn),
+        availableNgn: Number(r.available_ngn),
+      })),
+    };
+  },
+
+  /**
+   * One person's referrals, of all time: their code, who brought them, every
+   * friend they brought (with how far that friend got), and every naira of
+   * cashback: given for which friend, spent on which ride, left, frozen.
+   * Null when they are not a user.
+   */
+  async person(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, phone: true, username: true, role: true, createdAt: true, referralCode: { select: { code: true, isActive: true, createdAt: true } } },
+    });
+    if (!user) return null;
+
+    const [broughtBy, friends, cashback, usages] = await Promise.all([
+      prisma.referral.findUnique({
+        where: { referredUserId: userId },
+        select: { code: true, status: true, appliedAt: true, referrer: { select: { id: true, name: true, phone: true } } },
+      }),
+      prisma.$queryRaw<Row[]>`
+        SELECT r."id", r."code", r."status"::text AS status, r."appliedAt" AS applied_at, r."expiresAt" AS expires_at, r."qualifiedAt" AS qualified_at,
+          b."id" AS friend_id, b."name" AS friend_name, b."phone" AS friend_phone, b."createdAt" AS friend_joined_at,
+          fr."id" AS first_ride_id, fr."tripNumber" AS first_ride_number, fr."completedAt" AS first_ride_at, fr."fareFinalNgn" AS first_ride_fare_ngn,
+          (SELECT count(*) FROM "Ride" x WHERE x."riderId" = r."referredUserId" AND x."status" = 'COMPLETED') AS friend_trips,
+          (SELECT max(x."completedAt") FROM "Ride" x WHERE x."riderId" = r."referredUserId" AND x."status" = 'COMPLETED') AS friend_last_trip_at,
+          c."amountNgn" AS cashback_ngn, c."status"::text AS cashback_status
+        FROM "Referral" r
+        JOIN "User" b ON b."id" = r."referredUserId"
+        LEFT JOIN "Ride" fr ON fr."id" = r."firstRideId"
+        LEFT JOIN LATERAL (
+          SELECT c."amountNgn", c."status" FROM "ReferralCashback" c WHERE c."sourceReferralId" = r."id" ORDER BY c."createdAt" LIMIT 1
+        ) c ON true
+        WHERE r."referrerId" = ${userId}
+        ORDER BY r."appliedAt" DESC
+        LIMIT 1000`,
+      prisma.referralCashback.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+        select: {
+          id: true, type: true, amountNgn: true, remainingAmountNgn: true, status: true, freezesAt: true, frozenAt: true, usedAt: true, createdAt: true,
+          sourceReferral: { select: { referredUser: { select: { id: true, name: true, phone: true } } } },
+        },
+      }),
+      prisma.$queryRaw<Row[]>`
+        SELECT u."id", u."amountNgn" AS amount_ngn, u."status"::text AS status, u."createdAt" AS created_at, u."settledAt" AS settled_at,
+          x."id" AS ride_id, x."tripNumber" AS trip_number, x."fareFinalNgn" AS fare_ngn
+        FROM "ReferralCashbackUsage" u
+        JOIN "ReferralCashback" c ON c."id" = u."cashbackId"
+        LEFT JOIN "Ride" x ON x."id" = u."rideId"
+        WHERE c."userId" = ${userId}
+        ORDER BY u."createdAt" DESC
+        LIMIT 500`,
+    ]);
+
+    const friendRows = plain(friends).map((r) => ({
+      id: String(r.id),
+      code: String(r.code),
+      status: r.status as ReferralStatusName,
+      appliedAt: (r.applied_at as Date).toISOString(),
+      expiresAt: (r.expires_at as Date).toISOString(),
+      qualifiedAt: r.qualified_at ? (r.qualified_at as Date).toISOString() : null,
+      friend: { id: String(r.friend_id), name: (r.friend_name as string | null) ?? null, phone: (r.friend_phone as string | null) ?? null, joinedAt: (r.friend_joined_at as Date).toISOString() },
+      firstRide: r.first_ride_id
+        ? { id: String(r.first_ride_id), tripNumber: Number(r.first_ride_number), completedAt: r.first_ride_at ? (r.first_ride_at as Date).toISOString() : null, fareNgn: r.first_ride_fare_ngn == null ? null : Number(r.first_ride_fare_ngn) }
+        : null,
+      friendTrips: Number(r.friend_trips ?? 0),
+      friendLastTripAt: r.friend_last_trip_at ? (r.friend_last_trip_at as Date).toISOString() : null,
+      cashback: r.cashback_ngn == null ? null : { amountNgn: Number(r.cashback_ngn), status: String(r.cashback_status) },
+    }));
+    const now = Date.now();
+    const money = (v: Prisma.Decimal) => Number(v.toString());
+    const cashbackRows = cashback.map((c) => ({
+      id: c.id,
+      type: c.type,
+      amountNgn: money(c.amountNgn),
+      remainingNgn: money(c.remainingAmountNgn),
+      status: c.status,
+      freezesAt: c.freezesAt.toISOString(),
+      frozenAt: c.frozenAt?.toISOString() ?? null,
+      usedAt: c.usedAt?.toISOString() ?? null,
+      createdAt: c.createdAt.toISOString(),
+      forFriend: c.sourceReferral?.referredUser ?? null,
+    }));
+    const usageRows = plain(usages).map((u) => ({
+      id: String(u.id),
+      amountNgn: Number(u.amount_ngn),
+      status: String(u.status),
+      createdAt: (u.created_at as Date).toISOString(),
+      settledAt: u.settled_at ? (u.settled_at as Date).toISOString() : null,
+      ride: u.ride_id ? { id: String(u.ride_id), tripNumber: Number(u.trip_number), fareNgn: u.fare_ngn == null ? null : Number(u.fare_ngn) } : null,
+    }));
+
+    const sum = (rows: Array<{ amountNgn: number }>) => rows.reduce((t, r) => t + r.amountNgn, 0);
+    return {
+      user: { id: user.id, name: user.name, phone: user.phone, username: user.username, role: user.role, joinedAt: user.createdAt.toISOString() },
+      code: user.referralCode ? { code: user.referralCode.code, active: user.referralCode.isActive, createdAt: user.referralCode.createdAt.toISOString() } : null,
+      broughtBy: broughtBy
+        ? { code: broughtBy.code, status: broughtBy.status, appliedAt: broughtBy.appliedAt.toISOString(), referrer: broughtBy.referrer }
+        : null,
+      summary: {
+        referred: friendRows.length,
+        rode: friendRows.filter((r) => r.status === 'QUALIFIED_RIDE').length,
+        waiting: friendRows.filter((r) => r.status === 'PENDING').length,
+        noRide: friendRows.filter((r) => r.status === 'EXPIRED_NO_RIDE').length,
+        friendsStillRiding: friendRows.filter((r) => r.friendLastTripAt && now - Date.parse(r.friendLastTripAt) < 30 * 86_400_000).length,
+        friendTrips: friendRows.reduce((t, r) => t + r.friendTrips, 0),
+        earnedNgn: sum(cashbackRows),
+        spentNgn: sum(usageRows.filter((u) => u.status === 'SETTLED')),
+        availableNgn: cashbackRows.filter((c) => c.status === 'AVAILABLE' && Date.parse(c.freezesAt) > now).reduce((t, c) => t + c.remainingNgn, 0),
+        frozenNgn: cashbackRows.filter((c) => c.status === 'FROZEN').reduce((t, c) => t + c.remainingNgn, 0),
+      },
+      friends: friendRows,
+      cashback: cashbackRows,
+      spending: usageRows,
+    };
+  },
+
   /** Every referral in the period, newest first: both people, the friend's first ride and the cashback. */
   async list(f: ReferralFilters) {
     const { start, end } = bounds(f);
