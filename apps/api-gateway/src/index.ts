@@ -236,6 +236,7 @@ import { driverPresence, pricingClient } from "@wheleers/db";
 import { createLeaderLock } from "./cluster/leader";
 import { handleAdminInsightsRoute } from "./http/admin-insights.route";
 import { handleAdminDataRoute } from "./http/admin-data.route";
+import { handleAdminReferralsRoute } from "./http/admin-referrals.route";
 import { handleAdminSecurityRoute } from "./http/admin-security.route";
 import { startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
@@ -1944,6 +1945,11 @@ async function bootstrap(): Promise<void> {
 
       // Where riders stop: datasets to download for Power BI or Python, and the funnel.
       if (await handleAdminDataRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // Who brought whom: the Referrals page.
+      if (await handleAdminReferralsRoute(req, res, adminDeps, url)) {
         return;
       }
 

@@ -25,7 +25,9 @@ export { PLATFORM_USER_ID, ensurePlatformWalletId } from './clients/platform-wal
 export { walletSecurityClient } from './clients/wallet-security.client';
 export { groupRideClient }      from './clients/group-ride.client';
 export { complianceClient }     from './clients/compliance.client';
-export { referralClient }       from './clients/referral.client';
+export { referralClient, REFERRAL_RULES } from './clients/referral.client';
+export { adminReferralsClient, REFERRAL_STATUSES } from './clients/admin-referrals.client';
+export type { ReferralFilters, ReferralStatusName } from './clients/admin-referrals.client';
 export { chatClient }           from './clients/chat.client';
 export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';

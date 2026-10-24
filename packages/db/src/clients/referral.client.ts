@@ -13,6 +13,14 @@ const CASHBACK_FREEZE_DAYS = 30;
 const REFERRAL_REWARD_DAYS = 30;
 const REFERRAL_CLOSE_DAYS = 60;
 
+/** The rules above, as plain numbers, for the admin Referrals page. */
+export const REFERRAL_RULES = {
+  rideRewardNgn: RIDE_QUALIFIED_REWARD_NGN.toNumber(),
+  noRideRewardNgn: NO_RIDE_EXPIRED_REWARD_NGN.toNumber(),
+  rideWithinDays: REFERRAL_REWARD_DAYS,
+  cashbackUnusedDays: CASHBACK_FREEZE_DAYS,
+} as const;
+
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
