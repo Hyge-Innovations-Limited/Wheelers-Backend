@@ -1659,3 +1659,239 @@ model Passkey {
 
   @@index([userId])
 }
+
+// ── Mail service (apps/mail-service) ─────────────────────────────────────
+// Our own mail: sent from our own server (signed, queued, retried, paced per
+// provider) and received (an inbox, bounces, complaints, DMARC reports).
+
+enum MailStream {
+  TRANSACTIONAL
+  MARKETING
+}
+
+enum MailPriority {
+  URGENT
+  NORMAL
+}
+
+enum MailDeliveryStatus {
+  QUEUED
+  SENDING
+  DEFERRED
+  DELIVERED
+  BOUNCED
+  SUPPRESSED
+  EXPIRED
+  /// The whole message went out but the server's final answer never came (the line dropped, a crash).
+  /// It most likely arrived; it is not sent again, so nobody gets it twice.
+  UNCONFIRMED
+}
+
+enum MailSuppressionReason {
+  HARD_BOUNCE
+  COMPLAINT
+  UNSUBSCRIBE
+  MANUAL
+}
+
+enum MailInboxKind {
+  MESSAGE
+  BOUNCE
+  COMPLAINT
+  DMARC_REPORT
+}
+
+/// One email we send: built, signed and kept exactly as it goes out, so every
+/// retry sends the same bytes. One MailDelivery per recipient.
+model MailMessage {
+  id              String         @id @default(uuid())
+  stream          MailStream     @default(TRANSACTIONAL)
+  priority        MailPriority   @default(NORMAL)
+  fromAddress     String
+  subject         String
+  /// The Message-ID header, with angle brackets: replies and bounces name it.
+  messageIdHeader String         @unique
+  /// The signed message (RFC 5322), as sent.
+  raw             Bytes
+  sizeBytes       Int
+  /// The caller's key: the same key twice is the same email, sent once.
+  idempotencyKey  String?        @unique
+  /// From, recipients, subject and body, hashed: the same email again within minutes is the first one (a retried call, a double tap).
+  contentHash     String?
+  /// What it is, for counting: "password_reset", "kyc_approved".
+  tag             String?
+  /// The inbox message this answers, when it is a reply from the inbox.
+  inReplyToInboxId String?
+  /// Not delivered by then: given up (a sign-in code is useless after minutes).
+  expiresAt       DateTime
+  createdAt       DateTime       @default(now())
+  deliveries      MailDelivery[]
+  events          MailEvent[]
+
+  @@index([createdAt])
+  @@index([tag, createdAt])
+  @@index([contentHash, createdAt])
+}
+
+/// One recipient of a MailMessage, and how getting it there is going.
+model MailDelivery {
+  id            String             @id @default(uuid())
+  messageId     String
+  /// Lower case.
+  recipient     String
+  domain        String
+  /// Who runs their mail, from the MX: gmail, microsoft, yahoo, apple, zoho, other. Each is paced on its own.
+  provider      String             @default("other")
+  status        MailDeliveryStatus @default(QUEUED)
+  attempts      Int                @default(0)
+  nextAttemptAt DateTime           @default(now())
+  /// While SENDING: a worker holds it until then; a worker that died lets go when it passes.
+  leaseUntil    DateTime?
+  lastAttemptAt DateTime?
+  /// Set the moment the whole message has gone out on the current try. A worker that dies after
+  /// this cannot know whether it arrived: the delivery becomes UNCONFIRMED, never sent twice.
+  bodySentAt    DateTime?
+  /// The receiving server's last answer: 250, 451, 550…, its enhanced code (5.1.1) and text.
+  lastCode      Int?
+  lastEnhanced  String?
+  lastResponse  String?
+  mxHost        String?
+  deliveredAt   DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  message       MailMessage        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  events        MailEvent[]
+
+  @@index([status, nextAttemptAt])
+  @@index([provider, lastAttemptAt])
+  @@index([recipient])
+  @@index([messageId])
+}
+
+/// What happened to a message: queued, each attempt, delivered, deferred, bounced, complained.
+model MailEvent {
+  id         String        @id @default(uuid())
+  messageId  String?
+  deliveryId String?
+  type       String
+  detail     Json?
+  createdAt  DateTime      @default(now())
+  message    MailMessage?  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  delivery   MailDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, createdAt])
+  @@index([deliveryId])
+  @@index([type, createdAt])
+}
+
+/// Addresses we never send to again: they bounced for good, complained, or
+/// unsubscribed. `stream` ALL, TRANSACTIONAL or MARKETING.
+model MailSuppression {
+  id        String                @id @default(uuid())
+  address   String
+  stream    String                @default("ALL")
+  reason    MailSuppressionReason
+  detail    String?
+  createdAt DateTime              @default(now())
+
+  @@unique([address, stream])
+}
+
+/// A provider that told us to slow down (Gmail 421 4.7.28, Yahoo TSS04): nothing goes to it until then.
+model MailProviderPause {
+  provider  String   @id
+  until     DateTime
+  reason    String
+  updatedAt DateTime @updatedAt
+}
+
+/// An address that receives mail into the inbox: support@, hello@.
+model MailMailbox {
+  address   String   @id
+  name      String?
+  createdAt DateTime @default(now())
+}
+
+/// One email we received, for one mailbox, parsed; also bounces, complaints
+/// and DMARC reports (kind), kept for the record.
+model MailInboxMessage {
+  id              String           @id @default(uuid())
+  mailbox         String
+  kind            MailInboxKind    @default(MESSAGE)
+  fromAddress     String?
+  fromName        String?
+  toAddresses     String[]
+  ccAddresses     String[]
+  subject         String
+  messageIdHeader String?
+  inReplyTo       String?
+  references      String[]
+  /// Messages of one conversation share it: replies find it from In-Reply-To and References.
+  threadId        String
+  sentAt          DateTime?
+  text            String?
+  html            String?
+  snippet         String
+  sizeBytes       Int
+  /// SPF, DKIM and DMARC, as checked on arrival.
+  auth            Json?
+  /// Failed DMARC, or SPF failed with no DKIM to vouch for it.
+  suspicious      Boolean          @default(false)
+  remoteIp        String?
+  helo            String?
+  mailFrom        String?
+  readAt          DateTime?
+  archivedAt      DateTime?
+  deletedAt       DateTime?
+  receivedAt      DateTime         @default(now())
+  raw             MailInboxRaw?
+  attachments     MailAttachment[]
+
+  @@index([mailbox, kind, receivedAt])
+  @@index([threadId])
+  @@index([messageIdHeader])
+}
+
+/// The message as it arrived, apart so lists never load it.
+model MailInboxRaw {
+  inboxMessageId String           @id
+  raw            Bytes
+  message        MailInboxMessage @relation(fields: [inboxMessageId], references: [id], onDelete: Cascade)
+}
+
+model MailAttachment {
+  id             String           @id @default(uuid())
+  inboxMessageId String
+  filename       String?
+  contentType    String
+  sizeBytes      Int
+  /// For pictures shown inside the message (cid:).
+  contentId      String?
+  content        Bytes
+  message        MailInboxMessage @relation(fields: [inboxMessageId], references: [id], onDelete: Cascade)
+
+  @@index([inboxMessageId])
+}
+
+/// A message being written in the inbox. Saved again and again (each save a
+/// new version); sent only when asked, and only the version the person saw;
+/// sent once, however often "send" is pressed or retried.
+model MailDraft {
+  id               String    @id @default(uuid())
+  /// The mailbox it is sent from: support@…
+  mailbox          String
+  toAddresses      String[]
+  ccAddresses      String[]
+  subject          String    @default("")
+  text             String?
+  html             String?
+  /// Answering this inbox message: threaded with it when sent.
+  inReplyToInboxId String?
+  version          Int       @default(1)
+  sentMessageId    String?
+  sentAt           DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([mailbox, updatedAt])
+}
