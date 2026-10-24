@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { adminActivityClient, adminClient, prisma } from '@wheleers/db';
 import { BALANCE_ACCESS_MS } from './admin-desk.route';
 import { adminMarkCode, clientIp, recordAdminActivity } from '../admin/activity';
-import { verifyAdminAuth, type AdminAuth } from './admin-auth.route';
+import { forgetAdmin, verifyAdminAuth, type AdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
 
 interface TeamDeps {
@@ -99,6 +99,7 @@ export async function handleAdminTeamRoute(req: IncomingMessage, res: ServerResp
       return true;
     }
     const updated = await adminClient.setRole(target.id, role);
+    forgetAdmin(target.id);
     if (!updated) {
       sendJson(res, 409, { error: 'There must always be at least one owner.' });
       return true;

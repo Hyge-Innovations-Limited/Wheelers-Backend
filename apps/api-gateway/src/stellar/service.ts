@@ -91,8 +91,10 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
    * pass queues a few riders and drivers who have none, so Friendbot is
    * asked a few at a time and trip payments never wait behind a long queue.
    */
-  async function openForEveryone(options: { inFlight?: number; among?: string[] } = {}): Promise<number> {
+  async function openForEveryone(options: { inFlight?: number; among?: string[]; onQueueFull?: () => void } = {}): Promise<number> {
     const room = (options.inFlight ?? OPENS_IN_FLIGHT) - await stellarClient.pendingOpens();
+    // Openings still in flight: nobody was looked for, which is not the same as nobody waiting.
+    if (room <= 0) options.onQueueFull?.();
     const userIds = await stellarClient.usersWithoutAccount(room, options.among);
     for (const userId of userIds) await ensureUserAccount(userId);
     return userIds.length;
@@ -458,14 +460,38 @@ export function createStellarService(deps: { config: StellarConfig; network: Ste
 
 export type StellarService = ReturnType<typeof createStellarService>;
 
-/** The background job: every few seconds, on the one gateway process that runs jobs. */
-export function startStellarJob(service: StellarService, shouldRun: () => Promise<boolean>, everyMs = 5_000): () => void {
+/** When the last look found nobody without an account, the next look is this much later. */
+const OPENS_IDLE_MS = 2 * 60_000;
+
+/**
+ * The background job, on the one gateway process that runs jobs. Payments
+ * and account openings already queued are pushed every few seconds (a rider
+ * paying waits for this). Looking for people with no account yet is a scan
+ * of every user: every few seconds while some are found, otherwise every two
+ * minutes (it ran 13,000 times a day finding nobody). Someone who needs their
+ * account sooner gets it then (ensureUserAccount).
+ */
+export function startStellarJob(service: StellarService, shouldRun: () => Promise<boolean>, everyMs = 5_000, opensIdleMs = OPENS_IDLE_MS): () => void {
+  let nextOpensAt = 0;
+  let busy = false;
   const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
     void (async () => {
       if (!(await shouldRun().catch(() => false))) return;
-      await service.openForEveryone().catch((error) => console.warn('[stellar] opening accounts failed', { error: error instanceof Error ? error.message : String(error) }));
+      if (Date.now() >= nextOpensAt) {
+        let queueFull = false;
+        const opened = await service.openForEveryone({ onQueueFull: () => { queueFull = true; } }).catch((error) => {
+          console.warn('[stellar] opening accounts failed', { error: error instanceof Error ? error.message : String(error) });
+          return 0;
+        });
+        // Found some, or the queue was full: look again next round. Found nobody: in two minutes.
+        nextOpensAt = opened > 0 || queueFull ? 0 : Date.now() + opensIdleMs;
+      }
       await service.processDue().catch((error) => console.warn('[stellar] job failed', { error: error instanceof Error ? error.message : String(error) }));
-    })();
+    })().finally(() => {
+      busy = false;
+    });
   }, everyMs);
   timer.unref?.();
   return () => clearInterval(timer);

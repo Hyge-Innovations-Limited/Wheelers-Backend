@@ -6,6 +6,7 @@ import { buildWorkbook } from '../analytics/workbook';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
 import { clientIp, recordAdminActivity } from '../admin/activity';
+import { dashboardKey, kept60s } from '../admin/dashboard-cache';
 import { sendJson } from './utils';
 
 /**
@@ -119,35 +120,38 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
       return true;
     }
     const f = parseFilters(url);
+    // The same filters within a minute: the numbers already worked out (admin/dashboard-cache.ts).
+    const kept = <T,>(compute: () => Promise<T>) => kept60s(dashboardKey(url), compute);
     switch (path) {
       case '/admin/insights/summary':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.summary(f)) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.summary(f))) });
         return true;
       case '/admin/insights/timeseries': {
         const bucket = pick(url, 'bucket', BUCKETS, 'day');
-        sendJson(res, 200, { filters: f, bucket, points: await adminAnalyticsClient.timeseries(f, bucket) });
+        sendJson(res, 200, { filters: f, bucket, points: await kept(() => adminAnalyticsClient.timeseries(f, bucket)) });
         return true;
       }
       case '/admin/insights/breakdown': {
         const by = pick(url, 'by', BREAKDOWNS, 'channel');
-        sendJson(res, 200, { filters: f, by, rows: await adminAnalyticsClient.breakdown(f, by) });
+        sendJson(res, 200, { filters: f, by, rows: await kept(() => adminAnalyticsClient.breakdown(f, by)) });
         return true;
       }
       case '/admin/insights/hours':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.hours(f)) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.hours(f))) });
         return true;
       case '/admin/insights/trips': {
         const status = pick(url, 'status', TRIP_STATUSES, 'all');
-        sendJson(res, 200, { ...(await adminAnalyticsClient.trips(f, status, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.trips(f, status, tableQuery(url)))) });
         return true;
       }
       case '/admin/insights/drivers':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.drivers(f, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.drivers(f, tableQuery(url)))) });
         return true;
       case '/admin/insights/riders':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.riders(f, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.riders(f, tableQuery(url)))) });
         return true;
       case '/admin/insights/reconcile':
+        // Whether the money adds up is asked when something looks wrong: always worked out fresh.
         sendJson(res, 200, { filters: f, checks: await adminAnalyticsClient.reconcile(f) });
         return true;
       case '/admin/insights/export': {
@@ -174,19 +178,19 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
       }
       case '/admin/fees/summary': {
         const bucket = pick(url, 'bucket', BUCKETS, 'day');
-        sendJson(res, 200, { ...(await adminAnalyticsClient.fees(f, bucket)) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.fees(f, bucket))) });
         return true;
       }
       case '/admin/fees/deposits':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.deposits(f, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.deposits(f, tableQuery(url)))) });
         return true;
       case '/admin/fees/withdrawals':
-        sendJson(res, 200, { ...(await adminAnalyticsClient.withdrawals(f, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.withdrawals(f, tableQuery(url)))) });
         return true;
       case '/admin/fees/ledger': {
         const raw = url.searchParams.get('kind');
         const kind = raw ? pick(url, 'kind', FEE_KINDS, 'ride_fee') : null;
-        sendJson(res, 200, { ...(await adminAnalyticsClient.feeLedger(f, kind, tableQuery(url))) });
+        sendJson(res, 200, { ...(await kept(() => adminAnalyticsClient.feeLedger(f, kind, tableQuery(url)))) });
         return true;
       }
       default:

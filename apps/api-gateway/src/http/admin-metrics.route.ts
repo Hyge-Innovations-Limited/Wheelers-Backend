@@ -4,6 +4,7 @@ import { serviceUsage } from '../usage/service-usage';
 import { activityClient, adminMetricsClient, safetyAlertClient, userClient, walletSecurityClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
+import { kept60s } from '../admin/dashboard-cache';
 import { readJsonBody, sendJson } from './utils';
 import { isRecord } from '../utils/object';
 
@@ -145,7 +146,7 @@ export async function handleAdminOverviewRoute(
   if (!(await requireAdmin(req, res, deps))) return;
 
   try {
-    sendJson(res, 200, await adminMetricsClient.overview());
+    sendJson(res, 200, await kept60s('/admin/metrics/overview', () => adminMetricsClient.overview()));
   } catch (error) {
     fail(res, error, 'could not load overview');
   }
@@ -162,7 +163,7 @@ export async function handleAdminTimeseriesRoute(
 
   try {
     const days = intParam(url, 'days', 30);
-    sendJson(res, 200, { days, points: await adminMetricsClient.timeseries(days) });
+    sendJson(res, 200, { days, points: await kept60s(`/admin/metrics/timeseries?days=${days}`, () => adminMetricsClient.timeseries(days)) });
   } catch (error) {
     fail(res, error, 'could not load timeseries');
   }
@@ -192,7 +193,7 @@ export async function handleAdminGroupRideMetricsRoute(
   if (!(await requireAdmin(req, res, deps))) return;
 
   try {
-    sendJson(res, 200, await adminMetricsClient.groupRideMetrics());
+    sendJson(res, 200, await kept60s('/admin/metrics/group-rides', () => adminMetricsClient.groupRideMetrics()));
   } catch (error) {
     fail(res, error, 'could not load group ride metrics');
   }

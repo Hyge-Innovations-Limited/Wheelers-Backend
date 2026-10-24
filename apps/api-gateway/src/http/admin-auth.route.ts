@@ -188,6 +188,29 @@ export async function supportDeskRefuses(req: IncomingMessage, jwtSecret: string
  * Verifies the request is from an authenticated admin (JWT) or has the bootstrap API key.
  * Returns the admin's name for audit logging, or null if unauthorized.
  */
+/**
+ * The admin behind a token, kept 15 seconds: every admin request asks, and a
+ * dashboard opens ten at once (3,600 lookups a day that each waited for a
+ * database connection). A role change or a deactivation here is seen at once
+ * by this process (forgetAdmin), by the other gateway process within 15 seconds.
+ */
+const ADMIN_KEEP_MS = 15_000;
+const knownAdmins = new Map<string, { at: number; admin: Awaited<ReturnType<typeof adminClient.findById>> }>();
+
+async function adminById(id: string) {
+  const hit = knownAdmins.get(id);
+  if (hit && Date.now() - hit.at < ADMIN_KEEP_MS) return hit.admin;
+  const admin = await adminClient.findById(id);
+  knownAdmins.set(id, { at: Date.now(), admin });
+  if (knownAdmins.size > 500) knownAdmins.delete(knownAdmins.keys().next().value!);
+  return admin;
+}
+
+/** After changing an admin (role, active, password): the next request reads them fresh. */
+export function forgetAdmin(id: string): void {
+  knownAdmins.delete(id);
+}
+
 export async function verifyAdminAuth(
   req: IncomingMessage,
   deps: AdminAuthDeps,
@@ -195,7 +218,7 @@ export async function verifyAdminAuth(
   // Try JWT first
   const adminId = extractAdminId(req, deps.jwtSecret);
   if (adminId) {
-    const admin = await adminClient.findById(adminId);
+    const admin = await adminById(adminId);
     if (admin?.active) {
       // Support only gets the support desk, whichever route asks.
       if (admin.role === 'SUPPORT' && !supportDeskAllows(req.method, pathOf(req))) return null;
