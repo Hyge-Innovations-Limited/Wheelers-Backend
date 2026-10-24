@@ -5,11 +5,13 @@ import {
   zoneFor,
   GoogleMapsRoutePlanner,
   type PlannedRouteMetrics,
+  type Rain,
   type RouteWaypoint,
 } from '@wheleers/config';
 import { pricingClient } from '@wheleers/db';
 import { demandFactorAt } from '../pricing/busyness';
 import { surgeFactorAt } from '../pricing/surge';
+import { rainAt } from '../pricing/weather';
 import { cachedMaps, mapsKey } from './shared-cache';
 
 /**
@@ -59,6 +61,7 @@ function recordQuote(
   price: ReturnType<typeof calculateSuggestedFare>,
   demandFactor: number,
   tripKey: string,
+  rain: Rain,
 ): void {
   const now = Date.now();
   const key = `${point(params.origin)}>${point(params.destination)}=${price.suggestedFareNgn}`;
@@ -78,6 +81,7 @@ function recordQuote(
     modelFareNgn: price.modelFareNgn, suggestedFareNgn: price.suggestedFareNgn, minOfferNgn: price.minOfferNgn, setBy: price.setBy,
     tripKey, premiumNgn: price.premium?.premiumNgn ?? null, premiumPosition: price.premium?.position ?? null, dayPeriod: price.premium?.period ?? null,
     hourFactor: price.hourFactor, surgeFactor: price.surgeFactor,
+    rain, rainFactor: price.rainFactor,
   }).catch((error) => console.warn('[pricing] quote not logged', { error: error instanceof Error ? error.message : String(error) }));
 }
 
@@ -99,15 +103,17 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     const demandFactor = demandFactorAt(params.origin.lat, params.origin.lng);
     // Our own market right now: riders against drivers, and how drivers bid (used with the surge switched on).
     const surgeFactor = surgeFactorAt(params.origin.lat, params.origin.lng);
+    // Raining at the pickup now (the last 15-minute reading of its zone); unknown is dry.
+    const rain = rainAt(params.origin.lat, params.origin.lng);
     // The trip and the half hour: a trial price, and the trip's own turn within a premium range, stay the same through quote, edit and confirm.
     const tripKey = quoteTripKey(params.origin, params.destination, Date.now());
     const ridePrice = calculateSuggestedFare(route.distanceKm, {
-      trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor, surgeFactor,
+      trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor, surgeFactor, rain,
       // Ikorodu, Epe, Ibeju-Lekki, Badagry: the trip's ends decide the area factor.
       origin: params.origin, destination: params.destination,
       trialKey: tripKey,
     });
-    recordQuote(params, route, ridePrice, demandFactor, tripKey);
+    recordQuote(params, route, ridePrice, demandFactor, tripKey, rain);
     return {
       distanceKm: route.distanceKm,
       durationSeconds: route.durationSeconds,

@@ -27,6 +27,7 @@
  * a premium), the rules (the base rate lifted by traffic and a busy area)
  * and, once switched on, the model. The floor is never undercut.
  */
+import { holidayOn } from './calendar';
 import { candidateFares, chooseFare, getPricingMlModel, steadyDraw } from './pricing-ml';
 import { PRICING_AREAS, pricingAreaOf, type PricingAreaKey } from './pricing-areas';
 
@@ -141,14 +142,27 @@ export const HOUR_CURVE_MIN = 0.9;
 /** At most this far above the quiet-hour figures on a weekday, however many prices say otherwise: an hour can never run away. */
 export const HOUR_CURVE_MAX = 1.15;
 /**
- * The same on a weekend. Higher: Saturday evenings were measured costing more
- * on the other app than any weekday hour, and a weekend hour held at +15% left
- * us ₦1,500 under it. Reached only on weekend prices, at most 15% a night.
+ * The same on a weekend or holiday, and at night. Higher: Saturday evenings
+ * were measured costing more on the other app than any weekday hour, and a
+ * weekend hour held at +15% left us ₦1,500 under it; nights were under too.
+ * Reached only on prices, at most 15% a night.
  */
 export const WEEKEND_HOUR_CURVE_MAX = 1.6;
 
-/** The most an hour may reach on its kind of day. */
-export const hourCurveMax = (weekend: boolean) => (weekend ? WEEKEND_HOUR_CURVE_MAX : HOUR_CURVE_MAX);
+/** Night, Lagos time: 22:00 to 05:00. Fewer drivers out, and the other apps charge more. */
+export const isNightHour = (hour: number) => hour >= 22 || hour < 5;
+
+/** Where a night hour starts before prices teach it: the other apps charge more at night, so it never starts at the quiet rate. */
+export const NIGHT_START = 1.15;
+
+export type Rain = 'none' | 'light' | 'heavy';
+/** Where the rain lift starts, and the most it may be learned to. */
+export const RAIN_START = 1.15;
+export const RAIN_LIFT_MAX = 1.6;
+
+/** The most an hour may reach: weekdays' daytime +15%, weekends, holidays and nights +60%. */
+export const hourCurveMax = (weekend: boolean, hour?: number) =>
+  weekend || (hour !== undefined && isNightHour(hour)) ? WEEKEND_HOUR_CURVE_MAX : HOUR_CURVE_MAX;
 /** The live surge may never be set to lift a price past this, whatever is saved. */
 export const SURGE_MAX_LIMIT = 2;
 /** Nor to take more than this off, whatever is saved: a quiet market lowers a price, it never gives rides away. */
@@ -178,6 +192,22 @@ export type PricingSettings = {
   hourCurve: HourCurve | null;
   /** When the curve was last learned. */
   hourCurveFittedAt: string | null;
+  /**
+   * Holidays priced as weekends beyond the calendar's own (calendar.ts): days
+   * declared on the day, such as an Eid moved by the moon (YYYY-MM-DD, Lagos).
+   * `notHolidays` takes a calendar day off, when the guess was wrong.
+   */
+  holidays: string[];
+  notHolidays: string[];
+  /**
+   * Rain: while it rains at the pickup (weather.ts reads each zone every 15
+   * minutes), the other app's fare is taken to be rainLift times higher,
+   * heavy rain 10% more again. rainLift is learned each night from prices
+   * seen in the rain (hour-curve.ts); it starts at 1.15.
+   */
+  rainOn: boolean;
+  rainLift: number;
+  rainLiftFittedAt: string | null;
   /**
    * The live surge: our own riders against our own drivers, and how drivers
    * bid, move the other app's fare: up to surgeMax times when busy, down to
@@ -257,6 +287,11 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   hourCurveOn: false,
   hourCurve: null,
   hourCurveFittedAt: null,
+  holidays: [],
+  notHolidays: [],
+  rainOn: true,
+  rainLift: RAIN_START,
+  rainLiftFittedAt: null,
   surgeOn: false,
   surgeMax: 1.4,
   surgeMin: 0.9,
@@ -344,12 +379,12 @@ function periodPremiumsFrom(value: unknown): PricingSettings['periodPremiums'] {
 
 function hourCurveFrom(value: unknown): HourCurve | null {
   const v = value as Partial<HourCurve> | null | undefined;
-  const list = (x: unknown, max: number) =>
+  const list = (x: unknown, weekend: boolean) =>
     Array.isArray(x) && x.length === 24 && x.every((n) => Number.isFinite(Number(n)))
-      ? x.map((n) => Math.round(Math.min(max, Math.max(HOUR_CURVE_MIN, Number(n))) * 100) / 100)
+      ? x.map((n, hour) => Math.round(Math.min(hourCurveMax(weekend, hour), Math.max(HOUR_CURVE_MIN, Number(n))) * 100) / 100)
       : null;
-  const weekday = list(v?.weekday, hourCurveMax(false));
-  const weekend = list(v?.weekend, hourCurveMax(true));
+  const weekday = list(v?.weekday, false);
+  const weekend = list(v?.weekend, true);
   return weekday && weekend ? { weekday, weekend } : null;
 }
 
@@ -370,6 +405,13 @@ function modelFrom(value: unknown): PricingModel | null {
 }
 
 /** Whatever was saved, made safe to price with: every number in range, anything missing at its default. */
+/** A list of Lagos dates (YYYY-MM-DD): real dates only, each once, in order, the last 60. */
+function datesFrom(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const real = value.filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d);
+  return [...new Set(real)].sort().slice(-60);
+}
+
 export function normalizePricingSettings(value: unknown): PricingSettings {
   const v = (value ?? {}) as Partial<PricingSettings>;
   const d = DEFAULT_PRICING_SETTINGS;
@@ -382,6 +424,12 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     hourCurveOn: v.hourCurveOn === true,
     hourCurve: hourCurveFrom(v.hourCurve),
     hourCurveFittedAt: typeof v.hourCurveFittedAt === 'string' ? v.hourCurveFittedAt.slice(0, 40) : null,
+    holidays: datesFrom(v.holidays),
+    notHolidays: datesFrom(v.notHolidays),
+    // On unless switched off: without readings it changes nothing.
+    rainOn: v.rainOn !== false,
+    rainLift: Math.round(finite(v.rainLift, d.rainLift, 1, RAIN_LIFT_MAX) * 100) / 100,
+    rainLiftFittedAt: typeof v.rainLiftFittedAt === 'string' ? v.rainLiftFittedAt.slice(0, 40) : null,
     surgeOn: v.surgeOn === true,
     surgeMax: finite(v.surgeMax, d.surgeMax, 1, SURGE_MAX_LIMIT),
     surgeMin: finite(v.surgeMin, d.surgeMin, SURGE_MIN_LIMIT, 1),
@@ -412,11 +460,19 @@ export function setPricingSettings(value: unknown): PricingSettings {
   return pricingSettings;
 }
 
-/** Lagos is UTC+1 all year. */
-export function lagosClock(at: Date): { hour: number; weekend: boolean } {
+/**
+ * Lagos is UTC+1 all year. `weekend` is Saturday, Sunday or a public holiday
+ * (calendar.ts, with the days settings add or take off): a holiday's roads
+ * and prices are a weekend's (no rush hours, the weekend side of the hour
+ * curve), and prices seen on one teach the weekend. `night` is 22:00–05:00.
+ */
+export function lagosClock(at: Date): { hour: number; weekend: boolean; holiday: string | null; night: boolean; date: string } {
   const local = new Date(at.getTime() + 60 * 60 * 1000);
   const day = local.getUTCDay();
-  return { hour: local.getUTCHours(), weekend: day === 0 || day === 6 };
+  const date = local.toISOString().slice(0, 10);
+  const hour = local.getUTCHours();
+  const holiday = holidayOn(date, pricingSettings.holidays, pricingSettings.notHolidays);
+  return { hour, weekend: day === 0 || day === 6 || holiday !== null, holiday, night: isNightHour(hour), date };
 }
 
 /** The other app's quiet-hour figures for a trip: what the hour curve multiplies. */
@@ -434,16 +490,18 @@ export function quietMarketFareNgn(distanceKm: number, minutes: number, settings
  * A weekend hour starts where the same weekday hour does. It used to start at
  * 1 everywhere (a weekend was never rush), which priced a Saturday evening
  * like a quiet Wednesday afternoon: ₦1,500 under the other app. A weekend hour
- * goes lower only when weekend prices say so.
+ * goes lower only when weekend prices say so. Night hours (22:00–05:00)
+ * start at NIGHT_START: the other apps charge more at night.
  */
 export function seedHourCurve(settings: PricingSettings = pricingSettings): HourCurve {
   const quiet = quietMarketFareNgn(15, 40, settings);
   const r = settings.rush;
   const rushShare = Math.min(HOUR_CURVE_MAX, Math.max(HOUR_CURVE_MIN, (r.baseNgn + r.perKmNgn * 15 + r.perMinuteNgn * 40) / quiet));
   const rushHour = (h: number) => (h >= 7 && h < 10) || (h >= 16 && h < 20);
+  const start = (h: number) => Math.round((isNightHour(h) ? NIGHT_START : rushHour(h) ? rushShare : 1) * 100) / 100;
   return {
-    weekday: Array.from({ length: 24 }, (_, h) => Math.round((rushHour(h) ? rushShare : 1) * 100) / 100),
-    weekend: Array.from({ length: 24 }, (_, h) => Math.round((rushHour(h) ? rushShare : 1) * 100) / 100),
+    weekday: Array.from({ length: 24 }, (_, h) => start(h)),
+    weekend: Array.from({ length: 24 }, (_, h) => start(h)),
   };
 }
 
@@ -589,6 +647,8 @@ export type RateFactors = {
    * from our own riders, drivers and bids. Used only with the surge switched on.
    */
   surgeFactor?: number;
+  /** Rain at the pickup now (weather.ts): none, light or heavy. Unknown is none. */
+  rain?: Rain;
   /**
    * Names this trip for a while (its two ends and the half hour): whether it
    * is shown a trial price, and which, and its own small turn within a part
@@ -611,11 +671,37 @@ function demandFactorOf(factors: RateFactors): number {
     : 1;
 }
 
-/** The live surge for a trip: 1 with the switch off or nothing measured, never under surgeMin, never past surgeMax. */
+/**
+ * The live surge for a trip: 1 with the switch off or nothing measured, never
+ * under surgeMin, never past surgeMax. At weekends, on holidays, at night and
+ * in the rain it only lifts: the surge reads our own riders, and ours are few
+ * then even when the other apps are busy, so a quiet discount there would
+ * take us under them.
+ */
 export function surgeFactorOf(factors: RateFactors): number {
   if (!pricingSettings.surgeOn) return 1;
   const s = factors.surgeFactor;
-  return s !== undefined && Number.isFinite(s) && s > 0 ? Math.min(pricingSettings.surgeMax, Math.max(pricingSettings.surgeMin, s)) : 1;
+  if (s === undefined || !Number.isFinite(s) || s <= 0) return 1;
+  const clock = lagosClock(factors.at ?? new Date());
+  const noDiscount = clock.weekend || clock.night || (factors.rain !== undefined && factors.rain !== 'none');
+  const least = noDiscount ? Math.max(1, pricingSettings.surgeMin) : pricingSettings.surgeMin;
+  return Math.min(pricingSettings.surgeMax, Math.max(least, s));
+}
+
+/** Heavy rain over light: a little more again. */
+const HEAVY_RAIN_EXTRA = 1.1;
+/**
+ * The hour, the surge and the rain together never lift the other app's
+ * quiet-hour figures past this: a Saturday night in a storm is dear, not
+ * three times the price.
+ */
+export const COMBINED_LIFT_MAX = 2.2;
+
+/** The rain multiplier for a trip: 1 with the switch off or no rain. */
+export function rainFactorOf(factors: Pick<RateFactors, 'rain'>): number {
+  if (!pricingSettings.rainOn || !factors.rain || factors.rain === 'none') return 1;
+  const lift = factors.rain === 'heavy' ? pricingSettings.rainLift * HEAVY_RAIN_EXTRA : pricingSettings.rainLift;
+  return Math.round(Math.min(RAIN_LIFT_MAX, lift) * 100) / 100;
 }
 
 /** The demand multiplier a requests-to-drivers ratio comes to (1 = normal), whatever the switch says. */
@@ -666,6 +752,8 @@ export type SuggestedFare = {
   /** This hour's multiplier on the other app's quiet-hour figures (null with the curve off), and the live surge applied (1 = none). */
   hourFactor: number | null;
   surgeFactor: number;
+  /** The rain lift applied (1 = dry, or rain off). */
+  rainFactor: number;
   /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
   premium: TripPremium | null;
 };
@@ -748,9 +836,13 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   // The floor: what the other app charges for this trip (by the hour, and
   // lifted by our own live surge), plus the premium. Nothing is ever
   // suggested below it.
+  // The hour (in marketFareNgn), the surge and the rain, together at most COMBINED_LIFT_MAX.
+  const hourLift = hourFactorAt(factors.at ?? new Date()) ?? 1;
+  const rainFactor = rainFactorOf(factors);
   const surgeFactor = surgeFactorOf(factors);
+  const lift = Math.min(surgeFactor * rainFactor, COMBINED_LIFT_MAX / Math.max(1, hourLift));
   const marketFare = settings.marketFloorOn && distanceKm > 0
-    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor * surgeFactor
+    ? marketFareNgn(distanceKm, factors.durationSeconds, factors.at) * areaFactor * lift
     : null;
   const premium = premiumFor(factors, areaFactor);
   const floorFareNgn = marketFare === null
@@ -839,6 +931,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     area,
     hourFactor: hourFactorAt(factors.at ?? new Date()),
     surgeFactor: marketFare === null ? 1 : surgeFactor,
+    rainFactor: marketFare === null ? 1 : rainFactor,
     premium: marketFare === null ? null : premium,
   };
 }

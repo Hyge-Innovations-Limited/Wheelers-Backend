@@ -39,7 +39,21 @@ export interface PricingQuoteInput {
   dayPeriod?: string | null;
   hourFactor?: number | null;
   surgeFactor?: number;
+  rain?: string | null;
+  rainFactor?: number;
 }
+
+/** A weather reading for a launch zone (apps/api-gateway pricing/weather.ts). */
+export interface WeatherReadingInput {
+  zone: string;
+  at: Date;
+  rain: 'none' | 'light' | 'heavy';
+  mm: number | null;
+  condition: string | null;
+}
+
+/** A reading this close to a price counts as the weather it was seen in. */
+const RAIN_MATCH_MS = 20 * 60_000;
 
 /** How far back the hour curve learns from. Older prices count less anyway (a week's age halves one). */
 const CURVE_DAYS = 28;
@@ -110,6 +124,8 @@ export const pricingClient = {
         dayPeriod: q.dayPeriod ?? null,
         hourFactor: q.hourFactor ?? null,
         surgeFactor: q.surgeFactor ?? 1,
+        rain: q.rain ?? null,
+        rainFactor: q.rainFactor ?? 1,
       },
     }),
 
@@ -122,27 +138,35 @@ export const pricingClient = {
    * so a surge is never learned as the usual price for its hour.
    */
   async curveEvidence(since: Date, settings: PricingSettings = getPricingSettings()): Promise<CurveEvidence[]> {
-    const [samples, rides, quotes] = await Promise.all([
+    const [samples, rides, quotes, rainy] = await Promise.all([
       prisma.marketSample.findMany({ where: { takenAt: { gte: since } } }),
       prisma.ride.findMany({
         where: { createdAt: { gte: since }, distanceKm: { gt: 0 } },
         select: {
-          pickupLat: true, pickupLng: true, destLat: true, destLng: true, distanceKm: true, durationSeconds: true,
+          pickupLat: true, pickupLng: true, destLat: true, destLng: true, distanceKm: true, durationSeconds: true, pickupZone: true,
           agreedFareNgn: true, createdAt: true, bids: { select: { amountNgn: true } },
         },
       }),
       prisma.pricingQuote.findMany({
         where: { createdAt: { gte: new Date(since.getTime() - 30 * 60_000) }, tripKey: { not: null }, marketFareNgn: { not: null } },
-        select: { tripKey: true, marketFareNgn: true, suggestedFareNgn: true, surgeFactor: true },
+        select: { tripKey: true, marketFareNgn: true, suggestedFareNgn: true, surgeFactor: true, rainFactor: true },
         orderBy: { createdAt: 'asc' },
+      }),
+      prisma.weatherReading.findMany({
+        where: { at: { gte: new Date(since.getTime() - RAIN_MATCH_MS) }, rain: { not: 'none' } },
+        select: { zone: true, at: true },
+        orderBy: { at: 'asc' },
       }),
     ]);
     const out: CurveEvidence[] = [];
+    // Was it raining then? At the ride's pickup zone when there is one; anywhere in the city for a price read off the other app (it has no place).
+    const rainedAt = (at: Date, zone: string | null = null) =>
+      rainy.some((r) => Math.abs(r.at.getTime() - at.getTime()) <= RAIN_MATCH_MS && (zone === null || r.zone === zone));
 
     for (const s of samples) {
       const area = s.area ? settings.areas[s.area as PricingAreaKey] : undefined;
       const base = quietMarketFareNgn(s.km, s.minutes, settings) * (area?.pickup ?? 1);
-      if (base > 0) out.push({ at: s.takenAt, ratio: Number(s.priceNgn) / base, weight: 3, kind: 'sample' });
+      if (base > 0) out.push({ at: s.takenAt, ratio: Number(s.priceNgn) / base, weight: 3, kind: 'sample', rain: rainedAt(s.takenAt) });
     }
 
     // The last price each trip was shown in its half hour.
@@ -164,9 +188,9 @@ export const pricingClient = {
       if (r.agreedFareNgn !== null) {
         const agreed = Number(r.agreedFareNgn);
         // Taken as shown only says the price was about right; bargained, it says which way.
-        out.push({ at: r.createdAt, ratio: (market + agreed - shown) / base, weight: Math.abs(agreed - shown) < 50 ? 0.5 : 1, kind: 'agreed' });
+        out.push({ at: r.createdAt, ratio: (market + agreed - shown) / base, weight: Math.abs(agreed - shown) < 50 ? 0.5 : 1, kind: 'agreed', rain: rainedAt(r.createdAt, r.pickupZone) });
       } else if (lowestBid !== null) {
-        out.push({ at: r.createdAt, ratio: (market + lowestBid - shown) / base, weight: 0.5, kind: 'bid' });
+        out.push({ at: r.createdAt, ratio: (market + lowestBid - shown) / base, weight: 0.5, kind: 'bid', rain: rainedAt(r.createdAt, r.pickupZone) });
       }
     }
     return out;
@@ -176,6 +200,20 @@ export const pricingClient = {
    * The hour curve the last four weeks of prices give, from the one saved (or,
    * with none yet, from what the rush and quiet figures charge now). Saves nothing.
    */
+  /** Keep this pass's readings; drop those older than 90 days. */
+  async saveWeather(readings: WeatherReadingInput[]): Promise<void> {
+    if (readings.length === 0) return;
+    await prisma.weatherReading.createMany({ data: readings });
+    await prisma.weatherReading.deleteMany({ where: { at: { lt: new Date(Date.now() - 90 * 86_400_000) } } });
+  },
+
+  /** The latest reading of each zone. */
+  async latestWeather(): Promise<WeatherReadingInput[]> {
+    const rows = await prisma.$queryRaw<WeatherReadingInput[]>`
+      SELECT DISTINCT ON (zone) zone, at, rain, mm, condition FROM "WeatherReading" ORDER BY zone, at DESC`;
+    return rows.map((r) => ({ ...r, rain: r.rain as WeatherReadingInput['rain'] }));
+  },
+
   async learnHourCurve(settings: PricingSettings, now = new Date()): Promise<HourCurveFit & { previous: PricingSettings['hourCurve'] }> {
     const baseline = seedHourCurve(settings);
     const previous = settings.hourCurve ?? baseline;

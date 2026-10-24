@@ -133,6 +133,7 @@ import { startBusynessJob } from "./pricing/busyness";
 import { startSurgeJob } from "./pricing/surge";
 import { handleAdminDeskRoute } from "./http/admin-desk.route";
 import { startHourCurveJob } from "./pricing/hour-curve-job";
+import { startWeatherJob } from "./pricing/weather";
 import { recordAdminRequest } from "./admin/activity";
 import { createHorizonNetwork } from "./stellar/network";
 import { createStellarService, startStellarJob } from "./stellar/service";
@@ -2606,6 +2607,8 @@ async function bootstrap(): Promise<void> {
   const stopBusynessJob = startBusynessJob(redisCommandClient, leader.isLeader);
   const stopSurgeJob = startSurgeJob(redisCommandClient, leader.isLeader);
   const stopHourCurveJob = startHourCurveJob(leader.isLeader);
+  // Rain at each zone every 15 minutes, for pricing (needs the Weather API enabled on the Google key).
+  const stopWeatherJob = startWeatherJob(redisCommandClient, gatewayEnv.GOOGLE_MAPS_API_KEY, leader.isLeader);
   const stopPaperReminders = startPaperReminderJob({ publisher }, leader.isLeader, () => lagosToday());
   const stopHealthJobs = startHealthJobs({
     redis: redisCommandClient,
@@ -2681,6 +2684,7 @@ async function bootstrap(): Promise<void> {
     stopBusynessJob();
     stopSurgeJob();
     stopHourCurveJob();
+    stopWeatherJob();
     stopPaperReminders();
     stopPricingSync();
     stopHealthJobs();

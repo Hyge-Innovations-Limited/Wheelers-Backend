@@ -56,8 +56,9 @@ test('curve on: the other app is its quiet-hour figures times the hour; switchin
 
 test('a saved curve is made safe: 24 hours each, never under 0.9, never over 1.15 on a weekday or 1.6 on a weekend', () => {
   const s = config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(9), weekend: Array(24).fill(9) } });
-  assert.equal(s.hourCurve.weekday[0], 1.15, 'a weekday hour that ran away is held at +15% the moment it is read');
-  assert.equal(s.hourCurve.weekend[0], 1.6, 'a weekend one at +60%');
+  assert.equal(s.hourCurve.weekday[12], 1.15, 'a weekday daytime hour that ran away is held at +15% the moment it is read');
+  assert.equal(s.hourCurve.weekend[12], 1.6, 'a weekend one at +60%');
+  assert.equal(s.hourCurve.weekday[0], 1.6, 'a night hour (22:00–05:00) at +60% too');
   assert.equal(config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(0.7), weekend: Array(24).fill(0.7) } }).hourCurve.weekend[0], 0.9, 'never more than 10% under');
   assert.equal(config.setPricingSettings({ hourCurve: { weekday: [1, 2], weekend: Array(24).fill(1) } }).hourCurve, null);
   assert.equal(config.setPricingSettings({ surgeMax: 50 }).surgeMax, 2);
@@ -243,7 +244,8 @@ test('a weekend hour with no weekend prices rests where the same weekday hour is
   assert.equal(fit.curve.weekday[18], 1.15);
   assert.equal(fit.curve.weekend[18], fit.curve.weekday[18], 'Saturday 18:00 follows Wednesday 18:00');
   assert.equal(fit.curve.weekend[8], fit.curve.weekday[8], 'and the morning rush');
-  assert.equal(fit.curve.weekend[3], 1, 'a quiet night stays quiet');
+  assert.equal(fit.curve.weekend[13], 1, 'a quiet afternoon stays quiet');
+  assert.equal(fit.curve.weekend[3], config.NIGHT_START, 'a night starts lifted, as the weekday night does');
 });
 
 test('four weekend prices teach a weekend hour; it may climb past a weekday\'s +15% (to +60%), 15% a night', () => {

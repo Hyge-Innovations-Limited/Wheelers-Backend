@@ -103,7 +103,11 @@ async function status() {
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
   console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.lagosClock(new Date()).weekend ? settings.hourCurve.weekend[config.lagosClock(new Date()).hour] : settings.hourCurve.weekday[config.lagosClock(new Date()).hour]}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
-  console.log(`Live surge: ${on(settings.surgeOn)}, from ×${settings.surgeMin} when quiet to ×${settings.surgeMax} when busy${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}`);
+  console.log(`Live surge: ${on(settings.surgeOn)}, from ×${settings.surgeMin} when quiet to ×${settings.surgeMax} when busy${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}; never a discount at weekends, holidays, nights or in the rain`);
+  const clock = config.lagosClock(new Date());
+  const next = config.upcomingHolidays(clock.date, 60, settings.holidays, settings.notHolidays).slice(0, 3);
+  console.log(`Today: ${clock.holiday ? `${clock.holiday} (priced as a weekend)` : clock.weekend ? 'weekend' : 'weekday'}${clock.night ? ', night' : ''}.  Next holidays: ${next.length ? next.map((h) => `${h.date} ${h.name}`).join(', ') : 'none in 60 days'}  (npm run pricing holiday)`);
+  console.log(`Rain: ${on(settings.rainOn)}, ×${settings.rainLift} in rain, more in heavy rain${settings.rainLiftFittedAt ? ` (learned ${lagosTime(new Date(settings.rainLiftFittedAt))})` : ' (starting value; learned from prices seen in the rain)'}  (npm run pricing rain)`);
   console.log(`Traffic: ${on(settings.trafficOn)}   Busy area: ${on(settings.demandOn)}`);
   console.log(`Outer areas (pickup / drop-off): ${config.PRICING_AREAS.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ')}`);
   console.log(`Model: ${on(settings.modelOn)}`);
@@ -137,6 +141,14 @@ async function curve() {
   if (word === 'fit') {
     const fit = await pricingClient.learnHourCurve(settings);
     console.log(`Learned from the last 4 weeks: ${fit.used.sample} inDrive prices, ${fit.used.agreed} agreed fares, ${fit.used.bid} driver bids on rides nobody agreed.`);
+    const lift = (value, prices, what) => (value === null
+      ? `${what}: not yet (${prices} of ${config.MIN_PRICES_FOR_A_LIFT} prices)`
+      : `${what}: ×${value} from ${prices} prices`);
+    console.log([
+      lift(fit.weekendLift, fit.liftPrices.weekend, 'Weekends and holidays, every hour'),
+      lift(fit.nightLift, fit.liftPrices.night, 'Nights 22:00–05:00'),
+      lift(fit.rainLift, fit.liftPrices.rain, `Rain (now ×${settings.rainLift})`),
+    ].join('\n'));
     console.log('Each hour moves at most 15% in one go; run it again (or let the night do it) to go further.\n');
     console.table(Array.from({ length: 24 }, (_, h) => ({
       hour: hh(h),
@@ -146,7 +158,9 @@ async function curve() {
       'prices (we)': fit.counts.weekend[h],
     })));
     if (also !== 'save') { console.log('Nothing saved. "npm run pricing curve fit save" to use it.'); return; }
-    await save(() => ({ hourCurve: fit.curve, hourCurveFittedAt: new Date().toISOString() }), (s) => (s.hourCurveOn ? 'Saved.' : 'Saved. It prices once "npm run pricing curve on".'));
+    const path = await import('node:path');
+    const { curveUpdate } = require(path.join(process.cwd(), 'apps/api-gateway/dist/pricing/hour-curve-job.js'));
+    await save((s) => curveUpdate(s, fit, new Date()), (s) => (s.hourCurveOn ? `Saved (rain ×${s.rainLift}).` : 'Saved. It prices once "npm run pricing curve on".'));
     return;
   }
   const c = settings.hourCurve ?? config.seedHourCurve(settings);
@@ -574,6 +588,62 @@ async function report() {
   console.log('premium and minutes are the middle value. Quotes logged before the report existed have no trip key and are left out.');
 }
 
+/**
+ * npm run pricing holiday [list | add DATE | remove DATE | restore DATE]: the
+ * days priced as weekends. The calendar (fixed holidays, Easter, the Eids,
+ * Mawlid, festive eves, days off in lieu) needs nothing; add a day declared on
+ * the day (an Eid moved by the moon), remove a calendar guess that was wrong.
+ */
+async function holiday() {
+  const [word, date] = rest;
+  const { settings } = await pricingClient.loadSettings();
+  config.setPricingSettings(settings);
+  const checkDate = (d) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d ?? '') || new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) !== d) throw new Error('A Lagos date, like 2027-03-10');
+    return d;
+  };
+  if (word === 'add') {
+    const d = checkDate(date);
+    return save((s) => ({ holidays: [...s.holidays, d], notHolidays: s.notHolidays.filter((x) => x !== d) }), () => `${d} is now priced as a weekend.`);
+  }
+  if (word === 'remove') {
+    const d = checkDate(date);
+    return save((s) => ({ holidays: s.holidays.filter((x) => x !== d), notHolidays: [...s.notHolidays, d] }), () => `${d} is now an ordinary day.`);
+  }
+  if (word === 'restore') {
+    const d = checkDate(date);
+    return save((s) => ({ holidays: s.holidays.filter((x) => x !== d), notHolidays: s.notHolidays.filter((x) => x !== d) }), () => `${d} is back to what the calendar says.`);
+  }
+  const today = config.lagosClock(new Date()).date;
+  const list = config.upcomingHolidays(today, 400, settings.holidays, settings.notHolidays);
+  console.log('Priced as weekends (the calendar, with the days added and removed here):');
+  console.table(list.map((h) => ({ date: h.date, day: new Date(`${h.date}T12:00:00Z`).toLocaleDateString('en-NG', { weekday: 'short', timeZone: 'UTC' }), holiday: h.name })));
+  if (settings.notHolidays.length) console.log(`Taken off the calendar: ${settings.notHolidays.join(', ')}`);
+  console.log('Eid and Mawlid dates are the Umm al-Qura calendar: when the government declares a different day, "holiday add" it and "holiday remove" the guess.');
+}
+
+/** npm run pricing rain [on | off | now]: the rain lift, and the weather at each zone now. */
+async function rain() {
+  const word = rest[0];
+  if (word === 'on' || word === 'off') return save(() => ({ rainOn: word === 'on' }), (s) => (s.rainOn ? `Rain prices: ON (×${s.rainLift}).` : 'Rain prices: off.'));
+  const path = await import('node:path');
+  const weather = require(path.join(process.cwd(), 'apps/api-gateway/dist/pricing/weather.js'));
+  const { settings } = await pricingClient.loadSettings();
+  config.setPricingSettings(settings);
+  let readings;
+  if (word === 'now') {
+    if (!process.env.GOOGLE_MAPS_API_KEY) throw new Error('GOOGLE_MAPS_API_KEY is not set');
+    // Read and kept like the job's pass; nothing shared through Redis from here.
+    readings = await weather.measureWeather({ set: async () => undefined }, process.env.GOOGLE_MAPS_API_KEY);
+    if (!readings.length) { console.log('No reading came back. Is the Weather API enabled for this Google key? https://console.cloud.google.com/apis/library/weather.googleapis.com'); return; }
+  } else {
+    readings = await pricingClient.latestWeather();
+  }
+  console.log(`Rain prices: ${settings.rainOn ? 'ON' : 'off'}, ×${settings.rainLift} in rain, ×${config.rainFactorOf({ rain: 'heavy' })} in heavy rain.`);
+  if (!readings.length) { console.log('No weather read yet. "npm run pricing rain now" reads it.'); return; }
+  console.table(readings.map((r) => ({ zone: r.zone, at: lagosTime(new Date(r.at)), rain: r.rain, mm: r.mm ?? '—', google: r.condition ?? '—', lift: `×${config.rainFactorOf({ rain: r.rain })}` })));
+}
+
 const onOff = (key, label) => () => {
   const word = rest[0];
   if (word !== 'on' && word !== 'off') throw new Error(`Say on or off: npm run pricing ${label} on`);
@@ -601,6 +671,8 @@ const commands = {
   premium: () => save(() => ({ premiumNgn: number(rest[0], 'the premium') }), (s) => `The floor is now the other app + ${naira(s.premiumNgn)}.`),
   curve,
   surge,
+  holiday,
+  rain,
   simulate,
   extra: () => save(() => ({ extraNgn: number(rest[0], 'the extra') }), (s) => (s.extraNgn > 0
     ? `Every price now has ${naira(s.extraNgn)} on top, after everything else is worked out.`
@@ -616,7 +688,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

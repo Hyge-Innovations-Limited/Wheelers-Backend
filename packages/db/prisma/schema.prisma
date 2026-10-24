@@ -1494,9 +1494,30 @@ model PricingQuote {
   /// The hour's multiplier on the other app's quiet-hour figures (null: the curve was off), and the live surge applied (1: none).
   hourFactor       Float?
   surgeFactor      Float    @default(1)
+  /// Rain at the pickup when priced ("none", "light", "heavy"; null: before rain was read), and the lift it gave.
+  rain             String?
+  rainFactor       Float    @default(1)
 
   @@index([createdAt])
   @@index([tripKey])
+}
+
+/// The weather at a launch zone, read every 15 minutes (apps/api-gateway
+/// pricing/weather.ts): what prices rain, and what tells the nightly learning
+/// which prices were seen in the rain.
+model WeatherReading {
+  id          String   @id @default(uuid())
+  zone        String
+  at          DateTime @default(now())
+  /// "none", "light" or "heavy".
+  rain        String
+  /// Rain over the last hour, when the provider says.
+  mm          Float?
+  /// The provider's own words: "LIGHT_RAIN", "THUNDERSTORM"…
+  condition   String?
+
+  @@index([at])
+  @@index([zone, at])
 }
 
 /// A price someone read off another app by hand, for a trip of a known

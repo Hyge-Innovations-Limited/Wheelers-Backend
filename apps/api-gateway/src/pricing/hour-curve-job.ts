@@ -1,4 +1,4 @@
-import { lagosClock } from '@wheleers/config';
+import { lagosClock, type HourCurveFit, type PricingSettings } from '@wheleers/config';
 import { pricingClient } from '@wheleers/db';
 
 /**
@@ -9,6 +9,18 @@ import { pricingClient } from '@wheleers/db';
  */
 const HOUR = 3;
 
+/**
+ * What a night's learning saves: the curve, and the rain lift moved toward
+ * what prices in the rain said, at most 15% a night like the hours (it stays
+ * where it is with too few rain prices).
+ */
+export function curveUpdate(settings: PricingSettings, fit: HourCurveFit, now: Date): Partial<PricingSettings> {
+  const rain = fit.rainLift === null
+    ? {}
+    : { rainLift: Math.round(Math.min(settings.rainLift * 1.15, Math.max(settings.rainLift / 1.15, fit.rainLift)) * 100) / 100, rainLiftFittedAt: now.toISOString() };
+  return { hourCurve: fit.curve, hourCurveFittedAt: now.toISOString(), ...rain };
+}
+
 /** Learn and save tonight's curve, unless it is not time yet or it was done today. Exported for the test. */
 export async function learnTonight(now = new Date()): Promise<boolean> {
   if (lagosClock(now).hour !== HOUR) return false;
@@ -18,8 +30,8 @@ export async function learnTonight(now = new Date()): Promise<boolean> {
   const last = settings.hourCurveFittedAt ? new Date(new Date(settings.hourCurveFittedAt).getTime() + 60 * 60_000).toISOString().slice(0, 10) : null;
   if (last === today) return false;
   const fit = await pricingClient.learnHourCurve(settings, now);
-  await pricingClient.saveSettings({ ...settings, hourCurve: fit.curve, hourCurveFittedAt: now.toISOString() }, 'nightly curve');
-  console.info('[pricing] hour curve learned', { used: fit.used });
+  await pricingClient.saveSettings({ ...settings, ...curveUpdate(settings, fit, now) }, 'nightly curve');
+  console.info('[pricing] hour curve learned', { used: fit.used, weekendLift: fit.weekendLift, nightLift: fit.nightLift, rainLift: fit.rainLift, liftPrices: fit.liftPrices });
   return true;
 }
 

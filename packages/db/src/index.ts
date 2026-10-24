@@ -41,6 +41,7 @@ export { riderKycClient }       from './clients/rider-kyc.client';
 export { adminClient }          from './clients/admin.client';
 export { adminActivityClient }  from './clients/admin-activity.client';
 export { pricingClient }        from './clients/pricing.client';
+export type { WeatherReadingInput } from './clients/pricing.client';
 export { driverPaperClient }    from './clients/driver-paper.client';
 export { driverCheckClient }    from './clients/driver-check.client';
 export { ridePageEventClient }  from './clients/ride-page-event.client';
