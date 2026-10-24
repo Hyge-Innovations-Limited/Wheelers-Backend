@@ -53,6 +53,8 @@ test("a TURN login is coturn's REST scheme: expiry:user, HMAC-SHA1 of it with th
   const servers = iceServersFor('u', { host: 'h', secret: 's', ttlSeconds: 60 }, now);
   assert.deepEqual(servers[1].urls, ['turn:h:3478?transport=udp', 'turn:h:3478?transport=tcp', 'turns:h:443?transport=tcp']);
   assert.equal(servers[1].credential, createHmac('sha1', 's').update(servers[1].username).digest('base64'));
+  const beside = iceServersFor('u', { host: 'h', secret: 's', tlsPort: 5349, ttlSeconds: 60 }, now);
+  assert.equal(beside[1].urls[2], 'turns:h:5349?transport=tcp', 'beside Caddy, TLS on 5349');
 });
 
 test('the chat opens when a driver is assigned and closes when the trip ends (or a set time after)', () => {

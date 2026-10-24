@@ -14,6 +14,8 @@ import { createHmac } from 'crypto';
 export interface TurnConfig {
   host?: string;
   secret?: string;
+  /** coturn's TLS port: 443 on its own machine, 5349 when it shares one with Caddy. */
+  tlsPort?: number;
   ttlSeconds: number;
 }
 
@@ -38,11 +40,11 @@ export function iceServersFor(userId: string, config: TurnConfig, nowMs: number 
   return [
     stun,
     {
-      // UDP first; TCP when UDP is blocked; TLS on 443 when only web traffic gets out.
+      // UDP first; TCP when UDP is blocked; TLS (on 443 where it has it) when only web traffic gets out.
       urls: [
         `turn:${config.host}:3478?transport=udp`,
         `turn:${config.host}:3478?transport=tcp`,
-        `turns:${config.host}:443?transport=tcp`,
+        `turns:${config.host}:${config.tlsPort ?? 443}?transport=tcp`,
       ],
       username,
       credential,

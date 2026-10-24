@@ -129,6 +129,8 @@ const GatewayEnvSchema = z.object({
   // static-auth-secret in /etc/turnserver.conf on that machine.
   TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),
   TURN_SHARED_SECRET: z.string().optional().transform(v => v?.trim() || undefined),
+  // The port coturn takes TLS on: 443 on a machine of its own, 5349 beside Caddy (which has 443).
+  TURN_TLS_PORT: z.coerce.number().int().min(1).max(65535).default(443),
   // How long one call's TURN login lasts. Longer than the longest call.
   TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().positive().default(2 * 60 * 60),
   // Social Auth

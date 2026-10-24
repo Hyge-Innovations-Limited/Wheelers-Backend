@@ -576,6 +576,7 @@ async function bootstrap(): Promise<void> {
       turn: {
         host: gatewayEnv.TURN_HOST,
         secret: gatewayEnv.TURN_SHARED_SECRET,
+        tlsPort: gatewayEnv.TURN_TLS_PORT,
         ttlSeconds: gatewayEnv.TURN_CREDENTIAL_TTL_SECONDS,
       },
     },

@@ -4,9 +4,10 @@
 #   __PRIVATE_IP__  the machine's own address inside Google Cloud (10.x)
 #   __PUBLIC_IP__   its static public address (the A record of turn.wheelersng.com)
 #   __SECRET__      the shared secret; the gateway's TURN_SHARED_SECRET is the same value
+#   __TLS_PORT__    443 on a machine of its own, 5349 beside Caddy (the gateway's TURN_TLS_PORT)
 
 listening-port=3478
-tls-listening-port=443
+tls-listening-port=__TLS_PORT__
 min-port=49152
 max-port=65535
 listening-ip=__PRIVATE_IP__
@@ -21,7 +22,7 @@ server-name=turn.wheelersng.com
 fingerprint
 stale-nonce=600
 
-# TLS on 443, for networks that only let web traffic out.
+# TLS, for networks that only let web traffic out.
 cert=/etc/coturn/certs/fullchain.pem
 pkey=/etc/coturn/certs/privkey.pem
 no-tlsv1
