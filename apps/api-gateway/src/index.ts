@@ -225,6 +225,7 @@ import {
   handleListReferralCashbackRoute,
   handleListReferralReferralsRoute,
   handlePreviewReferralRideCashbackRoute,
+  handleReferralLinkRoute,
   handleSetReferralCodeRoute,
 } from "./http/referral.route";
 import {
@@ -921,6 +922,12 @@ async function bootstrap(): Promise<void> {
       await handleGetReferralSummaryRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
       });
+      return;
+    }
+
+    // A referral link, tapped or scanned: on to the store or the chat.
+    if (url.pathname.startsWith("/r/") && req.method === "GET") {
+      handleReferralLinkRoute(req, res, url.pathname.slice("/r/".length));
       return;
     }
 

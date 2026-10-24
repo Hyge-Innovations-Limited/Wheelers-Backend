@@ -1,3 +1,4 @@
+import { PUBLIC_BASE_URL_DEFAULT, resolvePublicBaseUrl } from '@wheleers/config';
 import { referralClient } from '@wheleers/db';
 import { logActivity } from '../analytics/log-activity';
 import type { MetaWhatsappRouteDeps } from './deps';
@@ -31,14 +32,38 @@ export const referralChatMessage = (code: string) => `Hi Wheelers. My referral c
 /** The Wheelers WhatsApp number when WHATSAPP_BOT_NUMBER is not set (the website's too). */
 const WHEELERS_NUMBER = '2348141979106';
 
+/** The Wheelers app in the stores: one app for riders and drivers (the website's links too). */
+const PLAY_STORE = 'https://play.google.com/store/apps/details?id=com.timmy133.wheelers.driver';
+const APP_STORE = 'https://apps.apple.com/ng/app/wheelers-driver/id6802810113';
+
 /**
- * A person's referral link, what their QR code holds: a chat with Wheelers
- * with "My referral code is CODE" already typed; the bot adds the code when
- * the friend sends it.
+ * A person's referral link, what their QR code holds and what the app shares:
+ * app.wheelersng.com/r/CODE, which sends the friend to the app in their
+ * phone's store, or to the WhatsApp chat (referralLinkTarget).
  */
-export function referralShareLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] || WHEELERS_NUMBER): string {
+export function referralShareLink(code: string, base = resolvePublicBaseUrl(process.env['APP_BASE_URL'] || PUBLIC_BASE_URL_DEFAULT, process.env['NODE_ENV'])): string {
+  return `${base.replace(/\/+$/, '')}/r/${encodeURIComponent(code)}`;
+}
+
+/** A chat with Wheelers with "My referral code is CODE" typed: the bot adds the code when the friend sends it. */
+export function referralWhatsappLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] || WHEELERS_NUMBER): string {
   const digits = botNumber.replace(/\D/g, '') || WHEELERS_NUMBER;
   return `https://wa.me/${digits}?text=${encodeURIComponent(referralChatMessage(code))}`;
+}
+
+/**
+ * Where a referral link sends the friend who taps it: an Android phone to the
+ * Play Store (the link carries the code, for the app to read once it can), an
+ * iPhone or iPad to the App Store, anything else (a laptop, a phone we cannot
+ * tell) to the WhatsApp chat with the code typed. The app asks for the code at
+ * sign-up; the message they were sent has it.
+ */
+export function referralLinkTarget(code: string, userAgent = ''): string {
+  if (/android/i.test(userAgent)) {
+    return `${PLAY_STORE}&referrer=${encodeURIComponent(`utm_source=referral&utm_campaign=${code}`)}`;
+  }
+  if (/iphone|ipad|ipod/i.test(userAgent)) return APP_STORE;
+  return referralWhatsappLink(code);
 }
 
 const NEXT = 'To book a ride, tell me where you are going, or reply *menu*.';

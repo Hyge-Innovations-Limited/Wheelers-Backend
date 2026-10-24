@@ -5,7 +5,7 @@ import { readJsonBody, sendJson } from "./utils";
 import { getNumber, getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
 import { noteRequestDetail } from "../analytics/user-outcomes";
-import { referralChatMessage, referralShareLink } from "../whatsapp/referral";
+import { referralChatMessage, referralLinkTarget, referralShareLink } from "../whatsapp/referral";
 
 interface ReferralRouteDeps {
   jwtSecret: string;
@@ -86,8 +86,8 @@ export async function handleGetReferralSummaryRoute(
     const user = await authenticateHttpUser(req, deps.jwtSecret);
     const summary = await referralClient.findSummary(user.id);
 
-    // The link a referral QR code holds: it opens a chat with Wheelers with
-    // the code already typed.
+    // The link a referral QR code holds: app.wheelersng.com/r/CODE, to the
+    // app in the friend's store, or the chat with Wheelers.
     sendJson(res, 200, {
       ...summary,
       shareLink: summary.code ? referralShareLink(summary.code) : null,
@@ -103,6 +103,25 @@ export async function handleGetReferralSummaryRoute(
           : "Could not load referral summary.",
     });
   }
+}
+
+/**
+ * GET /r/:code, no sign-in: a referral link tapped or scanned. Sends the
+ * friend on (referralLinkTarget): the Play Store, the App Store or the chat.
+ * Never cached: the same link goes somewhere else on another phone.
+ */
+export function handleReferralLinkRoute(req: IncomingMessage, res: ServerResponse, rawCode: string): void {
+  let code = "";
+  try {
+    code = referralClient.normalizeCode(decodeURIComponent(rawCode)).slice(0, 12);
+  } catch {
+    // A broken escape: no code, still sent on.
+  }
+  res.statusCode = 302;
+  res.setHeader("Location", referralLinkTarget(code, req.headers["user-agent"] ?? ""));
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Vary", "User-Agent");
+  res.end();
 }
 
 /** PUT /referrals/me/code { code } — the person's own choice of referral code. */
