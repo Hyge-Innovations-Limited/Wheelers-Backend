@@ -1,6 +1,6 @@
 #!/bin/sh
 # Sets up coturn for Wheelers Live call on a fresh Ubuntu 24.04 machine in
-# Google Cloud. Run ON THE TURN MACHINE, from this folder, as a user with sudo:
+# Google Cloud or AWS. Run ON THE TURN MACHINE, from this folder, as a user with sudo:
 #
 #   sh setup.sh turn.wheelersng.com you@example.com
 #
@@ -19,8 +19,15 @@ sudo apt-get update -y
 sudo apt-get install -y coturn certbot
 
 echo "== addresses"
-PRIVATE_IP="$(curl -s -H 'Metadata-Flavor: Google' "$META/ip")"
-PUBLIC_IP="$(curl -s -H 'Metadata-Flavor: Google' "$META/access-configs/0/external-ip")"
+if curl -s -m 2 -H 'Metadata-Flavor: Google' "$META/ip" >/dev/null 2>&1; then
+  PRIVATE_IP="$(curl -s -H 'Metadata-Flavor: Google' "$META/ip")"
+  PUBLIC_IP="$(curl -s -H 'Metadata-Flavor: Google' "$META/access-configs/0/external-ip")"
+else
+  # AWS (IMDSv2). With an Elastic IP associated, public-ipv4 is that address.
+  TOKEN="$(curl -s -m 2 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+  PRIVATE_IP="$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
+  PUBLIC_IP="$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)"
+fi
 RESOLVED="$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1)"
 echo "private $PRIVATE_IP  public $PUBLIC_IP  $DOMAIN -> ${RESOLVED:-nothing}"
 if [ "$RESOLVED" != "$PUBLIC_IP" ]; then
