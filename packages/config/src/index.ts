@@ -73,9 +73,9 @@ export {
   getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
   marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
   dayPeriodOf, premiumAt, premiumFor, DAY_PERIODS, PERIOD_PREMIUM_MAX_NGN,
-  lagosClock, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, SURGE_MAX_LIMIT, SURGE_MIN_LIMIT,
+  lagosClock, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, WEEKEND_HOUR_CURVE_MAX, hourCurveMax, SURGE_MAX_LIMIT, SURGE_MIN_LIMIT,
 } from './pricing';
-export { fitHourCurve, MIN_PRICES_FOR_AN_HOUR } from './hour-curve';
+export { fitHourCurve, MIN_PRICES_FOR_AN_HOUR, MIN_PRICES_FOR_A_WEEKEND_HOUR } from './hour-curve';
 export type { CurveEvidence, CurveEvidenceKind, HourCurveFit } from './hour-curve';
 export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';

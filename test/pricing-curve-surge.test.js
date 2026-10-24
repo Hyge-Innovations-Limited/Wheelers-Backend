@@ -38,7 +38,8 @@ test('curve on: the other app is its quiet-hour figures times the hour; switchin
   const seed = config.seedHourCurve(s);
   assert.equal(seed.weekday[12], 1, 'a quiet hour');
   assert.ok(seed.weekday[18] > 1 && seed.weekday[8] > 1, 'rush hours carry what rush charges over quiet');
-  assert.equal(seed.weekend[18], 1);
+  assert.equal(seed.weekend[18], seed.weekday[18], 'a weekend hour starts where the same weekday hour does');
+  assert.equal(seed.weekend[12], 1);
   const off = config.calculateSuggestedFare(15, { durationSeconds: 40 * 60, at: lagos(18) });
   config.setPricingSettings({ ...floorOn, hourCurveOn: true, hourCurve: seed });
   const on = config.calculateSuggestedFare(15, { durationSeconds: 40 * 60, at: lagos(18) });
@@ -53,10 +54,11 @@ test('curve on: the other app is its quiet-hour figures times the hour; switchin
   assert.equal(Math.round(noon.marketFareNgn), Math.round(config.quietMarketFareNgn(15, 40)));
 });
 
-test('a saved curve is made safe: 24 hours each, never under 0.9 or over 1.15', () => {
-  const s = config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(0.7), weekend: Array(24).fill(9) } });
-  assert.equal(s.hourCurve.weekday[0], 0.9, 'never more than 10% under');
-  assert.equal(s.hourCurve.weekend[0], 1.15, 'an hour that ran away is held at +15% the moment it is read');
+test('a saved curve is made safe: 24 hours each, never under 0.9, never over 1.15 on a weekday or 1.6 on a weekend', () => {
+  const s = config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(9), weekend: Array(24).fill(9) } });
+  assert.equal(s.hourCurve.weekday[0], 1.15, 'a weekday hour that ran away is held at +15% the moment it is read');
+  assert.equal(s.hourCurve.weekend[0], 1.6, 'a weekend one at +60%');
+  assert.equal(config.setPricingSettings({ hourCurve: { weekday: Array(24).fill(0.7), weekend: Array(24).fill(0.7) } }).hourCurve.weekend[0], 0.9, 'never more than 10% under');
   assert.equal(config.setPricingSettings({ hourCurve: { weekday: [1, 2], weekend: Array(24).fill(1) } }).hourCurve, null);
   assert.equal(config.setPricingSettings({ surgeMax: 50 }).surgeMax, 2);
   config.setPricingSettings({});
@@ -223,4 +225,64 @@ test('a quiet market brings the price down, gently, and only with drivers there 
   assert.equal(stepSurge(0.9, 1.1, 0.9), 0.95, 'riders back: up at once');
   assert.equal(stepSurge(0.9, 0.5, 0.9), 0.9);
   assert.equal(stepSurge(0.85, 1, 1), 1, 'with the least back at 1, a saved discount goes at once');
+});
+
+/* ── weekends: never priced as a quiet weekday by default ─────────────── */
+
+// A Saturday at an hour, Lagos time (24 Oct 2026).
+const saturday = (hour) => lagos(hour, 24);
+const sample = (at, ratio) => ({ at, ratio, weight: 3, kind: 'sample' });
+
+test('a weekend hour with no weekend prices rests where the same weekday hour is tonight, not at 1', () => {
+  const now = lagos(23);
+  const old = flat(); // saved before this change: every weekend hour at 1
+  const baseline = config.seedHourCurve(config.normalizePricingSettings({}));
+  // Plenty of weekday evening prices lift weekday 18:00 (a step of 15%).
+  const weekday6pm = Array.from({ length: 12 }, (_, i) => sample(new Date(lagos(18).getTime() - i * 60_000), 1.3));
+  const fit = config.fitHourCurve(weekday6pm, old, now, { baseline });
+  assert.equal(fit.curve.weekday[18], 1.15);
+  assert.equal(fit.curve.weekend[18], fit.curve.weekday[18], 'Saturday 18:00 follows Wednesday 18:00');
+  assert.equal(fit.curve.weekend[8], fit.curve.weekday[8], 'and the morning rush');
+  assert.equal(fit.curve.weekend[3], 1, 'a quiet night stays quiet');
+});
+
+test('four weekend prices teach a weekend hour; it may climb past a weekday\'s +15% (to +60%), 15% a night', () => {
+  const now = saturday(23);
+  const baseline = config.seedHourCurve(config.normalizePricingSettings({}));
+  const sat6pm = Array.from({ length: 4 }, (_, i) => sample(new Date(saturday(18).getTime() - i * 7 * 86_400_000), 1.7));
+  let curve = flat();
+  const steps = [];
+  for (let night = 0; night < 5; night++) {
+    curve = config.fitHourCurve(sat6pm, curve, now, { baseline }).curve;
+    steps.push(curve.weekend[18]);
+  }
+  assert.deepEqual(steps, [1.15, 1.32, 1.52, 1.6, 1.6], 'up 15% a night, then held at +60%');
+  assert.equal(config.MIN_PRICES_FOR_A_WEEKEND_HOUR, 4);
+  const three = config.fitHourCurve(sat6pm.slice(0, 3), flat(), now, { baseline });
+  assert.equal(three.curve.weekend[18], three.curve.weekday[18], 'three are not enough: it rests on the weekday hour');
+  // The weekday side never goes past +15%, whatever weekend prices say.
+  assert.ok(curve.weekday.every((v) => v <= 1.15));
+});
+
+test('a weekend that really is cheaper (weekend prices say so) comes down, never more than 10%', () => {
+  const now = saturday(23);
+  const baseline = config.seedHourCurve(config.normalizePricingSettings({}));
+  const cheapSunday = Array.from({ length: 6 }, (_, i) => sample(new Date(saturday(9).getTime() - i * 3_600_000 * 0.1), 0.85));
+  const fit = config.fitHourCurve(cheapSunday, baseline, now, { baseline, maxStep: 1 });
+  assert.ok(fit.curve.weekend[9] < fit.curve.weekday[9], `weekend 09:00 under the weekday one (${fit.curve.weekend[9]} vs ${fit.curve.weekday[9]})`);
+  assert.ok(fit.curve.weekend[9] >= 0.9);
+});
+
+test('Unilag to Surulere, Saturday 18:00: no longer priced like a quiet weekday', () => {
+  const at = { durationSeconds: 28 * 60, origin: { lat: 6.5158, lng: 3.3898 }, destination: { lat: 6.4935, lng: 3.3561 } };
+  config.setPricingSettings({ ...floorOn, hourCurveOn: true, hourCurve: flat() });
+  const before = config.calculateSuggestedFare(9.6, { ...at, at: saturday(18) });
+  const learned = config.fitHourCurve([], flat(), saturday(23), { baseline: config.seedHourCurve(config.getPricingSettings()) }).curve;
+  config.setPricingSettings({ ...floorOn, hourCurveOn: true, hourCurve: learned });
+  const after = config.calculateSuggestedFare(9.6, { ...at, at: saturday(18) });
+  const wednesday = config.calculateSuggestedFare(9.6, { ...at, at: lagos(18) });
+  assert.equal(before.hourFactor, 1);
+  assert.equal(after.hourFactor, wednesday.hourFactor, 'the same multiplier as Wednesday at 18:00');
+  assert.ok(after.suggestedFareNgn > before.suggestedFareNgn, `${before.suggestedFareNgn} → ${after.suggestedFareNgn}`);
+  assert.ok(Math.abs(after.suggestedFareNgn - wednesday.suggestedFareNgn) <= 100, 'within the premium\'s own turn of the weekday price for the same trip');
 });

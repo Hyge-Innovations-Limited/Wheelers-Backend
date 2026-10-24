@@ -19,11 +19,15 @@
  *
  * An hour moves only on enough of its own evidence: fewer than
  * MIN_PRICES_FOR_AN_HOUR prices within an hour of it (on that kind of day),
- * and it stays at the baseline, what the rush and quiet figures charge, so
- * three evening prices cannot lift every evening. Never under HOUR_CURVE_MIN
- * (−10%: a cheaper hour may come down) nor over HOUR_CURVE_MAX (+15%).
+ * and it rests, so three evening prices cannot lift every evening. A weekday
+ * hour rests at the baseline, what the rush and quiet figures charge. A
+ * weekend hour rests at tonight's weekday value for the same hour: without
+ * weekend prices, a Saturday is never taken to be cheaper than a weekday. It
+ * needs MIN_PRICES_FOR_A_WEEKEND_HOUR, fewer, since four weeks hold only eight
+ * weekend days. Never under HOUR_CURVE_MIN (−10%: a cheaper hour may come
+ * down), nor over hourCurveMax: +15% on a weekday, +60% on a weekend.
  */
-import { HOUR_CURVE_MAX, HOUR_CURVE_MIN, lagosClock, type HourCurve } from './pricing';
+import { HOUR_CURVE_MIN, hourCurveMax, lagosClock, type HourCurve } from './pricing';
 
 export type CurveEvidenceKind = 'sample' | 'agreed' | 'bid';
 
@@ -55,6 +59,8 @@ const NEIGHBOUR = [1, 0.5, 0.15];
 const OTHER_KIND_OF_DAY = 0.3;
 /** Prices an hour needs within an hour either side, on its kind of day, before it moves off the baseline. */
 export const MIN_PRICES_FOR_AN_HOUR = 8;
+/** The same for a weekend hour: about one price per weekend day in that part of the day, over four weeks. */
+export const MIN_PRICES_FOR_A_WEEKEND_HOUR = 4;
 
 function weightedMedian(points: Array<{ value: number; weight: number }>): number {
   const sorted = [...points].sort((a, b) => a.value - b.value);
@@ -67,7 +73,7 @@ function weightedMedian(points: Array<{ value: number; weight: number }>): numbe
   return sorted[sorted.length - 1]!.value;
 }
 
-const clamp = (n: number) => Math.min(HOUR_CURVE_MAX, Math.max(HOUR_CURVE_MIN, n));
+const clamp = (n: number, weekend: boolean) => Math.min(hourCurveMax(weekend), Math.max(HOUR_CURVE_MIN, n));
 
 export function fitHourCurve(
   evidence: CurveEvidence[],
@@ -88,9 +94,9 @@ export function fitHourCurve(
       return { hour, weekend, log: Math.log(e.ratio), weight: e.weight * 0.5 ** (ageDays / HALF_LIFE_DAYS) };
     });
 
-  const fitDay = (weekend: boolean) => {
+  const fitDay = (weekend: boolean, resting: number[]) => {
     const before = weekend ? previous.weekend : previous.weekday;
-    const resting = weekend ? baseline.weekend : baseline.weekday;
+    const enough = weekend ? MIN_PRICES_FOR_A_WEEKEND_HOUR : MIN_PRICES_FOR_AN_HOUR;
     const curve: number[] = [];
     const counts: number[] = [];
     for (let hour = 0; hour < 24; hour++) {
@@ -103,22 +109,23 @@ export function fitHourCurve(
         near.push({ value: p.log, weight: p.weight * NEIGHBOUR[gap]! * (p.weekend === weekend ? 1 : OTHER_KIND_OF_DAY) });
       }
       counts.push(count);
-      if (count < MIN_PRICES_FOR_AN_HOUR) {
-        // Not enough to say this hour differs: back to the baseline, not wherever three prices pushed it.
-        curve.push(Math.round(clamp(resting[hour] ?? 1) * 100) / 100);
+      if (count < enough) {
+        // Not enough to say this hour differs: back to where it rests, not wherever three prices pushed it.
+        curve.push(Math.round(clamp(resting[hour] ?? 1, weekend) * 100) / 100);
         continue;
       }
       const prior = Math.log(before[hour] ?? 1);
       const total = near.reduce((sum, p) => sum + p.weight, 0);
       const learned = total > 0 ? (total * weightedMedian(near) + PRIOR_WEIGHT * prior) / (total + PRIOR_WEIGHT) : prior;
       const stepped = Math.max(prior - Math.log(1 + maxStep), Math.min(prior + Math.log(1 + maxStep), learned));
-      curve.push(Math.round(clamp(Math.exp(stepped)) * 100) / 100);
+      curve.push(Math.round(clamp(Math.exp(stepped), weekend) * 100) / 100);
     }
     return { curve, counts };
   };
 
-  const weekday = fitDay(false);
-  const weekend = fitDay(true);
+  const weekday = fitDay(false, baseline.weekday);
+  // A weekend hour without its own prices rests where the same weekday hour is tonight.
+  const weekend = fitDay(true, weekday.curve);
   return {
     curve: { weekday: weekday.curve, weekend: weekend.curve },
     counts: { weekday: weekday.counts, weekend: weekend.counts },

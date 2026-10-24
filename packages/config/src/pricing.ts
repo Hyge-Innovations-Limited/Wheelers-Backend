@@ -138,8 +138,17 @@ export type HourCurve = { weekday: number[]; weekend: number[] };
  * (hour-curve.ts) and never more than 10%.
  */
 export const HOUR_CURVE_MIN = 0.9;
-/** At most this far above the quiet-hour figures, however many prices say otherwise: an hour can never run away. */
+/** At most this far above the quiet-hour figures on a weekday, however many prices say otherwise: an hour can never run away. */
 export const HOUR_CURVE_MAX = 1.15;
+/**
+ * The same on a weekend. Higher: Saturday evenings were measured costing more
+ * on the other app than any weekday hour, and a weekend hour held at +15% left
+ * us ₦1,500 under it. Reached only on weekend prices, at most 15% a night.
+ */
+export const WEEKEND_HOUR_CURVE_MAX = 1.6;
+
+/** The most an hour may reach on its kind of day. */
+export const hourCurveMax = (weekend: boolean) => (weekend ? WEEKEND_HOUR_CURVE_MAX : HOUR_CURVE_MAX);
 /** The live surge may never be set to lift a price past this, whatever is saved. */
 export const SURGE_MAX_LIMIT = 2;
 /** Nor to take more than this off, whatever is saved: a quiet market lowers a price, it never gives rides away. */
@@ -335,12 +344,12 @@ function periodPremiumsFrom(value: unknown): PricingSettings['periodPremiums'] {
 
 function hourCurveFrom(value: unknown): HourCurve | null {
   const v = value as Partial<HourCurve> | null | undefined;
-  const list = (x: unknown) =>
+  const list = (x: unknown, max: number) =>
     Array.isArray(x) && x.length === 24 && x.every((n) => Number.isFinite(Number(n)))
-      ? x.map((n) => Math.round(Math.min(HOUR_CURVE_MAX, Math.max(HOUR_CURVE_MIN, Number(n))) * 100) / 100)
+      ? x.map((n) => Math.round(Math.min(max, Math.max(HOUR_CURVE_MIN, Number(n))) * 100) / 100)
       : null;
-  const weekday = list(v?.weekday);
-  const weekend = list(v?.weekend);
+  const weekday = list(v?.weekday, hourCurveMax(false));
+  const weekend = list(v?.weekend, hourCurveMax(true));
   return weekday && weekend ? { weekday, weekend } : null;
 }
 
@@ -419,7 +428,13 @@ export function quietMarketFareNgn(distanceKm: number, minutes: number, settings
 /**
  * A curve that changes nothing at first: 1 in quiet hours, and in rush hours
  * what the rush figures already charge over the quiet ones for a typical trip
- * (15 km, 40 minutes). Where a new curve starts learning from.
+ * (15 km, 40 minutes). Where a new curve starts learning from, and where an
+ * hour with too few prices of its own rests.
+ *
+ * A weekend hour starts where the same weekday hour does. It used to start at
+ * 1 everywhere (a weekend was never rush), which priced a Saturday evening
+ * like a quiet Wednesday afternoon: ₦1,500 under the other app. A weekend hour
+ * goes lower only when weekend prices say so.
  */
 export function seedHourCurve(settings: PricingSettings = pricingSettings): HourCurve {
   const quiet = quietMarketFareNgn(15, 40, settings);
@@ -428,7 +443,7 @@ export function seedHourCurve(settings: PricingSettings = pricingSettings): Hour
   const rushHour = (h: number) => (h >= 7 && h < 10) || (h >= 16 && h < 20);
   return {
     weekday: Array.from({ length: 24 }, (_, h) => Math.round((rushHour(h) ? rushShare : 1) * 100) / 100),
-    weekend: Array.from({ length: 24 }, () => 1),
+    weekend: Array.from({ length: 24 }, (_, h) => Math.round((rushHour(h) ? rushShare : 1) * 100) / 100),
   };
 }
 

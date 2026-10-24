@@ -54,6 +54,7 @@
 // The other app's figures, from prices read off it by hand:
 //   npm run pricing sample 15.5 23 5800       a trip of 15.5 km and 23 minutes cost ₦5,800 just now
 //   npm run pricing sample 16 33 7200 rush    ...taken in rush hours (or "quiet"), when adding it later
+//   npm run pricing sample 9.6 28 7200 at=2026-10-24T18:00   ...seen then (Lagos time): a weekend price typed in later teaches the weekend
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
 //   npm run pricing sample 9.5 28 5200 ikeja      ...a trip from or to an area inside Lagos (maryland, ikeja,
 //                                                 surulere, lekki, ajah): Yaba and the Island are the standard
@@ -308,9 +309,12 @@ async function tryTrip() {
 async function sample() {
   const [km, minutes, price, ...words] = rest;
   const hours = words.find((w) => w === 'rush' || w === 'quiet');
-  const areaWord = words.find((w) => w !== 'rush' && w !== 'quiet');
+  const atWord = words.find((w) => w.startsWith('at='));
+  const areaWord = words.find((w) => w !== 'rush' && w !== 'quiet' && !w.startsWith('at='));
   const area = areaWord ? areaNamed(areaWord) : null;
-  const now = new Date();
+  // When the price was seen, if not just now: at=2026-10-24T18:00 (Lagos time). A Saturday price
+  // typed in on Monday must teach Saturday's hour, not Monday's.
+  const now = atWord ? seenAt(atWord.slice(3)) : new Date();
   const row = await prisma.marketSample.create({ data: {
     km: number(km, 'km'), minutes: number(minutes, 'minutes'), priceNgn: number(price, 'the price'),
     rush: hours ? hours === 'rush' : config.isRushHour(now), takenAt: now, addedBy: 'server', area: area?.key ?? null,
@@ -325,6 +329,17 @@ async function sample() {
     : f.baseNgn + f.perKmNgn * row.km + f.perMinuteNgn * row.minutes) * factor;
   console.log(`Saved: ${row.km} km in ${row.minutes} minutes cost ${naira(row.priceNgn)} (${row.rush ? 'rush' : 'quiet'} hours${area ? `, from ${area.name}` : ''}).`);
   console.log(`Our figures would have said ${naira(ours)}: ${naira(Math.abs(ours - Number(row.priceNgn)))} ${ours > Number(row.priceNgn) ? 'too high' : 'too low'}. Run "npm run pricing ${area ? 'area-fit' : 'fit'}" to see what the prices collected so far give.`);
+}
+
+/** "2026-10-24T18:00" (or with a space), Lagos time: not in the future, and within the 4 weeks the curve learns from. */
+function seenAt(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/.exec(text.trim());
+  if (!m) throw new Error('at= takes the Lagos date and time the price was seen, like at=2026-10-24T18:00');
+  const at = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+01:00`);
+  if (Number.isNaN(at.getTime())) throw new Error(`${text} is not a date and time`);
+  if (at.getTime() > Date.now() + 5 * 60_000) throw new Error(`${text} is in the future`);
+  if (Date.now() - at.getTime() > 28 * 86_400_000) throw new Error(`${text} is more than 4 weeks ago: the curve would not learn from it`);
+  return at;
 }
 
 async function samples() {
@@ -601,7 +616,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | lift N | curve [fit [save] | on | off] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }
