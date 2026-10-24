@@ -13,6 +13,15 @@ const CASHBACK_FREEZE_DAYS = 30;
 const REFERRAL_REWARD_DAYS = 30;
 const REFERRAL_CLOSE_DAYS = 60;
 
+/**
+ * Referrals are recorded and followed (who joined with whose code, whether
+ * they rode), but nobody is paid for them: no cashback for a friend's ride or
+ * for one who never rode, and a new friend no longer unfreezes cashback.
+ * REFERRAL_REWARDS=on turns the rewards below back on. Cashback already given
+ * stays the person's to spend, and still freezes as before.
+ */
+const rewardsOn = () => process.env['REFERRAL_REWARDS'] === 'on';
+
 /** The rules above, as plain numbers, for the admin Referrals page. */
 export const REFERRAL_RULES = {
   rideRewardNgn: RIDE_QUALIFIED_REWARD_NGN.toNumber(),
@@ -86,6 +95,11 @@ async function createCashback(
   });
 }
 
+/**
+ * A pending referral moves on: the friend rode in time, or did not. With
+ * rewards on, the person whose code it was is given the cashback, once.
+ * Answers whether it moved on now (false when it had already).
+ */
 async function settleReferralWithReward(
   tx: Prisma.TransactionClient,
   input: {
@@ -105,34 +119,20 @@ async function settleReferralWithReward(
     return false;
   }
 
-  const existingCashback = await tx.referralCashback.findFirst({
+  const alreadyRewarded = await tx.referralCashback.findFirst({
     where: { sourceReferralId: referral.id },
     select: { id: true },
   });
 
-  if (existingCashback) {
-    await tx.referral.update({
-      where: { id: referral.id },
-      data: {
-        status: input.status,
-        firstRideId: input.firstRideId ?? referral.firstRideId,
-        qualifiedAt:
-          input.status === ReferralStatus.QUALIFIED_RIDE
-            ? input.now
-            : referral.qualifiedAt,
-        settledAt: input.now,
-      },
+  if (rewardsOn() && !alreadyRewarded) {
+    await createCashback(tx, {
+      userId: referral.referrerId,
+      sourceReferralId: referral.id,
+      type: input.type,
+      amountNgn: input.amountNgn,
+      now: input.now,
     });
-    return false;
   }
-
-  await createCashback(tx, {
-    userId: referral.referrerId,
-    sourceReferralId: referral.id,
-    type: input.type,
-    amountNgn: input.amountNgn,
-    now: input.now,
-  });
 
   await tx.referral.update({
     where: { id: referral.id },
@@ -236,6 +236,22 @@ export const referralClient = {
     }
   },
 
+  /**
+   * Who a code belongs to, for the page a referral link opens: the code and
+   * the first word of their name, nothing else. Null for a code nobody has.
+   */
+  async findCodeOwner(code: string): Promise<{ code: string; firstName: string | null } | null> {
+    const normalized = normalizeReferralCode(code);
+    if (normalized.length < CUSTOM_CODE_MIN || normalized.length > CUSTOM_CODE_MAX) return null;
+    const row = await prisma.referralCode.findFirst({
+      where: { code: normalized, isActive: true },
+      select: { code: true, user: { select: { name: true } } },
+    });
+    if (!row) return null;
+    const firstName = row.user.name?.trim().split(/\s+/)[0] ?? '';
+    return { code: row.code, firstName: firstName || null };
+  },
+
   /** The code this person created for themselves; null until they create one. */
   async findOwnCode(userId: string): Promise<string | null> {
     const row = await prisma.referralCode.findUnique({ where: { userId }, select: { code: true } });
@@ -275,7 +291,7 @@ export const referralClient = {
         throw new Error('A referral code has already been applied.');
       }
 
-      const frozenCashback = await tx.referralCashback.findFirst({
+      const frozenCashback = !rewardsOn() ? null : await tx.referralCashback.findFirst({
         where: {
           userId: referralCode.userId,
           status: ReferralCashbackStatus.FROZEN,
@@ -561,37 +577,32 @@ export const referralClient = {
   },
 
   async settleQualifiedRideRewards(now = new Date(), limit = 100) {
-    const referrals = await prisma.referral.findMany({
-      where: {
-        status: ReferralStatus.PENDING,
-        appliedAt: { lte: now },
-      },
-      orderBy: { appliedAt: 'asc' },
-      take: limit,
-    });
+    // Only friends who have ridden in their window, oldest first: with the 100
+    // oldest pending read instead, more than 100 friends yet to ride hid
+    // every one who had, until those expired.
+    const referrals = await prisma.$queryRaw<Array<{ id: string; rideId: string }>>`
+      SELECT r.id, first_ride.id AS "rideId"
+      FROM "Referral" r
+      CROSS JOIN LATERAL (
+        SELECT ride.id FROM "Ride" ride
+        WHERE ride."riderId" = r."referredUserId"
+          AND ride.status = 'COMPLETED'
+          AND ride."completedAt" >= r."appliedAt"
+          AND ride."completedAt" <= r."expiresAt"
+        ORDER BY ride."completedAt" ASC
+        LIMIT 1
+      ) first_ride
+      WHERE r.status = 'PENDING' AND r."appliedAt" <= ${now}
+      ORDER BY r."appliedAt" ASC
+      LIMIT ${limit}`;
 
     let settledCount = 0;
     for (const referral of referrals) {
-      const ride = await prisma.ride.findFirst({
-        where: {
-          riderId: referral.referredUserId,
-          status: 'COMPLETED',
-          completedAt: {
-            gte: referral.appliedAt,
-            lte: referral.expiresAt,
-          },
-        },
-        orderBy: { completedAt: 'asc' },
-        select: { id: true },
-      });
-
-      if (!ride) continue;
-
       const settled = await prisma.$transaction((tx) =>
         settleReferralWithReward(tx, {
           referralId: referral.id,
           status: ReferralStatus.QUALIFIED_RIDE,
-          firstRideId: ride.id,
+          firstRideId: referral.rideId,
           amountNgn: RIDE_QUALIFIED_REWARD_NGN,
           type: ReferralCashbackType.RIDE_QUALIFIED,
           now,

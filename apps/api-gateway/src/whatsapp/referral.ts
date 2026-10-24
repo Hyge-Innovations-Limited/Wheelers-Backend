@@ -29,12 +29,13 @@ export function referralCodeIn(text: string): string | null {
 export const referralChatMessage = (code: string) => `Hi Wheelers. My referral code is ${code}`;
 
 /**
- * A link that opens a chat with the Wheelers number and the code already
- * typed. It is what a referral QR code holds. Null when the number is not set.
+ * A person's referral link, what their QR code holds: the website's page for
+ * the code (Wheelers-Frontend, app/r/[code]). It names who invited them and
+ * offers the app (Play Store, App Store) or a chat with Wheelers with the code
+ * already typed. One link that works wherever it is shared.
  */
-export function referralShareLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] ?? ''): string | null {
-  const digits = botNumber.replace(/\D/g, '');
-  return digits ? `https://wa.me/${digits}?text=${encodeURIComponent(referralChatMessage(code))}` : null;
+export function referralShareLink(code: string, base = process.env['REFERRAL_LINK_BASE'] || 'https://wheelersng.com/r'): string {
+  return `${base.replace(/\/+$/, '')}/${encodeURIComponent(code)}`;
 }
 
 const NEXT = 'To book a ride, tell me where you are going, or reply *menu*.';

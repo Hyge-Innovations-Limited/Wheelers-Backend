@@ -163,13 +163,13 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
  * way to open an account number for a rider who has none yet.
  */
 /**
- * What a rider forwards to a friend: the code, and the link that opens a chat
- * with Wheelers with it already typed (the bot reads it and adds it).
+ * What a rider forwards to a friend: the code, and their link (the page that
+ * opens the app, the store or a chat with Wheelers with the code typed).
  */
-export function referralShareMessage(code: string, link = referralShareLink(code)): string {
+export function referralShareMessage(code: string, link: string | null = referralShareLink(code)): string {
   return link
-    ? `Book rides on WhatsApp with Wheelers. Use my code *${code}* — tap to start: ${link}`
-    : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
+    ? `Ride with Wheelers on WhatsApp or the app, and name your own price. Use my code *${code}* — tap to start: ${link}`
+    : `Ride with Wheelers on WhatsApp or the app. Message Wheelers and say: My referral code is ${code}`;
 }
 
 export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
@@ -200,7 +200,7 @@ export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
     onReferralCodeSaved: async (userId: string, code: string): Promise<void> => {
       const phone = (await userClient.findById(userId).catch(() => null))?.phone;
       if (!phone) return;
-      const note = `Your referral code is *${code}*. Forward the next message to friends: when they take a ride with your code, you get ride cashback.`;
+      const note = `Your referral code is *${code}*. Forward the next message to friends: everyone who joins with your code shows under Your referral code.`;
       const forward = referralShareMessage(code);
       await sendMetaText(deps, phone, note);
       await sendMetaText(deps, phone, forward);

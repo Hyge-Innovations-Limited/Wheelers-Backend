@@ -1,5 +1,6 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { referralClient, rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { referralShareLink } from '../whatsapp/referral';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
@@ -286,8 +287,8 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
     const ownCode = await referralClient.findOwnCode(userId).catch(() => null);
     choices.push(
       ownCode
-        ? { id: MENU_IDS.myCode, title: 'Your referral code', description: clip(`${ownCode} — share it and earn ride cashback`, 300) }
-        : { id: MENU_IDS.myCode, title: 'Create your referral code', description: 'Pick your own code, share it, earn ride cashback' },
+        ? { id: MENU_IDS.myCode, title: 'Your referral code', description: clip(`${ownCode} — share your link with friends`, 300) }
+        : { id: MENU_IDS.myCode, title: 'Create your referral code', description: 'Pick your own code and invite friends' },
     );
     choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' });
   }
@@ -448,16 +449,13 @@ async function applyReferral(typed: string, userId: string): Promise<FlowScreen>
 
 // ── REFERRAL, their own code ─────────────────────────────────────────────────────────────────
 
-/** What a friend's first ride earns the person whose code they used (referralClient). */
-const RIDE_REWARD_LINE = 'When someone joins with your code and takes a ride within 30 days, you get ₦1,000 cashback for your rides.';
-
 /** Creating their own referral code, as the app has it: once, and theirs for good. */
 function myCodeScreen(typed = '', error = ''): FlowScreen {
   return {
     screen: 'REFERRAL',
     data: {
       heading: 'Create your referral code',
-      intro_line: `Pick a code friends will remember. Your name works well. It can't be changed later. ${RIDE_REWARD_LINE}`,
+      intro_line: 'Pick a code friends will remember. Your name works well. It can\'t be changed later.',
       stats_line: '',
       has_stats: false,
       code: typed,
@@ -486,17 +484,17 @@ async function saveMyCode(typed: string, userId: string, deps: QuickActionsFlowD
   return shareMyCode(userId, code, deps);
 }
 
-/** Their code, sent to the chat to forward, and what it has earned so far. */
+/** Their code, sent to the chat to forward, and who has joined with it so far. */
 async function shareMyCode(userId: string, code: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   void deps.onReferralCodeSaved?.(userId, code).catch((error) => console.error('[quick-actions] referral code message not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
   const summary = await referralClient.findSummary(userId).catch(() => null);
   const joined = summary ? summary.pendingReferrals + summary.qualifiedReferrals + summary.expiredNoRideReferrals + summary.closedReferrals : 0;
-  const cashback = summary?.availableCashbackNgn ?? 0;
+  const rode = summary?.qualifiedReferrals ?? 0;
   const stats = [
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
-    cashback > 0 ? `${naira(cashback)} cashback ready for your rides.` : '',
+    rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  return doneScreen(`Your code is ${code}`, `It is in your chat now. Forward that message to friends. ${RIDE_REWARD_LINE}${stats ? `\n\n${stats}` : ''}`, false);
+  return doneScreen(`Your code is ${code}`, `It is in your chat now. Forward that message to friends, or share your link: ${referralShareLink(code)}${stats ? `\n\n${stats}` : ''}`, false);
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────
