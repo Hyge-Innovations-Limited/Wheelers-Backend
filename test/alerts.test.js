@@ -55,6 +55,8 @@ test('under pm2: an error is sent once, its repeats counted, warnings only when 
     console.error('[payments] webhook failed for +2348039999999', new Error('boom'));
     console.warn('[ride] nothing to see');
     console.warn('[whatsapp] Meta could not deliver a message', { errors: [{ code: 131042 }] });
+    // A deploy's Kafka rebalance is routine: no alert.
+    console.error(JSON.stringify({ level: 'ERROR', logger: 'kafkajs', message: '[Connection] Response Heartbeat(key: 12, version: 3)', error: 'The group is rebalancing, so a rejoin is needed' }));
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(sent.length, 2, JSON.stringify(sent.map((m) => m.text.split('\n')[0])));
     assert.equal(sent[0].chat_id, '12345');

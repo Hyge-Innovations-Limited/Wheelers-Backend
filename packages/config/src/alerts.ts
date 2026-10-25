@@ -46,6 +46,19 @@ const WATCHED_WARNINGS: readonly RegExp[] = [
   /\[backup\].*FAILED/,
 ];
 
+/**
+ * Errors that are the system working, not failing: Kafka moving a consumer
+ * group's partitions around while services restart (every deploy) logs these
+ * at ERROR and settles within seconds. A consumer that really cannot reach
+ * Kafka still alerts (its retries run out, "Crash", "ECONNREFUSED").
+ */
+const ROUTINE_ERRORS: readonly RegExp[] = [
+  /The group is rebalancing, so a rejoin is needed/,
+  /The coordinator is not aware of this member/,
+  /Specified group generation id is not valid/,
+  /There is no leader for this topic-partition as we are in the middle of a leadership election/,
+];
+
 const SPOOL_DIR = join(homedir(), '.wheelers-alerts');
 
 type Group = { count: number; firstLine: string; sentAt: number; unsent: number };
@@ -154,6 +167,7 @@ export async function sendAlert(title: string, body = '', options: { force?: boo
 
 function report(level: 'error' | 'warning', args: unknown[]): void {
   const text = describe(args);
+  if (ROUTINE_ERRORS.some((pattern) => pattern.test(text))) return;
   if (level === 'error') lastError = text.slice(0, MAX_TEXT);
   const key = fingerprint(text);
   const now = Date.now();
