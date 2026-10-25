@@ -8,13 +8,18 @@
  * The outer areas (Ikorodu, Epe, Ibeju-Lekki, Badagry), where drivers are few
  * and come back empty: local government outlines from OpenStreetMap
  * (© OpenStreetMap contributors, ODbL), simplified to about a hundred metres.
- * The inner ones (Maryland, Ikeja, Surulere, Lekki, Ajah), where the other app
- * charges more than in Yaba and on the Island: boxes drawn around the
- * neighbourhood, kept off Yaba and the Island. The first area a point falls
- * in is its area, so Maryland comes before the Ikeja around it.
+ * Three neighbourhoods have their own boxes (Maryland, Lekki, Ajah), and
+ * every other part of Lagos is in its local government area: all 20 of them,
+ * outlined from OpenStreetMap (lga-outlines.ts), each with its own factors,
+ * ×1 until set by hand (npm run pricing area KEY P D) or learned from prices
+ * there (sample … KEY, then area-fit). The first area a point falls in is its
+ * area, so a neighbourhood comes before the local government around it
+ * (Maryland before Ikeja, Lekki and Ajah before Eti-Osa).
  */
 
-export type PricingAreaKey = 'ikorodu' | 'epe' | 'ibeju-lekki' | 'badagry' | 'maryland' | 'ikeja' | 'surulere' | 'lekki' | 'ajah';
+import { LGA_OUTLINES, type LgaKey } from './lga-outlines';
+
+export type PricingAreaKey = LgaKey | 'maryland' | 'lekki' | 'ajah';
 
 export interface PricingArea {
   key: PricingAreaKey;
@@ -116,20 +121,6 @@ export const PRICING_AREAS: readonly PricingArea[] = [
     outline: box(6.560, 3.355, 6.585, 3.385),
   },
   {
-    // Ikeja GRA, Allen, Alausa, Opebi, Oregun, Agidingbi, Ogba and the airport.
-    key: 'ikeja',
-    name: 'Ikeja',
-    center: [6.6018, 3.3515],
-    outline: box(6.565, 3.310, 6.655, 3.385),
-  },
-  {
-    // Surulere, Ojuelegba, Aguda, Itire, Masha, Adeniran Ogunsanya, up to Yaba.
-    key: 'surulere',
-    name: 'Surulere',
-    center: [6.5000, 3.3500],
-    outline: box(6.470, 3.325, 6.520, 3.362),
-  },
-  {
     // Lekki Phase 1, Ikate, Agungi, Osapa, Chevron, Jakande, Ikota: from the toll gate.
     key: 'lekki',
     name: 'Lekki',
@@ -143,7 +134,39 @@ export const PRICING_AREAS: readonly PricingArea[] = [
     center: [6.4670, 3.5710],
     outline: box(6.415, 3.550, 6.500, 3.624),
   },
+  // The rest of Lagos, by local government (the four outer ones are above).
+  ...lgaAreas([
+    // Ikeja GRA, Allen, Alausa, Opebi, Oregun, Agidingbi, Ogba and the airport.
+    ['ikeja', [6.6018, 3.3515]],
+    // Surulere, Ojuelegba, Aguda, Itire, Ijeshatedo, Masha, Adeniran Ogunsanya.
+    ['surulere', [6.5000, 3.3500]],
+    ['agege', [6.6180, 3.3210]],
+    ['ajeromi-ifelodun', [6.4550, 3.3330]],
+    // Alagbado, Abule Egba, Ipaja, Egbeda, Ikotun, Igando.
+    ['alimosho', [6.5920, 3.2930]],
+    // Festac, Mile 2, Satellite Town.
+    ['amuwo-odofin', [6.4660, 3.2840]],
+    ['apapa', [6.4490, 3.3590]],
+    // Victoria Island, Ikoyi, Oniru, Lekki outside its box.
+    ['eti-osa', [6.4281, 3.4219]],
+    ['ifako-ijaiye', [6.6400, 3.3200]],
+    // Gbagada, Ojota, Ketu, Mile 12, Ogudu.
+    ['kosofe', [6.5550, 3.3900]],
+    ['mushin', [6.5270, 3.3500]],
+    ['ojo', [6.4600, 3.1800]],
+    ['oshodi-isolo', [6.5550, 3.3430]],
+    // Shomolu, Bariga, Akoka (Unilag).
+    ['shomolu', [6.5390, 3.3850]],
+    // Yaba, Ebute Metta, Iwaya.
+    ['lagos-mainland', [6.5070, 3.3780]],
+    ['lagos-island', [6.4520, 3.3900]],
+  ]),
 ];
+
+/** Local government areas as pricing areas, each with a point in its main town. */
+function lgaAreas(list: ReadonlyArray<readonly [LgaKey, readonly [number, number]]>): PricingArea[] {
+  return list.map(([key, center]) => ({ key, name: LGA_OUTLINES[key].name, center, outline: LGA_OUTLINES[key].parts[0]! }));
+}
 
 function inside(outline: PricingArea['outline'], lat: number, lng: number): boolean {
   let hit = false;

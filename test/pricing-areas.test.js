@@ -30,8 +30,34 @@ test('the outer areas and the dearer ones inside Lagos are where they should be;
   assert.equal(config.pricingAreaOf(6.5715, 3.3676)?.key, 'maryland', 'Maryland, though inside Ikeja\'s box');
   assert.equal(config.pricingAreaOf(6.495, 3.355)?.key, 'surulere');
   assert.equal(config.pricingAreaOf(6.467, 3.571)?.key, 'ajah');
-  // The standard: Yaba, Unilag, Victoria Island, Ikoyi.
-  for (const p of [YABA, { lat: 6.5158, lng: 3.3896 }, { lat: 6.428, lng: 3.42 }, { lat: 6.452, lng: 3.435 }]) assert.equal(config.pricingAreaOf(p.lat, p.lng), null);
+  // The standard: Yaba, Unilag, Victoria Island, Ikoyi, each in its local government and ×1 there.
+  const standard = [[{ lat: 6.507, lng: 3.378 }, 'lagos-mainland'], [{ lat: 6.5158, lng: 3.3896 }, 'shomolu'], [{ lat: 6.428, lng: 3.42 }, 'eti-osa'], [{ lat: 6.452, lng: 3.435 }, 'eti-osa']];
+  for (const [p, key] of standard) {
+    assert.equal(config.pricingAreaOf(p.lat, p.lng)?.key, key);
+    assert.deepEqual(config.getPricingSettings().areas[key], { pickup: 1, dropoff: 1 });
+  }
+});
+
+test('every local government in Lagos is an area of its own, one area for any point, each ×1 until set or learned', () => {
+  const lgas = ['agege', 'ajeromi-ifelodun', 'alimosho', 'amuwo-odofin', 'apapa', 'badagry', 'epe', 'eti-osa', 'ibeju-lekki', 'ifako-ijaiye',
+    'ikeja', 'ikorodu', 'kosofe', 'lagos-island', 'lagos-mainland', 'mushin', 'ojo', 'oshodi-isolo', 'shomolu', 'surulere'];
+  const keys = config.PRICING_AREAS.map((a) => a.key);
+  for (const lga of lgas) assert.ok(keys.includes(lga), lga);
+  assert.equal(new Set(keys).size, keys.length, 'no area twice');
+  // Places on the edge of town and the trips that were cheap.
+  assert.equal(config.pricingAreaOf(6.665, 3.27)?.key, 'alimosho', 'Alagbado');
+  assert.equal(config.pricingAreaOf(6.645, 3.30)?.key, 'alimosho', 'Abule Egba');
+  assert.equal(config.pricingAreaOf(6.591, 3.357)?.key, 'ikeja', '108 Opebi Road');
+  assert.equal(config.pricingAreaOf(6.498, 3.336)?.key, 'surulere', 'Ijeshatedo');
+  assert.equal(config.pricingAreaOf(6.466, 3.284)?.key, 'amuwo-odofin', 'Festac');
+  assert.equal(config.pricingAreaOf(6.555, 3.39)?.key, 'kosofe', 'Gbagada');
+  // Each centre is in its own area, and a new one prices as the standard until set.
+  for (const area of config.PRICING_AREAS) assert.equal(config.pricingAreaOf(area.center[0], area.center[1])?.key, area.key, area.key);
+  config.setPricingSettings({});
+  assert.deepEqual(config.getPricingSettings().areas.alimosho, { pickup: 1, dropoff: 1 });
+  config.setPricingSettings({ areas: { alimosho: { pickup: 1.1, dropoff: 1.15 } } });
+  assert.equal(price(16, 35, { origin: { lat: 6.6018, lng: 3.3515 }, destination: { lat: 6.665, lng: 3.27 } }).areaFactor, 1.15, 'Ikeja to Alagbado takes Alimosho\'s drop-off factor');
+  config.setPricingSettings({});
 });
 
 test('a trip from Ikorodu takes the pickup factor; one into Ikorodu the drop-off factor; the larger wins', () => {

@@ -111,7 +111,8 @@ async function status() {
   console.log(`Today: ${clock.holiday ? `${clock.holiday} (priced as a Sunday)` : clock.dayKind === 'weekday' ? 'weekday' : clock.dayKind === 'saturday' ? 'Saturday' : 'Sunday'}${clock.night ? ', night' : ''}.  Next holidays: ${next.length ? next.map((h) => `${h.date} ${h.name}`).join(', ') : 'none in 60 days'}  (npm run pricing holiday)`);
   console.log(`Rain: ${on(settings.rainOn)}, ×${settings.rainLift} in rain, more in heavy rain${settings.rainLiftFittedAt ? ` (learned ${lagosTime(new Date(settings.rainLiftFittedAt))})` : ' (starting value; learned from prices seen in the rain)'}  (npm run pricing rain)`);
   console.log(`Traffic: ${on(settings.trafficOn)}   Busy area: ${on(settings.demandOn)}`);
-  console.log(`Outer areas (pickup / drop-off): ${config.PRICING_AREAS.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ')}`);
+  const lifted = config.PRICING_AREAS.filter((a) => settings.areas[a.key].pickup !== 1 || settings.areas[a.key].dropoff !== 1);
+  console.log(`Areas (pickup / drop-off): ${lifted.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ') || 'none lifted'}; the other ${config.PRICING_AREAS.length - lifted.length} ×1  (npm run pricing areas)`);
   console.log(`Model: ${on(settings.modelOn)}`);
   console.log(ml
     ? `  trained on ${ml.rows.toLocaleString('en-NG')} ${ml.source} quotes, ${ml.trainedAt.slice(0, 10)}`

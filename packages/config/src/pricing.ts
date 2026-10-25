@@ -373,6 +373,21 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
     surulere: { pickup: 1, dropoff: 1 },
     lekki: { pickup: 1, dropoff: 1 },
     ajah: { pickup: 1, dropoff: 1 },
+    // Every other local government: the standard until set or learned.
+    agege: { pickup: 1, dropoff: 1 },
+    'ajeromi-ifelodun': { pickup: 1, dropoff: 1 },
+    alimosho: { pickup: 1, dropoff: 1 },
+    'amuwo-odofin': { pickup: 1, dropoff: 1 },
+    apapa: { pickup: 1, dropoff: 1 },
+    'eti-osa': { pickup: 1, dropoff: 1 },
+    'ifako-ijaiye': { pickup: 1, dropoff: 1 },
+    kosofe: { pickup: 1, dropoff: 1 },
+    mushin: { pickup: 1, dropoff: 1 },
+    ojo: { pickup: 1, dropoff: 1 },
+    'oshodi-isolo': { pickup: 1, dropoff: 1 },
+    shomolu: { pickup: 1, dropoff: 1 },
+    'lagos-mainland': { pickup: 1, dropoff: 1 },
+    'lagos-island': { pickup: 1, dropoff: 1 },
   },
 };
 
