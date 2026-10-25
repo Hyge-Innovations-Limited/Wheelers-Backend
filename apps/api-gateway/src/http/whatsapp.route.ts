@@ -32,7 +32,7 @@ import { addingStop } from '../whatsapp/stages/adding-stop';
 import { awaitingTripConfirm } from '../whatsapp/stages/awaiting-trip-confirm';
 import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
 import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
-import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
+import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
 import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
 import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
@@ -112,6 +112,11 @@ export async function handleMetaWhatsappWebhookRoute(
     } catch {
       console.warn('[whatsapp] Invalid JSON in Meta webhook');
       return;
+    }
+
+    // A message of ours Meta could not deliver (a code, a ride card): the reason is only ever said here.
+    for (const failure of extractMetaFailures(parsed)) {
+      console.warn('[whatsapp] Meta could not deliver a message', failure);
     }
 
     // Meta sends status updates (delivered, read) — those yield no messages.

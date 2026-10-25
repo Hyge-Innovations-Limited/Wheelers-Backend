@@ -39,6 +39,39 @@ export interface MetaMessageInfo {
   flowCompleted?: { flow: string; rearm: boolean };
 }
 
+/** A message of ours Meta could not deliver, and why (its error codes: 131042 a payment problem, 131026 the number cannot receive it…). */
+export interface MetaDeliveryFailure {
+  messageId: string;
+  to: string;
+  errors: Array<{ code: number | null; title: string; details: string | null }>;
+}
+
+/**
+ * The messages Meta reports as failed in a webhook. Meta says "accepted" when
+ * it takes a message and only later, here, that it could not deliver it: a
+ * sign-in code that never arrives says why only in this.
+ */
+export function extractMetaFailures(body: unknown): MetaDeliveryFailure[] {
+  const payload = body as Record<string, unknown> | null;
+  if (payload?.object !== 'whatsapp_business_account') return [];
+  const out: MetaDeliveryFailure[] = [];
+  for (const entry of (payload.entry as Array<Record<string, unknown>> | undefined) ?? []) {
+    for (const change of (entry.changes as Array<Record<string, unknown>> | undefined) ?? []) {
+      const value = change.value as Record<string, unknown> | undefined;
+      for (const status of (value?.statuses as Array<Record<string, unknown>> | undefined) ?? []) {
+        if (status.status !== 'failed') continue;
+        const errors = ((status.errors as Array<Record<string, unknown>> | undefined) ?? []).map((e) => ({
+          code: typeof e.code === 'number' ? e.code : null,
+          title: String(e.title ?? e.message ?? 'unknown'),
+          details: typeof (e.error_data as Record<string, unknown> | undefined)?.details === 'string' ? String((e.error_data as Record<string, unknown>).details) : null,
+        }));
+        out.push({ messageId: String(status.id ?? ''), to: String(status.recipient_id ?? ''), errors });
+      }
+    }
+  }
+  return out;
+}
+
 export function extractMetaMessages(body: unknown): MetaMessageInfo[] {
   const out: MetaMessageInfo[] = [];
   const payload = body as Record<string, unknown>;
