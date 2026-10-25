@@ -3,7 +3,7 @@ import {
   areaFactorOf,
   fitHourCurve,
   getPricingSettings,
-  lagosClock,
+  curveValueAt,
   marketHighFrom,
   normalizePricingSettings,
   quietMarketFareNgn,
@@ -231,8 +231,7 @@ export const pricingClient = {
     const ratios = evidence
       .filter((e) => e.kind === 'sample')
       .map((e) => {
-        const { hour, weekend } = lagosClock(e.at);
-        const curve = (weekend ? fit.curve.weekend : fit.curve.weekday)[hour] ?? 1;
+        const curve = curveValueAt(fit.curve, e.at);
         return e.ratio / (curve * (e.rain ? settings.rainLift : 1));
       });
     return { ...fit, previous, marketHigh: marketHighFrom(ratios), marketHighPrices: ratios.length };

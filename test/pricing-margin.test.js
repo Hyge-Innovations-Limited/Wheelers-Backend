@@ -91,3 +91,29 @@ test('the nightly learning reads the high end from the other app\'s real prices 
     await prisma.marketSample.deleteMany({ where: { id: { in: ids } } });
   }
 });
+
+test('Sunday is not priced like a weekday rush: 108 Opebi Road to Ijeshatedo, Sunday 09:50, from ₦10,000 to Linc\'s range', () => {
+  // The curve on the server on 25 Oct: Saturday's list (the only weekend one) copied the weekday rush, ×1.15 at 07–09.
+  const r = 1.15;
+  const weekday = [r, r, r, r, r, 1, 1, r, r, r, 1, 1, 1, 1, 1, 1, r, r, r, r, 1, 1, r, r];
+  const weekend = [r, r, r, r, r, 1.08, 1.08, r, r, r, 1.08, 1.05, 1.06, 1.08, 1.08, 1.08, r, r, r, r, 1.08, 1.08, r, r];
+  const onServer = { ...live, marginPercent: 3, marketHigh: 1.15, hourCurveOn: true, hourCurve: { weekday, weekend } };
+  const sunday = new Date(Date.UTC(2026, 9, 25, 8, 50)); // 09:50 Lagos
+  const trip = (settings) => {
+    config.setPricingSettings(settings);
+    return config.calculateSuggestedFare(19.2, { durationSeconds: 31 * 60, at: sunday, trafficRatio: 1 });
+  };
+  const before = trip(onServer);
+  assert.equal(before.suggestedFareNgn, 10000, 'what the rider saw');
+
+  // Tonight's fit, from the four weekend prices the server had (all on Saturday).
+  const sat = (h, m, price) => ({ at: new Date(Date.UTC(2026, 9, 24, h - 1, m)), ratio: price / 7616, weight: 3, kind: 'sample' });
+  const evidence = [sat(10, 30, 8200), sat(11, 43, 8800), sat(12, 14, 7500), sat(12, 14, 8200)];
+  config.setPricingSettings(onServer);
+  const fit = config.fitHourCurve(evidence, onServer.hourCurve, new Date(Date.UTC(2026, 9, 25, 2)), { baseline: config.seedHourCurve() });
+  assert.equal(fit.curve.sunday[9], 1, 'Sunday 09:00 has no rush');
+  assert.equal(fit.curve.weekend[9], 1.15, 'Saturday 09:00 stays at the rush, not ×1.15 × the lift');
+  const after = trip({ ...onServer, hourCurve: fit.curve });
+  assert.ok(after.suggestedFareNgn <= 9000 && after.suggestedFareNgn >= 8100, `about ₦900 over Linc's ₦8,100 (${after.suggestedFareNgn})`);
+  assert.equal(after.minOfferNgn, after.suggestedFareNgn - 900);
+});

@@ -104,11 +104,11 @@ async function status() {
   console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
-  console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.lagosClock(new Date()).weekend ? settings.hourCurve.weekend[config.lagosClock(new Date()).hour] : settings.hourCurve.weekday[config.lagosClock(new Date()).hour]}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
+  console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.curveValueAt(settings.hourCurve, new Date())}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
   console.log(`Live surge: ${on(settings.surgeOn)}, from ×${settings.surgeMin} when quiet to ×${settings.surgeMax} when busy${settings.surgeOn ? `  (npm run pricing surge for now)` : ''}; never a discount at weekends, holidays, nights or in the rain`);
   const clock = config.lagosClock(new Date());
   const next = config.upcomingHolidays(clock.date, 60, settings.holidays, settings.notHolidays).slice(0, 3);
-  console.log(`Today: ${clock.holiday ? `${clock.holiday} (priced as a weekend)` : clock.weekend ? 'weekend' : 'weekday'}${clock.night ? ', night' : ''}.  Next holidays: ${next.length ? next.map((h) => `${h.date} ${h.name}`).join(', ') : 'none in 60 days'}  (npm run pricing holiday)`);
+  console.log(`Today: ${clock.holiday ? `${clock.holiday} (priced as a Sunday)` : clock.dayKind === 'weekday' ? 'weekday' : clock.dayKind === 'saturday' ? 'Saturday' : 'Sunday'}${clock.night ? ', night' : ''}.  Next holidays: ${next.length ? next.map((h) => `${h.date} ${h.name}`).join(', ') : 'none in 60 days'}  (npm run pricing holiday)`);
   console.log(`Rain: ${on(settings.rainOn)}, ×${settings.rainLift} in rain, more in heavy rain${settings.rainLiftFittedAt ? ` (learned ${lagosTime(new Date(settings.rainLiftFittedAt))})` : ' (starting value; learned from prices seen in the rain)'}  (npm run pricing rain)`);
   console.log(`Traffic: ${on(settings.trafficOn)}   Busy area: ${on(settings.demandOn)}`);
   console.log(`Outer areas (pickup / drop-off): ${config.PRICING_AREAS.map((a) => `${a.name} ×${settings.areas[a.key].pickup}/×${settings.areas[a.key].dropoff}`).join(', ')}`);
@@ -128,7 +128,8 @@ const hh = (h) => `${String(h).padStart(2, '0')}:00`;
 
 /**
  * npm run pricing curve [fit [save] | on | off]: the price by the clock. Each
- * hour's multiplier on the other app's quiet-hour figures, weekday and weekend.
+ * hour's multiplier on the other app's quiet-hour figures: weekdays, Saturdays,
+ * and Sundays with public holidays.
  */
 async function curve() {
   const [word, also] = rest;
@@ -147,7 +148,8 @@ async function curve() {
       ? `${what}: not yet (${prices} of ${config.MIN_PRICES_FOR_A_LIFT} prices)`
       : `${what}: ×${value} from ${prices} prices`);
     console.log([
-      lift(fit.weekendLift, fit.liftPrices.weekend, 'Weekends and holidays, every hour'),
+      lift(fit.weekendLift, fit.liftPrices.weekend, 'Saturdays, every quiet hour'),
+      lift(fit.sundayLift, fit.liftPrices.sunday, 'Sundays and holidays, every hour'),
       lift(fit.nightLift, fit.liftPrices.night, 'Nights 22:00–05:00'),
       lift(fit.rainLift, fit.liftPrices.rain, `Rain (now ×${settings.rainLift})`),
       fit.marketHigh === null
@@ -159,8 +161,10 @@ async function curve() {
       hour: hh(h),
       weekday: `×${fit.previous.weekday[h]} → ×${fit.curve.weekday[h]}`,
       'prices (wd)': fit.counts.weekday[h],
-      weekend: `×${fit.previous.weekend[h]} → ×${fit.curve.weekend[h]}`,
-      'prices (we)': fit.counts.weekend[h],
+      saturday: `×${fit.previous.weekend[h]} → ×${fit.curve.weekend[h]}`,
+      'prices (sat)': fit.counts.weekend[h],
+      sunday: `×${config.curveDay(fit.previous, 'sunday')[h]} → ×${fit.curve.sunday[h]}`,
+      'prices (sun)': fit.counts.sunday[h],
     })));
     if (also !== 'save') { console.log('Nothing saved. "npm run pricing curve fit save" to use it.'); return; }
     const path = await import('node:path');
@@ -173,7 +177,9 @@ async function curve() {
   console.log('Each number multiplies the other app\'s quiet-hour figures (base, per km, per minute); the premium goes on top.');
   const quiet = config.quietMarketFareNgn(15, 40, settings);
   console.table(Array.from({ length: 24 }, (_, h) => ({
-    hour: hh(h), weekday: `×${c.weekday[h]}`, '15 km, 40 min': naira(quiet * c.weekday[h]), weekend: `×${c.weekend[h]}`, ' 15 km, 40 min': naira(quiet * c.weekend[h]),
+    hour: hh(h), weekday: `×${c.weekday[h]}`, '15 km, 40 min': naira(quiet * c.weekday[h]),
+    saturday: `×${c.weekend[h]}`, ' 15 km, 40 min': naira(quiet * c.weekend[h]),
+    sunday: `×${config.curveDay(c, 'sunday')[h]}`, '  15 km, 40 min': naira(quiet * config.curveDay(c, 'sunday')[h]),
   })));
 }
 
@@ -403,10 +409,7 @@ async function fit() {
  * learned again against the new shape, so the two agree; saved together.
  */
 async function fitShape(rows, settings) {
-  const hourOf = (at) => {
-    const { hour, weekend } = config.lagosClock(at);
-    return (weekend ? settings.hourCurve.weekend : settings.hourCurve.weekday)[hour];
-  };
+  const hourOf = (at) => config.curveValueAt(settings.hourCurve, at);
   const areaOf = (r) => (r.area ? settings.areas[r.area]?.pickup ?? 1 : 1);
   const mine = rows.map((r) => ({ km: r.km, minutes: r.minutes, priceNgn: Number(r.priceNgn) / hourOf(r.takenAt) / areaOf(r) }));
   const result = fitMarket(mine, settings.quiet);
@@ -420,18 +423,18 @@ async function fitShape(rows, settings) {
   const next = { ...settings, quiet: f };
   config.setPricingSettings(next);
   const curve = await pricingClient.learnHourCurve(next);
-  const guess = (r, quiet, c) => {
-    const { hour, weekend } = config.lagosClock(r.takenAt);
-    return (quiet.baseNgn + quiet.perKmNgn * r.km + quiet.perMinuteNgn * r.minutes) * (weekend ? c.weekend : c.weekday)[hour] * areaOf(r);
-  };
+  const guess = (r, quiet, c) =>
+    (quiet.baseNgn + quiet.perKmNgn * r.km + quiet.perMinuteNgn * r.minutes) * config.curveValueAt(c, r.takenAt) * areaOf(r);
   console.log('\nEach price you collected, and what we would guess for it:');
   console.table(rows.map((r) => ({
     taken: lagosTime(r.takenAt), km: r.km, min: r.minutes, inDrive: naira(r.priceNgn),
     'guess now': naira(guess(r, settings.quiet, settings.hourCurve)), 'guess with these': naira(guess(r, f, curve.curve)),
   })));
   const moved = [];
-  for (const day of ['weekday', 'weekend']) {
-    for (let h = 0; h < 24; h++) if (curve.curve[day][h] !== settings.hourCurve[day][h]) moved.push(`${day} ${hh(h)} ×${settings.hourCurve[day][h]} → ×${curve.curve[day][h]}`);
+  for (const [day, name] of [['weekday', 'weekday'], ['saturday', 'Saturday'], ['sunday', 'Sunday']]) {
+    const was = config.curveDay(settings.hourCurve, day);
+    const now = config.curveDay(curve.curve, day);
+    for (let h = 0; h < 24; h++) if (now[h] !== was[h]) moved.push(`${name} ${hh(h)} ×${was[h]} → ×${now[h]}`);
   }
   console.log(moved.length ? `The curve against the new shape: ${moved.join(', ')}` : 'The curve stays as it is against the new shape.');
   if (rest[0] !== 'save') { console.log('\nNothing saved. "npm run pricing fit save" to use the shape and the curve.'); return; }

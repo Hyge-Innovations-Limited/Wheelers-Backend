@@ -27,12 +27,21 @@
  * weekend days. Never under HOUR_CURVE_MIN (−10%: a cheaper hour may come
  * down), nor over hourCurveMax: +15% on a weekday, +60% on a weekend.
  *
- * Every weekend hour, not only the ones prices were taken at: from
- * MIN_PRICES_FOR_A_WEEKEND_LIFT weekend prices at any hours, one weekend lift
- * is learned (how far weekend prices sit from the weekday curve at their
- * hours), and each weekend hour without its own prices rests at its weekday
- * value times that lift, moving at most maxStep a fit like a learned hour.
- * Two prices at 11:00 then lift Saturday 15:00 and 21:00 too.
+ * Saturdays and Sundays are learned apart (a public holiday is a Sunday):
+ * a busy Saturday's prices said nothing about a quiet Sunday morning, which
+ * was priced like a Monday's rush (₦10,000 against Linc's ₦8,100).
+ *
+ * Every Saturday hour, not only the ones prices were taken at: from
+ * MIN_PRICES_FOR_A_LIFT Saturday prices at any hours, one weekend lift is
+ * learned (how far they sit from the weekday curve at their hours). A
+ * Saturday hour without its own prices rests at the higher of its weekday
+ * value and the quiet value times that lift: rush stays rush, the quiet hours
+ * take the lift, and the two never multiply (Saturday 09:00 was climbing
+ * toward ×1.24). Two prices at 11:00 then lift Saturday 15:00 too.
+ *
+ * Sundays have no rush: an hour without its own prices rests at the quiet
+ * value (nights at the night value) times a Sunday lift, learned the same way
+ * from Sunday prices; ×1 until there are enough.
  *
  * Nights the same way: from MIN_PRICES_FOR_A_LIFT weekday prices taken
  * 22:00–05:00, one night lift for every night hour without its own prices
@@ -43,7 +52,7 @@
  * them, rainLift is learned: how far rain prices sit above the curve at their
  * hours (pricing.ts applies it while it rains).
  */
-import { HOUR_CURVE_MIN, RAIN_LIFT_MAX, hourCurveMax, isNightHour, lagosClock, type HourCurve } from './pricing';
+import { HOUR_CURVE_MIN, RAIN_LIFT_MAX, curveDay, hourCurveMax, isNightHour, lagosClock, type DayKind, type HourCurve } from './pricing';
 
 export type CurveEvidenceKind = 'sample' | 'agreed' | 'bid';
 
@@ -59,16 +68,18 @@ export type CurveEvidence = {
 
 export type HourCurveFit = {
   curve: HourCurve;
-  /** Weekend prices against the weekday curve at their hours (1.16 = weekends 16% dearer); null with too few weekend prices. */
+  /** Saturday prices against the weekday curve at their hours (1.16 = Saturdays 16% dearer); null with too few. */
   weekendLift: number | null;
+  /** Sunday and holiday prices against the quiet (and night) values at their hours; null with too few. */
+  sundayLift: number | null;
   /** Weekday night prices against where night hours start; null with too few. */
   nightLift: number | null;
   /** Prices seen in the rain against the curve at their hours; null with too few. */
   rainLift: number | null;
-  /** How many prices each lift was learned from (weekend and night: dry ones only). */
-  liftPrices: { weekend: number; night: number; rain: number };
+  /** How many prices each lift was learned from (weekend, Sunday and night: dry ones only). */
+  liftPrices: { weekend: number; sunday: number; night: number; rain: number };
   /** Prices within an hour either side of each hour, before weighting. */
-  counts: HourCurve;
+  counts: { weekday: number[]; weekend: number[]; sunday: number[] };
   used: Record<CurveEvidenceKind, number>;
 };
 
@@ -120,9 +131,9 @@ export function fitHourCurve(
     .filter((e) => Number.isFinite(e.ratio) && e.ratio >= WILD_LOW && e.ratio <= WILD_HIGH && e.weight > 0 && e.at <= now)
     .map((e) => {
       used[e.kind] += 1;
-      const { hour, weekend } = lagosClock(e.at);
+      const { hour, dayKind } = lagosClock(e.at);
       const ageDays = (now.getTime() - e.at.getTime()) / 86_400_000;
-      return { hour, weekend, rain: e.rain === true, log: Math.log(e.ratio), weight: e.weight * 0.5 ** (ageDays / HALF_LIFE_DAYS) };
+      return { hour, kind: dayKind, rain: e.rain === true, log: Math.log(e.ratio), weight: e.weight * 0.5 ** (ageDays / HALF_LIFE_DAYS) };
     });
   // Dry prices shape the hours; rain ones only the rain lift.
   const points = all.filter((p) => !p.rain);
@@ -135,8 +146,9 @@ export function fitHourCurve(
   const step = (from: number, to: number) => Math.max(from - Math.log(1 + maxStep), Math.min(from + Math.log(1 + maxStep), to));
 
   /** `steadyRest`: hours at rest that move toward `resting` at most maxStep a fit, as a learned one does (those set by a lift). */
-  const fitDay = (weekend: boolean, resting: number[], steadyRest: (hour: number) => boolean = () => false) => {
-    const before = weekend ? previous.weekend : previous.weekday;
+  const fitDay = (kind: DayKind, resting: number[], steadyRest: (hour: number) => boolean = () => false) => {
+    const weekend = kind !== 'weekday';
+    const before = curveDay(previous, kind);
     const enough = weekend ? MIN_PRICES_FOR_A_WEEKEND_HOUR : MIN_PRICES_FOR_AN_HOUR;
     const curve: number[] = [];
     const counts: number[] = [];
@@ -146,8 +158,8 @@ export function fitHourCurve(
       for (const p of points) {
         const gap = Math.min(Math.abs(p.hour - hour), 24 - Math.abs(p.hour - hour));
         if (gap >= NEIGHBOUR.length) continue;
-        if (gap <= 1 && p.weekend === weekend) count += 1;
-        near.push({ value: p.log, weight: p.weight * NEIGHBOUR[gap]! * (p.weekend === weekend ? 1 : OTHER_KIND_OF_DAY) });
+        if (gap <= 1 && p.kind === kind) count += 1;
+        near.push({ value: p.log, weight: p.weight * NEIGHBOUR[gap]! * (p.kind === kind ? 1 : OTHER_KIND_OF_DAY) });
       }
       counts.push(count);
       if (count < enough) {
@@ -167,30 +179,41 @@ export function fitHourCurve(
   };
 
   // Weekday nights: how far night prices sit from where night hours start.
-  const nightPoints = points.filter((p) => !p.weekend && isNightHour(p.hour));
+  const nightPoints = points.filter((p) => p.kind === 'weekday' && isNightHour(p.hour));
   const nightLift = liftOf(nightPoints, (p) => baseline.weekday[p.hour] ?? 1);
   const weekdayRest = baseline.weekday.map((v, hour) => (nightLift !== null && isNightHour(hour) ? v * nightLift : v));
-  const weekday = fitDay(false, weekdayRest, (hour) => nightLift !== null && isNightHour(hour));
+  const weekday = fitDay('weekday', weekdayRest, (hour) => nightLift !== null && isNightHour(hour));
+  // Where an hour sits with no rush in it: 1 by day, tonight's weekday value at night.
+  const quiet = weekday.curve.map((v, hour) => (isNightHour(hour) ? v : 1));
 
-  // Weekends and holidays: how far their prices, at whatever hours, sit from tonight's weekday curve at those hours.
-  const weekendPoints = points.filter((p) => p.weekend);
-  const weekendLift = liftOf(weekendPoints, (p) => weekday.curve[p.hour] ?? 1);
-  // A weekend hour without its own prices rests where the same weekday hour is tonight, times the weekend lift.
-  const weekend = weekendLift === null
-    ? fitDay(true, weekday.curve)
-    : fitDay(true, weekday.curve.map((v) => v * weekendLift), () => true);
+  // Saturdays: how far their prices, at whatever hours, sit from tonight's weekday curve at those hours.
+  const saturdayPoints = points.filter((p) => p.kind === 'saturday');
+  const weekendLift = liftOf(saturdayPoints, (p) => weekday.curve[p.hour] ?? 1);
+  // A Saturday hour without its own prices: its weekday value, or the quiet value times the lift if higher.
+  const saturday = weekendLift === null
+    ? fitDay('saturday', weekday.curve)
+    : fitDay('saturday', weekday.curve.map((v, hour) => Math.max(v, (quiet[hour] ?? 1) * weekendLift)), () => true);
 
+  // Sundays and holidays: no rush; the quiet value times what their own prices say.
+  const sundayPoints = points.filter((p) => p.kind === 'sunday');
+  const sundayLift = liftOf(sundayPoints, (p) => quiet[p.hour] ?? 1);
+  const sunday = sundayLift === null
+    ? fitDay('sunday', quiet)
+    : fitDay('sunday', quiet.map((v) => v * sundayLift), () => true);
+
+  const curve: HourCurve = { weekday: weekday.curve, weekend: saturday.curve, sunday: sunday.curve };
   // Rain: how far prices seen in the rain sit above tonight's curve at their hours.
   const rainPoints = all.filter((p) => p.rain);
-  const rainLift = liftOf(rainPoints, (p) => (p.weekend ? weekend.curve : weekday.curve)[p.hour] ?? 1);
+  const rainLift = liftOf(rainPoints, (p) => curveDay(curve, p.kind)[p.hour] ?? 1);
 
   return {
-    curve: { weekday: weekday.curve, weekend: weekend.curve },
+    curve,
     weekendLift,
+    sundayLift,
     nightLift,
     rainLift: rainLift === null ? null : Math.min(RAIN_LIFT_MAX, Math.max(1, rainLift)),
-    liftPrices: { weekend: weekendPoints.length, night: nightPoints.length, rain: rainPoints.length },
-    counts: { weekday: weekday.counts, weekend: weekend.counts },
+    liftPrices: { weekend: saturdayPoints.length, sunday: sundayPoints.length, night: nightPoints.length, rain: rainPoints.length },
+    counts: { weekday: weekday.counts, weekend: saturday.counts, sunday: sunday.counts },
     used,
   };
 }

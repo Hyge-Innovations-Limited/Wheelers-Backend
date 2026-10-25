@@ -129,10 +129,27 @@ export const PERIOD_PREMIUM_MAX_NGN = 10_000;
 
 /**
  * The price by the clock: a multiplier on the other app's quiet-hour figures
- * for each hour of the day (0–23, Lagos time), one list for weekdays and one
- * for weekends.
+ * for each hour of the day (0–23, Lagos time), one list for weekdays, one for
+ * Saturdays (`weekend`, its old name) and one for Sundays and public holidays.
+ * A curve saved before Sundays were learned apart has no `sunday`: Sundays
+ * then read the Saturday list until the next fit.
  */
-export type HourCurve = { weekday: number[]; weekend: number[] };
+export type HourCurve = { weekday: number[]; weekend: number[]; sunday?: number[] };
+
+/** Which list of the curve a day reads: Saturdays are busy into the evening, Sundays and holidays quiet. */
+export type DayKind = 'weekday' | 'saturday' | 'sunday';
+
+/** The 24 multipliers for a kind of day. */
+export function curveDay(curve: HourCurve, kind: DayKind): number[] {
+  if (kind === 'weekday') return curve.weekday;
+  return kind === 'saturday' ? curve.weekend : curve.sunday ?? curve.weekend;
+}
+
+/** The curve's multiplier at a moment, Lagos time. */
+export function curveValueAt(curve: HourCurve, at: Date): number {
+  const { hour, dayKind } = lagosClock(at);
+  return curveDay(curve, dayKind)[hour] ?? 1;
+}
 /**
  * At most this far under the other app's quiet-hour figures: an hour really
  * cheaper there (late at night, say) may come down, but only on enough prices
@@ -422,7 +439,8 @@ function hourCurveFrom(value: unknown): HourCurve | null {
       : null;
   const weekday = list(v?.weekday, false);
   const weekend = list(v?.weekend, true);
-  return weekday && weekend ? { weekday, weekend } : null;
+  const sunday = list(v?.sunday, true);
+  return weekday && weekend ? { weekday, weekend, ...(sunday ? { sunday } : {}) } : null;
 }
 
 function modelFrom(value: unknown): PricingModel | null {
@@ -505,14 +523,16 @@ export function setPricingSettings(value: unknown): PricingSettings {
  * (calendar.ts, with the days settings add or take off): a holiday's roads
  * and prices are a weekend's (no rush hours, the weekend side of the hour
  * curve), and prices seen on one teach the weekend. `night` is 22:00–05:00.
+ * `dayKind` is the list of the curve it reads: a holiday reads Sunday's.
  */
-export function lagosClock(at: Date): { hour: number; weekend: boolean; holiday: string | null; night: boolean; date: string } {
+export function lagosClock(at: Date): { hour: number; weekend: boolean; dayKind: DayKind; holiday: string | null; night: boolean; date: string } {
   const local = new Date(at.getTime() + 60 * 60 * 1000);
   const day = local.getUTCDay();
   const date = local.toISOString().slice(0, 10);
   const hour = local.getUTCHours();
   const holiday = holidayOn(date, pricingSettings.holidays, pricingSettings.notHolidays);
-  return { hour, weekend: day === 0 || day === 6 || holiday !== null, holiday, night: isNightHour(hour), date };
+  const dayKind: DayKind = day === 0 || holiday !== null ? 'sunday' : day === 6 ? 'saturday' : 'weekday';
+  return { hour, weekend: dayKind !== 'weekday', dayKind, holiday, night: isNightHour(hour), date };
 }
 
 /** The other app's quiet-hour figures for a trip: what the hour curve multiplies. */
@@ -527,11 +547,13 @@ export function quietMarketFareNgn(distanceKm: number, minutes: number, settings
  * (15 km, 40 minutes). Where a new curve starts learning from, and where an
  * hour with too few prices of its own rests.
  *
- * A weekend hour starts where the same weekday hour does. It used to start at
- * 1 everywhere (a weekend was never rush), which priced a Saturday evening
- * like a quiet Wednesday afternoon: ₦1,500 under the other app. A weekend hour
- * goes lower only when weekend prices say so. Night hours (22:00–05:00)
- * start at NIGHT_START: the other apps charge more at night.
+ * A Saturday hour starts where the same weekday hour does. It used to start
+ * at 1 everywhere (a weekend was never rush), which priced a Saturday evening
+ * like a quiet Wednesday afternoon: ₦1,500 under the other app. A Sunday or
+ * holiday has no rush: it starts at 1, which priced a Sunday 09:50 like a
+ * Monday's rush (₦10,000 against Linc's ₦8,100) when it copied the weekday.
+ * Night hours (22:00–05:00) start at NIGHT_START: the other apps charge more
+ * at night.
  */
 export function seedHourCurve(settings: PricingSettings = pricingSettings): HourCurve {
   const quiet = quietMarketFareNgn(15, 40, settings);
@@ -542,6 +564,7 @@ export function seedHourCurve(settings: PricingSettings = pricingSettings): Hour
   return {
     weekday: Array.from({ length: 24 }, (_, h) => start(h)),
     weekend: Array.from({ length: 24 }, (_, h) => start(h)),
+    sunday: Array.from({ length: 24 }, (_, h) => (isNightHour(h) ? NIGHT_START : 1)),
   };
 }
 
@@ -549,8 +572,7 @@ export function seedHourCurve(settings: PricingSettings = pricingSettings): Hour
 export function hourFactorAt(at: Date = new Date()): number | null {
   const curve = pricingSettings.hourCurve;
   if (!pricingSettings.hourCurveOn || !curve) return null;
-  const { hour, weekend } = lagosClock(at);
-  return (weekend ? curve.weekend : curve.weekday)[hour] ?? 1;
+  return curveValueAt(curve, at);
 }
 
 /** Lagos time: morning 05–12, afternoon 12–16, evening 16–21, night 21–05. */

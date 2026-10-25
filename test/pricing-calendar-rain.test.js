@@ -83,7 +83,7 @@ test('nights start lifted (×1.15), may reach ×1.6, and learn one lift from a f
 
 /* ── weekends, every hour ────────────────────────────────────────────── */
 
-test('three weekend prices at 11:00 lift every weekend hour, 15% a fit; weekdays are untouched', () => {
+test('three Saturday prices at 11:00 lift every quiet Saturday hour, 15% a fit; rush is not lifted on top; weekdays and Sundays are untouched', () => {
   const s = seed();
   const now = lagos(SATURDAY, 23, 30);
   const late = [10, 11, 12].map((h) => sample(lagos(SATURDAY, h), 1.16));
@@ -91,8 +91,10 @@ test('three weekend prices at 11:00 lift every weekend hour, 15% a fit; weekdays
   assert.equal(fit.weekendLift, 1.16);
   assert.equal(fit.curve.weekend[15], 1.15, 'Saturday 15:00 moves too: 15% toward 1.16');
   assert.equal(fit.curve.weekend[21], 1.15);
-  assert.equal(fit.curve.weekend[18], 1.32, 'the evening rush: ×1.15 × 1.16 ≈ 1.33, at most 15% over where it was');
+  assert.equal(fit.curve.weekend[18], 1.16, 'the evening rush: the higher of ×1.15 and ×1.16, never the two multiplied (it was ×1.33)');
   assert.deepEqual(fit.curve.weekday, s.weekday, 'no weekday hour moved');
+  assert.equal(fit.sundayLift, null, 'Saturday prices say nothing about Sunday');
+  assert.deepEqual(fit.curve.sunday, s.sunday, 'no Sunday hour moved');
 });
 
 /* ── rain ────────────────────────────────────────────────────────────── */
@@ -102,7 +104,7 @@ test('prices seen in the rain never move the hours; three of them teach the rain
   const now = lagos(WEDNESDAY, 23, 30);
   const wet = [11, 12, 14].map((h) => sample(lagos(WEDNESDAY, h), 1.38, true));
   const fit = config.fitHourCurve(wet, s, now, { baseline: s });
-  assert.deepEqual(fit.curve, { weekday: s.weekday, weekend: s.weekend }, 'the hours stay where they were');
+  assert.deepEqual(fit.curve, { weekday: s.weekday, weekend: s.weekend, sunday: s.sunday }, 'the hours stay where they were');
   assert.equal(fit.rainLift, 1.38);
   assert.equal(fit.liftPrices.rain, 3);
   config.setPricingSettings(live);
