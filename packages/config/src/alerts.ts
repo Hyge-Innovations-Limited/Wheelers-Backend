@@ -24,10 +24,14 @@ import { join } from 'path';
  *
  * Settings (.env):
  *   TELEGRAM_BOT_TOKEN   from @BotFather
- *   TELEGRAM_CHAT_ID     the chat (or group) the bot writes to; several, comma-separated
+ *   TELEGRAM_CHAT_ID     optional: chats that always get alerts (owners); several, comma-separated
  *   ALERTS=off           silences everything; ALERTS=on sends outside pm2 too (a test)
  *
- * Off unless the token and chat are set, and only under pm2 (pm_id), so tests,
+ * Who gets alerts is otherwise kept by the bot (watchdog.mjs) in
+ * ALERT_DIR/members.json: the first person to send it /start is its owner;
+ * anyone after asks, and an owner taps Allow. Nobody types a chat id.
+ *
+ * Off unless the token is set, and only under pm2 (pm_id), so tests,
  * scripts and a laptop never send. The watchdog (scripts/watchdog.mjs) and the
  * nightly backup send through sendAlert too.
  *
@@ -79,11 +83,44 @@ let sentInWindow = 0;
 let mutedNoticeSent = false;
 let lastError: string | null = null;
 
+export type AlertMember = { id: string; name: string; owner: boolean; addedAt: string };
+
+const MEMBERS = join(SPOOL_DIR, 'members.json');
+
+function savedMembers(): AlertMember[] {
+  try {
+    const list = JSON.parse(readFileSync(MEMBERS, 'utf8')) as AlertMember[];
+    return Array.isArray(list) ? list.filter((m) => m && typeof m.id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Everyone who gets alerts and may use the bot: TELEGRAM_CHAT_ID (owners), then those the bot let in. */
+export function alertMembers(): AlertMember[] {
+  const fromEnv = (process.env['TELEGRAM_CHAT_ID'] ?? '').split(',').map((c) => c.trim()).filter(Boolean)
+    .map((id) => ({ id, name: 'set in .env', owner: true, addedAt: '' }));
+  const saved = savedMembers().filter((m) => !fromEnv.some((e) => e.id === m.id));
+  return [...fromEnv, ...saved];
+}
+
+/** Let a chat in (the first ever is an owner). Every process on this machine reads the same list. */
+export function addAlertMember(id: string, name: string, owner = false): void {
+  mkdirSync(SPOOL_DIR, { recursive: true });
+  const list = savedMembers().filter((m) => m.id !== id);
+  list.push({ id, name: name.slice(0, 80), owner, addedAt: new Date().toISOString() });
+  writeFileSync(MEMBERS, JSON.stringify(list, null, 2));
+}
+
+export function removeAlertMember(id: string): void {
+  if (!existsSync(MEMBERS)) return;
+  writeFileSync(MEMBERS, JSON.stringify(savedMembers().filter((m) => m.id !== id), null, 2));
+}
+
 function settings(): { token: string; chats: string[] } | null {
   const token = process.env['TELEGRAM_BOT_TOKEN']?.trim();
-  const chats = (process.env['TELEGRAM_CHAT_ID'] ?? '').split(',').map((c) => c.trim()).filter(Boolean);
-  if (!token || chats.length === 0 || process.env['ALERTS'] === 'off') return null;
-  return { token, chats };
+  if (!token || process.env['ALERTS'] === 'off') return null;
+  return { token, chats: alertMembers().map((m) => m.id) };
 }
 
 /** Phone numbers, keys, tokens and secrets out of a line, before it leaves the server. */
@@ -136,7 +173,7 @@ function describe(args: unknown[]): string {
  */
 /** The chats alerts go to, which are also the only ones the bot answers. */
 export function alertChats(): string[] {
-  return settings()?.chats ?? [];
+  return alertMembers().map((m) => m.id);
 }
 
 /** Until when alerts are held back (ms), or 0. */
@@ -181,14 +218,14 @@ function remember(title: string, sent: boolean): void {
 }
 
 /** One message to one chat, as it is (HTML). The bot's replies; alerts go through sendAlert. */
-export async function sendTelegram(chat: string, html: string): Promise<boolean> {
+export async function sendTelegram(chat: string, html: string, extra: Record<string, unknown> = {}): Promise<boolean> {
   const s = settings();
   if (!s) return false;
   try {
     const res = await fetch(`https://api.telegram.org/bot${s.token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text: html.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: chat, text: html.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true, ...extra }),
       signal: AbortSignal.timeout(10_000),
     });
     return res.ok;
@@ -199,7 +236,7 @@ export async function sendTelegram(chat: string, html: string): Promise<boolean>
 
 export async function sendAlert(title: string, body = '', options: { force?: boolean } = {}): Promise<boolean> {
   const s = settings();
-  if (!s) return false;
+  if (!s || s.chats.length === 0) return false;
   const now = Date.now();
   if (!options.force && alertsMutedUntil() > now) {
     remember(title, false);

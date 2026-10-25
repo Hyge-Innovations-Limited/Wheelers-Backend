@@ -12,15 +12,16 @@
  * the last day, memory, disk and last night's backup. A service's own errors
  * are sent by that service; this is what a service cannot say about itself.
  *
- * It is also the bot's other half: it answers commands in Telegram, only from
- * the chats in TELEGRAM_CHAT_ID (anyone else is told the bot is private, and
- * the team is told who tried, with the id to add them):
+ * It is also the bot's other half: it answers commands in Telegram. Anyone who
+ * sends /start is signed up (the first one ever as its owner) and gets the
+ * alerts from then on; nobody types a chat id (alerts.ts, members.json):
  *
- *   /start, /help   what it can do
+ *   /start, /help   sign up, and what it can do
  *   /status         the gateway, every service, memory, disk, the last backup
  *   /alerts         the last alerts, sent or held back
  *   /logs NAME      the last error lines of a service (masked)
  *   /mute [MIN]     hold alerts back (an hour by default); /unmute
+ *   /people         who gets the alerts; /leave stops them in this chat
  *
  * Needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (npm run alerts).
  */
@@ -206,14 +207,14 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim();
 const esc = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const say = (chat, html) => config.sendTelegram(String(chat), html);
 const lagosClock = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-const strangersSeen = new Map(); // chat id → day told
 
 const MENU = [
-  '<b>Wheelers ops</b>: just for the team.',
+  '<b>Wheelers alerts</b>',
   '/status  the gateway, every service, memory, disk, the last backup',
   '/alerts  the last alerts',
   '/logs api-gateway  the last error lines of a service',
   '/mute 60  hold alerts back for 60 minutes · /unmute',
+  '/people  who gets the alerts · /leave  stop them here',
 ].join('\n');
 
 async function statusText() {
@@ -265,28 +266,38 @@ async function answer(message) {
   const chat = String(message.chat?.id ?? '');
   const text = String(message.text ?? '').trim();
   if (!chat || !text) return;
-  if (!config.alertChats().includes(chat)) {
-    await say(chat, 'This bot is private to the Wheelers team.');
-    const day = new Date().toISOString().slice(0, 10);
-    if (strangersSeen.get(chat) !== day) {
-      strangersSeen.set(chat, day);
-      const who = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.chat?.title || 'Someone';
-      await config.sendAlert(`🙋 ${who}${message.from?.username ? ` (@${message.from.username})` : ''} tried the bot`, `To let them use it and get alerts, add ${chat} to TELEGRAM_CHAT_ID (comma-separated) and restart the watchdog.`, { force: true });
-    }
-    return;
-  }
   const [command, ...args] = text.split(/\s+/);
   const word = command.toLowerCase().replace(/@.*$/, '');
+  const who = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.chat?.title || message.from?.username || 'Someone';
+  const member = config.alertChats().includes(chat);
+
+  if (!member) {
+    if (word !== '/start') { await say(chat, 'Send /start to get Wheelers alerts and use this bot.'); return; }
+    const first = config.alertMembers().length === 0;
+    config.addAlertMember(chat, who, first);
+    await say(chat, `You're in, ${esc(who)}. Wheelers alerts come here from now on.\n\n${MENU}`);
+    await config.sendAlert(`🙋 ${who}${message.from?.username ? ` (@${message.from.username})` : ''} joined the alerts`, `${config.alertMembers().length} people get them now. /people to see who.`, { force: true });
+    return;
+  }
+
   if (word === '/status') await say(chat, await statusText());
   else if (word === '/alerts') await say(chat, alertsText());
   else if (word === '/logs') await say(chat, await logsText(args[0] ?? 'api-gateway'));
   else if (word === '/mute') {
     const minutes = Math.min(24 * 60, Math.max(5, Number(args[0]) || 60));
     config.muteAlerts(minutes * 60_000);
-    await say(chat, `🔇 Alerts held back for ${minutes} minutes. /unmute to have them again; /alerts still lists them.`);
+    await say(chat, `🔇 Alerts held back for ${minutes} minutes, for everyone. /unmute to have them again; /alerts still lists them.`);
   } else if (word === '/unmute') {
     config.muteAlerts(0);
     await say(chat, '🔔 Alerts are on again.');
+  } else if (word === '/people') {
+    const list = config.alertMembers();
+    await say(chat, [`<b>${list.length} get the alerts</b>`, ...list.map((m) => `${m.owner ? '⭐ ' : ''}${esc(m.name)}`)].join('\n'));
+  } else if (word === '/leave') {
+    config.removeAlertMember(chat);
+    await say(chat, config.alertChats().includes(chat)
+      ? 'This chat is set in .env (TELEGRAM_CHAT_ID), so it always gets alerts. Take it out there to stop them.'
+      : 'Done: no more alerts here. Send /start to come back.');
   } else await say(chat, MENU);
 }
 
@@ -304,6 +315,8 @@ async function listen() {
     { command: 'logs', description: 'The last error lines of a service, e.g. /logs api-gateway' },
     { command: 'mute', description: 'Hold alerts back, e.g. /mute 60' },
     { command: 'unmute', description: 'Alerts on again' },
+    { command: 'people', description: 'Who gets the alerts' },
+    { command: 'leave', description: 'Stop the alerts in this chat' },
     { command: 'help', description: 'What this bot does' },
   ] }).catch(() => undefined);
   let offset = 0;
