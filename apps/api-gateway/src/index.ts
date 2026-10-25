@@ -13,6 +13,7 @@ import {
 import {
   GoogleMapsRoutePlanner,
   loadWorkspaceEnv,
+  startAlerts,
   validateGatewayEnv,
   validateSharedEnv,
 } from "@wheleers/config";
@@ -387,6 +388,7 @@ function getSafePathForLog(url: URL): string {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
 
   process.env["NODE_ENV"] ??= "development";
   process.env["KAFKA_CLIENT_ID"] ??= "api-gateway";

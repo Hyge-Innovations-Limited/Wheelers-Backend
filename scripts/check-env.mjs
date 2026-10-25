@@ -84,7 +84,8 @@ try {
 } catch { /* an unparseable REDIS_URL is reported below */ }
 
 let services = 8;
-try { services = require('../ecosystem.config.cjs').apps.length; } catch { /* keep the default */ }
+// The watchdog opens no database connections.
+try { services = require('../ecosystem.config.cjs').apps.filter((a) => a.name !== 'watchdog').length; } catch { /* keep the default */ }
 const poolSize = Number(/[?&]connection_limit=(\d+)/.exec(file.DATABASE_URL ?? '')?.[1] ?? NaN);
 if (Number.isFinite(poolSize) && services * poolSize > 97) {
   warnings.push(`DATABASE_URL connection_limit=${poolSize} × ${services} services = ${services * poolSize} connections; Postgres accepts ~97 by default. Run scripts/db-capacity.mjs for the exact figure.`);

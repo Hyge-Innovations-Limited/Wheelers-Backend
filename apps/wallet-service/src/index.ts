@@ -1,4 +1,4 @@
-import { loadWorkspaceEnv, validateSharedEnv } from '@wheleers/config';
+import { loadWorkspaceEnv, startAlerts, validateSharedEnv } from '@wheleers/config';
 import { walletClient } from '@wheleers/db';
 import { createConsumer, createProducer } from '@wheleers/kafka-client';
 import { TOPICS } from '@wheleers/kafka-schemas';
@@ -19,6 +19,7 @@ bootstrap().catch((err) => {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
   process.env['NODE_ENV'] ??= 'development';
   process.env['KAFKA_CLIENT_ID'] ??= SERVICE_ID;
   process.env['KAFKA_BROKERS'] ??= 'localhost:9092';

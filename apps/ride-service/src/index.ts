@@ -1,4 +1,4 @@
-import { GoogleMapsRoutePlanner, RIDE, loadWorkspaceEnv, validateRideEnv, validateSharedEnv } from '@wheleers/config';
+import { GoogleMapsRoutePlanner, RIDE, loadWorkspaceEnv, startAlerts, validateRideEnv, validateSharedEnv } from '@wheleers/config';
 import { createConsumer, createProducer, onShutdown } from '@wheleers/kafka-client';
 import { TOPICS } from '@wheleers/kafka-schemas';
 
@@ -149,6 +149,7 @@ bootstrap().catch((err) => {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
   process.env['NODE_ENV'] ??= 'development';
   process.env['KAFKA_CLIENT_ID'] ??= SERVICE_ID;
   // Default local Kafka broker for host-managed development.

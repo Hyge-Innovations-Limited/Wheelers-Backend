@@ -137,5 +137,8 @@ module.exports = {
         ...(defined.has("MCP_GATEWAY_BASE_URL") ? {} : { MCP_GATEWAY_BASE_URL: `http://127.0.0.1:${gatewayPort}` }),
       },
     }),
+    // Alerts on Telegram about what a service cannot say itself: the gateway not
+    // answering, crash loops, memory and disk, and a morning summary.
+    { ...app("watchdog", { memory: "120M" }), cwd: root, script: "scripts/watchdog.mjs" },
   ],
 };

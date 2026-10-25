@@ -76,6 +76,7 @@
     "flow:push:quick-actions": "node scripts/whatsapp-form-push.mjs quick-actions",
     "flow:push:forms": "npm run flow:push:edit-trip && npm run flow:push:offers && npm run flow:push:quick-actions",
     "sms": "node scripts/run-with-env.cjs node scripts/sms.mjs",
+    "alerts": "node scripts/run-with-env.cjs node scripts/alerts.mjs",
     "pricing": "node scripts/run-with-env.cjs node scripts/pricing.mjs",
     "admin:add": "node scripts/run-with-env.cjs node scripts/admin-add.mjs",
     "pricing:train": "python3 ml/pricing/train.py",

@@ -10,6 +10,7 @@ import {
 import {
   GoogleMapsRoutePlanner,
   loadWorkspaceEnv,
+  startAlerts,
   validateGroupRideEnv,
   validateSharedEnv,
 } from '@wheleers/config';
@@ -32,6 +33,7 @@ bootstrap().catch((err) => {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
 
   process.env['NODE_ENV'] ??= 'development';
   process.env['KAFKA_CLIENT_ID'] ??= SERVICE_ID;

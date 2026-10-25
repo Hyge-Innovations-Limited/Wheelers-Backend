@@ -37,6 +37,7 @@ import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
@@ -178,7 +179,14 @@ function explain(error) {
   return message;
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error(`[backup] ${new Date().toISOString()} FAILED: ${explain(error)}`);
+  // On Telegram too, when alerts are set up: a missed backup is found the morning it happens, not the day one is needed.
+  try {
+    const { sendAlert } = createRequire(import.meta.url)('../packages/config/dist/index.js');
+    await sendAlert('🔴 The database backup failed', `${explain(error)}\nnpm run db:backup   (log: ~/backups/backup.log)`);
+  } catch {
+    // No alerts set up, or not built: the log line above is the record.
+  }
   process.exit(1);
 });
