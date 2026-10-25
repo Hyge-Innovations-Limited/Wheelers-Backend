@@ -86,8 +86,7 @@ export async function handleGetReferralSummaryRoute(
     const user = await authenticateHttpUser(req, deps.jwtSecret);
     const summary = await referralClient.findSummary(user.id);
 
-    // The link a referral QR code holds: app.wheelersng.com/r/CODE, to the
-    // app in the friend's store, or the chat with Wheelers.
+    // The link a referral QR code holds: a chat with the Wheelers bot with the code typed.
     sendJson(res, 200, {
       ...summary,
       shareLink: summary.code ? referralShareLink(summary.code) : null,
@@ -106,9 +105,9 @@ export async function handleGetReferralSummaryRoute(
 }
 
 /**
- * GET /r/:code, no sign-in: a referral link tapped or scanned. Sends the
- * friend on (referralLinkTarget): the Play Store, the App Store or the chat.
- * Never cached: the same link goes somewhere else on another phone.
+ * GET /r/:code, no sign-in: a referral link of the kind shared for a day
+ * (app.wheelersng.com/r/CODE). Sends the friend to the chat with the bot,
+ * the code typed, so those links keep working.
  */
 export function handleReferralLinkRoute(req: IncomingMessage, res: ServerResponse, rawCode: string): void {
   let code = "";
@@ -118,9 +117,8 @@ export function handleReferralLinkRoute(req: IncomingMessage, res: ServerRespons
     // A broken escape: no code, still sent on.
   }
   res.statusCode = 302;
-  res.setHeader("Location", referralLinkTarget(code, req.headers["user-agent"] ?? ""));
+  res.setHeader("Location", referralLinkTarget(code));
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Vary", "User-Agent");
   res.end();
 }
 

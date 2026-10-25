@@ -9,7 +9,7 @@ import { MetaWhatsappRouteDeps } from './deps';
 import { createOffersFormChatHooks, sendCurrentOffers } from './ride-card';
 import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText } from './send';
 import { BOOKING_START_PROMPT, BUSY_REPLY, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
-import { referralShareLink, referralWhatsappLink } from './referral';
+import { referralShareLink } from './referral';
 import { sendWalletPageButton } from './wallet';
 
 export const supportContact = () => process.env['SUPPORT_CONTACT']?.trim() || null;
@@ -163,14 +163,13 @@ export async function handleQuickAction(deps: MetaWhatsappRouteDeps, user: { id:
  * way to open an account number for a rider who has none yet.
  */
 /**
- * What a rider forwards to a friend: the code, the link to the app (it opens
- * the store on their phone), and the chat with Wheelers with the code already
- * typed, for a friend who would rather ride on WhatsApp.
+ * What a rider forwards to a friend: the code, and the link that opens a chat
+ * with the Wheelers bot with it already typed (the bot reads it and adds it).
  */
-export function referralShareMessage(code: string, link: string | null = referralShareLink(code), chat = referralWhatsappLink(code)): string {
+export function referralShareMessage(code: string, link: string | null = referralShareLink(code)): string {
   return link
-    ? `Ride with Wheelers and name your own price. Use my code *${code}* when you sign up.\n\nGet the app: ${link}\nOr ride on WhatsApp: ${chat}`
-    : `Ride with Wheelers on WhatsApp or the app. Message Wheelers and say: My referral code is ${code}`;
+    ? `Book rides on WhatsApp with Wheelers and name your own price. Use my code *${code}* — tap to start: ${link}`
+    : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
 }
 
 export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {

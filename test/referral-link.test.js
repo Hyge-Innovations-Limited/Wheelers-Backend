@@ -1,7 +1,6 @@
-// Referral links and QR codes: app.wheelersng.com/r/CODE sends an Android
-// phone to the Play Store, an iPhone to the App Store and anything else to a
-// chat with Wheelers with the code already typed; the bot reads the code out
-// of that message (and out of
+// Referral links and QR codes: the link opens a chat with the Wheelers bot
+// with the code already typed (an app.wheelersng.com/r/CODE link too, on any
+// phone); the bot reads the code out of that message (and out of
 // a message that is only the code), adds it to the rider's account, and says
 // in plain words when it cannot. Against the local Postgres.
 //
@@ -12,7 +11,7 @@ const http = require('node:http');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { prisma, referralClient } = require('@wheleers/db');
-const { referralCodeIn, referralChatMessage, referralShareLink, referralWhatsappLink, referralLinkTarget, referralRefusal, applyReferralFromChat } = require('../apps/api-gateway/dist/whatsapp/referral.js');
+const { referralCodeIn, referralChatMessage, referralShareLink, referralWhatsappLink, referralRefusal, applyReferralFromChat } = require('../apps/api-gateway/dist/whatsapp/referral.js');
 const { handleReferralLinkRoute } = require('../apps/api-gateway/dist/http/referral.route.js');
 
 const made = [];
@@ -68,43 +67,27 @@ test('ordinary messages are not mistaken for a code', () => {
   assert.equal(referralCodeIn(''), null);
 });
 
-test('the link is app.wheelersng.com/r/CODE, and the chat link types the code, on the Wheelers number when none is set', () => {
-  assert.equal(referralShareLink('TIMI', 'https://app.wheelersng.com'), 'https://app.wheelersng.com/r/TIMI');
-  assert.equal(referralShareLink('TIMI'), 'https://app.wheelersng.com/r/TIMI', 'the public address by default');
-  const chat = referralWhatsappLink('WHLAB2CD3', '+234 814 197 9106');
-  assert.ok(chat.startsWith('https://wa.me/2348141979106?text='));
-  assert.equal(referralCodeIn(decodeURIComponent(chat.split('text=')[1])), 'WHLAB2CD3', 'what the chat link sends is read back as the code');
-  assert.ok(referralWhatsappLink('TIMI', '').startsWith('https://wa.me/2348141979106?text='));
+test('the link and the QR code open a chat with the Wheelers bot with the code typed, on the Wheelers number when none is set', () => {
+  const link = referralShareLink('WHLAB2CD3', '+234 814 197 9106');
+  assert.ok(link.startsWith('https://wa.me/2348141979106?text='));
+  assert.equal(referralCodeIn(decodeURIComponent(link.split('text=')[1])), 'WHLAB2CD3', 'what the link sends is read back as the code');
+  assert.ok(referralShareLink('TIMI', '').startsWith('https://wa.me/2348141979106?text='), 'never empty: the app always has a link and QR code');
+  assert.equal(referralWhatsappLink('TIMI', '2348000000001'), referralShareLink('TIMI', '2348000000001'));
 });
 
-const ANDROID = 'Mozilla/5.0 (Linux; Android 14; SM-A155F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
-const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
-const WHATSAPP_ANDROID = 'Mozilla/5.0 (Linux; Android 13; TECNO KI5k; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0 Mobile Safari/537.36 WhatsApp/2.24';
-const LAPTOP = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
-
-test('a tapped link goes to the app in the phone\'s store, or to the chat on anything else', () => {
-  const android = referralLinkTarget('TIMI', ANDROID);
-  assert.ok(android.startsWith('https://play.google.com/store/apps/details?id=com.timmy133.wheelers.driver&referrer='));
-  assert.equal(decodeURIComponent(android.split('referrer=')[1]), 'utm_source=referral&utm_campaign=TIMI', 'the Play Store link carries the code');
-  assert.ok(referralLinkTarget('TIMI', WHATSAPP_ANDROID).startsWith('https://play.google.com/'), 'tapped inside WhatsApp too');
-  assert.equal(referralLinkTarget('TIMI', IPHONE), 'https://apps.apple.com/ng/app/wheelers-driver/id6802810113');
-  const laptop = referralLinkTarget('TIMI', LAPTOP);
-  assert.ok(laptop.startsWith('https://wa.me/'));
-  assert.equal(referralCodeIn(decodeURIComponent(laptop.split('text=')[1])), 'TIMI');
-  assert.ok(referralLinkTarget('TIMI', '').startsWith('https://wa.me/'), 'no user agent: the chat');
-});
-
-test('GET /r/CODE answers 302 to that place, uncached, the code tidied', async () => {
+test('an app.wheelersng.com/r/CODE link, shared for a day, opens the chat with the bot on every phone', async () => {
   const server = http.createServer((req, res) => handleReferralLinkRoute(req, res, req.url.slice('/r/'.length)));
   await new Promise((resolve) => server.listen(0, resolve));
   const at = (ua, code = 'timi') => fetch(`http://127.0.0.1:${server.address().port}/r/${code}`, { redirect: 'manual', headers: { 'user-agent': ua } });
   try {
-    const android = await at(ANDROID);
-    assert.equal(android.status, 302);
-    assert.match(android.headers.get('location'), /utm_campaign%3DTIMI$/);
-    assert.equal(android.headers.get('cache-control'), 'no-store');
-    assert.equal((await at(IPHONE)).headers.get('location'), 'https://apps.apple.com/ng/app/wheelers-driver/id6802810113');
-    assert.ok((await at(LAPTOP, 'ti%20mi!')).headers.get('location').includes(encodeURIComponent('My referral code is TIMI')));
+    for (const ua of ['Mozilla/5.0 (Linux; Android 14) Mobile', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', 'Mozilla/5.0 (Macintosh)', '']) {
+      const res = await at(ua);
+      assert.equal(res.status, 302);
+      const location = res.headers.get('location');
+      assert.ok(location.startsWith('https://wa.me/'), `${ua}: ${location}`);
+      assert.equal(referralCodeIn(decodeURIComponent(location.split('text=')[1])), 'TIMI');
+    }
+    assert.ok((await at('', 'ti%20mi!')).headers.get('location').includes(encodeURIComponent('My referral code is TIMI')), 'the code tidied');
   } finally {
     server.close();
   }
@@ -281,7 +264,6 @@ test('QUICK ACTIONS · the chat gets a line to read and a message to forward, wh
   assert.match(said(0), /Your referral code is \*TIMI\*/);
   assert.match(said(0), /Forward the next message/);
   assert.match(said(1), /Use my code \*TIMI\*/);
-  assert.match(said(1), /Get the app: https:\/\/app\.wheelersng\.com\/r\/TIMI/);
   const link = said(1).match(/https:\/\/wa\.me\/[^"\s\\]+/)[0];
   assert.equal(referralCodeIn(decodeURIComponent(link.split('text=')[1])), 'TIMI', 'the friend\'s tap sends the code to the bot');
   assert.doesNotMatch(said(0) + said(1), /cashback/i, 'nothing is promised');
