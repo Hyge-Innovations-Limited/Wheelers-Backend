@@ -4,6 +4,8 @@
  *
  *   npm run alerts          whether alerts are set up, and the bot's name
  *   npm run alerts chat     the chats that have written to the bot: the id to put in TELEGRAM_CHAT_ID
+ *                           (once the watchdog runs it reads the bot's messages itself: a new person
+ *                           who writes to the bot is then sent to the team with their id instead)
  *   npm run alerts test     send one test alert
  *
  * Setting up: in Telegram, open @BotFather, send /newbot, give it a name; it

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { join } from 'path';
 
@@ -30,6 +30,10 @@ import { join } from 'path';
  * Off unless the token and chat are set, and only under pm2 (pm_id), so tests,
  * scripts and a laptop never send. The watchdog (scripts/watchdog.mjs) and the
  * nightly backup send through sendAlert too.
+ *
+ * Every alert, sent or held back, is written to ALERT_DIR/recent.jsonl, which
+ * the bot's /alerts reads; /mute writes ALERT_DIR/muted-until, which holds
+ * back every alert but a forced one until then.
  */
 
 const REPEAT_WINDOW_MS = 30 * 60_000;
@@ -60,6 +64,10 @@ const ROUTINE_ERRORS: readonly RegExp[] = [
 ];
 
 const SPOOL_DIR = join(homedir(), '.wheelers-alerts');
+export const ALERT_DIR = SPOOL_DIR;
+const RECENT = join(SPOOL_DIR, 'recent.jsonl');
+const MUTED_UNTIL = join(SPOOL_DIR, 'muted-until');
+const RECENT_KEEP = 200;
 
 type Group = { count: number; firstLine: string; sentAt: number; unsent: number };
 
@@ -126,10 +134,77 @@ function describe(args: unknown[]): string {
  * `body`, if any, goes under it as preformatted text. Answers whether it went.
  * Exported for the watchdog, the backup and `npm run alerts test`.
  */
+/** The chats alerts go to, which are also the only ones the bot answers. */
+export function alertChats(): string[] {
+  return settings()?.chats ?? [];
+}
+
+/** Until when alerts are held back (ms), or 0. */
+export function alertsMutedUntil(): number {
+  try {
+    const until = Number(readFileSync(MUTED_UNTIL, 'utf8'));
+    return Number.isFinite(until) && until > Date.now() ? until : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Hold alerts back for `ms` (0 lets them through again). Every process on this machine reads it. */
+export function muteAlerts(ms: number): void {
+  mkdirSync(SPOOL_DIR, { recursive: true });
+  if (ms > 0) writeFileSync(MUTED_UNTIL, String(Date.now() + ms));
+  else if (existsSync(MUTED_UNTIL)) unlinkSync(MUTED_UNTIL);
+}
+
+/** The last alerts, newest first: when, from where, what, and whether it was sent or held back. */
+export function recentAlerts(count = 10): Array<{ at: string; host: string; title: string; sent: boolean }> {
+  try {
+    return readFileSync(RECENT, 'utf8').trim().split('\n').filter(Boolean).slice(-count).reverse()
+      .map((line) => JSON.parse(line) as { at: string; host: string; title: string; sent: boolean });
+  } catch {
+    return [];
+  }
+}
+
+function remember(title: string, sent: boolean): void {
+  try {
+    mkdirSync(SPOOL_DIR, { recursive: true });
+    appendFileSync(RECENT, `${JSON.stringify({ at: new Date().toISOString(), host: hostname(), title: maskSecrets(title).slice(0, 300), sent })}\n`);
+    // Kept short: rewritten to the newest RECENT_KEEP now and then.
+    if (Math.random() < 0.05) {
+      const lines = readFileSync(RECENT, 'utf8').trim().split('\n');
+      if (lines.length > RECENT_KEEP) writeFileSync(RECENT, `${lines.slice(-RECENT_KEEP).join('\n')}\n`);
+    }
+  } catch {
+    // Nowhere to write: the alert itself still goes.
+  }
+}
+
+/** One message to one chat, as it is (HTML). The bot's replies; alerts go through sendAlert. */
+export async function sendTelegram(chat: string, html: string): Promise<boolean> {
+  const s = settings();
+  if (!s) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${s.token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: html.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function sendAlert(title: string, body = '', options: { force?: boolean } = {}): Promise<boolean> {
   const s = settings();
   if (!s) return false;
   const now = Date.now();
+  if (!options.force && alertsMutedUntil() > now) {
+    remember(title, false);
+    return false;
+  }
   if (!options.force) {
     if (now - windowStart > CAP_WINDOW_MS) {
       windowStart = now;
@@ -162,6 +237,7 @@ export async function sendAlert(title: string, body = '', options: { force?: boo
       return false;
     }
   }));
+  remember(title, results.some(Boolean));
   return results.some(Boolean);
 }
 

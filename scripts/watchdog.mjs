@@ -12,11 +12,21 @@
  * the last day, memory, disk and last night's backup. A service's own errors
  * are sent by that service; this is what a service cannot say about itself.
  *
+ * It is also the bot's other half: it answers commands in Telegram, only from
+ * the chats in TELEGRAM_CHAT_ID (anyone else is told the bot is private, and
+ * the team is told who tried, with the id to add them):
+ *
+ *   /start, /help   what it can do
+ *   /status         the gateway, every service, memory, disk, the last backup
+ *   /alerts         the last alerts, sent or held back
+ *   /logs NAME      the last error lines of a service (masked)
+ *   /mute [MIN]     hold alerts back (an hour by default); /unmute
+ *
  * Needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (npm run alerts).
  */
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, uptime } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -190,7 +200,128 @@ async function pass() {
   await dailySummary(list);
 }
 
+/* ── the bot: commands from the team's chats ───────────────────────────── */
+
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim();
+const esc = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const say = (chat, html) => config.sendTelegram(String(chat), html);
+const lagosClock = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const strangersSeen = new Map(); // chat id → day told
+
+const MENU = [
+  '<b>Wheelers ops</b>: just for the team.',
+  '/status  the gateway, every service, memory, disk, the last backup',
+  '/alerts  the last alerts',
+  '/logs api-gateway  the last error lines of a service',
+  '/mute 60  hold alerts back for 60 minutes · /unmute',
+].join('\n');
+
+async function statusText() {
+  let health = 'not answering';
+  const started = Date.now();
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/health`, { signal: AbortSignal.timeout(5000) });
+    health = res.ok ? `answering (${Date.now() - started} ms)` : `HTTP ${res.status}`;
+  } catch { /* stays "not answering" */ }
+  const list = (await processes()) ?? [];
+  const services = list
+    .filter((p) => p.name !== 'watchdog')
+    .map((p) => `${p.status === 'online' ? '🟢' : '🔴'} ${p.name}  ↺${p.restarts}  ${p.memoryMb} MB`)
+    .join('\n');
+  const free = memoryFree();
+  const disk = await diskUsed();
+  const muted = config.alertsMutedUntil();
+  return [
+    `<b>${health.startsWith('answering') && list.every((p) => p.status === 'online') ? '🟢' : '⚠️'} Wheelers now</b>`,
+    `Gateway: ${esc(health)}`,
+    `<pre>${esc(services || 'pm2 did not answer')}</pre>`,
+    `Memory free: ${free === null ? '?' : `${Math.round(free * 100)}%`} · Disk used: ${disk ?? '?'}% · Up ${Math.round(uptime() / 86400)} days`,
+    `Last backup: ${esc(lastBackup())}`,
+    `Alerts: ${muted ? `muted until ${lagosClock(new Date(muted).toISOString())}` : 'on'}`,
+  ].join('\n');
+}
+
+function alertsText() {
+  const recent = config.recentAlerts(12);
+  if (recent.length === 0) return 'No alerts yet.';
+  return ['<b>Last alerts</b>', ...recent.map((a) => `${lagosClock(a.at)} ${a.sent ? '' : '✋ held · '}${esc(a.title)}`)].join('\n');
+}
+
+async function logsText(name) {
+  const list = (await processes()) ?? [];
+  const known = [...new Set(list.map((p) => p.name))];
+  if (!known.includes(name)) return `No service called ${esc(name)}. The services: ${esc(known.join(', '))}`;
+  for (const kind of ['error', 'out']) {
+    const file = join(homedir(), '.pm2', 'logs', `${name}-${kind}.log`);
+    if (!existsSync(file)) continue;
+    const lines = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).slice(-15);
+    if (lines.length === 0) continue;
+    return `<b>${esc(name)}, last ${kind === 'error' ? 'errors' : 'lines'}</b>\n<pre>${esc(config.maskSecrets(lines.join('\n'))).slice(-3500)}</pre>`;
+  }
+  return `${esc(name)} has written nothing yet.`;
+}
+
+async function answer(message) {
+  const chat = String(message.chat?.id ?? '');
+  const text = String(message.text ?? '').trim();
+  if (!chat || !text) return;
+  if (!config.alertChats().includes(chat)) {
+    await say(chat, 'This bot is private to the Wheelers team.');
+    const day = new Date().toISOString().slice(0, 10);
+    if (strangersSeen.get(chat) !== day) {
+      strangersSeen.set(chat, day);
+      const who = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.chat?.title || 'Someone';
+      await config.sendAlert(`🙋 ${who}${message.from?.username ? ` (@${message.from.username})` : ''} tried the bot`, `To let them use it and get alerts, add ${chat} to TELEGRAM_CHAT_ID (comma-separated) and restart the watchdog.`, { force: true });
+    }
+    return;
+  }
+  const [command, ...args] = text.split(/\s+/);
+  const word = command.toLowerCase().replace(/@.*$/, '');
+  if (word === '/status') await say(chat, await statusText());
+  else if (word === '/alerts') await say(chat, alertsText());
+  else if (word === '/logs') await say(chat, await logsText(args[0] ?? 'api-gateway'));
+  else if (word === '/mute') {
+    const minutes = Math.min(24 * 60, Math.max(5, Number(args[0]) || 60));
+    config.muteAlerts(minutes * 60_000);
+    await say(chat, `🔇 Alerts held back for ${minutes} minutes. /unmute to have them again; /alerts still lists them.`);
+  } else if (word === '/unmute') {
+    config.muteAlerts(0);
+    await say(chat, '🔔 Alerts are on again.');
+  } else await say(chat, MENU);
+}
+
+async function listen() {
+  if (!TOKEN) return;
+  const api = (method, body) => fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(65_000),
+  }).then((r) => r.json());
+  await api('setMyCommands', { commands: [
+    { command: 'status', description: 'The gateway, every service, memory, disk, the last backup' },
+    { command: 'alerts', description: 'The last alerts' },
+    { command: 'logs', description: 'The last error lines of a service, e.g. /logs api-gateway' },
+    { command: 'mute', description: 'Hold alerts back, e.g. /mute 60' },
+    { command: 'unmute', description: 'Alerts on again' },
+    { command: 'help', description: 'What this bot does' },
+  ] }).catch(() => undefined);
+  let offset = 0;
+  for (;;) {
+    try {
+      const res = await api('getUpdates', { offset, timeout: 50, allowed_updates: ['message'] });
+      for (const update of res.result ?? []) {
+        offset = update.update_id + 1;
+        if (update.message) await answer(update.message).catch((error) => console.warn('[watchdog] command failed', error instanceof Error ? error.message : error));
+      }
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+}
+
 const first = await processes();
 for (const p of first ?? []) state.restarts.set(p.id, { count: p.restarts, times: [] });
-await sendAlert(`👀 Wheelers alerts are on`, `Watching ${(first ?? []).filter((p) => p.name !== 'watchdog').length} services, the gateway, memory and disk. A summary every morning at 09:00.`);
+await sendAlert(`👀 Wheelers alerts are on`, `Watching ${(first ?? []).filter((p) => p.name !== 'watchdog').length} services, the gateway, memory and disk. A summary every morning at 09:00. Send /status any time.`);
 setInterval(() => { pass().catch((error) => console.warn('[watchdog] pass failed', error instanceof Error ? error.message : error)); }, EVERY_MS);
+void listen();

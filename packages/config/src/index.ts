@@ -1,6 +1,6 @@
 // Env validators — each service imports and calls its own
 export { loadWorkspaceEnv }         from './load-workspace-env';
-export { startAlerts, sendAlert, maskSecrets, fingerprint } from './alerts';
+export { startAlerts, sendAlert, sendTelegram, alertChats, alertsMutedUntil, muteAlerts, recentAlerts, maskSecrets, fingerprint, ALERT_DIR } from './alerts';
 export { validateSharedEnv }       from './env/shared.env';
 export { validateGatewayEnv, resolvePublicBaseUrl, PUBLIC_BASE_URL_DEFAULT }      from './env/gateway.env';
 export { validateRideEnv }         from './env/ride.env';
