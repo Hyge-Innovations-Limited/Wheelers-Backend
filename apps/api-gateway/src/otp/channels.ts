@@ -15,6 +15,13 @@
  *   meta_whatsapp → twilio_whatsapp → SMS
  * which spends the least money that still reaches the person.
  *
+ * A sign-in or phone code goes both ways at once (deliverOtpEverywhere): by
+ * SMS and on WhatsApp from our own number, the same code in each, so it
+ * arrives wherever the person looks. WhatsApp is Meta only, with the
+ * AUTHENTICATION template (META_OTP_TEMPLATE_NAME); if Meta refuses it, the
+ * code goes as a plain message, which reaches anyone who wrote to us in the
+ * last 24 hours.
+ *
  * SMS has two providers, Termii and Twilio. `SMS_PROVIDER` in .env says
  * which goes first (twilio until told otherwise); the other stays behind it
  * as the fallback, and one that is not configured is skipped. Switching is
@@ -455,4 +462,75 @@ export async function deliverOtp(
     attempts.map(({ channel, error }) => ({ channel, error })),
     attempts.length > 0 && attempts.every((a) => a.windowClosed),
   );
+}
+
+/* ── Both ways at once ─────────────────────────────────────────────────── */
+
+/**
+ * Meta, for the both-ways send: the template first; if Meta refuses it (not
+ * approved, paused, a wording rule), the code as a plain message, which Meta
+ * delivers within 24 hours of the person's last message to us.
+ */
+async function sendViaMetaOrText(config: OtpChannelConfig, phone: string, code: string, body: string): Promise<OtpDeliveryResult> {
+  if (!config.metaOtpTemplateName) return sendViaMeta(config, phone, code, body);
+  try {
+    return await sendViaMeta(config, phone, code, body);
+  } catch (templateError) {
+    try {
+      return await sendViaMeta({ ...config, metaOtpTemplateName: undefined }, phone, code, body);
+    } catch (textError) {
+      const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
+      const windowClosed = textError instanceof OtpChannelError && textError.windowClosed;
+      throw new OtpChannelError(`template: ${said(templateError)}; text: ${said(textError)}`, 'meta_whatsapp', windowClosed);
+    }
+  }
+}
+
+/** Where a both-ways send landed: every channel that took the code. */
+export interface OtpEverywhereResult extends OtpDeliveryResult {
+  channels: OtpChannel[];
+}
+
+/**
+ * The same code by SMS (the SMS providers in their order) and on WhatsApp
+ * (Meta), at once. Done when either took it; fails only when both did, with
+ * every attempt in the error. Never Twilio Verify or Twilio WhatsApp: the
+ * code is ours, one code in both messages, checked against our own hash.
+ */
+export async function deliverOtpEverywhere(
+  config: OtpChannelConfig,
+  options: Omit<DeliverOptions, 'order' | 'prefer'>,
+): Promise<OtpEverywhereResult> {
+  const log = options.log ?? (() => {});
+  const smsReady = availableChannels(config, smsChannels(config)).length > 0;
+  const [bySms, byWhatsapp] = await Promise.allSettled([
+    smsReady ? deliverOtp(config, { ...options, order: smsChannels(config) }) : Promise.reject(new OtpDeliveryFailed([], false)),
+    hasMeta(config) ? sendViaMetaOrText(config, options.phone, options.code, options.body) : Promise.reject(new OtpChannelError('Meta is not set up', 'meta_whatsapp')),
+  ]);
+
+  const attempts: Array<{ channel: OtpChannel; error: string }> = [];
+  // "Message us first" is the answer only when WhatsApp's window was the one thing in the way.
+  let windowClosedOnly = true;
+  if (bySms.status === 'rejected') {
+    const reason: unknown = bySms.reason;
+    if (reason instanceof OtpDeliveryFailed) attempts.push(...reason.attempts);
+    else attempts.push({ channel: smsChannels(config)[0]!, error: reason instanceof Error ? reason.message : String(reason) });
+    if (smsReady) windowClosedOnly = false;
+  }
+  if (byWhatsapp.status === 'rejected') {
+    const reason: unknown = byWhatsapp.reason;
+    const error = reason instanceof Error ? reason.message : String(reason);
+    attempts.push({ channel: 'meta_whatsapp', error });
+    if (!(reason instanceof OtpChannelError && reason.windowClosed)) windowClosedOnly = false;
+    if (hasMeta(config)) log('[otp] the WhatsApp copy of the code was not sent', { phone: options.phone, error });
+  }
+
+  const delivered = [bySms, byWhatsapp].flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  if (delivered.length === 0) throw new OtpDeliveryFailed(attempts, attempts.length > 0 && windowClosedOnly);
+  return {
+    // The SMS one first: the app's autofill reads text messages.
+    ...(delivered.find((d) => d.medium === 'sms') ?? delivered[0]!),
+    providerManaged: false,
+    channels: delivered.map((d) => d.channel),
+  };
 }

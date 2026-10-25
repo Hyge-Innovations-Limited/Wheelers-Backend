@@ -10,10 +10,10 @@ import type { PaymentsClient } from '@wheleers/payments';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import {
   checkTwilioVerify,
-  deliverOtp,
+  deliverOtpEverywhere,
   isOtpConfigured,
   OtpDeliveryFailed,
-  type OtpChannelConfig, smsChannels } from '../otp/channels';
+  type OtpChannelConfig } from '../otp/channels';
 
 const PHONE_OTP_KEY_PREFIX = 'auth:phone-otp:';
 const PHONE_OTP_LENGTH = 6;
@@ -177,16 +177,15 @@ export async function getWhatsappBusinessNumber(
 }
 
 /**
- * Deliver a code over the best available channel. Returns which one worked so
- * the caller can tell the rider where to look ("check WhatsApp" vs "check SMS").
+ * Deliver a code by SMS and on WhatsApp at once, the same code in both
+ * (deliverOtpEverywhere). Returns 'sms' when the text message went, else
+ * 'whatsapp'; the apps say only that a code was sent to the number.
  */
 export async function sendPhoneOtpMessage(
   deps: PhoneRouteDeps,
   phone: string,
   body: string,
   code: string,
-  /** `smsOnly`: the code goes by text message and nothing else (a rider signing in to the app). */
-  options: { smsOnly?: boolean } = {},
 ): Promise<'whatsapp' | 'sms'> {
   if (!hasOtpChannel(deps)) {
     throw new Error(OTP_NOT_CONFIGURED);
@@ -194,18 +193,14 @@ export async function sendPhoneOtpMessage(
 
   try {
     const config = otpConfigFrom(deps);
-    const result = await deliverOtp(config, {
+    const result = await deliverOtpEverywhere(config, {
       phone,
       code,
       body,
-      // SMS only: the provider chosen in .env first, the other behind it, and
-      // never WhatsApp. Naming the order also keeps the code ours to check.
-      ...(options.smsOnly ? { prefer: 'sms' as const, order: smsChannels(config) } : {}),
       log: (message, meta) => console.warn(message, meta ?? {}),
     });
-    // Twilio Verify owns the code; remember that so verification asks Twilio
-    // instead of comparing against a hash we never generated.
-    await rememberProviderManaged(deps.redisClient, phone, result.providerManaged);
+    // The code is ours (never Twilio Verify): an earlier Verify code for this phone no longer applies.
+    await rememberProviderManaged(deps.redisClient, phone, false);
     return result.medium;
   } catch (error) {
     if (error instanceof OtpDeliveryFailed) {

@@ -70,7 +70,7 @@ async function status() {
   }
   console.log(`  Termii: ${termiiReady ? `ready   sends as "${env('TERMII_SENDER_ID')}"` : `NOT ready   ${env('TERMII_API_KEY') ? 'TERMII_SENDER_ID is not set (the sender name Termii approved)' : 'TERMII_API_KEY is not set'}`}${termiiNote}`);
   const order = (first === 'termii' ? [['Termii', termiiReady], ['Twilio', twilioReady]] : [['Twilio', twilioReady], ['Termii', termiiReady]]).filter(([, ready]) => ready).map(([name]) => name);
-  console.log(order.length ? `A driver's code will be tried by: ${order.join(', then ')}, then WhatsApp.` : 'No SMS provider is ready: a driver\'s code can only go by WhatsApp.');
+  console.log(order.length ? `Every code goes by SMS (${order.join(', then ')}) and on WhatsApp from our own number, at once.` : 'No SMS provider is ready: codes go on WhatsApp only.');
   if (first === 'termii' && !termiiReady) console.log('Termii is chosen but not ready, so Twilio is carrying SMS for now.');
 }
 

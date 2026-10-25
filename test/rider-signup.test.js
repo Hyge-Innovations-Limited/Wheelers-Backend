@@ -22,6 +22,9 @@ const JWT_SECRET = 'test-secret-that-is-at-least-32-characters-long';
 
 /** Twilio only — proves the rider app works without Meta being reachable. */
 const OTP_DEPS = {
+  metaAccessToken: 'meta-test',
+  metaPhoneNumberId: '1234567890',
+  metaOtpTemplateName: 'wheelers_code',
   twilioAccountSid: 'ACtest',
   twilioAuthToken: 'secret',
   twilioWhatsappNumber: '+14155238886',
@@ -117,6 +120,13 @@ test.before(() => {
   // Capture Twilio sends; fail loudly on anything else leaving the process.
   global.fetch = async (url, init) => {
     const href = String(url);
+    if (href.includes('graph.facebook.com')) {
+      // Our WhatsApp number: the code is the template's body parameter.
+      const sent = JSON.parse(String(init?.body ?? '{}'));
+      const code = sent.template?.components?.[0]?.parameters?.[0]?.text ?? sent.text?.body ?? '';
+      sentMessages.push({ to: `whatsapp:+${sent.to}`, from: 'meta', body: String(code), template: sent.template?.name ?? null });
+      return { ok: true, status: 200, text: async () => '{"messages":[{"id":"wamid.test"}]}', json: async () => ({ messages: [{ id: 'wamid.test' }] }) };
+    }
     if (href.includes('api.twilio.com')) {
       const params = new URLSearchParams(String(init?.body ?? ''));
       sentMessages.push({ to: params.get('To'), from: params.get('From'), body: params.get('Body') });
@@ -286,10 +296,16 @@ test('a new rider verifies their phone by WhatsApp code', async () => {
   assert.ok(['whatsapp', 'sms'].includes(send.body.channel));
   assert.equal(send.body.phone, phone);
 
-  assert.equal(sentMessages.length, 1, 'exactly one message should be sent');
-  assert.equal(sentMessages[0].to, `whatsapp:${phone}`, 'WhatsApp is tried before SMS');
-  const code = sentMessages[0].body.match(/\b(\d{6})\b/)?.[1];
-  assert.ok(code, `no 6-digit code in: ${sentMessages[0].body}`);
+  // The same code twice, at once: by SMS and on WhatsApp from our own number (Meta's template, never Twilio's WhatsApp).
+  assert.equal(sentMessages.length, 2, 'one SMS and one WhatsApp message');
+  const sms = sentMessages.find((m) => m.to === phone);
+  const whatsapp = sentMessages.find((m) => m.to === `whatsapp:${phone}`);
+  assert.ok(sms && whatsapp, JSON.stringify(sentMessages));
+  assert.equal(whatsapp.from, 'meta');
+  assert.equal(whatsapp.template, 'wheelers_code');
+  const code = sms.body.match(/\b(\d{6})\b/)?.[1];
+  assert.ok(code, `no 6-digit code in: ${sms.body}`);
+  assert.equal(whatsapp.body, code, 'the same code in both');
 
   // 3. A wrong code is refused.
   const wrong = await call(
@@ -388,8 +404,8 @@ test('a number with no account gets a code and a session', async () => {
   const send = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), deps);
   assert.equal(send.status, 200, JSON.stringify(send.body));
   assert.equal(send.body.sent, true);
-  assert.equal(sentMessages.length, 1);
-  const code = sentMessages[0].body.match(/\b(\d{6})\b/)[1];
+  assert.equal(sentMessages.length, 2, 'by SMS and on WhatsApp');
+  const code = sentMessages.find((m) => !m.to.startsWith('whatsapp:')).body.match(/\b(\d{6})\b/)[1];
 
   const verify = await call(phoneLoginRoute.handlePhoneLoginVerifyOtpRoute, req({ phone, code }), deps);
   assert.equal(verify.status, 200, JSON.stringify(verify.body));
@@ -445,27 +461,34 @@ test('a wrong code never hands out a session', async () => {
   assert.ok(wrong.body.attemptsRemaining >= 1, 'the rider should be told how many tries are left');
 });
 
-test('a rider\'s sign-in code goes by text message only: with WhatsApp set up too it is still an SMS, and with no SMS sender nothing is sent at all', async () => {
+test('a rider\'s sign-in code goes by SMS and on WhatsApp at once; with no SMS sender it still goes on WhatsApp', async () => {
   sentMessages = [];
   const phone = `+23481${Math.floor(10000000 + Math.random() * 89999999)}`.slice(0, 14);
 
-  // WhatsApp is configured as well: any request to it fails this test (the fetch stub throws on anything but Twilio).
-  const both = { ...loginDeps(memoryRedis()), metaAccessToken: 'meta-token', metaPhoneNumberId: '123456' };
-  const send = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), both);
+  const send = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), loginDeps(memoryRedis()));
   assert.equal(send.status, 200, JSON.stringify(send.body));
-  assert.equal(send.body.channel, 'sms');
-  assert.equal(sentMessages.length, 1);
-  assert.ok(!String(sentMessages[0].from).startsWith('whatsapp:'), 'a plain text message, not a WhatsApp one through Twilio');
-  assert.ok(!String(sentMessages[0].to).startsWith('whatsapp:'));
-  assert.match(sentMessages[0].body, /^Your Wheelers sign-in code is \d{6}\. It expires in 30 minutes\. Do not share it with anyone\.$/);
+  assert.equal(send.body.channel, 'sms', 'the SMS one is named: the app autofills from text messages');
+  assert.equal(sentMessages.length, 2);
+  const sms = sentMessages.find((m) => m.to === phone);
+  const whatsapp = sentMessages.find((m) => m.to === `whatsapp:${phone}`);
+  assert.ok(!String(sms.from).startsWith('whatsapp:'), 'a plain text message, not a WhatsApp one through Twilio');
+  assert.match(sms.body, /^Your Wheelers sign-in code is \d{6}\. It expires in 30 minutes\. Do not share it with anyone\.$/);
+  assert.equal(whatsapp.from, 'meta', 'WhatsApp from our own number');
+  assert.equal(whatsapp.body, sms.body.match(/\d{6}/)[0], 'the same code');
   assert.equal(send.body.expiresInSeconds, 1800);
 
-  // Only WhatsApp is set up: there is no way to text, so the rider is told, and WhatsApp is not used instead.
+  // Only WhatsApp is set up: the code still goes, on WhatsApp.
   sentMessages = [];
-  const whatsappOnly = { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), metaAccessToken: 'meta-token', metaPhoneNumberId: '123456', onboarding: loginDeps(memoryRedis()).onboarding };
-  const refused = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), whatsappOnly);
-  assert.equal(refused.status, 502);
-  assert.equal(refused.body.code, 'OTP_DELIVERY_FAILED');
-  assert.match(refused.body.error, /could not send a text message/);
+  const whatsappOnly = { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), metaAccessToken: 'meta-token', metaPhoneNumberId: '123456', metaOtpTemplateName: 'wheelers_code', onboarding: loginDeps(memoryRedis()).onboarding };
+  const viaWhatsapp = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), whatsappOnly);
+  assert.equal(viaWhatsapp.status, 200, JSON.stringify(viaWhatsapp.body));
+  assert.equal(viaWhatsapp.body.channel, 'whatsapp');
+  assert.deepEqual(sentMessages.map((m) => m.to), [`whatsapp:${phone}`]);
+
+  // Nothing set up at all: nothing is sent, and the rider is told.
+  sentMessages = [];
+  const nothing = { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), onboarding: loginDeps(memoryRedis()).onboarding };
+  const refused = await call(phoneLoginRoute.handlePhoneLoginSendOtpRoute, req({ phone }), nothing);
+  assert.notEqual(refused.status, 200);
   assert.equal(sentMessages.length, 0);
 });

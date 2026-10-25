@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { prisma, driverClient, userClient } from '@wheleers/db';
 import { verifyLocalAccessToken } from '../auth/local';
 import { logActivity } from '../analytics/log-activity';
-import { deliverOtp, isOtpConfigured, smsChannels, type OtpChannelConfig } from '../otp/channels';
+import { deliverOtpEverywhere, isOtpConfigured, type OtpChannelConfig } from '../otp/channels';
 import type { RedisClient } from '../redis/client';
 import { getString, isRecord } from '../utils/object';
 import { buildOtpCode, hashOtp, timingSafeStringEquals } from './phone.route';
@@ -174,17 +174,16 @@ export async function handleDriverPhoneRoute(req: IncomingMessage, res: ServerRe
 
     const code = buildOtpCode();
     try {
-      const sent = await deliverOtp(deps.otp, {
+      // By SMS and on WhatsApp at once, the same code.
+      const sent = await deliverOtpEverywhere(deps.otp, {
         phone,
         code,
         body: `Your Wheelers verification code is ${code}. This code expires in 30 minutes. Do not share with anyone.`,
-        prefer: 'sms',
-        order: [...smsChannels(deps.otp), 'meta_whatsapp'],
         log: (message, meta) => console.warn(message, meta),
       });
       await redis.set(key.code(userId), JSON.stringify({ codeHash: hashOtp(code), phone, tries: 0 } satisfies StoredCode), CODE_TTL_SECONDS);
       await redis.set(key.wait(userId), '1', RESEND_WAIT_SECONDS);
-      logActivity({ userId, eventType: 'driver_phone_code_sent', metadata: { channel: sent.channel, number: sends } });
+      logActivity({ userId, eventType: 'driver_phone_code_sent', metadata: { channel: sent.channels.join('+'), number: sends } });
       sendJson(res, 200, {
         sentTo: maskPhone(phone),
         by: sent.medium,

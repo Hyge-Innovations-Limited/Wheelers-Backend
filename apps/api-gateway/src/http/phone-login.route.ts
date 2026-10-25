@@ -147,8 +147,8 @@ export async function handlePhoneLoginSendOtpRoute(
 
     let channel: 'whatsapp' | 'sms';
     try {
-      // By text message, never WhatsApp: the app tells the rider to look in their messages.
-      channel = await sendPhoneOtpMessage(deps, phone, messageBody, code, { smsOnly: true });
+      // By text message and on WhatsApp at once: it arrives wherever they look.
+      channel = await sendPhoneOtpMessage(deps, phone, messageBody, code);
     } catch (error) {
       // A code that never left the building must not eat the rider's quota —
       // otherwise a broken sender locks them out for the whole window.
