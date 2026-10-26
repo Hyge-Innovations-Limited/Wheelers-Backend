@@ -58,6 +58,7 @@
 //   npm run pricing linc                     Linc as the guide: on or off, its figures, where we sit, its prices
 //   npm run pricing linc on|off              price at Linc's price for the trip (never under inDrive's high end)
 //   npm run pricing linc above 300           sit ₦300 above Linc (0 the same; -200 under)
+//   npm run pricing linc night 1.15          how much more Linc charges at night (22:00–05:00)
 //   npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]   a price read off Linc (km, minutes, price)
 //   npm run pricing linc fit [save]          Linc's figures from its prices (saves with "save")
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
@@ -674,11 +675,15 @@ async function linc() {
   const [word, ...args] = rest;
   const { settings } = await pricingClient.loadSettings();
   const f = settings.linc;
-  const guess = (s, figures = f) => config.lincFareNgn(s.km, s.minutes, figures);
+  const atNight = (s) => { const h = new Date(new Date(s.at).getTime() + 3_600_000).getUTCHours(); return h >= 22 || h < 5; };
+  const guess = (s, figures = f) => config.lincFareNgn(s.km, s.minutes, figures) * (atNight(s) ? settings.lincNightLift : 1);
   if (word === 'on' || word === 'off') {
     return save(() => ({ lincOn: word === 'on' }), (s) => (s.lincOn
       ? `Prices now follow Linc: its price for the trip${s.lincAboveNgn ? ` ${s.lincAboveNgn > 0 ? '+' : '−'} ${naira(Math.abs(s.lincAboveNgn))}` : ''}, never under inDrive's high end. The flat extra and the margin are not added while this is on.`
       : 'Prices are back on inDrive + the premium, the extra and the margin.'));
+  }
+  if (word === 'night') {
+    return save(() => ({ lincNightLift: Number(args[0]) }), (s) => `At night (22:00–05:00) Linc's price is now taken as ×${s.lincNightLift} its daytime one.`);
   }
   if (word === 'above') {
     return save(() => ({ lincAboveNgn: Number(args[0]) }), (s) => (s.lincAboveNgn === 0
@@ -696,7 +701,7 @@ async function linc() {
     return;
   }
   if (word === 'fit') {
-    const fitted = config.fitLincFigures(settings.lincSamples);
+    const fitted = config.fitLincFigures(settings.lincSamples, settings.lincNightLift);
     if (!fitted) { console.log(`Not enough to fit from: ${settings.lincSamples.length} Linc prices (3 at least, of different trips).`); return; }
     console.log(`From ${settings.lincSamples.length} Linc prices: ${naira(fitted.baseNgn)} + ${naira(fitted.perKmNgn)} a km + ${naira(fitted.perMinuteNgn)} a minute (now ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} + ${naira(f.perMinuteNgn)}).`);
     console.table(settings.lincSamples.slice(-15).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'figures now': naira(guess(s)), 'these figures': naira(guess(s, fitted)) })));
@@ -705,7 +710,7 @@ async function linc() {
   }
   console.log(`Linc as the guide: ${settings.lincOn ? 'ON' : 'off'}  (npm run pricing linc on|off)`);
   console.log(`Linc's figures: ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} a km + ${naira(f.perMinuteNgn)} a minute; we sit ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`} (linc above N).`);
-  console.log(`Never under inDrive's high end (×${settings.marketHigh} our inDrive guess), and our own live surge and rain move it too.`);
+  console.log(`At night (22:00–05:00) ×${settings.lincNightLift} (linc night N). Never under inDrive's high end (×${settings.marketHigh} our inDrive guess); our own live surge and rain move it too.`);
   console.table(settings.lincSamples.slice(-10).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'its figures say': naira(guess(s)) })));
 }
 

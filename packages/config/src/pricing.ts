@@ -153,10 +153,14 @@ export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
 /**
  * Linc's figures fitted from its prices: least squares on base, per km and
  * per minute, none below 0 (a figure that comes out negative is dropped and
- * the rest fitted again). Null with fewer than 3 prices.
+ * the rest fitted again). A price seen at night is taken back to its daytime
+ * price first (÷ nightLift), so the figures are the daytime ones. Null with
+ * fewer than 3 prices.
  */
-export function fitLincFigures(samples: readonly LincSample[]): MarketFormula | null {
-  const rows = samples.filter((s) => s.km > 0 && s.minutes > 0 && s.priceNgn > 0);
+export function fitLincFigures(samples: readonly LincSample[], nightLift = 1): MarketFormula | null {
+  const rows = samples
+    .filter((s) => s.km > 0 && s.minutes > 0 && s.priceNgn > 0)
+    .map((s) => (isNightHour(lagosHourOf(s.at)) ? { ...s, priceNgn: s.priceNgn / nightLift } : s));
   if (rows.length < 3) return null;
   const solve = (use: [boolean, boolean, boolean]): number[] | null => {
     const cols = [0, 1, 2].filter((i) => use[i]);
@@ -196,7 +200,13 @@ export function fitLincFigures(samples: readonly LincSample[]): MarketFormula | 
   return null;
 }
 
-/** What Linc would charge for a trip, on its fitted figures. */
+/** The Lagos hour of an ISO time (Lagos is UTC+1 all year). */
+function lagosHourOf(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t + 3_600_000).getUTCHours() : 12;
+}
+
+/** What Linc would charge for a trip, on its fitted (daytime) figures. */
 export const lincFareNgn = (km: number, minutes: number, f: MarketFormula) => f.baseNgn + f.perKmNgn * km + f.perMinuteNgn * minutes;
 
 /** Which list of the curve a day reads: Saturdays are busy into the evening, Sundays and holidays quiet. */
@@ -392,6 +402,8 @@ export type PricingSettings = {
   linc: MarketFormula;
   /** Where we sit against Linc's price for the trip: 0 the same, 500 ₦500 above, -300 under. */
   lincAboveNgn: number;
+  /** How much more Linc charges at night (22:00–05:00): ₦7,950 at 23:03 where its daytime figures said ₦6,758. */
+  lincNightLift: number;
   /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
   lincSamples: LincSample[];
 };
@@ -440,6 +452,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   lincOn: false,
   linc: { baseNgn: 1150, perKmNgn: 36, perMinuteNgn: 202 },
   lincAboveNgn: 0,
+  lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
@@ -606,6 +619,7 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
       perMinuteNgn: finite((v.linc as Partial<MarketFormula> | undefined)?.perMinuteNgn, d.linc.perMinuteNgn, 0, 2_000),
     },
     lincAboveNgn: Math.round(finite(v.lincAboveNgn, d.lincAboveNgn, -3_000, 5_000) / 50) * 50,
+    lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
     lincSamples: Array.isArray(v.lincSamples)
       ? (v.lincSamples as unknown[]).flatMap((x) => {
         const s = x as Partial<LincSample>;
@@ -1100,8 +1114,9 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const tripMinutes = factors.durationSeconds !== undefined && Number.isFinite(factors.durationSeconds) && factors.durationSeconds > 0
     ? factors.durationSeconds / 60
     : null;
+  const lincNight = isNightHour(lagosClock(factors.at ?? new Date()).hour) ? settings.lincNightLift : 1;
   const lincNgn = settings.lincOn && distanceKm > 0 && tripMinutes !== null
-    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * surgeFactor * rainFactor)
+    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincNight * surgeFactor * rainFactor)
     : null;
   if (lincNgn !== null) {
     suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));

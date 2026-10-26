@@ -52,6 +52,21 @@ test('on: the trip is priced at Linc\'s price, fast and slow trips alike, never 
   assert.equal(quick.suggestedFareNgn, quick.highEndNgn);
 });
 
+test('at night Linc charges more: ×1.15 by default (Opebi to Ijeshatedo at 23:03, 15.5 km 25 min: Linc ₦7,950)', () => {
+  config.setPricingSettings({ ...live, lincOn: true });
+  const night = config.calculateSuggestedFare(15.5, { durationSeconds: 25 * 60, at: new Date(Date.UTC(2026, 9, 26, 22, 3)), trafficRatio: 1 });
+  assert.equal(night.setBy, 'linc');
+  assert.ok(Math.abs(night.suggestedFareNgn - 7950) <= 250, String(night.suggestedFareNgn));
+  // A night price is taken back to daytime before fitting: it does not bend the daytime figures.
+  const samples = [...config.LINC_SAMPLES_SEEN, { km: 15.5, minutes: 25, priceNgn: 7950, at: '2026-10-26T22:03:00Z' }];
+  const withNight = config.fitLincFigures(samples, 1.15);
+  for (const s of samples) {
+    const night = new Date(Date.parse(s.at) + 3_600_000).getUTCHours() >= 22;
+    const said = config.lincFareNgn(s.km, s.minutes, withNight) * (night ? 1.15 : 1);
+    assert.ok(Math.abs(said / s.priceNgn - 1) < 0.1, `${s.km} km ${s.minutes} min: ${Math.round(said)} for ${s.priceNgn}`);
+  }
+});
+
 test('Linc\'s figures are fitted from its prices, none below zero; it is a price by the minute', () => {
   const fitted = config.fitLincFigures(config.LINC_SAMPLES_SEEN);
   assert.ok(fitted.perMinuteNgn > 150, JSON.stringify(fitted));
