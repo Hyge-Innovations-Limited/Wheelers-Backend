@@ -55,6 +55,11 @@
 //   npm run pricing sample 15.5 23 5800       a trip of 15.5 km and 23 minutes cost ₦5,800 just now
 //   npm run pricing sample 16 33 7200 rush    ...taken in rush hours (or "quiet"), when adding it later
 //   npm run pricing sample 9.6 28 7200 at=2026-10-24T18:00   ...seen then (Lagos time): a weekend price typed in later teaches the weekend
+//   npm run pricing linc                     Linc as the guide: on or off, its figures, where we sit, its prices
+//   npm run pricing linc on|off              price at Linc's price for the trip (never under inDrive's high end)
+//   npm run pricing linc above 300           sit ₦300 above Linc (0 the same; -200 under)
+//   npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]   a price read off Linc (km, minutes, price)
+//   npm run pricing linc fit [save]          Linc's figures from its prices (saves with "save")
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
 //   npm run pricing sample 9.5 28 5200 ikeja      ...a trip from or to an area inside Lagos (maryland, ikeja,
 //                                                 surulere, lekki, ajah): Yaba and the Island are the standard
@@ -98,6 +103,7 @@ async function status() {
   const f = (x) => `base ${naira(x.baseNgn)}, ${naira(x.perKmNgn)} a km, ${naira(x.perMinuteNgn)} a minute`;
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
   console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${premiumText(settings, p)}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
+  console.log(`Linc as the guide: ${on(settings.lincOn)}  ${naira(settings.linc.baseNgn)} + ${naira(settings.linc.perKmNgn)} a km + ${naira(settings.linc.perMinuteNgn)} a minute, ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`}, from ${settings.lincSamples.length} Linc prices${settings.lincOn ? '; the extra and margin below are not added' : ''}  (npm run pricing linc)`);
   console.log(`Flat extra on top of every price: ${settings.extraNgn > 0 ? naira(settings.extraNgn) : 'none'}`);
   console.log(`Margin that grows with the fare: ${settings.marginPercent > 0 ? `${settings.marginPercent}% of the other app's fare` : 'none'}  (npm run pricing margin N)`);
   console.log(`Never under inDrive's high end: ×${settings.marketHigh} our guess${settings.marketHighFittedAt ? `, learned ${lagosTime(new Date(settings.marketHighFittedAt))}` : ' (until 5 of its prices teach it)'}`);
@@ -659,6 +665,50 @@ const onOff = (key, label) => () => {
   return save(() => ({ [key]: word === 'on' }), (s) => `${label[0].toUpperCase()}${label.slice(1)} is now ${s[key] ? 'ON' : 'off'}.`);
 };
 
+/**
+ * npm run pricing linc [on | off | above N | sample KM MIN PRICE [at=…] | fit [save]]:
+ * Linc as the guide (pricing.ts, lincOn). A price read off Linc is kept in
+ * the settings; its figures are fitted from them all.
+ */
+async function linc() {
+  const [word, ...args] = rest;
+  const { settings } = await pricingClient.loadSettings();
+  const f = settings.linc;
+  const guess = (s, figures = f) => config.lincFareNgn(s.km, s.minutes, figures);
+  if (word === 'on' || word === 'off') {
+    return save(() => ({ lincOn: word === 'on' }), (s) => (s.lincOn
+      ? `Prices now follow Linc: its price for the trip${s.lincAboveNgn ? ` ${s.lincAboveNgn > 0 ? '+' : '−'} ${naira(Math.abs(s.lincAboveNgn))}` : ''}, never under inDrive's high end. The flat extra and the margin are not added while this is on.`
+      : 'Prices are back on inDrive + the premium, the extra and the margin.'));
+  }
+  if (word === 'above') {
+    return save(() => ({ lincAboveNgn: Number(args[0]) }), (s) => (s.lincAboveNgn === 0
+      ? 'We now sit at Linc\'s price.'
+      : `We now sit ${naira(Math.abs(s.lincAboveNgn))} ${s.lincAboveNgn > 0 ? 'above' : 'under'} Linc's price.`));
+  }
+  if (word === 'sample') {
+    const [km, minutes, price] = args.slice(0, 3).map(Number);
+    if (!(km > 0) || !(minutes > 0) || !(price > 0)) throw new Error('Say the trip and the price: npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]');
+    const atWord = args.find((w) => w.startsWith('at='));
+    const at = atWord ? seenAt(atWord.slice(3)) : new Date();
+    const row = { km, minutes, priceNgn: price, at: at.toISOString() };
+    await save((s) => ({ lincSamples: [...s.lincSamples, row] }), () => `Saved: Linc charged ${naira(price)} for ${km} km in ${minutes} minutes.`);
+    console.log(`Its figures would have said ${naira(guess(row))}. "npm run pricing linc fit" shows what all ${settings.lincSamples.length + 1} prices give.`);
+    return;
+  }
+  if (word === 'fit') {
+    const fitted = config.fitLincFigures(settings.lincSamples);
+    if (!fitted) { console.log(`Not enough to fit from: ${settings.lincSamples.length} Linc prices (3 at least, of different trips).`); return; }
+    console.log(`From ${settings.lincSamples.length} Linc prices: ${naira(fitted.baseNgn)} + ${naira(fitted.perKmNgn)} a km + ${naira(fitted.perMinuteNgn)} a minute (now ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} + ${naira(f.perMinuteNgn)}).`);
+    console.table(settings.lincSamples.slice(-15).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'figures now': naira(guess(s)), 'these figures': naira(guess(s, fitted)) })));
+    if (args[0] !== 'save') { console.log('Nothing saved. "npm run pricing linc fit save" to use them.'); return; }
+    return save(() => ({ linc: fitted }), () => 'Saved Linc\'s figures.');
+  }
+  console.log(`Linc as the guide: ${settings.lincOn ? 'ON' : 'off'}  (npm run pricing linc on|off)`);
+  console.log(`Linc's figures: ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} a km + ${naira(f.perMinuteNgn)} a minute; we sit ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`} (linc above N).`);
+  console.log(`Never under inDrive's high end (×${settings.marketHigh} our inDrive guess), and our own live surge and rain move it too.`);
+  console.table(settings.lincSamples.slice(-10).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'its figures say': naira(guess(s)) })));
+}
+
 const commands = {
   floor: onOff('marketFloorOn', 'floor'),
   traffic: onOff('trafficOn', 'traffic'),
@@ -696,11 +746,12 @@ const commands = {
   report,
   indrive,
   try: tryTrip,
+  linc,
 };
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | margin PERCENT | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | margin PERCENT | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE | linc [on | off | above N | sample KM MIN PRICE [at=…] | fit [save]]]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

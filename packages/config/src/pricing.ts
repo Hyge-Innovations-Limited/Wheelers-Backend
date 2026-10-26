@@ -136,6 +136,69 @@ export const PERIOD_PREMIUM_MAX_NGN = 10_000;
  */
 export type HourCurve = { weekday: number[]; weekend: number[]; sunday?: number[] };
 
+/** One price read off Linc: the trip, what it cost, and when (ISO). */
+export type LincSample = { km: number; minutes: number; priceNgn: number; at: string };
+
+/** The Linc prices seen while building the guide (24–26 Oct 2026, Lagos). */
+export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
+  { km: 20.2, minutes: 37, priceNgn: 9000, at: '2026-10-24T10:40:00Z' },
+  { km: 20.2, minutes: 37, priceNgn: 9200, at: '2026-10-24T11:14:00Z' },
+  { km: 20.2, minutes: 37, priceNgn: 9750, at: '2026-10-24T11:20:00Z' },
+  { km: 20.2, minutes: 37, priceNgn: 9350, at: '2026-10-24T11:23:00Z' },
+  { km: 19.2, minutes: 31, priceNgn: 8100, at: '2026-10-25T08:50:00Z' },
+  { km: 16.6, minutes: 48, priceNgn: 11450, at: '2026-10-25T17:46:00Z' },
+  { km: 16.6, minutes: 52, priceNgn: 13050, at: '2026-10-25T17:55:00Z' },
+];
+
+/**
+ * Linc's figures fitted from its prices: least squares on base, per km and
+ * per minute, none below 0 (a figure that comes out negative is dropped and
+ * the rest fitted again). Null with fewer than 3 prices.
+ */
+export function fitLincFigures(samples: readonly LincSample[]): MarketFormula | null {
+  const rows = samples.filter((s) => s.km > 0 && s.minutes > 0 && s.priceNgn > 0);
+  if (rows.length < 3) return null;
+  const solve = (use: [boolean, boolean, boolean]): number[] | null => {
+    const cols = [0, 1, 2].filter((i) => use[i]);
+    const x = (s: LincSample) => [1, s.km, s.minutes].filter((_, i) => use[i]);
+    const n = cols.length;
+    const a = Array.from({ length: n }, () => Array(n + 1).fill(0) as number[]);
+    for (const s of rows) {
+      const v = x(s);
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) a[i]![j]! += v[i]! * v[j]!;
+        a[i]![n]! += v[i]! * s.priceNgn;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      let p = i;
+      for (let r = i + 1; r < n; r++) if (Math.abs(a[r]![i]!) > Math.abs(a[p]![i]!)) p = r;
+      [a[i], a[p]] = [a[p]!, a[i]!];
+      if (Math.abs(a[i]![i]!) < 1e-9) return null;
+      for (let r = 0; r < n; r++) {
+        if (r === i) continue;
+        const f = a[r]![i]! / a[i]![i]!;
+        for (let c = i; c <= n; c++) a[r]![c]! -= f * a[i]![c]!;
+      }
+    }
+    const out = [0, 0, 0];
+    cols.forEach((col, i) => { out[col] = a[i]![n]! / a[i]![i]!; });
+    return out;
+  };
+  let use: [boolean, boolean, boolean] = [true, true, true];
+  for (let tries = 0; tries < 3; tries++) {
+    const fit = solve(use);
+    if (!fit) return null;
+    const negative = fit.findIndex((v, i) => use[i] && v < 0);
+    if (negative === -1) return { baseNgn: Math.round(fit[0]!), perKmNgn: Math.round(fit[1]!), perMinuteNgn: Math.round(fit[2]!) };
+    use = use.map((u, i) => u && i !== negative) as [boolean, boolean, boolean];
+  }
+  return null;
+}
+
+/** What Linc would charge for a trip, on its fitted figures. */
+export const lincFareNgn = (km: number, minutes: number, f: MarketFormula) => f.baseNgn + f.perKmNgn * km + f.perMinuteNgn * minutes;
+
 /** Which list of the curve a day reads: Saturdays are busy into the evening, Sundays and holidays quiet. */
 export type DayKind = 'weekday' | 'saturday' | 'sunday';
 
@@ -317,6 +380,20 @@ export type PricingSettings = {
    */
   marketHigh: number;
   marketHighFittedAt: string | null;
+  /**
+   * Linc as the guide (off until switched on): the price is what Linc would
+   * charge for the trip, Linc's figures on Google's live minutes, times our
+   * own live surge and rain, plus lincAboveNgn; never under the other app's
+   * high end. The flat extra and the margin, stand-ins for Linc, are then
+   * not added. Linc charges by the minute, nearly not by the km: fitted from
+   * its prices on 24–26 Oct, ₦1,150 + ₦36 a km + ₦202 a minute.
+   */
+  lincOn: boolean;
+  linc: MarketFormula;
+  /** Where we sit against Linc's price for the trip: 0 the same, 500 ₦500 above, -300 under. */
+  lincAboveNgn: number;
+  /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
+  lincSamples: LincSample[];
 };
 
 /** A cut is never more than this share of the fare. */
@@ -360,6 +437,10 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   marginPercent: 0,
   marketHigh: 1,
   marketHighFittedAt: null,
+  lincOn: false,
+  linc: { baseNgn: 1150, perKmNgn: 36, perMinuteNgn: 202 },
+  lincAboveNgn: 0,
+  lincSamples: [...LINC_SAMPLES_SEEN],
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
   areas: {
@@ -518,6 +599,22 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     marginPercent: Math.round(finite(v.marginPercent, d.marginPercent, 0, 50) * 10) / 10,
     marketHigh: Math.round(finite(v.marketHigh, d.marketHigh, 1, MARKET_HIGH_MAX) * 100) / 100,
     marketHighFittedAt: typeof v.marketHighFittedAt === 'string' ? v.marketHighFittedAt.slice(0, 40) : null,
+    lincOn: v.lincOn === true,
+    linc: {
+      baseNgn: finite((v.linc as Partial<MarketFormula> | undefined)?.baseNgn, d.linc.baseNgn, 0, 10_000),
+      perKmNgn: finite((v.linc as Partial<MarketFormula> | undefined)?.perKmNgn, d.linc.perKmNgn, 0, 2_000),
+      perMinuteNgn: finite((v.linc as Partial<MarketFormula> | undefined)?.perMinuteNgn, d.linc.perMinuteNgn, 0, 2_000),
+    },
+    lincAboveNgn: Math.round(finite(v.lincAboveNgn, d.lincAboveNgn, -3_000, 5_000) / 50) * 50,
+    lincSamples: Array.isArray(v.lincSamples)
+      ? (v.lincSamples as unknown[]).flatMap((x) => {
+        const s = x as Partial<LincSample>;
+        const km = Number(s.km); const minutes = Number(s.minutes); const priceNgn = Number(s.priceNgn);
+        return km > 0 && km < 300 && minutes > 0 && minutes < 600 && priceNgn > 0 && priceNgn < 500_000 && typeof s.at === 'string'
+          ? [{ km, minutes, priceNgn: Math.round(priceNgn), at: s.at.slice(0, 40) }]
+          : [];
+      }).slice(-300)
+      : [...d.lincSamples],
     areas: areasFrom(v.areas, d.areas),
   };
 }
@@ -815,7 +912,7 @@ export type SuggestedFare = {
   /** The suggested fare as the driver's rate per km. */
   ratePerKmNgn: number;
   /** What set the fare. "trial": a price near the model's, shown on a small share of trips so there is something to learn from. */
-  setBy: 'floor' | 'rules' | 'model' | 'trial';
+  setBy: 'floor' | 'rules' | 'model' | 'trial' | 'linc';
   /** The other app's fare for this trip, and the floor it gives (that + the premium). Null with the floor off. */
   marketFareNgn: number | null;
   floorFareNgn: number | null;
@@ -834,6 +931,8 @@ export type SuggestedFare = {
   /** The percentage margin on the other app's fare (1.03 = 3%; 1 = none). */
   marginFactor: number;
   /** The other app's high end for this trip: never suggested under it. Null with the floor off. */
+  /** What Linc would charge for the trip (with our surge and rain), when the Linc guide is on; else null. */
+  lincNgn: number | null;
   highEndNgn: number | null;
   /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
   premium: TripPremium | null;
@@ -995,8 +1094,22 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     const model = Math.min(modelFareNgn, liftLimit);
     if (model > suggestedFareNgn) { suggestedFareNgn = model; setBy = 'model'; }
   }
-  // Last of all: the flat extra, on top of whatever the above came to.
-  suggestedFareNgn += settings.extraNgn;
+  // Linc as the guide, when on and the trip's minutes are known: what Linc
+  // would charge (its figures on the live minutes, times our own surge and
+  // rain), plus lincAboveNgn, in place of everything above and the extra.
+  const tripMinutes = factors.durationSeconds !== undefined && Number.isFinite(factors.durationSeconds) && factors.durationSeconds > 0
+    ? factors.durationSeconds / 60
+    : null;
+  const lincNgn = settings.lincOn && distanceKm > 0 && tripMinutes !== null
+    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * surgeFactor * rainFactor)
+    : null;
+  if (lincNgn !== null) {
+    suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
+    setBy = 'linc';
+  } else {
+    // Last of all: the flat extra, on top of whatever the above came to.
+    suggestedFareNgn += settings.extraNgn;
+  }
   // Never under the other app's high end (a trial price excepted: it is never above today's anyway).
   const highEndNgn = marketFare === null ? null : roundUpToIncrement(marketFare * settings.marketHigh, FARE_ROUNDING_INCREMENT);
   if (highEndNgn !== null && suggestedFareNgn < highEndNgn && setBy !== 'trial') {
@@ -1023,6 +1136,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     rainFactor: marketFare === null ? 1 : rainFactor,
     marginFactor: marketFare === null ? 1 : Math.round(marginFactor * 1000) / 1000,
     highEndNgn,
+    lincNgn,
     premium: marketFare === null ? null : premium,
   };
 }
