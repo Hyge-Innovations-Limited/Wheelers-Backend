@@ -1375,7 +1375,8 @@
     paying = { key: offer.key, driverName: offer.driverName || 'your driver' };
     local.confirming = { name: offer.driverName || '', fareNgn: offer.priceNgn };
     render();
-    api('POST', '/ride-page/accept', { key: offer.key, method: method }).then(function (next) {
+    // The price the rider saw: the server books nothing at any other price (OFFER_CHANGED → back to the offers, which show the new one).
+    api('POST', '/ride-page/accept', { key: offer.key, method: method, priceNgn: offer.priceNgn }).then(function (next) {
       busy = false;
       paying = null;
       local.confirming = null;
