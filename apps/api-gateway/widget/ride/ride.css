@@ -567,6 +567,134 @@ section[data-view="offers"] { position: relative; }
 /* the pay sheet: one sheet, two parts */
 .sheet-part { display: flex; flex-direction: column; gap: 14px; }
 
+/* ── Home: Later, the ride for later, saved places (app/rider/index.tsx) ── */
+.search-row { display: flex; gap: 10px; }
+.search-row .home-search { flex: 1; width: auto; min-width: 0; }
+.later {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; height: 60px; padding: 0 16px; border: 0;
+  border-radius: var(--r-lg); background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: 16px; line-height: 22px;
+}
+.later svg { width: 18px; height: 18px; fill: none; stroke: var(--orange); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.later:active { opacity: 0.72; }
+.home-stack { display: flex; flex-direction: column; gap: 14px; }
+.sched-card {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 12px 14px; border: 0;
+  border-radius: var(--r-md); background: var(--orange-soft); color: var(--ink); text-align: left;
+}
+.sched-card:active { opacity: 0.72; }
+.sched-words { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sched-words strong { font-size: 15px; line-height: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sched-words span { font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chips-row { display: flex; gap: 10px; }
+.chips { flex: 1; min-width: 0; display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 52px; max-width: 180px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); color: var(--ink);
+}
+.chip.wide { flex: 1 1 0; max-width: none; }
+.chip svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: var(--orange-ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chip-text { min-width: 0; font-size: 15px; line-height: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip:active, .add-chip:active, .add-place:active { opacity: 0.72; }
+.add-chip { flex: 0 0 auto; width: 52px; height: 52px; padding: 0; border: 2px solid var(--ink); border-radius: var(--r-md); background: transparent; display: flex; align-items: center; justify-content: center; }
+.add-chip svg, .add-place svg, .add-stop svg, .btn.ghost svg { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.add-chip svg { width: 24px; height: 24px; }
+.add-place { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 52px; border: 2px solid var(--ink); border-radius: var(--r-md); background: transparent; color: var(--ink); font-size: 15px; line-height: 20px; font-weight: 700; }
+.add-place svg { width: 22px; height: 22px; }
+
+/* ── Plan your trip: stops, + Add stop, saved places ─────────────────── */
+.plan-mark.hollow { border-radius: 6px; border: 3px solid var(--ink); }
+.plan-remove svg { width: 19px; height: 19px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.add-stop { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--orange-ink); font-size: 14px; line-height: 20px; font-weight: 700; }
+.add-stop svg { width: 18px; height: 18px; }
+.add-stop:disabled { opacity: 0.45; cursor: not-allowed; }
+.add-stop.full svg { display: none; }
+.add-stop:active:not(:disabled) { opacity: 0.72; }
+.result-icon.saved svg { stroke: var(--ink); }
+
+/* ── screens over Home ───────────────────────────────────────────────── */
+section.screen { min-height: calc(100vh - 36px); }
+.grow { flex: 1; }
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group .label-caps { color: var(--ink); }
+.bad-text { color: var(--bad); font-weight: 700; }
+.text-input {
+  width: 100%; height: 52px; padding: 0 14px; border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg);
+  font: inherit; font-size: 16px; font-weight: 600; color: var(--ink); outline: 0;
+}
+.text-input::placeholder { color: var(--placeholder); }
+.field-error { font-size: 14px; line-height: 20px; font-weight: 700; color: var(--bad); }
+
+/* Schedule a ride */
+.days { display: flex; gap: 8px; overflow-x: auto; margin: 0 -20px; padding: 0 20px; scrollbar-width: none; }
+.days::-webkit-scrollbar { display: none; }
+.day {
+  flex: 0 0 63px; height: 68px; padding: 0; border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
+.day-top { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--muted); }
+.day-num { font-family: var(--display); font-size: 20px; line-height: 24px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; }
+.day.on { background: var(--ink); }
+.day.on .day-top { color: var(--on-ink-muted); }
+.day.on .day-num { color: var(--orange); }
+.day:disabled { opacity: 0.4; cursor: not-allowed; }
+.times { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.times:empty { display: none; }
+.time {
+  height: 48px; padding: 0 4px; border: 2px solid var(--ink); border-radius: 14px; background: var(--bg); color: var(--ink);
+  font-size: 15px; line-height: 20px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.time.on { border-color: var(--orange); background: var(--orange); font-weight: 800; }
+.day:active:not(:disabled), .time:active, .half:active, .dial-btn:active, .choice:active, .text-action:active { opacity: 0.72; }
+.rlink.underline { align-self: flex-start; padding: 0; color: var(--orange-ink); font-weight: 700; text-decoration: underline; }
+.summary-ink { display: flex; flex-direction: column; gap: 10px; padding: 18px; border-radius: var(--r-xl); background: var(--ink); }
+.summary-when { font-family: var(--display); font-weight: 800; font-size: 26px; line-height: 30px; letter-spacing: -0.5px; color: var(--orange); }
+.summary-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.summary-route span { flex: 1; min-width: 0; font-size: 15px; line-height: 20px; color: var(--on-ink-soft); }
+.summary-route strong { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 20px; line-height: 24px; color: var(--on-ink); font-variant-numeric: tabular-nums; }
+.summary-route strong:empty { display: none; }
+
+/* Choose another time */
+.sheet-title { display: flex; flex-direction: column; gap: 2px; }
+.dials { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 4px 0; }
+.dial { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.dial-btn { width: 76px; height: 48px; padding: 0; border: 2px solid var(--ink); border-radius: 14px; background: var(--bg); display: flex; align-items: center; justify-content: center; }
+.dial-btn svg { width: 24px; height: 24px; fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.dial-value { min-width: 76px; font-family: var(--display); font-weight: 800; font-size: 44px; line-height: 56px; text-align: center; font-variant-numeric: tabular-nums; }
+.dial-colon { margin-bottom: 20px; font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 56px; }
+.halves { display: flex; flex-direction: column; gap: 8px; margin: 0 0 20px 6px; }
+.half { width: 64px; height: 48px; padding: 0; border: 2px solid var(--ink); border-radius: 14px; background: var(--bg); color: var(--ink); font-size: 16px; font-weight: 700; }
+.half.on { background: var(--ink); color: var(--on-ink); }
+
+/* Schedule ride (the trip for later, priced) */
+.estimate-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: var(--r-lg); }
+.estimate-figure { font-family: var(--display); font-weight: 800; font-size: 34px; line-height: 40px; letter-spacing: -0.8px; color: var(--orange-ink); font-variant-numeric: tabular-nums; }
+.info-card { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--r-lg); }
+.info-card > svg { width: 24px; height: 24px; flex: 0 0 auto; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.info-words { display: flex; flex-direction: column; min-width: 0; }
+.info-words strong { font-size: 16px; line-height: 22px; font-weight: 700; }
+
+/* Saved places */
+.saved-list { display: flex; flex-direction: column; gap: 14px; }
+.saved-list:empty { display: none; }
+.saved-card { padding: 14px 16px 4px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); }
+.saved-top { display: flex; align-items: center; gap: 12px; }
+.result-words .two-lines { white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.saved-actions { display: flex; gap: 24px; padding-left: 52px; }
+.text-action { min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--orange-ink); font-size: 15px; line-height: 20px; font-weight: 700; text-decoration: underline; }
+.text-action.danger { color: var(--bad); }
+.choices { display: flex; flex-wrap: wrap; gap: 10px; }
+.choice { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px; border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg); color: var(--ink); font-size: 14px; line-height: 20px; font-weight: 700; }
+.choice svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.choice.on { background: var(--ink); color: var(--on-ink); }
+.choice.on svg { stroke: var(--orange); }
+.picked { display: flex; align-items: center; gap: 12px; padding: 10px 4px 10px 14px; border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg); }
+.picked-text { flex: 1; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 700; }
+.picked .plan-clear { margin-right: 0; }
+
+/* the link has expired */
+section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 24px; padding-bottom: 60px; }
+
 /* ── small phones ────────────────────────────────────────────────────── */
 @media (max-width: 360px) {
   .shell { padding-left: 16px; padding-right: 16px; }

@@ -36,6 +36,54 @@
     cancelledHere: false     // the search was cancelled on this page: no "Search ended" too
   };
 
+  /* ── screens over Home: Plan your trip, Later, saved places ──────────────
+   * Each has its own history entry ({ view, depth }), so the phone's Back
+   * steps back through them instead of closing the page. */
+  var nav = [];              // the screens open over Home, in order: 'plan', 'schedule', 'schedule-confirm', 'places', 'place-edit'
+  function topScreen() { return nav.length ? nav[nav.length - 1] : null; }
+  function navEntry() { return nav.length ? { view: topScreen(), depth: nav.length } : null; }
+  function syncNav() {
+    local.plan = topScreen() === 'plan';
+    // Later is over once its screen is left: Plan your trip books for now again.
+    if (nav.indexOf('schedule') < 0) { sched.at = null; sched.quote = null; }
+  }
+  function pushScreen(name) {
+    nav.push(name);
+    syncNav();
+    try { history.pushState(navEntry(), ''); } catch (e) { /* ignore */ }
+    render();
+  }
+  /** One screen back, as the phone's Back would. */
+  function backScreen() {
+    if (!nav.length) return;
+    if (history.state && history.state.depth === nav.length) { try { history.back(); return; } catch (e) { /* below */ } }
+    nav.pop();
+    syncNav();
+    render();
+  }
+  /** Straight back to Home (a trip planned, a ride booked for later): every screen's entry goes too. */
+  function navHome() {
+    var entries = history.state && typeof history.state.depth === 'number' ? history.state.depth : 0;
+    nav = [];
+    syncNav();
+    clearTimeout(planTimer);
+    if (entries > 0) { try { history.go(-entries); } catch (e) { /* ignore */ } }
+  }
+  /** The history moved (Back, or a forward swipe): the screens follow it. */
+  function onScreenEntry(entry) {
+    var depth = entry && typeof entry.depth === 'number' ? entry.depth : 0;
+    if (depth < nav.length) {
+      nav = nav.slice(0, depth);
+      syncNav();
+      clearTimeout(planTimer);
+      render();
+    } else if (depth > nav.length) {
+      // Forward onto a screen already left: stay on what is true now.
+      if (shownView && shownView !== 'fatal' && shownView !== 'expired') W.showOnly(shownView);
+      try { history.replaceState(navEntry(), ''); } catch (e) { /* ignore */ }
+    }
+  }
+
   // Its own name in the tab's storage: the Trip chat opened from here (same tab) keeps another link's token.
   if (!W.takeToken('wheelers.ride.page.token')) { W.fatal('This link is not valid.'); return; }
 
@@ -48,6 +96,26 @@
     shownView = 'fatal';
     document.body.classList.remove('on-home');
     W.fatal(message);
+  }
+
+  /** The server refused the link: its time is up (one line, back to WhatsApp), or it is no good here. */
+  function dead(error) {
+    if (error && error.code === 'LINK_EXPIRED') return expired(error.body && error.body.chatUrl);
+    fatal(error.message);
+  }
+  function expired(chatUrl) {
+    if (shownView === 'expired') return;
+    stopped = true;
+    clearTimeout(polling);
+    hideSheets();
+    shownView = 'expired';
+    document.body.classList.remove('on-home');
+    W.showOnly('expired');
+    var back = W.$('expired-back');
+    var url = typeof chatUrl === 'string' && /^https:\/\/wa\.me\//.test(chatUrl) ? chatUrl : '';
+    W.show(back, Boolean(url));
+    if (url) back.setAttribute('href', url);
+    track('link_expired_shown');
   }
 
   /* ── storage: never trusted, never in the way ─────────────────────────── */
@@ -102,6 +170,7 @@
   var ICON_PIN = ['M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z', 'M12 7.7a2.3 2.3 0 1 0 0 4.6 2.3 2.3 0 0 0 0-4.6z'];
   var ICON_LOCATE = ['M12 2v3M12 19v3M2 12h3M19 12h3', 'M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z', 'M12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4z'];
   var ICON_CHEVRON = ['M9 6l6 6-6 6'];
+  var ICON_TRASH = ['M5 7h14', 'M10 4h4', 'M7 7l1 12.5h8L17 7', 'M10.5 10.5v6M13.5 10.5v6'];
 
   /** "Timilehin Olowu" → "TO", as the app's avatar shows a name. */
   function initials(name) {
@@ -391,7 +460,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-trip', 'sheet-cancel'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-trip', 'sheet-cancel', 'sheet-time', 'sheet-scheduled'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
@@ -405,8 +474,8 @@
     W.show(W.$(id), true);
     // One history entry per open sheet (a sheet opened over another takes its place).
     try {
-      if (onSheetEntry()) history.replaceState({ sheet: id }, '');
-      else history.pushState({ sheet: id }, '');
+      if (onSheetEntry()) history.replaceState({ sheet: id, depth: nav.length }, '');
+      else history.pushState({ sheet: id, depth: nav.length }, '');
     } catch (e) { /* ignore */ }
   }
   function closeSheets() {
@@ -423,6 +492,8 @@
     W.show(W.$('sheet-confirm'), false);
     W.show(W.$('sheet-trip'), false);
     W.show(W.$('sheet-cancel'), false);
+    W.show(W.$('sheet-time'), false);
+    W.show(W.$('sheet-scheduled'), false);
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
   }
@@ -484,17 +555,18 @@
       sheetBackPending = false;
       // A sheet opened while that step back was on its way: it gets its entry again.
       var open = openSheetId();
-      if (open) { try { history.pushState({ sheet: open }, ''); } catch (e) { /* ignore */ } }
+      if (open) { try { history.pushState({ sheet: open, depth: nav.length }, ''); } catch (e) { /* ignore */ } }
       return;
     }
     var toSheet = Boolean(event.state && event.state.sheet);
     // Back with a sheet open: the sheet goes, as its Back/Keep button would.
-    if (openSheetId() && !toSheet) { sheetPutAway(); return; }
+    if (openSheetId() && !toSheet) { sheetPutAway(); onScreenEntry(event.state); return; }
     // A forward swipe onto an old sheet entry: nothing to show.
-    if (toSheet && !openSheetId()) { try { history.replaceState(null, ''); } catch (e) { /* ignore */ } }
+    if (toSheet && !openSheetId()) { try { history.replaceState(navEntry(), ''); } catch (e) { /* ignore */ } return; }
+    onScreenEntry(event.state);
   });
-  // A reload keeps the tab's history state: an entry left from a sheet or Plan means nothing now.
-  if (history.state && (history.state.sheet || history.state.view === 'plan')) {
+  // A reload keeps the tab's history state: an entry left from a sheet or a screen means nothing now.
+  if (history.state && (history.state.sheet || history.state.view)) {
     try { history.replaceState(null, ''); } catch (e) { /* ignore */ }
   }
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (button) {
@@ -527,7 +599,7 @@
           }
           redrawLocation();
         }).catch(function (error) {
-          if (linkDead(error)) fatal(error.message);
+          if (linkDead(error)) dead(error);
         });
       }, function (error) {
         loc.state = error && error.code === 1 ? 'denied' : 'unavailable';
@@ -582,11 +654,11 @@
   }
 
   /** A row as the app's place list draws one: the round icon, the name, the area, a chevron. */
-  function placeRow(place, iconPaths, ink, onPick) {
+  function placeRow(place, iconPaths, ink, onPick, iconClass) {
     var row = el('button', 'result-row');
     row.type = 'button';
     row.setAttribute('role', 'option');
-    var round = el('span', 'result-icon' + (ink ? ' ink' : ''));
+    var round = el('span', 'result-icon' + (ink ? ' ink' : '') + (iconClass ? ' ' + iconClass : ''));
     round.appendChild(icon(iconPaths));
     row.appendChild(round);
     var words = el('span', 'result-words');
@@ -594,7 +666,7 @@
     var sub = place.subtitle !== undefined ? place.subtitle : (place.area || '');
     if (sub) words.appendChild(el('span', '', sub));
     row.appendChild(words);
-    if (!ink) row.appendChild(icon(ICON_CHEVRON, function (svg) { svg.setAttribute('class', 'result-chevron'); }));
+    if (!ink && iconClass !== 'saved') row.appendChild(icon(ICON_CHEVRON, function (svg) { svg.setAttribute('class', 'result-chevron'); }));
     row.addEventListener('click', onPick);
     return row;
   }
@@ -625,14 +697,48 @@
       }));
     });
 
+    // Later (a ride for later), the next one booked, and the places saved on this phone.
+    W.show(W.$('home-later'), Boolean(s.canSchedule));
+    drawScheduledCard();
+    drawSavedChips();
+
     if (changed) {
       if (loc.state === 'idle') askLocation();
       drawHomeMap();
+      if (s.canSchedule) loadScheduled();
     }
     layoutSheet();
   }
 
   W.$('home-search').addEventListener('click', function () { openPlan({}); });
+  W.$('home-later').addEventListener('click', function () { openSchedule(); });
+
+  /** The app's chips: Home, Work and the rest, then the + tile; or "Add a place" when there are none. */
+  var savedChipsSig = null;
+  function drawSavedChips() {
+    var saved = readSaved();
+    W.show(W.$('home-saved'), saved.length > 0);
+    W.show(W.$('home-add-place'), saved.length === 0);
+    var sig = JSON.stringify(saved);
+    if (sig === savedChipsSig) return;
+    savedChipsSig = sig;
+    var holder = W.$('home-chips');
+    holder.innerHTML = '';
+    saved.forEach(function (place) {
+      var chip = el('button', 'chip' + (saved.length <= 2 ? ' wide' : ''));
+      chip.type = 'button';
+      chip.setAttribute('aria-label', 'Go to ' + place.label);
+      chip.appendChild(icon(savedIcon(place.label, ICON_PIN)));
+      chip.appendChild(el('span', 'chip-text', place.label));
+      chip.addEventListener('click', function () {
+        track('place_picked', { field: 'destination', from: 'home_saved' });
+        openPlan({ destination: { lat: place.lat, lng: place.lng, address: place.address, name: place.label } });
+      });
+      holder.appendChild(chip);
+    });
+  }
+  W.$('home-places').addEventListener('click', function () { pushScreen('places'); });
+  W.$('home-add-place').addEventListener('click', function () { pushScreen('places'); });
 
   /* the sheet: up to book, down to see the map (as the app's, by touch or mouse) */
 
@@ -718,60 +824,172 @@
 
   /* ── 0b · Plan your trip ──────────────────────────────────────────────── */
 
-  // pickup / destination: { lat, lng, address, name?, area? }, null while being typed.
-  var plan = { pickup: null, destination: null, active: 'destination', query: '', results: [], searching: false, searchedFor: null, error: null, seq: 0, autoPickup: false };
+  // pickup / destination / each stop: { lat, lng, address, name?, area? }, null while being typed.
+  // A field is named 'pickup', 'destination', or a stop's place in line ('0', '1', '2').
+  var plan = { pickup: null, destination: null, stops: [], active: 'destination', query: '', results: [], searching: false, searchedFor: null, error: null, seq: 0, autoPickup: false, session: null, picking: false };
   var planTimer = null;
-  var PLAN_INPUT = { pickup: 'plan-from', destination: 'plan-to' };
+  var MAX_STOPS_DEFAULT = 3;   // the chat's limit; the server says its own (maxStops)
+
+  function maxStops() { return state && Number(state.maxStops) >= 0 ? Number(state.maxStops) : MAX_STOPS_DEFAULT; }
+  function isStop(field) { return field !== 'pickup' && field !== 'destination'; }
+  function fieldPlace(field) { return field === 'pickup' ? plan.pickup : field === 'destination' ? plan.destination : plan.stops[Number(field)] || null; }
+  function setFieldPlace(field, place) {
+    if (field === 'pickup') plan.pickup = place;
+    else if (field === 'destination') plan.destination = place;
+    else plan.stops[Number(field)] = place;
+  }
+  function planFields() {
+    return ['pickup'].concat(plan.stops.map(function (_, index) { return String(index); }), ['destination']);
+  }
+  function inputFor(field) {
+    if (field === 'pickup') return W.$('plan-from');
+    if (field === 'destination') return W.$('plan-to');
+    return document.querySelector('[data-plan-input="' + field + '"]') || W.$('plan-to');
+  }
+
+  /** Google bills a search and its pick as one session: a new one for each place. */
+  function newSession() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* below */ }
+    return 's' + Math.random().toString(36).slice(2, 14) + Date.now().toString(36);
+  }
 
   function openPlan(options) {
     options = options || {};
     plan.destination = options.destination || null;
+    plan.stops = [];
     if (!plan.pickup && loc.place) { plan.pickup = loc.place; plan.autoPickup = true; }
     plan.query = '';
     plan.results = [];
     plan.error = null;
+    plan.session = newSession();
     W.show(W.$('plan-err'), false);
     plan.active = options.field || (!plan.pickup ? 'pickup' : 'destination');
     W.$('plan-from').value = plan.pickup ? plan.pickup.address : '';
     W.$('plan-to').value = plan.destination ? plan.destination.address : '';
-    track('trip_edit_opened', { from: 'home' });
-    local.plan = true;
-    try { history.pushState({ view: 'plan' }, ''); } catch (e) { /* ignore */ }
-    render();
+    drawPlanStops(true);
+    track('trip_edit_opened', { from: sched.at ? 'schedule' : 'home' });
+    pushScreen('plan');
     // The cursor in the field that needs filling (in the same tap, so the keyboard opens).
-    if (!(plan.pickup && plan.destination) || options.field) W.$(PLAN_INPUT[plan.active]).focus();
+    if (!(plan.pickup && plan.destination) || options.field) inputFor(plan.active).focus();
   }
 
+  // The phone's own back (Android's button, the iOS swipe) closes Plan your trip, not the page (onScreenEntry).
   function leavePlan() {
     if (!local.plan) return;
-    local.plan = false;
     clearTimeout(planTimer);
-    if (history.state && history.state.view === 'plan') { try { history.back(); } catch (e) { /* ignore */ } }
-    render();
+    backScreen();
   }
-  // The phone's own back (Android's button, the iOS swipe) closes Plan your trip, not the page.
-  window.addEventListener('popstate', function (event) {
-    var toPlan = Boolean(event.state && event.state.view === 'plan');
-    if (local.plan && !toPlan) { local.plan = false; clearTimeout(planTimer); render(); return; }
-    // A forward swipe onto an old Plan entry: stay on the screen that is true now
-    // (the shared handler may already have switched to it).
-    if (toPlan && !local.plan) {
-      if (shownView && shownView !== 'fatal') W.showOnly(shownView);
-      try { history.replaceState(null, ''); } catch (e) { /* ignore */ }
-    }
-  });
   W.$('plan-back').addEventListener('click', leavePlan);
+
+  /** The stop rows between From and To, as the app's (a ring, STOP 1, the bin to take it off). */
+  var planStopsDrawn = -1;
+  function drawPlanStops(force) {
+    if (!force && planStopsDrawn === plan.stops.length) return;
+    planStopsDrawn = plan.stops.length;
+    var holder = W.$('plan-stops');
+    holder.innerHTML = '';
+    plan.stops.forEach(function (stop, index) {
+      var field = String(index);
+      var row = el('div', 'plan-field');
+      row.setAttribute('data-plan', field);
+      row.appendChild(el('span', 'plan-mark hollow'));
+      var label = el('span', 'plan-label', 'STOP ' + (index + 1));
+      label.setAttribute('aria-hidden', 'true');
+      row.appendChild(label);
+      var input = el('input');
+      input.setAttribute('data-plan-input', field);
+      input.setAttribute('autocomplete', 'off');
+      input.setAttribute('autocapitalize', 'words');
+      input.setAttribute('enterkeyhint', 'search');
+      input.setAttribute('placeholder', 'Search stop');
+      input.setAttribute('aria-label', 'Stop ' + (index + 1));
+      input.value = plan.active === field && plan.query ? plan.query : stop ? stop.address : '';
+      wirePlanInput(input);
+      row.appendChild(input);
+      var remove = el('button', 'plan-clear plan-remove');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', 'Remove stop ' + (index + 1));
+      remove.appendChild(icon(ICON_TRASH));
+      remove.addEventListener('click', function () { removeStop(index); });
+      row.appendChild(remove);
+      holder.appendChild(row);
+      var line = el('div', 'plan-line');
+      line.setAttribute('data-plan-line', field);
+      holder.appendChild(line);
+    });
+  }
+
+  function addStop() {
+    if (plan.stops.length >= maxStops() || plan.stops.some(function (stop) { return !stop; })) return;
+    plan.stops.push(null);
+    drawPlanStops(true);
+    track('stop_added', { stops: plan.stops.length });
+    focusField(String(plan.stops.length - 1));
+  }
+  function removeStop(index) {
+    var active = plan.active;
+    plan.stops.splice(index, 1);
+    track('stop_removed', { stops: plan.stops.length });
+    // The field being typed in keeps the cursor; one below the removed stop moves up.
+    if (isStop(active)) {
+      var at = Number(active);
+      if (at === index) { plan.active = 'destination'; plan.query = ''; plan.results = []; }
+      else if (at > index) plan.active = String(at - 1);
+    }
+    drawPlanStops(true);
+    drawPlan();
+  }
+  W.$('plan-add-stop').addEventListener('click', addStop);
+
+  /* saved places: on this phone, as the app's (lib/saved-places.ts) */
+
+  var SAVED_KEY = 'wheelers.ride.savedPlaces';
+  var MAX_SAVED = 8;
+  function savedRank(place) { var label = norm(place.label); return label === 'home' ? 0 : label === 'work' ? 1 : 2; }
+  function readSaved() {
+    var list = readStore('localStorage', SAVED_KEY);
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (p) {
+      return p && typeof p.id === 'string' && typeof p.label === 'string' && p.label.trim() && typeof p.address === 'string' && p.address.trim() && validPoint(p);
+    }).slice(0, MAX_SAVED).map(function (p, index) { return { place: p, index: index }; })
+      // Home first, then Work, then the rest in the order they were saved.
+      .sort(function (a, b) { return savedRank(a.place) - savedRank(b.place) || a.index - b.index; })
+      .map(function (item) { return item.place; });
+  }
+  function writeSaved(list) { writeStore('localStorage', SAVED_KEY, list.slice(0, MAX_SAVED)); }
+  var ICON_HOME = ['M4 10.5L12 4l8 6.5', 'M6 9v10.5h4.5V15h3v4.5H18V9'];
+  var ICON_WORK = ['M4 8.5A1.5 1.5 0 0 1 5.5 7h13A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z', 'M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7', 'M4 12.5h16'];
+  var ICON_BOOKMARK = ['M7 4h10v16l-5-3.5L7 20z'];
+  /** Home, Work, or the pin (on Home's chips) / the bookmark (in Plan your trip's list), as the app's. */
+  function savedIcon(label, other) {
+    var name = norm(label);
+    return name === 'home' ? ICON_HOME : name === 'work' ? ICON_WORK : other;
+  }
 
   var planListSig = null;
   function drawPlan() {
     var typing = plan.query.trim().length > 0;
-    ['pickup', 'destination'].forEach(function (field) {
-      var input = W.$(PLAN_INPUT[field]);
-      W.show(document.querySelector('[data-plan-clear="' + field + '"]'), input.value.length > 0);
-      document.querySelector('[data-plan-line="' + field + '"]').classList.toggle('active', plan.active === field);
+    drawPlanStops(false);
+    planFields().forEach(function (field) {
+      var input = inputFor(field);
+      var clear = document.querySelector('[data-plan-clear="' + field + '"]');
+      if (clear) W.show(clear, input.value.length > 0);
+      var line = document.querySelector('[data-plan-line="' + field + '"]');
+      if (line) line.classList.toggle('active', plan.active === field);
     });
+    // As the app: + Add stop until the stops are full; one at a time (the last must be filled first).
+    var full = plan.stops.length >= maxStops();
+    var addStopButton = W.$('plan-add-stop');
+    W.show(addStopButton, maxStops() > 0);
+    addStopButton.disabled = !full && plan.stops.some(function (stop) { return !stop; });
+    addStopButton.classList.toggle('full', full);
+    addStopButton.lastChild.textContent = full ? 'Maximum stops reached' : 'Add stop';
+    addStopButton.setAttribute('aria-label', full ? 'Maximum stops reached' : 'Add stop');
+    if (full) addStopButton.disabled = true;
+
     var fromActive = plan.active === 'pickup';
     var recents = readRecents();
+    var saved = typing ? [] : readSaved();
     var query = norm(plan.query);
     var listedRecents = (typing
       ? recents.filter(function (p) { return norm(p.address).indexOf(query) >= 0 || norm(p.name).indexOf(query) >= 0; })
@@ -780,13 +998,13 @@
       return !listedRecents.some(function (p) { return norm(p.address) === norm(r.address); });
     }) : [];
 
-    W.$('plan-heading').textContent = typing ? 'Matching places' : fromActive ? 'Pickup' : listedRecents.length ? 'Your places' : '';
-    W.show(W.$('plan-spin'), plan.searching);
+    W.$('plan-heading').textContent = typing ? 'Matching places' : fromActive ? 'Pickup' : (saved.length || listedRecents.length) ? 'Your places' : '';
+    W.show(W.$('plan-spin'), plan.searching || plan.picking);
 
-    var showError = typing && plan.error && !plan.searching;
-    var showNothing = typing && plan.query.trim().length >= 3 && !plan.searching && !plan.error && plan.searchedFor === plan.query.trim() && !listedRecents.length && !results.length;
+    var showError = Boolean(plan.error) && !plan.searching;
+    var showNothing = typing && plan.query.trim().length >= 2 && !plan.searching && !plan.error && plan.searchedFor === plan.query.trim() && !listedRecents.length && !results.length;
     var hereRow = fromActive && !typing;
-    var sig = JSON.stringify([hereRow, hereRow && loc.place ? loc.place.address : '', showError ? plan.error : '', listedRecents, results, showNothing]);
+    var sig = JSON.stringify([hereRow, hereRow && loc.place ? loc.place.address : '', showError ? plan.error : '', saved, listedRecents, results, showNothing]);
     var holder = W.$('plan-list');
     if (sig === planListSig) return;
     planListSig = sig;
@@ -800,11 +1018,19 @@
     if (showError) {
       holder.appendChild(el('div', 'notice bad', plan.error));
     }
+    // Saved places first, before anything is typed (as the app's "YOUR PLACES").
+    saved.forEach(function (place) {
+      var row = placeRow({ title: place.label, subtitle: place.address }, savedIcon(place.label, ICON_BOOKMARK), false, function () {
+        track('place_picked', { field: isStop(plan.active) ? 'stop' : plan.active, from: 'saved' });
+        pickPlace(place, true);
+      }, 'saved');
+      holder.appendChild(row);
+    });
     listedRecents.forEach(function (place) {
       holder.appendChild(placeRow(place, ICON_CLOCK, false, function () { pickPlace(place); }));
     });
     results.forEach(function (place) {
-      holder.appendChild(placeRow(place, ICON_PIN, false, function () { pickPlace(place); }));
+      holder.appendChild(placeRow(place, ICON_PIN, false, function () { pickSuggestion(place); }));
     });
     if (showNothing) {
       holder.appendChild(el('p', 'nothing', 'No place found. Check the spelling.'));
@@ -816,27 +1042,62 @@
     plan.query = '';
     plan.results = [];
     drawPlan();
-    var input = W.$(PLAN_INPUT[field]);
+    var input = inputFor(field);
     input.focus();
     try { input.select(); } catch (e) { /* ignore */ }
   }
 
+  /** The first field still empty, in the trip's order; null when every one is filled. */
+  function emptyField() {
+    var fields = planFields();
+    for (var i = 0; i < fields.length; i++) if (!fieldPlace(fields[i])) return fields[i];
+    return null;
+  }
+
   function pickPlace(place, notRecent) {
     var field = plan.active;
-    var picked = { lat: place.lat, lng: place.lng, address: place.address, name: place.name, area: place.area };
-    plan[field] = picked;
+    var picked = { lat: place.lat, lng: place.lng, address: place.address, name: place.name || place.label, area: place.area };
+    setFieldPlace(field, picked);
     if (field === 'pickup') plan.autoPickup = false;
-    W.$(PLAN_INPUT[field]).value = place.address;
+    inputFor(field).value = place.address;
+    plan.searching = false;
+    plan.seq++;   // a search still on its way is for the words just replaced
     plan.query = '';
     plan.results = [];
+    plan.error = null;
     W.show(W.$('plan-err'), false);
     if (!notRecent) saveRecent(picked);
-    track('place_picked', { field: field });
+    if (!notRecent || !place.label) track('place_picked', { field: isStop(field) ? 'stop' : field });
     // As the app: on to what is missing; the destination picked last goes straight to the price.
-    if (!plan.pickup) return focusField('pickup');
-    if (!plan.destination) return focusField('destination');
+    var missing = emptyField();
+    if (missing) return focusField(missing);
     if (field === 'destination') return submitPlan();
-    focusField('destination');
+    drawPlan();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  }
+
+  /** A Google suggestion tapped: where it is (by its id, in the same session), then it is the place. */
+  function pickSuggestion(suggestion) {
+    if (plan.picking || !suggestion || !suggestion.placeId) return;
+    var field = plan.active;
+    var seq = ++plan.seq;
+    plan.picking = true;
+    drawPlan();
+    api('GET', '/ride-page/place?id=' + encodeURIComponent(suggestion.placeId) + '&session=' + encodeURIComponent(plan.session || '')).then(function (answer) {
+      plan.picking = false;
+      if (seq !== plan.seq || plan.active !== field || !local.plan) return;
+      var spot = answer && answer.place;
+      if (!validPoint(spot)) throw { message: 'Could not look that up. Try again.' };
+      plan.session = newSession();
+      pickPlace({ lat: spot.lat, lng: spot.lng, address: suggestion.address, name: suggestion.name, area: suggestion.area });
+    }).catch(function (error) {
+      plan.picking = false;
+      if (linkDead(error)) return dead(error);
+      if (seq !== plan.seq) return;
+      plan.error = error.message || 'Could not look that up. Try again.';
+      planListSig = null;
+      if (shownView === 'plan') drawPlan();
+    });
   }
 
   function useMyLocation() {
@@ -856,19 +1117,20 @@
     plan.active = field;
     plan.query = '';
     plan.results = [];
+    plan.error = null;
     drawPlan();
   }
   function onPlanTyping() {
     var field = this.getAttribute('data-plan-input');
     plan.active = field;
-    plan[field] = null;               // typed over: not a place until one is picked
+    setFieldPlace(field, null);               // typed over: not a place until one is picked
     if (field === 'pickup') plan.autoPickup = false;
     plan.query = this.value;
     plan.error = null;
     W.show(W.$('plan-err'), false);
     clearTimeout(planTimer);
     var query = this.value.trim();
-    if (query.length < 3) { plan.searching = false; plan.results = []; plan.seq++; drawPlan(); return; }
+    if (query.length < 2) { plan.searching = false; plan.results = []; plan.seq++; drawPlan(); return; }
     drawPlan();
     planTimer = setTimeout(function () { searchPlaces(field, query); }, 280);
   }
@@ -876,20 +1138,21 @@
     if (event.key !== 'Enter') return;
     event.preventDefault();
     var typing = plan.query.trim();
-    if (typing && plan.results.length) return pickPlace(plan.results[0]);
+    if (typing && plan.results.length) return pickSuggestion(plan.results[0]);
     if (!typing) submitPlan();
   }
-  ['plan-from', 'plan-to'].forEach(function (id) {
-    W.$(id).addEventListener('focus', onPlanFocus);
-    W.$(id).addEventListener('input', onPlanTyping);
-    W.$(id).addEventListener('keydown', onPlanKey);
-  });
+  function wirePlanInput(input) {
+    input.addEventListener('focus', onPlanFocus);
+    input.addEventListener('input', onPlanTyping);
+    input.addEventListener('keydown', onPlanKey);
+  }
+  ['plan-from', 'plan-to'].forEach(function (id) { wirePlanInput(W.$(id)); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-plan-clear]'), function (button) {
     button.addEventListener('click', function () {
       var field = button.getAttribute('data-plan-clear');
-      plan[field] = null;
+      setFieldPlace(field, null);
       if (field === 'pickup') plan.autoPickup = false;
-      W.$(PLAN_INPUT[field]).value = '';
+      inputFor(field).value = '';
       focusField(field);
     });
   });
@@ -898,14 +1161,15 @@
     var seq = ++plan.seq;
     plan.searching = true;
     drawPlan();
-    api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
+    if (!plan.session) plan.session = newSession();
+    api('GET', '/ride-page/suggest?q=' + encodeURIComponent(query) + '&session=' + encodeURIComponent(plan.session)).then(function (answer) {
       if (seq !== plan.seq) return;   // a newer search is on its way
-      plan.results = ((answer && answer.places) || []).filter(validPoint);
+      plan.results = ((answer && answer.places) || []).filter(function (p) { return p && p.placeId && p.address; });
       plan.error = null;
-      track('place_searched', { field: field, letters: query.length, results: plan.results.length });
+      track('place_searched', { field: isStop(field) ? 'stop' : field, letters: query.length, results: plan.results.length });
     }).catch(function (error) {
       if (seq !== plan.seq) return;
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       plan.results = [];
       plan.error = error.message || 'Could not look that up. Try again.';
     }).then(function () {
@@ -923,24 +1187,538 @@
     var button = W.$('plan-go');
     var pickup = { lat: plan.pickup.lat, lng: plan.pickup.lng, address: plan.pickup.address };
     var destination = { lat: plan.destination.lat, lng: plan.destination.lng, address: plan.destination.address };
+    // A stop left empty is not one.
+    var stops = plan.stops.filter(Boolean).map(function (stop) { return { lat: stop.lat, lng: stop.lng, address: stop.address }; });
     busy = true;
     button.className = 'btn primary busy';
     W.show(W.$('plan-err'), false);
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    api('POST', '/ride-page/route', { pickup: pickup, destination: destination, stops: [] }).then(function (next) {
-      track('trip_saved', { from: 'plan', distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: 0 });
-      if (next.route) rememberPlaces(next.route, { pickup: pickup, destination: destination, stops: [] });
-      local.plan = false;
-      if (history.state && history.state.view === 'plan') { try { history.back(); } catch (e) { /* ignore */ } }
+    // Later: the trip is priced for the pickup time chosen, and nothing is booked yet.
+    if (sched.at) return quoteSchedule(pickup, destination, stops, button);
+    api('POST', '/ride-page/route', { pickup: pickup, destination: destination, stops: stops }).then(function (next) {
+      track('trip_saved', { from: 'plan', distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: stops.length });
+      if (next.route) rememberPlaces(next.route, { pickup: pickup, destination: destination, stops: stops });
+      navHome();
       apply(next);
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('trip_save_failed', { code: error.code || String(error.status) });
       W.$('plan-err').textContent = error.message;
       W.show(W.$('plan-err'), true);
     }).then(function () { busy = false; button.className = 'btn primary'; });
   }
+
   W.$('plan-go').addEventListener('click', submitPlan);
+
+  /* ── Later: a ride for later, as the app's (app/schedule-ride.tsx, lib/trip-words.ts) ── */
+
+  var MIN_LEAD_MINUTES = 15;          // a pickup at least this far away
+  var SCHEDULE_DAYS = 7;              // today and the next six days
+  var SLOT_COUNT = 8;                 // half hours offered before "Choose another time"
+  var FIRST_SLOT_LATER_DAY = 6 * 60;  // a later day starts at 6:00 am
+  var WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var ICON_CALENDAR = ['M7 3v3M17 3v3', 'M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z', 'M4 10h16'];
+
+  // at: the pickup chosen (a Date) once Continue is tapped; quote: the trip priced for it.
+  var sched = { day: null, minutes: null, at: null, quote: null, requestId: null };
+  var tp = { hour12: 12, minute: 0, pm: false, soon: false };
+
+  function startOfDay(date) { return new Date(date.getFullYear(), date.getMonth(), date.getDate()); }
+  function dayOffset(date, now) { return Math.round((startOfDay(date).getTime() - startOfDay(now).getTime()) / 86400000); }
+  function minutesWords(minutesOfDay) {
+    var hour24 = Math.floor(minutesOfDay / 60) % 24;
+    var minute = minutesOfDay % 60;
+    var hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+    return hour12 + ':' + pad2(minute) + ' ' + (hour24 < 12 ? 'am' : 'pm');
+  }
+  function timeWords(date) { return minutesWords(date.getHours() * 60 + date.getMinutes()); }
+  /** "Today", "Tomorrow", or "Tuesday 13 Oct". */
+  function dayWords(date, now) {
+    var offset = dayOffset(date, now);
+    if (offset === 0) return 'Today';
+    if (offset === 1) return 'Tomorrow';
+    return WEEKDAYS[date.getDay()] + ' ' + date.getDate() + ' ' + MONTHS[date.getMonth()];
+  }
+  function pickupWords(date, now) { return dayWords(date, now) + ', ' + timeWords(date); }
+  function pickupAt(dayStart, minutesOfDay) {
+    return new Date(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate(), Math.floor(minutesOfDay / 60), minutesOfDay % 60);
+  }
+  function isPickupAllowed(pickup, now) { return pickup.getTime() - now.getTime() >= MIN_LEAD_MINUTES * 60000; }
+  function dayHasTime(dayStart, now) { return isPickupAllowed(pickupAt(dayStart, 23 * 60 + 59), now); }
+  function scheduleDays(now) {
+    var days = [];
+    for (var index = 0; index < SCHEDULE_DAYS; index++) {
+      var start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + index);
+      days.push({ index: index, top: index === 0 ? 'Today' : WEEKDAYS[start.getDay()].slice(0, 3), num: start.getDate(), start: start });
+    }
+    return days;
+  }
+  /** Today: from the next half hour at least 15 minutes away; a later day: from 6:00 am. */
+  function halfHourSlots(dayStart, now) {
+    var first = FIRST_SLOT_LATER_DAY;
+    if (dayOffset(dayStart, now) === 0) {
+      var earliest = now.getHours() * 60 + now.getMinutes() + MIN_LEAD_MINUTES + (now.getSeconds() > 0 || now.getMilliseconds() > 0 ? 1 : 0);
+      first = Math.ceil(earliest / 30) * 30;
+    }
+    var slots = [];
+    for (var minutes = first; minutes < 24 * 60 && slots.length < SLOT_COUNT; minutes += 30) {
+      if (isPickupAllowed(pickupAt(dayStart, minutes), now)) slots.push(minutes);
+    }
+    return slots;
+  }
+
+  /** What the screen shows now: the day (the first with time left when the one picked has none), the time, the pickup. */
+  function scheduleChoice(now) {
+    var days = scheduleDays(now);
+    var day = (sched.day !== null && dayHasTime(days[sched.day].start, now) ? days[sched.day] : null)
+      || days.filter(function (d) { return dayHasTime(d.start, now); })[0] || days[1];
+    var slots = halfHourSlots(day.start, now);
+    var minutes = sched.minutes !== null && isPickupAllowed(pickupAt(day.start, sched.minutes), now) ? sched.minutes : (slots.length ? slots[0] : null);
+    var choices = minutes === null || slots.indexOf(minutes) >= 0 ? slots : slots.concat([minutes]).sort(function (a, b) { return a - b; });
+    return { days: days, day: day, minutes: minutes, choices: choices, pickup: minutes === null ? null : pickupAt(day.start, minutes) };
+  }
+
+  function openSchedule() {
+    sched.day = null;
+    sched.minutes = null;
+    sched.at = null;
+    sched.quote = null;
+    W.show(W.$('sch-err'), false);
+    track('schedule_opened');
+    pushScreen('schedule');
+  }
+  W.$('sch-back').addEventListener('click', backScreen);
+
+  function drawSchedule() {
+    var now = new Date();
+    var c = scheduleChoice(now);
+    var days = W.$('sch-days');
+    days.innerHTML = '';
+    c.days.forEach(function (d) {
+      var on = d.index === c.day.index;
+      var open = dayHasTime(d.start, now);
+      var chip = el('button', 'day' + (on ? ' on' : ''));
+      chip.type = 'button';
+      chip.disabled = !open;
+      chip.setAttribute('aria-label', dayWords(d.start, now));
+      chip.setAttribute('aria-pressed', String(on));
+      chip.appendChild(el('span', 'day-top', d.top));
+      chip.appendChild(el('span', 'day-num', String(d.num)));
+      chip.addEventListener('click', function () { sched.day = d.index; W.show(W.$('sch-err'), false); drawSchedule(); });
+      days.appendChild(chip);
+    });
+    var times = W.$('sch-times');
+    times.innerHTML = '';
+    c.choices.forEach(function (value) {
+      var on = value === c.minutes;
+      var chip = el('button', 'time' + (on ? ' on' : ''), minutesWords(value));
+      chip.type = 'button';
+      chip.setAttribute('aria-pressed', String(on));
+      chip.addEventListener('click', function () { sched.minutes = value; sched.day = c.day.index; W.show(W.$('sch-err'), false); drawSchedule(); });
+      times.appendChild(chip);
+    });
+    W.show(W.$('sch-none'), c.choices.length === 0);
+    W.$('sch-when').textContent = c.pickup ? dayWords(c.pickup, now) + ', ' + minutesWords(c.minutes) : 'Choose a time';
+    W.$('sch-go').disabled = !c.pickup;
+  }
+  // The clock moves on: a time 16 minutes away is not offered once it is 14.
+  setInterval(function () { if (shownView === 'schedule') drawSchedule(); }, 30000);
+
+  W.$('sch-go').addEventListener('click', function () {
+    var now = new Date();
+    var c = scheduleChoice(now);
+    if (!c.pickup || !isPickupAllowed(c.pickup, now)) {
+      W.$('sch-err').textContent = c.pickup ? 'That time is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.' : 'Choose a pickup time.';
+      W.show(W.$('sch-err'), true);
+      return drawSchedule();
+    }
+    sched.at = c.pickup;
+    sched.requestId = 'r' + newSession().replace(/[^A-Za-z0-9]/g, '').slice(0, 30);
+    openPlan({});
+  });
+
+  /* choose another time: hour, minute (five at a time), am or pm */
+
+  W.$('sch-another').addEventListener('click', function () {
+    var c = scheduleChoice(new Date());
+    var from = c.minutes;
+    if (from === null) {
+      from = 0;
+      for (var value = 0; value < 24 * 60; value += 5) { if (isPickupAllowed(pickupAt(c.day.start, value), new Date())) { from = value; break; } }
+    }
+    from -= from % 5;
+    var hour = Math.floor(from / 60) % 12;
+    tp.hour12 = hour === 0 ? 12 : hour;
+    tp.minute = from % 60;
+    tp.pm = from >= 12 * 60;
+    tp.soon = false;
+    tp.day = c.day;
+    W.$('tp-day').textContent = dayWords(c.day.start, new Date());
+    drawTimePicker();
+    openSheet('sheet-time');
+  });
+  function tpValue() { return ((tp.hour12 % 12) + (tp.pm ? 12 : 0)) * 60 + tp.minute; }
+  function drawTimePicker() {
+    W.$('tp-hour').textContent = String(tp.hour12);
+    W.$('tp-min').textContent = pad2(tp.minute);
+    W.$('tp-am').className = 'half' + (tp.pm ? '' : ' on');
+    W.$('tp-pm').className = 'half' + (tp.pm ? ' on' : '');
+    W.$('tp-am').setAttribute('aria-pressed', String(!tp.pm));
+    W.$('tp-pm').setAttribute('aria-pressed', String(tp.pm));
+    W.$('tp-set').textContent = 'Set ' + minutesWords(tpValue());
+    var soon = W.$('tp-soon');
+    W.show(soon, tp.soon);
+    soon.textContent = tp.soon ? minutesWords(tpValue()) + ' is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.' : '';
+  }
+  function tpChange(apply) { return function () { apply(); tp.soon = false; drawTimePicker(); }; }
+  W.$('tp-hour-up').addEventListener('click', tpChange(function () { tp.hour12 = tp.hour12 === 12 ? 1 : tp.hour12 + 1; }));
+  W.$('tp-hour-down').addEventListener('click', tpChange(function () { tp.hour12 = tp.hour12 === 1 ? 12 : tp.hour12 - 1; }));
+  W.$('tp-min-up').addEventListener('click', tpChange(function () { tp.minute = (tp.minute + 5) % 60; }));
+  W.$('tp-min-down').addEventListener('click', tpChange(function () { tp.minute = (tp.minute - 5 + 60) % 60; }));
+  W.$('tp-am').addEventListener('click', tpChange(function () { tp.pm = false; }));
+  W.$('tp-pm').addEventListener('click', tpChange(function () { tp.pm = true; }));
+  W.$('tp-set').addEventListener('click', function () {
+    var value = tpValue();
+    if (!tp.day || !isPickupAllowed(pickupAt(tp.day.start, value), new Date())) { tp.soon = true; return drawTimePicker(); }
+    sched.minutes = value;
+    sched.day = tp.day.index;
+    closeSheets();
+    W.show(W.$('sch-err'), false);
+    drawSchedule();
+  });
+
+  /* the trip for later, priced: Schedule ride */
+
+  function quoteSchedule(pickup, destination, stops, button) {
+    var trip = { pickup: pickup, destination: destination, stops: stops };
+    api('POST', '/ride-page/schedule/quote', { scheduledFor: sched.at.toISOString(), pickup: pickup, destination: destination, stops: stops }).then(function (answer) {
+      if (!sched.at || !local.plan) return;
+      sched.quote = { trip: trip, route: answer.route };
+      W.show(W.$('sr-err'), false);
+      pushScreen('schedule-confirm');
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('schedule_failed', { code: error.code || String(error.status), step: 'quote' });
+      W.$('plan-err').textContent = error.message;
+      W.show(W.$('plan-err'), true);
+    }).then(function () { busy = false; button.className = 'btn primary'; });
+  }
+
+  function drawScheduleConfirm() {
+    var quote = sched.quote;
+    if (!quote || !sched.at) return;
+    var route = quote.route || {};
+    var rows = W.$('sr-rows');
+    rows.innerHTML = '';
+    var list = [{ kind: 'from', label: 'Pickup', value: route.pickupAddress }]
+      .concat((route.stopAddresses || []).map(function (address, index) { return { kind: 'mid', label: 'Stop ' + (index + 1), value: address }; }))
+      .concat([{ kind: 'to', label: 'Destination', value: route.destAddress }]);
+    list.forEach(function (item, index) {
+      var row = el('div', 'route-row');
+      var rail = el('span', 'rail');
+      rail.appendChild(el('span', 'dot ' + item.kind));
+      if (index < list.length - 1) rail.appendChild(el('span', 'rail-line'));
+      row.appendChild(rail);
+      var text = el('div', 'route-text');
+      text.appendChild(el('span', 'route-label', item.label));
+      text.appendChild(el('span', 'route-value', item.value || ''));
+      row.appendChild(text);
+      rows.appendChild(row);
+    });
+    W.$('sr-km').textContent = Number(route.distanceKm) > 0 ? Number(route.distanceKm).toFixed(1) + ' km' : '';
+    W.$('sr-min').textContent = Number(route.durationMin) > 0 ? 'About ' + minutes(route.durationMin) : '';
+    W.$('sr-price').textContent = W.naira(route.suggestedFareNgn || 0);
+    W.$('sr-when').textContent = pickupWords(sched.at, new Date());
+  }
+  W.$('sr-back').addEventListener('click', backScreen);
+  W.$('sr-edit').addEventListener('click', backScreen);
+
+  W.$('sr-go').addEventListener('click', function () {
+    var quote = sched.quote;
+    if (busy || !quote || !sched.at) return;
+    var button = this;
+    var when = sched.at;
+    busy = true;
+    button.className = 'btn primary busy';
+    W.show(W.$('sr-err'), false);
+    api('POST', '/ride-page/schedule', {
+      scheduledFor: when.toISOString(), pickup: quote.trip.pickup, destination: quote.trip.destination, stops: quote.trip.stops, requestId: sched.requestId
+    }).then(function (answer) {
+      track('schedule_saved', { stops: quote.trip.stops.length, daysAhead: dayOffset(when, new Date()) });
+      if (answer && Array.isArray(answer.scheduled)) scheduledRides = answer.scheduled;
+      navHome();
+      render();
+      say('Ride scheduled for ' + pickupWords(when, new Date()), 'good');
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('schedule_failed', { code: error.code || String(error.status), step: 'book' });
+      W.$('sr-err').textContent = error.message;
+      W.show(W.$('sr-err'), true);
+    }).then(function () { busy = false; button.className = 'btn primary'; });
+  });
+
+  /* Home's card for the next ride for later, and its sheet (cancel it there) */
+
+  var scheduledRides = [];
+  var scheduledLoading = false;
+  function loadScheduled() {
+    if (scheduledLoading) return;
+    scheduledLoading = true;
+    api('GET', '/ride-page/scheduled').then(function (answer) {
+      scheduledRides = answer && Array.isArray(answer.scheduled) ? answer.scheduled : [];
+      if (shownView === 'idle') { drawScheduledCard(); layoutSheet(); }
+    }).catch(function (error) {
+      if (linkDead(error)) dead(error);
+    }).then(function () { scheduledLoading = false; });
+  }
+  function nextScheduled() {
+    var now = Date.now();
+    var next = null;
+    scheduledRides.forEach(function (ride) {
+      if (ride.status !== 'SCHEDULED' && ride.status !== 'DISPATCHING') return;
+      var at = Date.parse(ride.scheduledFor);
+      if (!isFinite(at) || at < now) return;
+      if (!next || at < Date.parse(next.scheduledFor)) next = ride;
+    });
+    return next;
+  }
+  /** "tomorrow, 7:30 am", as the app's Home card says it. */
+  function homeWhen(date, now) {
+    var days = dayOffset(date, now);
+    var day = days === 0 ? 'today' : days === 1 ? 'tomorrow' : WEEKDAYS[date.getDay()].slice(0, 3) + ' ' + date.getDate() + ' ' + MONTHS[date.getMonth()];
+    return day + ', ' + timeWords(date);
+  }
+  function drawScheduledCard() {
+    var ride = nextScheduled();
+    var card = W.$('home-scheduled');
+    W.show(card, Boolean(ride));
+    if (!ride) return;
+    W.$('home-scheduled-when').textContent = 'Scheduled ride: ' + homeWhen(new Date(ride.scheduledFor), new Date());
+    W.$('home-scheduled-route').textContent = shortPlace(ride.pickupAddress) + ' to ' + shortPlace(ride.destAddress);
+  }
+  var shownScheduled = null;
+  W.$('home-scheduled').addEventListener('click', function () {
+    var ride = nextScheduled();
+    if (!ride) return;
+    shownScheduled = ride;
+    W.$('ss-when').textContent = pickupWords(new Date(ride.scheduledFor), new Date());
+    W.$('ss-route').textContent = shortPlace(ride.pickupAddress) + ' to ' + shortPlace(ride.destAddress);
+    W.$('ss-price').textContent = ride.fareNgn ? W.naira(ride.fareNgn) : '';
+    W.show(W.$('ss-err'), false);
+    openSheet('sheet-scheduled');
+  });
+  W.$('ss-cancel').addEventListener('click', function () {
+    var ride = shownScheduled;
+    if (!ride || busy) return;
+    ask({ title: 'Cancel this ride?', text: '', yes: 'Cancel ride', no: 'Keep ride' }).then(function (yes) {
+      if (!yes) return;
+      busy = true;
+      api('POST', '/ride-page/scheduled/' + encodeURIComponent(ride.id) + '/cancel').then(function (answer) {
+        track('scheduled_cancelled');
+        scheduledRides = answer && Array.isArray(answer.scheduled) ? answer.scheduled : scheduledRides.filter(function (r) { return r.id !== ride.id; });
+        say('Scheduled ride cancelled');
+      }).catch(function (error) {
+        if (linkDead(error)) return dead(error);
+        if (error.body && Array.isArray(error.body.scheduled)) scheduledRides = error.body.scheduled;
+        say(error.message, 'bad');
+      }).then(function () {
+        busy = false;
+        if (shownView === 'idle') { drawScheduledCard(); layoutSheet(); }
+      });
+    });
+  });
+
+  /* ── saved places: as the app's app/saved-places.tsx ─────────────────── */
+
+  var editing = { place: null, choice: 'Home', name: '', address: null, query: '', results: [], searching: false, error: null, seq: 0, session: null, picking: false };
+  var editTimer = null;
+
+  function drawPlaces() {
+    var saved = readSaved();
+    var holder = W.$('places-list');
+    holder.innerHTML = '';
+    saved.forEach(function (place) {
+      var card = el('div', 'saved-card');
+      var top = el('div', 'saved-top');
+      var round = el('span', 'result-icon saved');
+      round.appendChild(icon(savedIcon(place.label, ICON_PIN)));
+      top.appendChild(round);
+      var words = el('span', 'result-words');
+      words.appendChild(el('strong', '', place.label));
+      words.appendChild(el('span', 'two-lines', place.address));
+      top.appendChild(words);
+      card.appendChild(top);
+      var actions = el('div', 'saved-actions');
+      var change = el('button', 'text-action', 'Change');
+      change.type = 'button';
+      change.setAttribute('aria-label', 'Change ' + place.label);
+      change.addEventListener('click', function () { openPlaceEdit(place); });
+      var remove = el('button', 'text-action danger', 'Remove');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', 'Remove ' + place.label);
+      remove.addEventListener('click', function () {
+        ask({ title: 'Remove ' + place.label + '?', text: place.address, yes: 'Remove', no: 'Cancel' }).then(function (yes) {
+          if (!yes) return;
+          writeSaved(readSaved().filter(function (p) { return p.id !== place.id; }));
+          track('saved_place_removed');
+          drawPlaces();
+        });
+      });
+      actions.appendChild(change);
+      actions.appendChild(remove);
+      card.appendChild(actions);
+      holder.appendChild(card);
+    });
+    var full = saved.length >= MAX_SAVED;
+    W.show(W.$('places-full'), full);
+    W.show(W.$('places-add'), !full);
+  }
+  W.$('places-back').addEventListener('click', backScreen);
+  W.$('places-add').addEventListener('click', function () { openPlaceEdit(null); });
+
+  function takenName(name) {
+    return readSaved().some(function (p) { return norm(p.label) === norm(name); });
+  }
+  function nameChoices() {
+    return (takenName('Home') ? [] : ['Home']).concat(takenName('Work') ? [] : ['Work'], ['Other']);
+  }
+  function openPlaceEdit(place) {
+    editing = { place: place, choice: nameChoices()[0], name: '', address: null, query: '', results: [], searching: false, error: null, seq: 0, session: newSession(), picking: false };
+    W.$('pe-name').value = '';
+    W.$('pe-query').value = '';
+    W.show(W.$('pe-name-err'), false);
+    pushScreen('place-edit');
+    if (place) W.$('pe-query').focus();
+  }
+  W.$('pe-back').addEventListener('click', backScreen);
+
+  function editName() { return editing.place ? editing.place.label : editing.choice === 'Other' ? W.$('pe-name').value.trim() : editing.choice; }
+
+  function drawPlaceEdit() {
+    var place = editing.place;
+    W.$('pe-title').textContent = place ? 'Change ' + place.label : 'Add a place';
+    W.show(W.$('pe-name-group'), !place);
+    var holder = W.$('pe-choices');
+    holder.innerHTML = '';
+    if (!place) nameChoices().forEach(function (option) {
+      var on = option === editing.choice;
+      var chip = el('button', 'choice' + (on ? ' on' : ''));
+      chip.type = 'button';
+      chip.setAttribute('role', 'radio');
+      chip.setAttribute('aria-checked', String(on));
+      chip.appendChild(icon(savedIcon(option, ICON_PIN)));
+      chip.appendChild(el('span', '', option));
+      chip.addEventListener('click', function () { editing.choice = option; W.show(W.$('pe-name-err'), false); drawPlaceEdit(); });
+      holder.appendChild(chip);
+    });
+    W.show(W.$('pe-other'), !place && editing.choice === 'Other');
+
+    var picked = editing.address;
+    W.show(W.$('pe-picked'), Boolean(picked));
+    W.show(W.$('pe-search'), !picked);
+    if (picked) {
+      var round = W.$('pe-picked-icon');
+      round.innerHTML = '';
+      round.appendChild(icon(savedIcon(editName(), ICON_PIN)));
+      W.$('pe-picked-text').textContent = picked.address;
+    }
+    W.$('pe-now').textContent = place ? 'Now: ' + place.address : '';
+    W.show(W.$('pe-now'), Boolean(place) && !picked);
+    W.show(W.$('pe-err'), Boolean(editing.error) && !editing.searching);
+    W.$('pe-err').textContent = editing.error || '';
+    W.show(W.$('pe-spin'), editing.searching || editing.picking);
+    var results = W.$('pe-results');
+    results.innerHTML = '';
+    var typed = editing.query.trim();
+    if (!picked && typed) {
+      editing.results.forEach(function (suggestion) {
+        results.appendChild(placeRow({ title: suggestion.name, subtitle: suggestion.area }, ICON_PIN, false, function () { pickEditPlace(suggestion); }, 'saved'));
+      });
+      if (!editing.searching && !editing.error && editing.searchedFor === typed && !editing.results.length) {
+        results.appendChild(el('p', 'nothing', 'No place found. Check the spelling.'));
+      }
+    }
+    W.$('pe-save').disabled = !picked || (!place && !editName());
+  }
+
+  W.$('pe-name').addEventListener('input', function () { W.show(W.$('pe-name-err'), false); W.$('pe-save').disabled = !editing.address || !editName(); });
+  W.$('pe-query').addEventListener('input', function () {
+    editing.query = this.value;
+    editing.error = null;
+    clearTimeout(editTimer);
+    var query = this.value.trim();
+    if (query.length < 2) { editing.searching = false; editing.results = []; editing.seq++; return drawPlaceEdit(); }
+    editTimer = setTimeout(function () { searchEditPlaces(query); }, 280);
+  });
+  function searchEditPlaces(query) {
+    var seq = ++editing.seq;
+    editing.searching = true;
+    drawPlaceEdit();
+    api('GET', '/ride-page/suggest?q=' + encodeURIComponent(query) + '&session=' + encodeURIComponent(editing.session)).then(function (answer) {
+      if (seq !== editing.seq) return;
+      editing.results = ((answer && answer.places) || []).filter(function (p) { return p && p.placeId && p.address; });
+      editing.error = null;
+    }).catch(function (error) {
+      if (seq !== editing.seq) return;
+      if (linkDead(error)) return dead(error);
+      editing.results = [];
+      editing.error = error.message || 'Could not look that up. Try again.';
+    }).then(function () {
+      if (seq !== editing.seq) return;
+      editing.searching = false;
+      editing.searchedFor = query;
+      if (shownView === 'place-edit') drawPlaceEdit();
+    });
+  }
+  function pickEditPlace(suggestion) {
+    if (editing.picking) return;
+    var seq = ++editing.seq;
+    editing.picking = true;
+    drawPlaceEdit();
+    api('GET', '/ride-page/place?id=' + encodeURIComponent(suggestion.placeId) + '&session=' + encodeURIComponent(editing.session)).then(function (answer) {
+      if (seq !== editing.seq) return;
+      var spot = answer && answer.place;
+      if (!validPoint(spot)) throw { message: 'Could not look that up. Try again.' };
+      editing.address = { lat: spot.lat, lng: spot.lng, address: suggestion.address };
+      editing.session = newSession();
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      if (seq !== editing.seq) return;
+      editing.error = error.message || 'Could not look that up. Try again.';
+    }).then(function () {
+      editing.picking = false;
+      if (shownView === 'place-edit') drawPlaceEdit();
+    });
+  }
+  W.$('pe-clear').addEventListener('click', function () {
+    editing.address = null;
+    editing.query = '';
+    editing.results = [];
+    W.$('pe-query').value = '';
+    drawPlaceEdit();
+    setTimeout(function () { W.$('pe-query').focus(); }, 50);
+  });
+  W.$('pe-save').addEventListener('click', function () {
+    var place = editing.place;
+    var name = editName();
+    var where = editing.address;
+    if (!where) return;
+    if (!place) {
+      var error = !name ? 'Give this place a name.' : takenName(name) ? 'You already have a place called ' + name + '. Use Change on it instead.' : '';
+      if (error) { W.$('pe-name-err').textContent = error; W.show(W.$('pe-name-err'), true); return; }
+    }
+    var list = readSaved();
+    if (place) {
+      list = list.map(function (p) { return p.id === place.id ? { id: p.id, label: p.label, address: where.address, lat: where.lat, lng: where.lng } : p; });
+    } else {
+      if (list.length >= MAX_SAVED) return;
+      list.push({ id: Date.now().toString(36) + '-' + list.length, label: name.slice(0, 24), address: where.address, lat: where.lat, lng: where.lng });
+    }
+    writeSaved(list);
+    track('saved_place_saved', { label: savedRank({ label: name }) === 2 ? 'other' : norm(name), changed: Boolean(place) });
+    backScreen();
+  });
 
   /* ── after a search nobody took: No driver accepted ₦X (Contract E) ─────── */
 
@@ -1014,7 +1792,7 @@
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('find_failed', { code: error.code || String(error.status), again: true });
       var box = W.$(fromSheet ? 'offer-err' : 'nd-err');
       box.textContent = error.message;
@@ -1103,7 +1881,7 @@
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('find_failed', { code: error.code || String(error.status) });
       W.$('price-err').textContent = error.message;
       W.show(W.$('price-err'), true);
@@ -1479,7 +2257,7 @@
       apply(next);
     }).catch(function (error) {
       busy = false;   // before the redraw: the offers come back live, not greyed out
-      if (linkDead(error)) { local.confirming = null; return fatal(error.message); }
+      if (linkDead(error)) { local.confirming = null; return dead(error); }
       // No answer in time: it may have gone through. Stay on Confirming and ask; the
       // next look decides (confirmed: Driver found; still offers: back to them, quietly).
       if (error.code === 'TIMEOUT' && local.confirming) {
@@ -1553,7 +2331,7 @@
       apply(next);
       setTimeout(function () { if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state); }, 1900);
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       say(error.message, 'bad');
     }).then(function () { busy = false; });
   }
@@ -1648,7 +2426,7 @@
       track('price_updated', { fromNgn: before, toNgn: amount });
       say('Offer updated to ' + W.naira(amount) + '. Drivers notified.', 'good');
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('price_update_failed', { code: error.code || String(error.status) });
       W.$('offer-err').textContent = error.message;
       W.show(W.$('offer-err'), true);
@@ -1725,7 +2503,7 @@
       apply(next);
       say('Search cancelled. Nothing was charged.');
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('cancel_failed', { code: error.code || String(error.status) });
       W.$('cancel-err').textContent = error.message;
       W.show(W.$('cancel-err'), true);
@@ -1750,7 +2528,7 @@
       api('POST', '/ride-page/edit-trip').then(function (next) {
         apply(next);
       }).catch(function (error) {
-        if (linkDead(error)) return fatal(error.message);
+        if (linkDead(error)) return dead(error);
         say(error.message, 'bad');
       }).then(function () { busy = false; });
     });
@@ -1761,6 +2539,7 @@
   var trip = null;          // { pickup, destination, stops: [] } — each { lat, lng, address }, null while being typed
   var searchTimer = null;
   var searchSeq = 0;
+  var tripSession = null;   // Google's session: the typing and the pick billed as one
 
   function openTrip() {
     if (!state || state.phase !== 'price' || !state.places) return;
@@ -1769,6 +2548,7 @@
       destination: state.places.destination,
       stops: (state.places.stops || []).slice()
     };
+    tripSession = newSession();
     W.$('trip-pickup').value = trip.pickup.address;
     W.$('trip-dest').value = trip.destination.address;
     drawTripStops();
@@ -1832,10 +2612,10 @@
     looking.appendChild(el('span', 'spinner'));
     looking.appendChild(document.createTextNode('Looking for places…'));
     holder.appendChild(looking);
-    api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
+    api('GET', '/ride-page/suggest?q=' + encodeURIComponent(query) + '&session=' + encodeURIComponent(tripSession || '')).then(function (answer) {
       if (seq !== searchSeq) return;   // a newer search is on its way
       holder.innerHTML = '';
-      var places = (answer && answer.places) || [];
+      var places = ((answer && answer.places) || []).filter(function (p) { return p && p.placeId && p.address; });
       track('place_searched', { field: field, letters: query.length, results: places.length });
       if (!places.length) {
         holder.appendChild(el('div', 'place-status', 'No place found. Add the area or a landmark, e.g. "Shoprite, Ikeja".'));
@@ -1848,18 +2628,32 @@
         option.appendChild(el('strong', '', place.name || place.address));
         if (place.area) option.appendChild(el('span', '', place.area));
         option.addEventListener('click', function () {
-          track('place_picked', { field: field });
-          trip[field] = { lat: place.lat, lng: place.lng, address: place.address };
-          saveRecent(place);
-          W.$(field === 'pickup' ? 'trip-pickup' : 'trip-dest').value = place.address;
-          clearPlaces();
-          syncTrip();
+          // Where it is, by its id in the same session; then it is the place.
+          var pickSeq = ++searchSeq;
+          option.disabled = true;
+          api('GET', '/ride-page/place?id=' + encodeURIComponent(place.placeId) + '&session=' + encodeURIComponent(tripSession || '')).then(function (found) {
+            if (pickSeq !== searchSeq || !trip) return;
+            var spot = found && found.place;
+            if (!validPoint(spot)) throw { message: 'Could not look that up. Try again.' };
+            tripSession = newSession();
+            track('place_picked', { field: field });
+            trip[field] = { lat: spot.lat, lng: spot.lng, address: place.address };
+            saveRecent({ lat: spot.lat, lng: spot.lng, address: place.address, name: place.name, area: place.area });
+            W.$(field === 'pickup' ? 'trip-pickup' : 'trip-dest').value = place.address;
+            clearPlaces();
+            syncTrip();
+          }).catch(function (error) {
+            if (linkDead(error)) return dead(error);
+            if (pickSeq !== searchSeq) return;
+            holder.innerHTML = '';
+            holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
+          });
         });
         holder.appendChild(option);
       });
     }).catch(function (error) {
       if (seq !== searchSeq) return;
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       holder.innerHTML = '';
       holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
     });
@@ -1876,7 +2670,7 @@
       apply(next);
       track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
     }).catch(function (error) {
-      if (linkDead(error)) return fatal(error.message);
+      if (linkDead(error)) return dead(error);
       track('trip_save_failed', { code: error.code || String(error.status) });
       W.$('trip-err').textContent = error.message;
       W.show(W.$('trip-err'), true);
@@ -2074,7 +2868,8 @@
   /** The screen for the state, with what only this page knows on top. */
   function viewFor(s) {
     if (s.phase === 'idle') {
-      if (local.plan) return 'plan';
+      // A screen over Home: Plan your trip, Later, saved places.
+      if (topScreen()) return topScreen();
       var last = lastSearchOf(s);
       if (last && noDriverClosed !== noDriverSig(last)) return 'nodriver';
       return 'idle';
@@ -2095,6 +2890,11 @@
     }
     if (view === 'idle') drawHome(state, changed);
     else if (view === 'plan') drawPlan();
+    // These redraw themselves as the rider taps; a poll does not rebuild them under a finger.
+    else if (view === 'schedule') { if (changed) drawSchedule(); }
+    else if (view === 'schedule-confirm') { if (changed) drawScheduleConfirm(); }
+    else if (view === 'places') { if (changed) drawPlaces(); }
+    else if (view === 'place-edit') { if (changed) drawPlaceEdit(); }
     else if (view === 'nodriver') drawNoDriver(state, changed);
     else if (view === 'price') drawPrice(state);
     else if (view === 'offers') drawSent(state);
@@ -2122,12 +2922,8 @@
     if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; addFor = null; }
     // An accept that timed out, and the server still shows the offers: back to them, quietly.
     if (next.phase === 'offers' && local.confirming && local.confirming.timedOut) { local.confirming = null; paying = null; }
-    // The trip moved on while Plan was open (a price, a search, a ride): its history entry goes too, so Back works.
-    if (next.phase !== 'idle' && local.plan) {
-      local.plan = false;
-      clearTimeout(planTimer);
-      if (history.state && history.state.view === 'plan') { try { history.back(); } catch (e) { /* ignore */ } }
-    }
+    // The trip moved on while a screen was open over Home (a price, a search, a ride): their history entries go too, so Back works.
+    if (next.phase !== 'idle' && nav.length) navHome();
 
     if (before !== next.phase) {
       track('phase_shown', { from: before || 'none' });
@@ -2149,7 +2945,7 @@
       appliedSeq = seq;
       applyState(next);
     }).catch(function (error) {
-      if (linkDead(error)) fatal(error.message);
+      if (linkDead(error)) dead(error);
       // Anything else — a dropped connection, a slow server — just waits for the next tick.
     });
   }

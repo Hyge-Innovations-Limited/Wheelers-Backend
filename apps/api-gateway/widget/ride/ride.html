@@ -22,6 +22,12 @@
     <p class="foot">Go back to WhatsApp and send any message for a fresh link.</p>
   </section>
 
+  <!-- the link's six hours are up: one line, one way back -->
+  <section data-view="expired" class="expired" hidden>
+    <h1 class="title center">This link has expired</h1>
+    <a class="btn primary" id="expired-back" href="#" hidden>Back to WhatsApp</a>
+  </section>
+
   <!-- 0 · home, as the app's app/rider/index.tsx: the map, and a sheet that slides up and down -->
   <section data-view="idle" hidden>
     <div class="home-map" id="home-map-wrap" hidden><div id="home-map" class="map" aria-label="Map"></div></div>
@@ -43,13 +49,27 @@
           <div class="ink-note-words"><strong>Not in your area yet</strong><span>Wheelers is only in Lagos for now.</span></div>
         </div>
         <h1 class="title">Where are you going?</h1>
-        <button class="home-search" type="button" id="home-search" aria-label="Search destination">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
-          <span>Search destination</span>
-        </button>
+        <div class="search-row">
+          <button class="home-search" type="button" id="home-search" aria-label="Search destination">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
+            <span>Search destination</span>
+          </button>
+          <button class="later" type="button" id="home-later" aria-label="Later: schedule a ride" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3"/><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z"/><path d="M4 10h16"/></svg><span>Later</span></button>
+        </div>
       </div>
       <div class="home-body" id="home-body">
-        <div class="result-list" id="home-recents"></div>
+        <div class="home-stack">
+          <button class="sched-card" type="button" id="home-scheduled" hidden>
+            <span class="sched-words"><strong id="home-scheduled-when"></strong><span id="home-scheduled-route"></span></span>
+            <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <div class="chips-row" id="home-saved" hidden>
+            <div class="chips" id="home-chips"></div>
+            <button class="add-chip" type="button" id="home-places" aria-label="Saved places"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          </div>
+          <button class="add-place" type="button" id="home-add-place" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add a place</button>
+          <div class="result-list" id="home-recents"></div>
+        </div>
       </div>
     </div>
   </section>
@@ -68,6 +88,7 @@
         <button class="plan-clear" type="button" data-plan-clear="pickup" aria-label="Clear pickup" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
       </div>
       <div class="plan-line" data-plan-line="pickup"></div>
+      <div id="plan-stops"></div>
       <div class="plan-field" data-plan="destination">
         <span class="plan-mark square" aria-hidden="true"></span>
         <span class="plan-label" aria-hidden="true">TO</span>
@@ -76,12 +97,100 @@
       </div>
       <div class="plan-line last" data-plan-line="destination"></div>
     </div>
-    <div class="list-head"><span class="label-caps" id="plan-heading"></span><span class="spinner orange" id="plan-spin" hidden></span></div>
+    <div class="list-head"><span class="label-caps" id="plan-heading"></span><span class="spinner orange" id="plan-spin" hidden></span><button class="add-stop" type="button" id="plan-add-stop" aria-label="Add stop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Add stop</span></button></div>
     <div class="result-list plan-list" id="plan-list" role="listbox" aria-label="Places"></div>
     <div class="notice bad" id="plan-err" hidden></div>
     <div class="plan-foot">
       <button class="btn primary" type="button" id="plan-go">Continue</button>
     </div>
+  </section>
+
+  <!-- Later: as the app's app/schedule-ride.tsx -->
+  <section data-view="schedule" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="sch-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Schedule a ride</h1>
+    </div>
+    <div class="group">
+      <span class="label-caps">Day</span>
+      <div class="days" id="sch-days" role="group" aria-label="Day"></div>
+    </div>
+    <div class="group">
+      <span class="label-caps">Pickup time</span>
+      <div class="times" id="sch-times" role="group" aria-label="Pickup time"></div>
+      <p class="small muted" id="sch-none" hidden>No times left today. Choose another day.</p>
+      <button class="rlink underline" type="button" id="sch-another">Choose another time</button>
+    </div>
+    <div class="summary-ink">
+      <span class="small on-ink-muted">Pickup</span>
+      <strong class="summary-when" id="sch-when" aria-live="polite"></strong>
+    </div>
+    <p class="small muted">You are charged only after a driver accepts.</p>
+    <div class="grow"></div>
+    <div class="notice bad" id="sch-err" hidden></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="sch-go">Continue</button></div>
+  </section>
+
+  <!-- the trip for later, priced: as the app's ride-selection.tsx with a pickup time -->
+  <section data-view="schedule-confirm" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="sr-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Schedule ride</h1>
+    </div>
+    <div class="card route-card">
+      <div class="route-rows" id="sr-rows"></div>
+      <button class="rlink orange route-edit" type="button" id="sr-edit" aria-label="Edit route">Edit</button>
+    </div>
+    <div class="tint-chips"><span class="tint-chip" id="sr-km"></span><span class="tint-chip" id="sr-min"></span></div>
+    <div class="card estimate-card"><span class="small muted">Suggested price</span><strong class="estimate-figure" id="sr-price"></strong></div>
+    <div class="card info-card"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3"/><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z"/><path d="M4 10h16"/></svg><span class="info-words"><strong>Pickup time</strong><span class="small muted" id="sr-when"></span></span></div>
+    <div class="grow"></div>
+    <div class="notice bad" id="sr-err" hidden></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="sr-go">Schedule ride</button></div>
+  </section>
+
+  <!-- saved places: as the app's app/saved-places.tsx (kept on this phone) -->
+  <section data-view="places" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="places-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Saved places</h1>
+    </div>
+    <div class="saved-list" id="places-list"></div>
+    <p class="small muted" id="places-full" hidden>You can save up to 8 places. Remove one to add another.</p>
+    <button class="btn ghost" type="button" id="places-add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add a place</button>
+  </section>
+
+  <section data-view="place-edit" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="pe-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title" id="pe-title">Add a place</h1>
+    </div>
+    <div class="group" id="pe-name-group">
+      <span class="label-caps">Name</span>
+      <div class="choices" id="pe-choices" role="radiogroup" aria-label="Name"></div>
+      <label class="field" id="pe-other" hidden>
+        <span class="field-label">Name of this place</span>
+        <input class="text-input" id="pe-name" maxlength="24" autocomplete="off" autocapitalize="words" placeholder="Mum, Gym, School">
+      </label>
+      <p class="field-error" id="pe-name-err" hidden></p>
+    </div>
+    <div class="group">
+      <span class="label-caps">Address</span>
+      <div class="picked" id="pe-picked" hidden>
+        <span class="result-icon saved" id="pe-picked-icon"></span>
+        <strong class="picked-text" id="pe-picked-text"></strong>
+        <button class="plan-clear" type="button" id="pe-clear" aria-label="Clear address"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="group" id="pe-search">
+        <input class="text-input" id="pe-query" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Search address" aria-label="Search address">
+        <p class="small muted" id="pe-now" hidden></p>
+        <div class="notice bad" id="pe-err" hidden></div>
+        <span class="spinner orange" id="pe-spin" hidden></span>
+        <div class="result-list" id="pe-results" role="listbox" aria-label="Places"></div>
+      </div>
+    </div>
+    <div class="grow"></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="pe-save" disabled>Save place</button></div>
   </section>
 
   <!-- after a search nobody took, as the app's "No driver accepted" (app/matching.tsx) -->
@@ -362,6 +471,46 @@
   <p class="sub" id="sc-text"></p>
   <button class="btn primary" type="button" id="sc-no"></button>
   <button class="btn danger" type="button" id="sc-yes"></button>
+</div>
+
+<!-- Choose another time: as the app's TimePicker (app/schedule-ride.tsx) -->
+<div class="sheet" id="sheet-time" hidden role="dialog" aria-modal="true" aria-labelledby="tp-title">
+  <div class="sheet-title"><h2 id="tp-title">Choose a time</h2><p class="small muted" id="tp-day"></p></div>
+  <div class="dials">
+    <div class="dial">
+      <button class="dial-btn" type="button" id="tp-hour-up" aria-label="Hour up"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+      <output class="dial-value" id="tp-hour"></output>
+      <button class="dial-btn" type="button" id="tp-hour-down" aria-label="Hour down"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      <span class="caption muted">Hour</span>
+    </div>
+    <span class="dial-colon" aria-hidden="true">:</span>
+    <div class="dial">
+      <button class="dial-btn" type="button" id="tp-min-up" aria-label="Minute up"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+      <output class="dial-value" id="tp-min"></output>
+      <button class="dial-btn" type="button" id="tp-min-down" aria-label="Minute down"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      <span class="caption muted">Minute</span>
+    </div>
+    <div class="halves">
+      <button class="half" type="button" id="tp-am" aria-label="a.m.">am</button>
+      <button class="half" type="button" id="tp-pm" aria-label="p.m.">pm</button>
+    </div>
+  </div>
+  <p class="small bad-text center" id="tp-soon" hidden></p>
+  <button class="btn primary" type="button" id="tp-set"></button>
+  <button class="btn quiet" type="button" data-close>Cancel</button>
+</div>
+
+<!-- a ride for later, from Home: as the app's app/scheduled-ride.tsx -->
+<div class="sheet" id="sheet-scheduled" hidden role="dialog" aria-modal="true" aria-labelledby="ss-title">
+  <h2 id="ss-title">Scheduled ride</h2>
+  <div class="summary-ink">
+    <span class="small on-ink-muted">Pickup</span>
+    <strong class="summary-when" id="ss-when"></strong>
+    <div class="summary-route"><span id="ss-route"></span><strong id="ss-price"></strong></div>
+  </div>
+  <div class="notice bad" id="ss-err" hidden></div>
+  <button class="btn primary" type="button" data-close>Done</button>
+  <button class="btn danger" type="button" id="ss-cancel">Cancel scheduled ride</button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
