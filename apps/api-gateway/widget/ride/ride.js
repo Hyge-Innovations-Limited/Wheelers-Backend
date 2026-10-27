@@ -18,7 +18,6 @@
   var seenOffers = null;     // how many offers there were at the last look — null until the first
   var paying = null;         // the offer being paid for: { key, driverName } — its card stays green
   var declined = null;       // { offers, until }: the offers just declined, shown red for a moment
-  var declinedOnce = false;  // this search had its offers declined: say the search goes on
   var polling = null;
   var busy = false;
 
@@ -49,7 +48,6 @@
     if (text !== undefined) node.textContent = text;
     return node;
   }
-  function roundTo(value, step) { return Math.round(value / step) * step; }
   /** "Timilehin Olowu" → "TO", as the app's avatar shows a name. */
   function initials(name) {
     return String(name || '?').trim().split(/\s+/).slice(0, 2).map(function (part) { return part.charAt(0).toUpperCase(); }).join('');
@@ -90,38 +88,18 @@
     });
   }
 
-  /** Suggested, a little lower, a little higher — never under the floor. */
-  function drawChips(holderId, inputId, base, floor, onPick) {
-    var holder = W.$(holderId);
-    holder.innerHTML = '';
-    var options = [
-      { label: 'Lowest', value: floor },
-      { label: 'Suggested', value: base },
-      { label: '+10%', value: roundTo(base * 1.1, 50) },
-      { label: '+20%', value: roundTo(base * 1.2, 50) }
-    ];
-    var seen = {};
-    options.forEach(function (option) {
-      if (!(option.value >= floor) || seen[option.value]) return;
-      seen[option.value] = true;
-      var button = el('button');
-      button.type = 'button';
-      button.setAttribute('data-amount', String(option.value));
-      button.appendChild(el('small', '', option.label));
-      button.appendChild(document.createTextNode(W.naira(option.value)));
-      button.addEventListener('click', function () {
-        W.$(inputId).value = Number(option.value).toLocaleString('en-NG');
-        onPick();
-      });
-      holder.appendChild(button);
-    });
+  /** The figure on a price card: smaller as it gets longer, as the app's shrinks to fit. */
+  function drawFigure(id, amount) {
+    var text = W.naira(amount);
+    var figure = W.$(id);
+    figure.textContent = text;
+    figure.className = 'figure len-' + Math.min(13, Math.max(2, text.length));
   }
-  function markChips(holderId, amount) {
-    var chips = W.$(holderId).children;
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].className = Number(chips[i].getAttribute('data-amount')) === amount ? 'on' : '';
-    }
-  }
+  /** The app's minus and plus (components/rider/price-card.tsx): to the next ₦100, never under the floor. */
+  function stepDown(price, floor) { return Math.max(floor, price - (price % 100 || 100)); }
+  function stepUp(price) { return price + (100 - (price % 100)); }
+  /** "Ilemere Rd, Ikorodu" → "Ilemere Rd". */
+  function shortPlace(address) { return String(address || '').split(',')[0].trim(); }
 
   /* ── analytics: what the rider does here, step by step ─────────────────── */
 
@@ -230,6 +208,9 @@
   function drawPrice(s) {
     drawRoute(s.route);
     W.show(W.$('route-edit'), Boolean(s.canEditTrip));
+    var back = W.$('price-back');
+    W.show(back, Boolean(s.chatUrl));
+    if (s.chatUrl) back.setAttribute('href', s.chatUrl);
     var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + (s.route.stopAddresses || []).join('|') + '|' + s.route.suggestedFareNgn;
     if (priceDrawnFor !== signature) {           // a fresh quote — not every poll, or typing would be wiped
       // The trip changed while they were here: the box starts again from the new suggested price.
@@ -249,17 +230,16 @@
     if (!state || state.phase !== 'price') return;
     var amount = W.parseAmount(W.$('price-input').value);
     var floor = state.minOfferNgn;
-    var hint = W.$('price-hint');
+    // Set with minus and plus only, as in the app: never under the minimum.
+    if (floor > 0 && !(amount >= floor)) {
+      amount = floor;
+      W.$('price-input').value = Number(floor).toLocaleString('en-NG');
+    }
+    drawFigure('price-figure', amount);
     W.show(W.$('price-err'), false);
 
     // The app's words under the price (components/rider/price-card.tsx).
-    if (amount > 0 && amount < floor) {
-      hint.className = 'price-note bad';
-      hint.textContent = 'The lowest price for this trip is ' + W.naira(floor) + '.';
-    } else {
-      hint.className = 'price-note';
-      hint.textContent = amount <= floor ? 'This is the minimum offer for this trip.' : 'Minimum offer: ' + W.naira(floor);
-    }
+    W.$('price-hint').textContent = amount <= floor ? 'This is the minimum offer for this trip.' : 'Minimum offer: ' + W.naira(floor);
     W.$('price-down').disabled = !(amount > floor);
     var find = W.$('find');
     find.disabled = !(amount >= floor);
@@ -270,21 +250,14 @@
   function stepPrice(up) {
     if (!state || state.phase !== 'price') return;
     var amount = W.parseAmount(W.$('price-input').value) || state.route.suggestedFareNgn;
-    var next = up ? amount + (100 - (amount % 100)) : Math.max(state.minOfferNgn, amount - (amount % 100 || 100));
+    var next = up ? stepUp(amount) : stepDown(amount, state.minOfferNgn);
     W.$('price-input').value = Number(next).toLocaleString('en-NG');
     syncPrice();
     track('price_changed', { method: up ? 'plus' : 'minus', amountNgn: next });
   }
   W.$('price-down').addEventListener('click', function () { stepPrice(false); });
   W.$('price-up').addEventListener('click', function () { stepPrice(true); });
-  var typedTimer = null;
-  W.$('price-input').addEventListener('input', function () {
-    W.formatAmountInput(this);
-    syncPrice();
-    // A price typed is one step once they stop typing, not one per key.
-    clearTimeout(typedTimer);
-    typedTimer = setTimeout(function () { track('price_changed', { method: 'typed', amountNgn: W.parseAmount(W.$('price-input').value) }); }, 1200);
-  });
+  W.$('price-back').addEventListener('click', function () { track('chat_link_tapped', { from: 'price' }); });
 
   W.$('find').addEventListener('click', function () {
     var button = this;
@@ -314,9 +287,8 @@
   function drawSent(s) {
     drawRoute(s.route);
 
-    // "Ilemere Rd → Ikorodu Garage · your offer ₦12,450", as in the app.
-    var place = function (address) { return String(address || '').split(',')[0].trim(); };
-    W.$('offers-route').textContent = [place(s.route && s.route.pickupAddress), place(s.route && s.route.destAddress)].filter(Boolean).join(' → ');
+    // "Ilemere Rd to Ikorodu Garage · your offer ₦12,450", as in the app.
+    W.$('offers-route').textContent = [shortPlace(s.route && s.route.pickupAddress), shortPlace(s.route && s.route.destAddress)].filter(Boolean).join(' to ');
     W.$('my-offer').textContent = W.naira(s.offerNgn);
 
     // Declined one by one on this page, as in the app: off the list here, the search goes on.
@@ -327,12 +299,18 @@
 
     var count = offers.length;
     W.show(W.$('searching'), list.length === 0);
-    W.$('sent-text').textContent = declinedOnce
-      ? 'Offers declined. A higher price usually gets drivers moving.'
-      : 'Your offer has been sent to drivers near you.';
+    W.show(W.$('sent-text'), list.length === 0);
     W.$('finding-route').textContent = W.$('offers-route').textContent;
     W.$('finding-offer').textContent = W.naira(s.offerNgn);
+    var suggested = s.route && s.route.suggestedFareNgn > 0 ? 'Suggested price ' + W.naira(s.route.suggestedFareNgn) : '';
+    W.$('finding-suggested').textContent = suggested;
+    W.$('offers-suggested').textContent = suggested;
+    W.show(W.$('finding-suggested'), Boolean(suggested));
+    W.show(W.$('offers-suggested'), Boolean(suggested));
     W.show(W.$('offers-sub'), list.length > 0);
+    // As the app: the way back (to change the trip) and the price buttons while finding; the footer once drivers reply.
+    W.show(W.$('offers-back'), list.length === 0);
+    W.show(W.$('offers-foot'), list.length > 0);
     if (count > (seenOffers === null ? 0 : seenOffers)) {
       track('offer_received', { count: count, lowestNgn: offers.length ? Math.min.apply(null, offers.map(function (o) { return o.priceNgn; })) : 0 });
     }
@@ -386,9 +364,11 @@
       top.appendChild(who);
       top.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
       card.appendChild(top);
-      if (offer.plate || offer.distanceKm) {
+      // Only a driver who took the rider's own price is called out (components/rider/offer-card.tsx).
+      var comparison = Math.round(offer.priceNgn) === Math.round(yoursNgn) ? 'Accepted your price' : '';
+      if (comparison || offer.plate) {
         var meta = el('div', 'offer-meta');
-        meta.appendChild(el('span', 'offer-distance', offer.distanceKm ? Number(offer.distanceKm).toFixed(1) + ' km to you' : ''));
+        meta.appendChild(el('span', 'offer-compare', comparison));
         if (offer.plate) meta.appendChild(el('span', 'plate', offer.plate));
         card.appendChild(meta);
       }
@@ -404,6 +384,7 @@
         var actions = el('div', 'offer-actions');
         var decline = el('button', 'btn decline-one', 'Decline');
         decline.type = 'button';
+        decline.setAttribute('aria-label', 'Decline the offer from ' + name);
         decline.disabled = Boolean(paying) || busy;
         decline.addEventListener('click', function () {
           track('offer_declined', { priceNgn: offer.priceNgn, rank: index + 1 });
@@ -546,7 +527,6 @@
     W.api('POST', '/ride-page/decline-all').then(function (next) {
       declined = { offers: shownOffers, until: Date.now() + 1800 };
       track('decline_all', { count: shownOffers.length });
-      declinedOnce = true;
       apply(next);
       setTimeout(function () { if (state) drawSent(state); }, 1900);
     }).catch(function (error) {
@@ -561,18 +541,32 @@
   function openChangePrice(raiseBy) {
     if (!state || state.phase !== 'offers') return;
     W.$('offer-input').value = Number(state.offerNgn + (raiseBy || 0)).toLocaleString('en-NG');
-    W.$('offer-current').textContent = 'Current ' + W.naira(state.offerNgn);
+    W.$('offer-current').textContent = W.naira(state.offerNgn);
+    W.$('offer-keep').textContent = 'Keep ' + W.naira(state.offerNgn);
+    var suggested = state.route && state.route.suggestedFareNgn > 0 ? 'Suggested price ' + W.naira(state.route.suggestedFareNgn) : '';
+    W.$('offer-suggested').textContent = suggested;
+    W.show(W.$('offer-suggested'), Boolean(suggested));
     W.show(W.$('offer-err'), false);
-    drawChips('offer-chips', 'offer-input', state.route.suggestedFareNgn, state.minOfferNgn, syncOfferSheet);
     syncOfferSheet();
     openSheet('sheet-offer');
   }
-  /** The chips and the button follow the figure: "Update price to ₦X". */
+  /** The figure, the minimum line and the button follow the price: "Update price to ₦X". */
   function syncOfferSheet() {
     var amount = W.parseAmount(W.$('offer-input').value);
-    markChips('offer-chips', amount);
-    W.$('offer-save').textContent = amount > 0 && state && amount !== state.offerNgn ? 'Update price to ' + W.naira(amount) : 'Update price';
+    var floor = state ? state.minOfferNgn || 0 : 0;
+    drawFigure('offer-figure', amount);
+    W.$('offer-down').disabled = !(amount > floor);
+    W.$('offer-min').textContent = amount <= floor ? 'This is the minimum offer for this trip.' : 'Minimum offer: ' + W.naira(floor);
+    W.$('offer-save').textContent = 'Update price to ' + W.naira(amount);
   }
+  function stepOffer(up) {
+    if (!state) return;
+    var amount = W.parseAmount(W.$('offer-input').value) || state.offerNgn;
+    W.$('offer-input').value = Number(up ? stepUp(amount) : stepDown(amount, state.minOfferNgn || 0)).toLocaleString('en-NG');
+    syncOfferSheet();
+  }
+  W.$('offer-down').addEventListener('click', function () { stepOffer(false); });
+  W.$('offer-up').addEventListener('click', function () { stepOffer(true); });
   W.$('change-offer').addEventListener('click', function () { track('price_sheet_opened', { from: 'change_my_price' }); openChangePrice(0); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-raise]'), function (button) {
     button.addEventListener('click', function () {
@@ -591,10 +585,6 @@
   W.$('offer-reset').addEventListener('click', function () {
     if (!state) return;
     W.$('offer-input').value = Number(Math.max(state.minOfferNgn || 0, state.offerNgn)).toLocaleString('en-NG');
-    syncOfferSheet();
-  });
-  W.$('offer-input').addEventListener('input', function () {
-    W.formatAmountInput(this);
     syncOfferSheet();
   });
 
@@ -647,16 +637,18 @@
         track('cancel_reason_picked', { reason: reason });
         cancelReason = reason;
         drawReasons();
-        W.show(W.$('cancel-other'), reason === OTHER);
+        W.show(W.$('cancel-other-field'), reason === OTHER);
         if (reason === OTHER) setTimeout(function () { W.$('cancel-other').focus(); }, 30);
         syncCancel();
       });
       holder.appendChild(row);
     });
   }
+  // As the app: their own words are optional; the button reads "Choose a reason" until one is picked.
   function syncCancel() {
-    var words = W.$('cancel-other').value.trim();
-    W.$('cancel-yes').disabled = !cancelReason || (cancelReason === OTHER && words.length < 3);
+    var button = W.$('cancel-yes');
+    button.disabled = !cancelReason;
+    button.textContent = cancelReason ? 'Cancel search' : 'Choose a reason';
     W.show(W.$('cancel-err'), false);
   }
   W.$('cancel-other').addEventListener('input', syncCancel);
@@ -665,7 +657,7 @@
     if (busy) return;
     cancelReason = null;
     W.$('cancel-other').value = '';
-    W.show(W.$('cancel-other'), false);
+    W.show(W.$('cancel-other-field'), false);
     drawReasons();
     syncCancel();
     track('cancel_opened');
@@ -678,7 +670,8 @@
     busy = true;
     button.className = 'btn danger busy';
     var body = { reason: cancelReason };
-    if (cancelReason === OTHER) body.detail = W.$('cancel-other').value.trim();
+    var words = W.$('cancel-other').value.trim();
+    if (cancelReason === OTHER && words) body.detail = words;
     W.api('POST', '/ride-page/cancel', body).then(function (next) {
       track('cancel_confirmed', body);
       closeSheets();
@@ -869,7 +862,6 @@
   function drawTrip(trip) {
     var copy = TRIP_COPY[trip.status] || TRIP_COPY.DRIVER_ASSIGNED;
     W.$('trip-eyebrow').textContent = copy[0];
-    W.$('trip-title').textContent = copy[1] + copy[2];
 
     // No Leaflet (an ancient browser, a blocked script)? The card below still says everything.
     if (typeof L === 'undefined') return;
@@ -942,6 +934,13 @@
     var driver = s.driver || {};
     // As the app's trip screen: "Tunde · 4.9", the car under it, the plate on the right.
     var name = (driver.name || 'Your driver').trim();
+    // The app's headline: "Tunde is on the way", then "Heading to Ikeja City Mall".
+    var first = driver.name ? name.split(/\s+/)[0] : 'Your driver';
+    var status = s.trip && s.trip.status;
+    var dest = shortPlace((s.route && s.route.destAddress) || (s.trip && s.trip.destination && s.trip.destination.address));
+    W.$('trip-title').textContent = status === 'IN_PROGRESS' ? 'Heading to ' + (dest || 'your destination')
+      : status === 'ARRIVED' ? first + ' has arrived'
+      : first + ' is on the way';
     W.$('d-initial').textContent = initials(name);
     W.$('d-name').textContent = name + (driver.rating ? ' · ' + Number(driver.rating).toFixed(1) : '');
     W.$('d-fare').textContent = W.naira(driver.fareNgn || s.offerNgn);
@@ -965,21 +964,10 @@
 
   /* ── the loop ─────────────────────────────────────────────────────────── */
 
-  /** The badge in the header: where the booking is, at a glance. */
-  function drawPill(next) {
-    var pill = W.$('top-pill');
-    // The app shows where you are with its step bar, not a badge up here.
-    var text = '';
-    pill.textContent = text;
-    pill.className = 'top-pill' + (next.phase === 'offers' ? ' live' : '');
-    W.show(pill, Boolean(text));
-  }
-
   function apply(next) {
     var before = state && state.phase;
-    drawPill(next);
     state = next;
-    if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; declinedOnce = false; }
+    if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; }
 
     // Switch the view FIRST: the map measures its box when it is created, and a
     // hidden box measures zero.

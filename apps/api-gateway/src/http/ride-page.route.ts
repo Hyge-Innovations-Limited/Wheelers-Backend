@@ -512,9 +512,9 @@ async function readCancelReason(req: IncomingMessage): Promise<string | null> {
   const reason = body.reason.trim();
   if (!(SEARCH_CANCEL_REASONS as readonly string[]).includes(reason)) throw new PageError('Pick why you are cancelling.', 400, 'REASON_INVALID');
   if (reason !== OTHER_REASON) return reason;
+  // Their own words are optional, as in the app.
   const words = (typeof body.detail === 'string' ? body.detail : '').replace(/\s+/g, ' ').trim().slice(0, 200);
-  if (words.length < 3) throw new PageError('Tell us in a few words why you are cancelling.', 400, 'REASON_NEEDED');
-  return `Other: ${words}`;
+  return words ? `Other: ${words}` : OTHER_REASON;
 }
 
 async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {

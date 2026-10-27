@@ -512,14 +512,13 @@ test('cancel stops the search; once a driver is confirmed the page sends them to
   assert.equal(refused.body.code, 'ALREADY_CONFIRMED');
 });
 
-test('cancel says why: one of the app\'s reasons, or Other in their own words', async () => {
+test('cancel says why: one of the app\'s reasons, or Other (their own words optional)', async () => {
   const { deps, redis, events } = world();
   const rider = await makeRider(10_000);
   await bidState.storePendingRoute(redis, rider, QUOTE);
   await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
 
   assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Because' })).body.code, 'REASON_INVALID');
-  assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Other reason', detail: ' ' })).body.code, 'REASON_NEEDED');
   const done = await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Other reason', detail: 'My friend is   driving me' });
   assert.equal(done.body.phase, 'idle');
   assert.equal(events.at(-1).eventType, 'RIDE_CANCELLED');
@@ -529,6 +528,12 @@ test('cancel says why: one of the app\'s reasons, or Other in their own words', 
   await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
   await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'The prices are too high' });
   assert.equal(events.at(-1).reason, 'The prices are too high');
+
+  // Other with no words: still cancels, as the app does.
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 });
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/cancel', { reason: 'Other reason', detail: ' ' })).body.phase, 'idle');
+  assert.equal(events.at(-1).reason, 'Other reason');
 });
 
 /* ── changing the trip ────────────────────────────────────────────────── */
