@@ -362,14 +362,17 @@
         offer.etaMin ? minutes(offer.etaMin) + ' away' : ''
       ].filter(Boolean).join(' · ')));
       top.appendChild(who);
-      top.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
+      // The price, the plate under it: one row, a small card.
+      var side = el('div', 'offer-side');
+      side.appendChild(el('div', 'price', W.naira(offer.priceNgn)));
+      if (offer.plate) side.appendChild(el('span', 'plate', offer.plate));
+      top.appendChild(side);
       card.appendChild(top);
       // Only a driver who took the rider's own price is called out (components/rider/offer-card.tsx).
       var comparison = Math.round(offer.priceNgn) === Math.round(yoursNgn) ? 'Accepted your price' : '';
-      if (comparison || offer.plate) {
+      if (comparison) {
         var meta = el('div', 'offer-meta');
         meta.appendChild(el('span', 'offer-compare', comparison));
-        if (offer.plate) meta.appendChild(el('span', 'plate', offer.plate));
         card.appendChild(meta);
       }
 

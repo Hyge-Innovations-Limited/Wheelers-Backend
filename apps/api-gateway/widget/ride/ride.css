@@ -113,7 +113,7 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 
 /* ── 1 · set your price ──────────────────────────────────────────────── */
 /* the route card: a rail of dots, the label, the place; Edit on the right */
-.route-card { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-radius: 20px; }
+.route-card { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-radius: 18px; }
 .route-rows { flex: 1; min-width: 0; }
 .route-row { display: flex; gap: 14px; }
 .rail { width: 12px; flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding-top: 6px; }
@@ -121,24 +121,24 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .rail .dot.to { border-radius: 3px; background: var(--orange); }
 .rail .dot.mid { border: 2px solid var(--ink); background: var(--bg); }
 .rail-line { flex: 1; width: 2px; min-height: 14px; margin: 4px 0; background: var(--line); }
-.route-text { flex: 1; min-width: 0; padding-bottom: 10px; display: flex; flex-direction: column; }
+.route-text { flex: 1; min-width: 0; padding-bottom: 8px; display: flex; flex-direction: column; }
 .route-row:last-child .route-text { padding-bottom: 0; }
-.route-label { font-size: 13px; line-height: 17px; color: var(--muted); }
-.route-value { font-size: 16px; line-height: 22px; font-weight: 700; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.route-label { font-size: 12px; line-height: 16px; color: var(--muted); }
+.route-value { font-size: 15px; line-height: 20px; font-weight: 700; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .route-edit { flex: 0 0 auto; align-self: center; }
 .tint-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.tint-chip { padding: 8px 12px; border-radius: 999px; background: var(--soft); font-size: 14px; line-height: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tint-chip { padding: 6px 10px; border-radius: 999px; background: var(--soft); font-size: 13px; line-height: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tint-chip:empty { display: none; }
 
 /* PriceCard: the figure between a minus and a plus */
-.price-card { padding: 18px; border-radius: 24px; background: var(--ink); display: flex; flex-direction: column; gap: 12px; }
+.price-card { padding: 14px 16px; border-radius: 20px; background: var(--ink); display: flex; flex-direction: column; gap: 10px; }
 .price-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .price-label { font-size: 15px; line-height: 20px; color: var(--on-ink-muted); }
 .price-side { flex-shrink: 1; font-size: 14px; line-height: 20px; color: var(--on-ink-muted); text-align: right; }
 .price-side strong { color: var(--page); font-weight: 700; font-variant-numeric: tabular-nums; }
 .stepper { display: flex; align-items: center; gap: 12px; container-type: inline-size; }
-.round { flex: 0 0 auto; width: 56px; height: 56px; border-radius: 28px; display: flex; align-items: center; justify-content: center; padding: 0; }
-.round svg { width: 26px; height: 26px; fill: none; stroke-width: 2.4; stroke-linecap: round; }
+.round { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 23px; display: flex; align-items: center; justify-content: center; padding: 0; }
+.round svg { width: 22px; height: 22px; fill: none; stroke-width: 2.4; stroke-linecap: round; }
 .round.minus { border: 2px solid var(--ink-line); background: transparent; }
 .round.minus svg { stroke: var(--page); }
 .round.plus { border: 0; background: var(--orange); }
@@ -147,24 +147,24 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .round:disabled { opacity: 0.4; cursor: not-allowed; }
 .figure {
   flex: 1; min-width: 0; display: block; text-align: center; white-space: nowrap; overflow: hidden;
-  font-family: var(--display); font-weight: 800; font-size: 54px; line-height: 60px; letter-spacing: -1.6px;
+  font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 46px; letter-spacing: -1.2px;
   color: var(--orange); font-variant-numeric: tabular-nums;
 }
 /* shrinks to fit, as the app's adjustsFontSizeToFit: the space between minus and plus
  * (the stepper less 2 × 56 + 2 × 12) over the figure's length (ride.js sets len-N);
  * a fixed size first for a browser without container units */
-.stepper > .figure.len-2 { font-size: 54px; font-size: min(54px, calc((100cqw - 136px) / 1.24)); }
-.stepper > .figure.len-3 { font-size: 54px; font-size: min(54px, calc((100cqw - 136px) / 1.86)); }
-.stepper > .figure.len-4 { font-size: 54px; font-size: min(54px, calc((100cqw - 136px) / 2.48)); }
-.stepper > .figure.len-5 { font-size: 54px; font-size: min(54px, calc((100cqw - 136px) / 3.1)); }
-.stepper > .figure.len-6 { font-size: 47px; font-size: min(54px, calc((100cqw - 136px) / 3.72)); }
-.stepper > .figure.len-7 { font-size: 41px; font-size: min(54px, calc((100cqw - 136px) / 4.34)); }
-.stepper > .figure.len-8 { font-size: 35px; font-size: min(54px, calc((100cqw - 136px) / 4.96)); }
-.stepper > .figure.len-9 { font-size: 31px; font-size: min(54px, calc((100cqw - 136px) / 5.58)); }
-.stepper > .figure.len-10 { font-size: 28px; font-size: min(54px, calc((100cqw - 136px) / 6.2)); }
-.stepper > .figure.len-11 { font-size: 26px; font-size: min(54px, calc((100cqw - 136px) / 6.82)); }
-.stepper > .figure.len-12 { font-size: 23px; font-size: min(54px, calc((100cqw - 136px) / 7.44)); }
-.stepper > .figure.len-13 { font-size: 22px; font-size: min(54px, calc((100cqw - 136px) / 8.06)); }
+.stepper > .figure.len-2 { font-size: 40px; font-size: min(40px, calc((100cqw - 116px) / 1.24)); }
+.stepper > .figure.len-3 { font-size: 40px; font-size: min(40px, calc((100cqw - 116px) / 1.86)); }
+.stepper > .figure.len-4 { font-size: 40px; font-size: min(40px, calc((100cqw - 116px) / 2.48)); }
+.stepper > .figure.len-5 { font-size: 40px; font-size: min(40px, calc((100cqw - 116px) / 3.1)); }
+.stepper > .figure.len-6 { font-size: 47px; font-size: min(40px, calc((100cqw - 116px) / 3.72)); }
+.stepper > .figure.len-7 { font-size: 41px; font-size: min(40px, calc((100cqw - 116px) / 4.34)); }
+.stepper > .figure.len-8 { font-size: 35px; font-size: min(40px, calc((100cqw - 116px) / 4.96)); }
+.stepper > .figure.len-9 { font-size: 31px; font-size: min(40px, calc((100cqw - 116px) / 5.58)); }
+.stepper > .figure.len-10 { font-size: 28px; font-size: min(40px, calc((100cqw - 116px) / 6.2)); }
+.stepper > .figure.len-11 { font-size: 26px; font-size: min(40px, calc((100cqw - 116px) / 6.82)); }
+.stepper > .figure.len-12 { font-size: 23px; font-size: min(40px, calc((100cqw - 116px) / 7.44)); }
+.stepper > .figure.len-13 { font-size: 22px; font-size: min(40px, calc((100cqw - 116px) / 8.06)); }
 .price-note { font-size: 14px; line-height: 19px; color: var(--on-ink-muted); }
 .price-note.strong { font-weight: 600; color: var(--page); font-variant-numeric: tabular-nums; }
 .ink-chips { display: flex; gap: 8px; }
@@ -176,47 +176,48 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 
 /* ── 2 · finding drivers ─────────────────────────────────────────────── */
 .finding { display: flex; flex-direction: column; gap: 14px; }
-.offer-ink { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border-radius: var(--r-xl); background: var(--ink); }
+.offer-ink { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-xl); background: var(--ink); }
 .offer-ink-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .offer-ink-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .offer-ink-label { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); }
 .offer-ink-route { font-size: 14px; line-height: 20px; color: var(--on-ink-soft); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.offer-ink-figure { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 36px; line-height: 40px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.offer-ink-figure { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 28px; line-height: 32px; color: var(--orange); font-variant-numeric: tabular-nums; }
 .offer-ink-caption { font-size: 13px; line-height: 17px; font-weight: 600; color: var(--on-ink-muted); font-variant-numeric: tabular-nums; }
 .raise { display: flex; flex-direction: column; gap: 8px; }
 .raise-row { display: flex; gap: 10px; }
 .raise-row .btn { flex: 1; padding: 0 8px; white-space: nowrap; }
-.waiting-box { height: 60px; border-radius: var(--r-lg); background: var(--soft); display: flex; align-items: center; justify-content: center; font-size: 16px; line-height: 22px; font-weight: 700; color: var(--muted); }
+.waiting-box { height: 48px; border-radius: var(--r-md); background: var(--soft); display: flex; align-items: center; justify-content: center; font-size: 15px; line-height: 20px; font-weight: 700; color: var(--muted); }
 
 /* ── 2 · drivers' offers (OfferCard) ─────────────────────────────────── */
-.offer-list { display: flex; flex-direction: column; gap: 12px; }
+.offer-list { display: flex; flex-direction: column; gap: 10px; }
 .offer-list:empty { display: none; }
 .offer {
-  display: flex; flex-direction: column; gap: 10px; padding: 14px;
-  border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--bg);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg);
   transition: background 0.2s ease, border-color 0.2s ease, opacity 0.3s ease;
 }
 /* only an offer that has just arrived slides in */
 .offer.in { animation: slide-in 0.3s ease; }
 @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.offer-top { display: flex; align-items: center; gap: 12px; }
+.offer-top { display: flex; align-items: center; gap: 10px; }
 .avatar {
-  width: 52px; height: 52px; border-radius: 50%; background: var(--ink); color: var(--orange);
+  width: 40px; height: 40px; border-radius: 50%; background: var(--ink); color: var(--orange);
   display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  font-family: var(--display); font-weight: 700; font-size: 19px;
+  font-family: var(--display); font-weight: 700; font-size: 15px;
 }
-.who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.who strong { display: block; font-size: 17px; line-height: 22px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.who span { font-size: 13px; line-height: 18px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.who strong { display: block; font-size: 15px; line-height: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who span { font-size: 12px; line-height: 16px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .who span:empty { display: none; }
-.price { flex: 0 0 auto; font-family: var(--display); font-size: 26px; font-weight: 800; line-height: 30px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price { flex: 0 0 auto; font-family: var(--display); font-size: 20px; font-weight: 800; line-height: 24px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.offer-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .offer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.offer-compare { flex-shrink: 1; font-size: 13px; line-height: 17px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
-.plate { padding: 2px 8px; border: 2px solid var(--ink); border-radius: 8px; font-family: var(--display); font-weight: 700; font-size: 13px; line-height: 17px; letter-spacing: 0.5px; color: var(--ink); }
-.offer-actions { display: flex; gap: 10px; }
-.offer-actions .btn { width: auto; min-height: 48px; height: 48px; padding: 0 10px; border-radius: 14px; white-space: nowrap; }
-.decline-one { flex: 1; border-color: var(--ink); font-size: 15px; font-weight: 700; }
-.accept { flex: 2; background: var(--ink); border-color: var(--ink); color: var(--page); font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.offer-compare { flex-shrink: 1; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.plate { padding: 1px 6px; border: 1.5px solid var(--ink); border-radius: 6px; font-family: var(--display); font-weight: 700; font-size: 11px; line-height: 15px; letter-spacing: 0.5px; color: var(--ink); }
+.offer-actions { display: flex; gap: 8px; }
+.offer-actions .btn { width: auto; min-height: 40px; height: 40px; padding: 0 10px; border-radius: 12px; white-space: nowrap; }
+.decline-one { flex: 1; border-color: var(--ink); font-size: 14px; font-weight: 700; }
+.accept { flex: 2; background: var(--ink); border-color: var(--ink); color: var(--page); font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
 /* the first card is the dark one */
 .offer.featured { background: var(--ink); border-color: var(--ink); color: var(--page); }
 .offer.featured .who strong { color: var(--page); }
@@ -226,7 +227,7 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .offer.featured .decline-one { border-color: var(--ink-line); color: var(--page); }
 .offer.featured .accept { background: var(--orange); border-color: var(--orange); color: var(--ink); }
 /* green while paying, red once declined */
-.offer-status { display: flex; align-items: center; gap: 10px; min-height: 48px; font-size: 16px; line-height: 22px; font-weight: 700; }
+.offer-status { display: flex; align-items: center; gap: 8px; min-height: 40px; font-size: 14px; line-height: 20px; font-weight: 700; }
 .offer.paying { background: var(--good-soft); border-color: var(--good); }
 .offer.paying .offer-status { color: var(--good); }
 .offer.declined { background: var(--bad-soft); border-color: var(--bad); }
@@ -238,7 +239,7 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 
 .offers-foot-wrap { display: flex; flex-direction: column; gap: 6px; }
 .offers-foot { display: flex; gap: 10px; }
-.offers-foot .btn { flex: 1; width: auto; padding: 0 10px; white-space: nowrap; }
+.offers-foot .btn { flex: 1; width: auto; min-height: 44px; height: 44px; padding: 0 10px; border-radius: 14px; font-size: 15px; white-space: nowrap; }
 
 /* ── 3 · the trip ────────────────────────────────────────────────────── */
 .headline { display: flex; flex-direction: column; gap: 4px; }
