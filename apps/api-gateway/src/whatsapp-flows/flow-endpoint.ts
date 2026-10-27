@@ -10,6 +10,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
+import { acceptSentFor, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -368,7 +369,27 @@ async function handleFlowAction(
 
 // ── Accept selected driver ──────────────────────────────────────────────
 
+/** The old form's accept, under the ride's one booking lock (rides/booking-lock.ts) like every other door. */
 async function handleAcceptBid(
+  rideId: string,
+  userId: string,
+  selectedBid: string,
+  meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<{ screen: string; data: Record<string, unknown> }> {
+  const busy = async () => ({ screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your driver is being confirmed — one moment.') });
+  if (!(await takeBookingLock(deps.redisClient, rideId))) return busy();
+  try {
+    const state = await getRideState(deps.redisClient, rideId).catch(() => null);
+    const held = await walletClient.rideHoldOf(rideId).catch(() => null);
+    if (state === 'confirmed' || state === 'in_progress' || (await acceptSentFor(deps.redisClient, rideId)) || held?.status === 'ACTIVE') return busy();
+    return await acceptBidOnce(rideId, userId, selectedBid, meta, deps);
+  } finally {
+    await releaseBookingLock(deps.redisClient, rideId);
+  }
+}
+
+async function acceptBidOnce(
   rideId: string,
   userId: string,
   selectedBid: string,
@@ -468,6 +489,7 @@ async function handleAcceptBid(
     timestamp: new Date().toISOString(),
   });
   await deps.publisher.publishRideEvent(acceptEvent);
+  await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
   await setRideState(deps.redisClient, rideId, 'confirmed');
   await clearFlowPendingAccept(deps.redisClient, userId).catch(() => undefined);
   console.info('[whatsapp-flow] accept confirmed', { rideId, driverId: bid.driverId, fareNgn: bid.counterOfferNgn });

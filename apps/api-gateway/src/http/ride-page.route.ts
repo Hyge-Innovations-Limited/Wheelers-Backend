@@ -13,7 +13,7 @@ import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { clearPendingAccept, getPendingAccept, markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
-import { isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
+import { autoAcceptOffAtStart, isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
@@ -438,7 +438,7 @@ async function startSearch(deps: RidePageRouteDeps, userId: string, quote: Pendi
     pickupAddress: quote.pickupAddress, destAddress: quote.destAddress,
     stopAddresses: (quote.stops ?? []).map((stop) => stop.address),
   }).catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
-  if (!autoAccept) await switchAutoAccept(deps, userId, result.rideId, false).catch(() => undefined);
+  if (!autoAccept) await autoAcceptOffAtStart(deps.redisClient, result.rideId, userId).catch(() => undefined);
 }
 
 /* ── POST /ride-page/auto-accept ──────────────────────────────────────── */

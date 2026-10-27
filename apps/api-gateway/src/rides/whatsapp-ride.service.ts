@@ -14,6 +14,7 @@ import {
   getBids,
   getPendingAccept,
   getRideMeta,
+  getRideState,
   removeBid,
   setActiveRide,
   setRideState,
@@ -26,6 +27,7 @@ import {
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
 import { startSearchClock } from './search-status';
+import { acceptSentFor, markSearchEnded, noteAcceptSent, releaseBookingLock, takeBookingLock } from './booking-lock';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -299,19 +301,29 @@ export async function confirmRideWithOffer(
   riderId: string,
   rideId: string,
   key: string,
-  options: { method?: PayMethod; xlm?: XlmPayer | null } = {},
+  options: ConfirmOptions = {},
 ): Promise<ConfirmResult> {
-  // One confirmation at a time per ride. A deposit landing can finish the ride
-  // in the same second the rider taps Accept again; without this both would
-  // publish the acceptance and the rider would be told twice.
-  const confirmingKey = `whatsapp:ride:${rideId}:confirming`;
-  const mine = await deps.redisClient.setIfNotExists(confirmingKey, '1', 20).catch(() => true);
-  if (!mine) return { ok: false, code: 'ALREADY_CONFIRMING' };
+  // One booking at a time per ride, whichever door it came through (the app's
+  // accept and auto-accept take the same lock: rides/booking-lock.ts). A deposit
+  // landing can finish the ride in the same second the rider taps Accept again;
+  // without this both would publish the acceptance.
+  if (!(await takeBookingLock(deps.redisClient, rideId))) return { ok: false, code: 'ALREADY_CONFIRMING' };
   try {
     return await confirmOnce(deps, riderId, rideId, key, options);
   } finally {
-    await deps.redisClient.del(confirmingKey).catch(() => undefined);
+    await releaseBookingLock(deps.redisClient, rideId);
   }
+}
+
+export interface ConfirmOptions {
+  method?: PayMethod;
+  xlm?: XlmPayer | null;
+  /**
+   * Auto-accept, not a person: nobody tapped Accept, so the driver is not
+   * pinged "A rider wants to book you", their card never says "Rider is
+   * paying…", and an acceptance that does not go out lets go of the hold.
+   */
+  auto?: boolean;
 }
 
 async function confirmOnce(
@@ -319,10 +331,15 @@ async function confirmOnce(
   riderId: string,
   rideId: string,
   key: string,
-  options: { method?: PayMethod; xlm?: XlmPayer | null } = {},
+  options: ConfirmOptions = {},
 ): Promise<ConfirmResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  // Booked already (inside the lock, so not by a booking still on its way): never a second driver.
+  const state = await getRideState(deps.redisClient, rideId).catch(() => null);
+  if (state === 'confirmed' || state === 'in_progress') return { ok: false, code: 'ALREADY_CONFIRMING' };
+  // An acceptance already went out on this ride (the app, or auto-accept): not a second one.
+  if (await acceptSentFor(deps.redisClient, rideId)) return { ok: false, code: 'ALREADY_CONFIRMING' };
 
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) return { ok: false, code: 'OFFER_GONE' };
@@ -344,9 +361,12 @@ async function confirmOnce(
   if (!payWithXlm && (!wallet || balanceNgn < fareNgn)) {
     const shortNgn = Math.ceil(fareNgn - balanceNgn);
     // The rider chose this driver and is adding money: their card says "Rider is paying…".
-    await deps.publisher.publishRideEvent({
-      eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
-    }).catch(() => undefined);
+    // (Not for auto-accept: nobody chose them, nobody is paying.)
+    if (!options.auto) {
+      await deps.publisher.publishRideEvent({
+        eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
+      }).catch(() => undefined);
+    }
     return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
   }
 
@@ -361,7 +381,8 @@ async function confirmOnce(
     const held = (await driverBidClient.findByRide(rideId).catch(() => []))
       .some((row) => row.driverId === bid.driverId && row.status === 'PENDING');
     if (!held) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
-    await pingAwayDriver(deps, rideId, bid.driverUserId);
+    // "They tapped Accept on your offer": only when somebody did.
+    if (!options.auto) await pingAwayDriver(deps, rideId, bid.driverUserId);
     return { ok: false, code: 'DRIVER_AWAY' };
   }
 
@@ -369,6 +390,16 @@ async function confirmOnce(
   const claimed = await deps.redisClient.setIfNotExists(driverClaimKey, rideId, 60).catch(() => true);
   const claimOwner = claimed ? rideId : await deps.redisClient.get(driverClaimKey).catch(() => null);
   if (!claimed && claimOwner !== rideId) return { ok: false, code: 'DRIVER_TAKEN' };
+
+  // Money held on this ride for ANOTHER driver is another booking: never adjusted onto this one.
+  const heldForOther = async () => {
+    const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
+    return existing?.status === 'ACTIVE' && Boolean(existing.driverUserId) && existing.driverUserId !== bid.driverUserId;
+  };
+  if (await heldForOther()) {
+    await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    return { ok: false, code: 'ALREADY_CONFIRMING' };
+  }
 
   if (wallet) try {
     const hold = await walletClient.createRideHold({
@@ -378,7 +409,11 @@ async function confirmOnce(
       driverUserId: bid.driverUserId,
       amountNgn: fareNgn,
     });
-    // A hold left by an earlier attempt on this ride may carry a different fare.
+    if (!hold.applied && await heldForOther()) {
+      await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+      return { ok: false, code: 'ALREADY_CONFIRMING' };
+    }
+    // A hold left by an earlier attempt on this ride (this driver's) may carry a different fare.
     if (!hold.applied && hold.holdAmountNgn !== fareNgn) {
       const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: fareNgn });
       if (!adjusted) throw new Error(`existing hold of ₦${hold.holdAmountNgn} could not be adjusted to ₦${fareNgn}`);
@@ -409,14 +444,17 @@ async function confirmOnce(
       timestamp: new Date().toISOString(),
     }));
   } catch (error) {
-    // The hold stays: accepting again adopts it, and a cancel releases it.
+    // A tap: the hold stays — accepting again adopts it, and a cancel releases it.
+    // Auto-accept: nobody is there to accept again, so the money goes back.
     console.error('[ride-service] accept publish FAILED — hold kept', {
       rideId, riderId,
       error: error instanceof Error ? error.message : String(error),
     });
     await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    if (options.auto && wallet) await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
     return { ok: false, code: 'CONFIRM_FAILED' };
   }
+  await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
 
   const ride: ConfirmedRide = {
     rideId,
@@ -464,6 +502,8 @@ export async function cancelWhatsappRide(
   if (meta && meta.riderId !== riderId) return { ok: false };
 
   const ride = await rideClient.findById(rideId).catch(() => null);
+  // Over in the gateway's eyes now, before the ride service writes the row: auto-accept stays off it.
+  await markSearchEnded(deps.redisClient, rideId);
   await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
     eventType: 'RIDE_CANCELLED',
     rideId,

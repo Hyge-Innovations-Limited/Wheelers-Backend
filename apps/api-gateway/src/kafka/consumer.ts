@@ -85,7 +85,8 @@ import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { noteOfferSent } from '../rides/search-status';
-import { autoAcceptPriceChanged, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
+import { autoAcceptPriceChanged, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
+import { clearAcceptSent, markSearchEnded } from '../rides/booking-lock';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -434,6 +435,7 @@ function isOpenBid(status: string): boolean {
  * A push to a driver whose app is not connected; a connected app has the
  * socket message and needs no banner on top. Never throws.
  */
+const PUSH_DEDUPE_SECONDS = 10 * 60;
 async function pushDriverIfAway(
   deps: StartGatewayConsumerDeps,
   driverUserId: string,
@@ -441,6 +443,9 @@ async function pushDriverIfAway(
 ): Promise<void> {
   const connected = await Promise.resolve().then(() => deps.registry.isUserConnected(driverUserId)).catch(() => true);
   if (connected) return;
+  // Once per ride, driver and message: a redelivered event (or two events saying the same) is not a second banner.
+  const first = await deps.redisClient.setIfNotExists(`push:driver:${message.rideId}:${driverUserId}:${message.title}`, '1', PUSH_DEDUPE_SECONDS).catch(() => true);
+  if (!first) return;
   await deps.publisher.publishNotificationEvent({
     eventType: 'PUSH_SEND',
     notificationId: randomUUID(),
@@ -633,6 +638,8 @@ export async function handleRideEvent(
       waRider,
       hasNotifier: !!deps.whatsappNotifier,
     });
+    // Booked by auto-accept on this offer: then nobody is asked to choose.
+    let autoBooked = false;
     if (waRider && deps.whatsappNotifier) {
       const bid: WhatsappBid = {
         bidId: event.bidId,
@@ -702,7 +709,7 @@ export async function handleRideEvent(
         source: meta?.source ?? null,
       });
       // Auto-accept first: an offer it books is not announced as one to choose.
-      const autoBooked = meta ? (await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => ({ booked: false }))).booked : false;
+      if (meta) autoBooked = (await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => ({ booked: false }))).booked;
       if (phone && meta && !autoBooked) {
         const previousBatch = await getLastBatch(deps.redisClient, event.rideId).catch(() => []);
         const urgent = isUrgentOffer(previousBatch, bid);
@@ -734,6 +741,9 @@ export async function handleRideEvent(
         }
       }
     }
+    // An app rider's offer: auto-accept first too (the bid row is already there), so a
+    // booked offer is not pushed as "Open Wheelers to accept".
+    if (!autoBooked) autoBooked = (await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => ({ booked: false }))).booked;
     if (!waRiderByPointer) {
       // An app rider — or one we could not tell apart — always gets the
       // socket event; sending to a rider with no socket is a no-op.
@@ -752,7 +762,7 @@ export async function handleRideEvent(
       });
       // The socket only reaches an open app. With the app closed, the first
       // offer of a search is a push, so the rider knows to come and choose.
-      if (!waRider && !registry.hasUser(event.riderId) && await firstOfferPush(deps, event.rideId)) {
+      if (!autoBooked && !waRider && !registry.hasUser(event.riderId) && await firstOfferPush(deps, event.rideId)) {
         await tellAppRider(deps, event.riderId, {
           title: 'A driver made an offer',
           body: `${event.driverName} offered ₦${Math.round(event.counterOfferNgn).toLocaleString('en-NG')}. Open Wheelers to accept or see more offers.`,
@@ -761,8 +771,6 @@ export async function handleRideEvent(
         });
       }
     }
-    // Auto-accept on: this offer (or a better one on the table) may be booked now.
-    await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => undefined);
     return;
   }
 
@@ -827,6 +835,8 @@ export async function handleRideEvent(
       });
       return;
     }
+    // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
+    await markSearchEnded(deps.redisClient, event.rideId);
     // A bidder away from the app hears the search ended by push.
     for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
       await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId: event.rideId });
@@ -942,14 +952,19 @@ export async function handleRideEvent(
     const first = await deps.redisClient.setIfNotExists(`ride:${event.rideId}:busy:${event.driverId}`, '1', 120).catch(() => true);
     if (!stillChoosing || holdIsAnothers || !first) return;
     await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
-    // The search goes on: auto-accept may book another driver.
+    // Booked by auto-accept, not by a tap: nobody is told an accept was refused that they never made.
+    const byAutoAccept = (await autoBookedDriver(deps.redisClient, event.rideId)) === event.driverId;
+    // The search goes on: another accept may go out, and auto-accept may book another driver.
+    await clearAcceptSent(deps.redisClient, event.rideId);
     await clearAutoAcceptBooked(deps.redisClient, event.rideId);
-    void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
-      rideId: event.rideId,
-      driverId: event.driverId,
-      reason: 'driver_unavailable',
-      message: 'That driver is no longer available.',
-    });
+    if (!byAutoAccept) {
+      void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        reason: 'driver_unavailable',
+        message: 'That driver is no longer available.',
+      });
+    }
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId).catch(() => null);
     if (phone && deps.whatsappNotifier) {
       const chosen = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
@@ -961,11 +976,13 @@ export async function handleRideEvent(
       // offers page or the offers form, dropping the bid above has just said so,
       // with the offers left; with the form it says nothing.)
       const onPage = await isRidePageOpen(deps.redisClient, event.riderId);
-      if (chosen && !onPage && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
+      if (!byAutoAccept && chosen && !onPage && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
         const who = chosen?.driverName ? `*${chosen.driverName}*` : 'That driver';
         await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, [`${who} couldn't take this ride after all. Nothing was charged.`, '', 'Pick another offer.'].join('\n')).catch(() => {});
       }
     }
+    // The search goes on: the next driver that qualifies may be booked.
+    if (byAutoAccept) await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => undefined);
     return;
   }
 
@@ -1369,8 +1386,10 @@ export async function handleRideEvent(
     // locked for the re-match told nobody, asked the rider to pay a second
     // time, and could leave it locked for good.
     const driverBailed = event.cancelledBy === 'driver';
+    if (!driverBailed) await markSearchEnded(deps.redisClient, event.rideId);
     if (driverBailed) {
-      // The search goes on: auto-accept may book again.
+      // The search goes on: another accept may go out, and auto-accept may book again.
+      await clearAcceptSent(deps.redisClient, event.rideId);
       await clearAutoAcceptBooked(deps.redisClient, event.rideId);
       // The search starts again. The offers on the table were the old search's:
       // the driver who just left, and the ones who lost to them. "1 driver found"

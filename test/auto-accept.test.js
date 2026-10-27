@@ -73,7 +73,7 @@ async function searching(riderId, offerNgn = 7900, id = undefined) {
   return r;
 }
 async function bid(r, d, amountNgn, etaSeconds = 300) {
-  return driverBidClient.record({ rideId: r.id, driverId: d.id, driverUserId: d.userId, riderId: r.riderId, amountNgn, etaSeconds });
+  return driverBidClient.record({ rideId: r.id, driverId: d.id, driverUserId: d.userId, riderId: r.riderId, amountNgn, etaSeconds, distanceKm: 2 });
 }
 const counterOffer = (r, d, row, amountNgn, etaSeconds = 300) => ({
   eventType: 'RIDE_COUNTER_OFFER', rideId: r.id, bidId: row.id, riderId: r.riderId, driverId: d.id, driverUserId: d.userId,

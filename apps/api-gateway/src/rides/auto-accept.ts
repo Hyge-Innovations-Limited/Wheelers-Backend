@@ -2,7 +2,8 @@ import { driverBidClient, rideClient, walletClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { logActivity } from '../analytics/log-activity';
-import { getBids, getGroupSeat, getPendingAccept, getRideMeta, getRideState, isRidePageOpen } from '../whatsapp-flows/bid-state';
+import { getActiveRide, getBids, getGroupSeat, getPendingAccept, getRideMeta, getRideState, getSearchTimedOut, isRidePageOpen } from '../whatsapp-flows/bid-state';
+import { isSearchEnded } from './booking-lock';
 import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import { acceptOfferInApp } from './app-accept';
@@ -86,8 +87,14 @@ async function balanceOf(riderId: string): Promise<number> {
 
 type Search = { kind: 'whatsapp' | 'app'; riderId: string; offerNgn: number };
 
-/** The search, if it is still looking for a driver: whose, where it began, and the price offered now. */
+/**
+ * The search, if it is still looking for a driver: whose, where it began, and
+ * the price offered now. The ride row is written by the ride service a moment
+ * after a cancel or a timeout, so the gateway's own view must agree too: the
+ * search not ended here, and for WhatsApp the rider's live search, not timed out.
+ */
 async function openSearch(redis: RedisClient, rideId: string, expectRiderId?: string, offerHint?: number): Promise<Search | null> {
+  if (await isSearchEnded(redis, rideId)) return null;
   if (await getGroupSeat(redis, rideId).catch(() => null)) return null;
   const [meta, ride] = await Promise.all([
     getRideMeta(redis, rideId).catch(() => null),
@@ -97,16 +104,28 @@ async function openSearch(redis: RedisClient, rideId: string, expectRiderId?: st
   if (!riderId) return null;
   if (ride && ride.riderId !== riderId) return null;
   if (ride && ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') return null;
-  if (meta && meta.riderId === riderId) {
+  if (meta) {
+    if (meta.riderId !== riderId) return null;
     const state = await getRideState(redis, rideId).catch(() => null);
     if (state === 'confirmed' || state === 'in_progress') return null;
+    if ((await getActiveRide(redis, riderId).catch(() => null)) !== rideId) return null;
+    if ((await getSearchTimedOut(redis, riderId).catch(() => null))?.rideId === rideId) return null;
     return { kind: 'whatsapp', riderId, offerNgn: meta.offerNgn };
   }
-  if (ride) {
-    const offerNgn = offerHint ?? Number(ride.riderOfferNgn ?? ride.fareEstimateNgn ?? 0);
-    return offerNgn > 0 ? { kind: 'app', riderId, offerNgn } : null;
-  }
-  return null;
+  // A WhatsApp search whose state is gone (cancelled, timed out) is never booked as an app ride.
+  if (!ride || ride.channel === 'WHATSAPP') return null;
+  const offerNgn = offerHint ?? Number(ride.riderOfferNgn ?? ride.fareEstimateNgn ?? 0);
+  return offerNgn > 0 ? { kind: 'app', riderId, offerNgn } : null;
+}
+
+/** Is this the rider's own search (by its ride row, or its WhatsApp state)? */
+async function ownsSearch(redis: RedisClient, riderId: string, rideId: string): Promise<boolean> {
+  const [meta, ride] = await Promise.all([
+    getRideMeta(redis, rideId).catch(() => null),
+    rideClient.findById(rideId).catch(() => null),
+  ]);
+  if (ride) return ride.riderId === riderId;
+  return meta?.riderId === riderId;
 }
 
 /**
@@ -116,6 +135,8 @@ async function openSearch(redis: RedisClient, rideId: string, expectRiderId?: st
  * table that qualifies.
  */
 export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, rideId: string, on: boolean): Promise<AutoAcceptSwitch> {
+  // Only the rider whose search it is: nobody switches it for someone else's ride.
+  if (!(await ownsSearch(deps.redisClient, riderId, rideId))) return { ok: false, reason: 'not_searching', message: 'This search has ended.' };
   const record = (await readRecord(deps.redisClient, rideId)) ?? {};
   if (record.riderId && record.riderId !== riderId) return { ok: false, reason: 'not_searching', message: 'This search has ended.' };
   if (!on) {
@@ -127,6 +148,16 @@ export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, ri
   await writeRecord(deps.redisClient, rideId, { ...record, riderId, off: false });
   const { booked } = await tryAutoAccept(deps, rideId);
   return booked ? { ok: true, on: false, booked: true } : { ok: true, on: true };
+}
+
+/** Off for a search the rider is starting right now (ride:request with autoAccept: false): theirs by construction. */
+export async function autoAcceptOffAtStart(redis: RedisClient, rideId: string, riderId: string): Promise<void> {
+  await writeRecord(redis, rideId, { riderId, off: true });
+}
+
+/** The driver auto-accept booked on this ride, if it did (its booking was nobody's tap). */
+export async function autoBookedDriver(redis: RedisClient, rideId: string): Promise<string | null> {
+  return redis.get(bookedKey(rideId)).catch(() => null);
 }
 
 /** The search goes on after a booking fell through (the driver bailed, or was busy): auto-accept may book again. */
@@ -149,6 +180,8 @@ interface Candidate {
   key?: string;
   priceNgn: number;
   etaSeconds: number;
+  /** Driver→pickup km from the driver's position on the server; absent: the ETA is the app's own word. */
+  distanceKm?: number | null;
 }
 
 /** Offers on the table that may be booked: open, at or under the price, at most 10 minutes away. Cheapest, then nearest, first. */
@@ -162,14 +195,17 @@ async function candidatesFor(redis: RedisClient, search: Search, rideId: string,
       const row = bid.bidId ? rows.find((r) => r.id === bid.bidId) : undefined;
       const theirs = rows.filter((r) => r.driverId === bid.driverId);
       const open = row ? row.status === 'PENDING' : theirs.length === 0 || theirs.some((r) => r.status === 'PENDING');
-      return open ? [{ driverId: bid.driverId, driverUserId: bid.driverUserId, bidId: bid.bidId, key: offerKey(bid), priceNgn: bid.counterOfferNgn, etaSeconds: bid.etaSeconds }] : [];
+      return open ? [{ driverId: bid.driverId, driverUserId: bid.driverUserId, bidId: bid.bidId, key: offerKey(bid), priceNgn: bid.counterOfferNgn, etaSeconds: bid.etaSeconds, distanceKm: row?.distanceKm ?? bid.distanceKm ?? null }] : [];
     });
   } else {
     list = rows
       .filter((row) => row.status === 'PENDING')
-      .map((row) => ({ driverId: row.driverId, driverUserId: row.driverUserId, bidId: row.id, priceNgn: Number(row.amountNgn), etaSeconds: row.etaSeconds }));
+      .map((row) => ({ driverId: row.driverId, driverUserId: row.driverUserId, bidId: row.id, priceNgn: Number(row.amountNgn), etaSeconds: row.etaSeconds, distanceKm: row.distanceKm }));
   }
   return list
+    // The 10 minutes must be ours to vouch for: a bid whose ETA came only from the driver's app (no position on
+    // the server) is left for the rider to choose.
+    .filter((c) => c.distanceKm != null && Number.isFinite(c.distanceKm))
     .filter((c) => Number.isFinite(c.priceNgn) && c.priceNgn > 0 && c.priceNgn <= priceNgn && c.etaSeconds <= AUTO_ACCEPT_MAX_ETA_SECONDS)
     .sort((a, b) => a.priceNgn - b.priceNgn || a.etaSeconds - b.etaSeconds);
 }
@@ -179,7 +215,7 @@ type Attempt = 'booked' | 'stop' | 'next';
 async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, candidate: Candidate): Promise<Attempt> {
   const riderId = search.riderId;
   if (search.kind === 'whatsapp') {
-    const result = await confirmRideWithOffer(deps, riderId, rideId, candidate.key!, { method: 'NGN' });
+    const result = await confirmRideWithOffer(deps, riderId, rideId, candidate.key!, { method: 'NGN', auto: true });
     if (result.ok) {
       logActivity({ userId: riderId, eventType: 'ride_offer_accepted', source: 'auto_accept', rideId, metadata: { fareNgn: result.ride.fareNgn, driverId: result.ride.driverId } });
       // "Your ride is booked" in the chat: now when the rider is not on the ride page, else once they leave it.
@@ -194,8 +230,9 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
       }
       return 'booked';
     }
-    // The wallet no longer covers it, the search is gone, or a booking is already going through: stop here.
-    if (result.code === 'WALLET_SHORT' || result.code === 'RIDE_GONE' || result.code === 'ALREADY_CONFIRMING') return 'stop';
+    // The wallet no longer covers it, the search is gone, a booking is already going through, or the
+    // money or the message could not be handled: stop here (a failed acceptance has let go of its hold).
+    if (['WALLET_SHORT', 'RIDE_GONE', 'ALREADY_CONFIRMING', 'CONFIRM_FAILED', 'HOLD_FAILED'].includes(result.code)) return 'stop';
     return 'next';
   }
   const reply = await acceptOfferInApp({ publisher: deps.publisher, redis: deps.redisClient }, riderId, {
@@ -206,7 +243,8 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
     paymentMethod: 'WALLET',
     agreedFareNgn: candidate.priceNgn,
   }).catch(() => null);
-  if (!reply) return 'next';
+  // Not sent (it lets go of its claim and its hold when it throws): stop.
+  if (!reply) return 'stop';
   if (reply.type === 'ride:accept_offer:accepted') {
     logActivity({ userId: riderId, eventType: 'ride_offer_accepted', source: 'auto_accept', rideId, metadata: { fareNgn: candidate.priceNgn, driverId: candidate.driverId } });
     return 'booked';
@@ -251,7 +289,7 @@ export async function tryAutoAccept(deps: AutoAcceptDeps, rideId: string): Promi
         tried.add(candidate.driverId);
         // Switched off meanwhile: stop.
         if ((await readRecord(deps.redisClient, rideId))?.off) return { booked: false };
-        const outcome = await bookOne(deps, search, rideId, candidate).catch((): Attempt => 'next');
+        const outcome = await bookOne(deps, search, rideId, candidate).catch((): Attempt => 'stop');
         if (outcome === 'booked') {
           await deps.redisClient.set(bookedKey(rideId), candidate.driverId, RECORD_TTL_SECONDS).catch(() => undefined);
           await Promise.resolve()

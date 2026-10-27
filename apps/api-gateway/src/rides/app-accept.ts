@@ -3,6 +3,7 @@ import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schem
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { HandlerResponse } from '../websocket/handlers/types';
+import { acceptSentFor, noteAcceptSent, releaseBookingLock, takeBookingLock } from './booking-lock';
 
 export interface AppAcceptInput {
   rideId: string;
@@ -30,6 +31,27 @@ export async function acceptOfferInApp(
   riderId: string,
   input: AppAcceptInput,
   timestamp: string = new Date().toISOString(),
+): Promise<HandlerResponse> {
+  const { redis } = deps;
+  // One booking at a time on the ride, whichever door it came through (rides/booking-lock.ts).
+  if (redis && !(await takeBookingLock(redis, input.rideId))) {
+    return {
+      type: 'ride:accept_offer:rejected',
+      payload: { rideId: input.rideId, driverId: input.driverId, reason: 'already_matched', message: 'Your ride is being booked — one moment.' },
+    };
+  }
+  try {
+    return await acceptOnce(deps, riderId, input, timestamp);
+  } finally {
+    if (redis) await releaseBookingLock(redis, input.rideId);
+  }
+}
+
+async function acceptOnce(
+  deps: { publisher: GatewayPublisher; redis?: RedisClient },
+  riderId: string,
+  input: AppAcceptInput,
+  timestamp: string,
 ): Promise<HandlerResponse> {
   const { publisher, redis } = deps;
   const { rideId, driverId, driverUserId, bidId, paymentMethod } = input;
@@ -123,13 +145,25 @@ export async function acceptOfferInApp(
     if (open) agreedFareNgn = Number(open.amountNgn);
   }
 
+  // ── Already accepted: for this driver, it is done (a repeat publishes
+  // nothing); for another, the ride is being booked.
+  const sent = redis ? await acceptSentFor(redis, rideId) : null;
+  if (sent === driverUserId) {
+    return { type: 'ride:accept_offer:accepted', payload: { rideId, driverId, agreedFareNgn } };
+  }
+  if (sent) {
+    return {
+      type: 'ride:accept_offer:rejected',
+      payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },
+    };
+  }
+
   // ── One booking at a time on a ride: while the rider's money is held for
-  // one driver (that accept still going through), a second accept would
-  // book two drivers. The app fetches where the booking stands instead.
+  // another driver, a second accept would book two drivers. The app fetches
+  // where the booking stands instead. The same driver's hold is adopted: a
+  // retry after an accept that did not go out.
   const heldFor = await walletClient.rideHoldOf(rideId).catch(() => null);
-  // The same driver too: auto-accept (or a first tap) is already booking them,
-  // and a second accept would assign them twice.
-  if (heldFor?.status === 'ACTIVE' && heldFor.driverUserId) {
+  if (heldFor?.status === 'ACTIVE' && heldFor.driverUserId && heldFor.driverUserId !== driverUserId) {
     return {
       type: 'ride:accept_offer:rejected',
       payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },
@@ -181,10 +215,21 @@ export async function acceptOfferInApp(
         driverUserId,
         amountNgn: agreedFareNgn,
       });
-      // A hold left by an earlier attempt on this ride may carry a different fare.
-      if (!hold.applied && hold.holdAmountNgn !== agreedFareNgn) {
-        const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: agreedFareNgn });
-        if (!adjusted) throw new Error('hold could not be adjusted');
+      if (!hold.applied) {
+        // A hold already there must be this driver's: another driver's is another booking.
+        const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
+        if (existing?.status === 'ACTIVE' && existing.driverUserId && existing.driverUserId !== driverUserId) {
+          await releaseClaim();
+          return {
+            type: 'ride:accept_offer:rejected',
+            payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },
+          };
+        }
+        // A hold left by an earlier attempt on this ride may carry a different fare.
+        if (hold.holdAmountNgn !== agreedFareNgn) {
+          const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: agreedFareNgn });
+          if (!adjusted) throw new Error('hold could not be adjusted');
+        }
       }
       if (hold.applied) {
         // The lock used to be wallet-service's to announce; now that the
@@ -229,6 +274,7 @@ export async function acceptOfferInApp(
     if (paymentMethod !== 'CASH') await walletClient.cancelRideHold(rideId, driverUserId).catch(() => undefined);
     throw error;
   }
+  if (redis) await noteAcceptSent(redis, rideId, driverUserId);
 
   return {
     type: 'ride:accept_offer:accepted',

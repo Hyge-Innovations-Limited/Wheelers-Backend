@@ -33,7 +33,8 @@ import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
-import { switchAutoAccept } from '../../rides/auto-accept';
+import { autoAcceptOffAtStart, switchAutoAccept } from '../../rides/auto-accept';
+import { markSearchEnded } from '../../rides/booking-lock';
 import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
@@ -396,7 +397,7 @@ export async function handleRideMessage(
     // Auto-accept is on for every search; an app that sends autoAccept: false switches it off for this one.
     let autoAccept = true;
     if (getBoolean(payload, 'autoAccept') === false && redis) {
-      await switchAutoAccept({ redisClient: redis, publisher }, auth.userId, rideId, false).catch(() => undefined);
+      await autoAcceptOffAtStart(redis, rideId, auth.userId);
       autoAccept = false;
     }
 
@@ -632,6 +633,9 @@ export async function handleRideMessage(
       if (!isParty) throw new Error('This ride is not yours to cancel.');
     }
 
+    // A rider ending their search: over in the gateway's eyes now, before the ride service writes the row.
+    if (cancelledBy === 'rider' && redis) await markSearchEnded(redis, rideId);
+
     const event = RideCancelledEvent.parse({
       eventType: 'RIDE_CANCELLED',
       rideId,
@@ -847,11 +851,14 @@ export async function handleRideMessage(
     // its screen, which can be another ride's (or empty, which used to refuse it).
     const rejectRideId = requireString(payload, 'rideId');
     const rejectedRide = await rideClient.findById(rejectRideId).catch(() => null);
+    // The driver is whoever is signed in: a driver can only withdraw their own bid.
+    const rejectingDriverId = auth.driverId ?? (await driverClient.findByUserId(auth.userId).catch(() => null))?.id;
+    if (!rejectingDriverId) throw new Error('Only a driver can do that.');
     const event = RideDriverRejectedEvent.parse({
       eventType: 'RIDE_DRIVER_REJECTED',
       rideId: rejectRideId,
       riderId: rejectedRide?.riderId ?? requireString(payload, 'riderId'),
-      driverId: getString(payload, 'driverId') ?? auth.driverId ?? auth.userId,
+      driverId: rejectingDriverId,
       reason: getString(payload, 'reason') === 'manual_reject' ? 'manual_reject' : 'timeout',
       timestamp,
     });
