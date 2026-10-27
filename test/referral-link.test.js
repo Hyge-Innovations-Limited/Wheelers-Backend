@@ -87,7 +87,7 @@ test('an app.wheelersng.com/r/CODE link, shared for a day, opens the chat with t
       assert.ok(location.startsWith('https://wa.me/'), `${ua}: ${location}`);
       assert.equal(referralCodeIn(decodeURIComponent(location.split('text=')[1])), 'TIMI');
     }
-    assert.ok((await at('', 'ti%20mi!')).headers.get('location').includes(encodeURIComponent('My referral code is TIMI')), 'the code tidied');
+    assert.ok((await at('', 'ti%20mi!')).headers.get('location').endsWith('?text=REF-TIMI'), 'the code tidied');
   } finally {
     server.close();
   }
@@ -207,7 +207,7 @@ test('QUICK ACTIONS · a rider with no code is offered to create one; creating i
   assert.equal(done.screen, 'NOTE');
   assert.equal(done.data.headline, `Your code is ${code}`);
   assert.deepEqual(saved, [], 'no chat messages: the code and the link are on the screen');
-  assert.match(done.data.note, /Your link: app\.wheelersng\.com\/r\//, 'the short link, not the long wa.me one');
+  assert.match(done.data.note, /Your link: wa\.me\/\d+\?text=REF-/, 'the bot\'s WhatsApp link, short and clean');
   assert.equal(await referralClient.findOwnCode(rider.id), code);
 
   const after = await tap('menu_choice', { choice: 'nothing' });
@@ -271,6 +271,10 @@ test('QUICK ACTIONS · the chat gets a line to read and a message to forward, wh
 
   assert.match(referralShareMessage('TIMI', null), /say: My referral code is TIMI/);
   assert.equal(referralCodeIn('My referral code is TIMI'), 'TIMI', 'the words without a link are read too');
+  assert.equal(referralCodeIn('REF-TIMI'), 'TIMI', 'what a referral link types now');
+  assert.equal(referralCodeIn('ref-timi '), 'TIMI');
+  assert.equal(referralCodeIn('Hi Wheelers. My referral code is TIMI'), 'TIMI', 'links shared before still work');
+  assert.equal(referralCodeIn('I am at REF-TIMI street'), null, 'only on its own');
 });
 
 test('QUICK ACTIONS · one REFERRAL screen does both: its button sends the action the server chose, and a friend\'s code still works', async () => {

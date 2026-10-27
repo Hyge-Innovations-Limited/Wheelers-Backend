@@ -11,6 +11,8 @@ const GIVEN = 'WHL[A-Z0-9]{6}';
 const ANY = '[A-Z0-9]{4,12}';
 const SAID = new RegExp(`\\bmy\\s+referral\\s+code\\s+is\\b[^A-Za-z0-9]*(${ANY})\\b|\\breferral\\s+code\\b[^A-Za-z0-9]*(?:is\\b[^A-Za-z0-9]*)?(${GIVEN})\\b`, 'i');
 const ALONE = new RegExp(`^\\s*(${GIVEN})\\s*$`, 'i');
+/** What a referral link types in the chat: REF-CODE, short enough to read in the link itself. */
+const REF = new RegExp(`^\\s*REF-(${ANY})\\s*$`, 'i');
 
 /**
  * The referral code in a message, or null. It is read from "my referral code
@@ -21,7 +23,7 @@ const ALONE = new RegExp(`^\\s*(${GIVEN})\\s*$`, 'i');
  */
 export function referralCodeIn(text: string): string | null {
   const said = SAID.exec(text);
-  const found = said ? (said[1] ?? said[2]) : ALONE.exec(text)?.[1];
+  const found = said ? (said[1] ?? said[2]) : (REF.exec(text)?.[1] ?? ALONE.exec(text)?.[1]);
   return found ? found.toUpperCase() : null;
 }
 
@@ -36,10 +38,19 @@ const WHEELERS_NUMBER = '2348141979106';
  * the bot share: a chat with the Wheelers bot with "My referral code is CODE"
  * already typed. The bot adds the code when the friend sends it.
  */
+/**
+ * The referral link: the bot's WhatsApp chat with REF-CODE typed, e.g.
+ * wa.me/2348141979106?text=REF-TIMI. Nothing in it needs encoding, so it reads
+ * clean wherever it is shown. (Links shared before, with "My referral code is
+ * …", are still read.)
+ */
 export function referralWhatsappLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] || WHEELERS_NUMBER): string {
   const digits = botNumber.replace(/\D/g, '') || WHEELERS_NUMBER;
-  return `https://wa.me/${digits}?text=${encodeURIComponent(referralChatMessage(code))}`;
+  return `https://wa.me/${digits}?text=REF-${code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
 }
+
+/** The link as a person reads it: no https://. */
+export const referralLinkText = (code: string): string => referralWhatsappLink(code).replace(/^https?:\/\//, '');
 
 export const referralShareLink = (code: string, botNumber?: string): string => referralWhatsappLink(code, botNumber);
 
@@ -53,19 +64,8 @@ export function referralShareMessage(code: string, link: string | null = referra
     : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
 }
 
-/**
- * The short link to show and to put in a QR: app.wheelersng.com/r/CODE, which
- * opens the chat with the bot and the code typed (GET /r/:code), for anyone.
- */
-export function referralShortLink(code: string, base = process.env['APP_BASE_URL'] || 'https://app.wheelersng.com'): string {
-  return `${base.trim().replace(/\/+$/, '')}/r/${encodeURIComponent(code)}`;
-}
-
-/** The short link as a person reads it: no https://. */
-export const referralShortLinkText = (code: string): string => referralShortLink(code).replace(/^https?:\/\//, '');
-
-/** WhatsApp's own share: pick a chat, and the forward message (with the short link) is typed there. */
-export const referralShareUrl = (code: string): string => `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code, referralShortLink(code)))}`;
+/** WhatsApp's own share: pick a chat, and the forward message is typed there. */
+export const referralShareUrl = (code: string): string => `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code))}`;
 
 /** Where an app.wheelersng.com/r/CODE link (shared for a day) sends the friend: the same chat with the bot, on every phone. */
 export const referralLinkTarget = (code: string): string => referralWhatsappLink(code);

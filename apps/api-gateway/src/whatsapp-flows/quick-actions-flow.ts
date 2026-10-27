@@ -1,7 +1,7 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { referralClient, rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import QRCode from 'qrcode';
-import { referralShareUrl, referralShortLink, referralShortLinkText } from '../whatsapp/referral';
+import { referralLinkText, referralShareLink, referralShareUrl } from '../whatsapp/referral';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
@@ -532,11 +532,11 @@ async function shareMyCode(userId: string, code: string, _deps: QuickActionsFlow
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
     rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  // The short link (app.wheelersng.com/r/CODE opens the bot with the code typed), never the long wa.me one.
-  const shown = doneScreen(`Your code is ${code}`, `Your link: ${referralShortLinkText(code)}${stats ? `\n\n${stats}` : ''}`, false);
+  // The bot's WhatsApp link with REF-CODE typed: short and clean (wa.me/234…?text=REF-TIMI).
+  const shown = doneScreen(`Your code is ${code}`, `Your link: ${referralLinkText(code)}${stats ? `\n\n${stats}` : ''}`, false);
   // The QR of the link (a friend scans it) and Share (WhatsApp's own, with the forward message typed).
   if (!shareInForm()) return shown;
-  const qr = await referralQrPng(referralShortLink(code));
+  const qr = await referralQrPng(referralShareLink(code));
   if (!qr) return shown;
   return { screen: 'NOTE', data: { headline: shown.data['headline'], note: shown.data['note'], has_share: true, qr_image: qr, share_url: referralShareUrl(code) } };
 }
