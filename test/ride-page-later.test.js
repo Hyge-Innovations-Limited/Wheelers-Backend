@@ -329,11 +329,21 @@ const started = (riderId, extra = {}) => ({
   paymentMethod: 'WALLET', timestamp: new Date().toISOString(), ...extra,
 });
 
+/** As the scheduler sends it: the ride for later's row is DISPATCHED for this search (a start no longer current is never set up). */
+async function dispatchedFor(event) {
+  const row = await prisma.scheduledRide.create({ data: {
+    riderId: event.riderId, scheduledFor: new Date(Date.now() + 5 * 60_000), status: 'DISPATCHED', requestedRideId: event.rideId, channel: 'WHATSAPP',
+    pickupLat: YABA.lat, pickupLng: YABA.lng, pickupAddress: YABA.address, destLat: VI.lat, destLng: VI.lng, destAddress: VI.address,
+  } });
+  made.scheduled.push(row.id);
+  return event;
+}
+
 test('a ride booked on the page starts as a WhatsApp search: the page shows it, the chat gets "Your bid is in" once, no app push', async () => {
   const redis = memoryRedis();
   const { deps, pushes, said } = consumerDeps(redis);
   const rider = await makeRider('+2348031112222');
-  const event = started(rider);
+  const event = await dispatchedFor(started(rider));
 
   await handleRideEvent(event, deps, new Map());
   assert.equal(await bidState.getActiveRide(redis, rider), event.rideId);
@@ -368,7 +378,7 @@ test('on the ride page when it starts: the chat waits for them to leave', async 
   const { deps, said } = consumerDeps(redis);
   const rider = await makeRider();
   await bidState.markRidePageSeen(redis, rider);
-  const event = started(rider);
+  const event = await dispatchedFor(started(rider));
   await handleRideEvent(event, deps, new Map());
   assert.equal(said.length, 0);
   const waiting = await catchup.pendingCatchup(redis, rider);

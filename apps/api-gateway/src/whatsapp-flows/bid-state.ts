@@ -281,6 +281,10 @@ const pageCancelKey = (rideId: string) => `whatsapp:cancel:${rideId}:on_page`;
 export async function markCancelledOnPage(redis: RedisClient, rideId: string): Promise<void> {
   await redis.set(pageCancelKey(rideId), '1', 15 * 60);
 }
+/** The cancel did not go out after all: the ride is not over, and the chat may speak of it again. */
+export async function unmarkCancelledOnPage(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(pageCancelKey(rideId));
+}
 export async function wasCancelledOnPage(redis: RedisClient, rideId: string): Promise<boolean> {
   return (await redis.get(pageCancelKey(rideId)).catch(() => null)) !== null;
 }
@@ -318,10 +322,34 @@ export async function setPhoneLookup(
  */
 export const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const lastInboundKey = (userId: string) => `whatsapp:user:${userId}:last_in`;
+/**
+ * The time is kept long after the window closes: while it is there it alone says
+ * whether the window is open (the phone lookup's TTL is renewed by other things).
+ */
+const LAST_INBOUND_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** A start template went out and the rider has not answered since: chat bubbles wait for the page. */
+const chatWaitKey = (userId: string) => `whatsapp:user:${userId}:chat_wait`;
+const CHAT_WAIT_TTL_SECONDS = 6 * 60 * 60;
 
-/** The rider just wrote to us (any message): their window runs 24 h from now. */
+/** The rider just wrote to us (any message, a template's button included): their window runs 24 h from now. */
 export async function markWhatsappInbound(redis: RedisClient, userId: string, at = Date.now()): Promise<void> {
-  await redis.set(lastInboundKey(userId), new Date(at).toISOString(), Math.ceil(WHATSAPP_WINDOW_MS / 1000));
+  await redis.set(lastInboundKey(userId), new Date(at).toISOString(), LAST_INBOUND_TTL_SECONDS);
+  // They answered: the chat can speak to them again.
+  await redis.del(chatWaitKey(userId)).catch(() => undefined);
+}
+
+/**
+ * A ride for later's start went out as the template (outside the rider's
+ * window): until they answer or tap it, free-form messages would not reach
+ * them, so everything the chat would say waits for the page (as if they were
+ * on it; page-catchup says what is still true once they answer).
+ */
+export async function holdChatUntilAnswered(redis: RedisClient, userId: string): Promise<void> {
+  await redis.set(chatWaitKey(userId), String(Date.now()), CHAT_WAIT_TTL_SECONDS);
+}
+
+export async function isChatHeldUntilAnswered(redis: RedisClient, userId: string): Promise<boolean> {
+  return (await redis.get(chatWaitKey(userId)).catch(() => null)) !== null;
 }
 
 /**
@@ -1053,7 +1081,45 @@ export async function markRidePageSeen(redis: RedisClient, userId: string): Prom
  * stays quiet. The moment they leave, chat notifications resume on their own.
  */
 export async function isRidePageOpen(redis: RedisClient, userId: string): Promise<boolean> {
+  if ((await redis.get(ridePageSeenKey(userId)).catch(() => null)) !== null) return true;
+  // A start template is waiting for their answer: the chat cannot reach them, so it waits as for the page.
+  return isChatHeldUntilAnswered(redis, userId);
+}
+
+/** Really on the page now (not only the chat waiting for an answer). */
+export async function isRidePageSeen(redis: RedisClient, userId: string): Promise<boolean> {
   return (await redis.get(ridePageSeenKey(userId)).catch(() => null)) !== null;
+}
+
+// ── One line for Home on the ride page ─────────────────────────────────────
+
+/** Something the rider must hear that the chat could not say (its window closed): shown on Home until seen. */
+const pageNoticeKey = (userId: string) => `ride_page:notice:${userId}`;
+const PAGE_NOTICE_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+export interface PageNotice { id: string; text: string }
+
+export async function setPageNotice(redis: RedisClient, userId: string, notice: PageNotice): Promise<void> {
+  await redis.set(pageNoticeKey(userId), JSON.stringify(notice), PAGE_NOTICE_TTL_SECONDS);
+}
+
+export async function getPageNotice(redis: RedisClient, userId: string): Promise<PageNotice | null> {
+  const raw = await redis.get(pageNoticeKey(userId)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PageNotice;
+    return parsed && typeof parsed.id === 'string' && typeof parsed.text === 'string' ? { id: parsed.id, text: parsed.text } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Seen on the page: gone (only the notice with this id: a newer one stays). */
+export async function clearPageNotice(redis: RedisClient, userId: string, id: string): Promise<boolean> {
+  const notice = await getPageNotice(redis, userId);
+  if (!notice || notice.id !== id) return false;
+  await redis.del(pageNoticeKey(userId)).catch(() => undefined);
+  return true;
 }
 
 // ── Not getting anywhere ───────────────────────────────────────────────────
@@ -1272,4 +1338,26 @@ export async function getFlowPendingAccept(
 
 export async function clearFlowPendingAccept(redis: RedisClient, userId: string): Promise<void> {
   await redis.del(flowPendingAcceptKey(userId));
+}
+
+// ── A booked trip's road, once its route was changed ───────────────────────
+
+/** The road a booked trip takes after a route change (the last route saved is the one searched). */
+const tripLineKey = (rideId: string) => `ride:${rideId}:trip_line`;
+const TRIP_LINE_TTL_SECONDS = 12 * 60 * 60;
+
+export async function storeTripLine(redis: RedisClient, rideId: string, line: Array<{ lat: number; lng: number }>): Promise<void> {
+  const points = line.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number').map((p) => ({ lat: p.lat, lng: p.lng }));
+  if (points.length) await redis.set(tripLineKey(rideId), JSON.stringify(points), TRIP_LINE_TTL_SECONDS);
+}
+
+export async function getTripLine(redis: RedisClient, rideId: string): Promise<Array<{ lat: number; lng: number }> | null> {
+  const raw = await redis.get(tripLineKey(rideId)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) && parsed.length ? (parsed as Array<{ lat: number; lng: number }>) : null;
+  } catch {
+    return null;
+  }
 }

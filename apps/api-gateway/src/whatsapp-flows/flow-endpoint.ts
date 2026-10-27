@@ -53,6 +53,7 @@ import {
   buildNotifyExitData,
 } from './flow-screens';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
+import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
 
 export interface WhatsappFlowEndpointDeps {
   redisClient: RedisClient;
@@ -314,6 +315,8 @@ export async function handleFlowAction(
       // driver's price — publish it so every candidate driver sees the new
       // number, and keep the rider on the offers page.
       if (!isNaN(adjustAmount) && adjustAmount >= 100 && adjustAmount !== meta.offerNgn) {
+        // The old form never asks about auto-booking: a yes given elsewhere does not carry over.
+        await autoAcceptOffForChatPrice(deps.redisClient, sessionRideId).catch(() => undefined);
         meta.offerNgn = adjustAmount;
         await deps.redisClient.set(
           `whatsapp:ride:${sessionRideId}:meta`,

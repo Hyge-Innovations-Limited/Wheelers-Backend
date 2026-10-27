@@ -16,6 +16,7 @@ import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
+import { autoAcceptStatus } from "../rides/auto-accept";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -24,6 +25,8 @@ interface RideRouteDeps {
 
 interface RideHistoryRouteDeps {
   jwtSecret: string;
+  /** Auto-accept's record for an open search (GET /rides/active). Absent: reported off. */
+  redisClient?: RedisClient;
 }
 
 interface ScheduledRideRouteDeps {
@@ -634,8 +637,14 @@ export async function handleActiveRideRoute(
     // the app finds the drivers who answered still there. It closes 30 minutes
     // after the rider last set a price (ride-service restarts the clock then).
     const searching = ride.status === "REQUESTED" || ride.status === "MATCHING";
+    // Whether the rider said yes to auto-booking for this search (and at what price), so a restored search shows it.
+    const autoAccept = searching && deps.redisClient
+      ? await autoAcceptStatus(deps.redisClient, active.id).catch(() => ({ on: false, priceNgn: null }))
+      : { on: false, priceNgn: null };
     const search = searching
       ? {
+          autoAccept: autoAccept.on,
+          autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
           offers: (await rideClient.pendingBids(active.id).catch(() => [])).map((bid) => ({
             bidId: bid.id,

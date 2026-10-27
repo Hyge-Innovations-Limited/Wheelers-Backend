@@ -6,8 +6,8 @@ import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
 import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
 import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { logActivity } from '../analytics/log-activity';
-import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept, isRidePageOpen, whatsappWindowEnd } from '../whatsapp-flows/bid-state';
-import { scheduledStartTemplate, sendScheduledStartTemplate } from './scheduled-template';
+import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept, isRidePageOpen, whatsappWindowEnd, holdChatUntilAnswered } from '../whatsapp-flows/bid-state';
+import { ChatUnreachableError, sendScheduledStartTemplate } from './scheduled-template';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
@@ -277,15 +277,19 @@ export async function sayRidePageEventInChat(deps: MetaWhatsappRouteDeps, event:
     if (!event.phone) return;
 
     if (event.kind === 'search_started') {
-      // A ride for later starting outside the rider's 24 h window: only the approved template reaches them.
-      if (event.scheduled && scheduledStartTemplate() && !(await whatsappWindowEnd(deps.redisClient, event.userId).catch(() => null))) {
-        if (await sendScheduledStartTemplate(deps, event.userId, event.phone, event)) {
-          await appendWhatsappConversation(deps.redisClient, event.phone, [
-            { role: 'user', content: `[a ride scheduled on the offers page started its search: ₦${event.offerNgn.toLocaleString()}]` },
-            { role: 'assistant', content: '[your ride for later is looking for a driver — sent the template with See driver offers]' },
-          ]).catch(() => undefined);
-          return;
-        }
+      // A ride for later starting outside the rider's 24 h window: only the approved template reaches
+      // them there. Never a plain message (it would not arrive): no template sent, the caller is told.
+      if (event.scheduled && !(await whatsappWindowEnd(deps.redisClient, event.userId).catch(() => null))) {
+        if (!(await sendScheduledStartTemplate(deps, event.userId, event.phone, event))) throw new ChatUnreachableError();
+        // Until they answer or tap it, plain messages fail: the first offer adds no bubble, and what the
+        // chat would say about this ride waits for the page (said once they answer, if still true).
+        await markOffersMessageSent(deps.redisClient, event.rideId).catch(() => undefined);
+        await holdChatUntilAnswered(deps.redisClient, event.userId).catch(() => undefined);
+        await appendWhatsappConversation(deps.redisClient, event.phone, [
+          { role: 'user', content: `[a ride scheduled on the offers page started its search: ₦${event.offerNgn.toLocaleString()}]` },
+          { role: 'assistant', content: '[your ride for later is looking for a driver — sent the template with See driver offers]' },
+        ]).catch(() => undefined);
+        return;
       }
       const text = await sendSearchStarted(deps, { id: event.userId }, event.phone, event);
       await appendWhatsappConversation(deps.redisClient, event.phone, [

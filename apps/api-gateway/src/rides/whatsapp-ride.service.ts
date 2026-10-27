@@ -27,7 +27,7 @@ import {
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
 import { startSearchClock } from './search-status';
-import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -518,15 +518,21 @@ export async function cancelWhatsappRide(
   const ride = await rideClient.findById(rideId).catch(() => null);
   // Over in the gateway's eyes now, before the ride service writes the row: auto-accept stays off it.
   await markSearchEnded(deps.redisClient, rideId);
-  await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
-    eventType: 'RIDE_CANCELLED',
-    rideId,
-    riderId,
-    driverId: ride?.driverId ?? undefined,
-    cancelledBy: 'rider',
-    reason,
-    timestamp: new Date().toISOString(),
-  }));
+  try {
+    await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
+      eventType: 'RIDE_CANCELLED',
+      rideId,
+      riderId,
+      driverId: ride?.driverId ?? undefined,
+      cancelledBy: 'rider',
+      reason,
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (error) {
+    // Not cancelled: the search goes on, and may still be booked.
+    await clearSearchEnded(deps.redisClient, rideId);
+    throw error;
+  }
   await clearActiveRide(deps.redisClient, riderId);
   await cleanupRideKeys(deps.redisClient, rideId);
   await clearPendingAccept(deps.redisClient, riderId);

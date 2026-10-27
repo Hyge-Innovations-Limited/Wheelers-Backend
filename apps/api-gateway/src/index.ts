@@ -219,6 +219,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
+import { getSafePathForLog } from "./http/log-path";
 import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, sayRidePageEventInChat, createWhatsappDepositFinisher, createQuickActionsChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
@@ -383,19 +384,6 @@ function getHeaderValue(req: IncomingMessage, name: string): string | null {
 }
 
 
-function getSafePathForLog(url: URL): string {
-  if (url.searchParams.size === 0) {
-    return url.pathname;
-  }
-
-  const queryKeys = Array.from(url.searchParams.keys())
-    .filter((key) => !/token|secret|password|authorization|otp|code/i.test(key))
-    .sort();
-
-  return queryKeys.length > 0
-    ? `${url.pathname}?${queryKeys.map((key) => `${key}=<redacted>`).join("&")}`
-    : url.pathname;
-}
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
@@ -2226,7 +2214,7 @@ async function bootstrap(): Promise<void> {
         sendMethodNotAllowed(res);
         return;
       }
-      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET });
+      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient });
       return;
     }
 

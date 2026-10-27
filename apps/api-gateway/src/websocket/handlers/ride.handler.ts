@@ -34,7 +34,8 @@ import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
-import { markSearchEnded } from '../../rides/booking-lock';
+import { forgetTripRouteQuote, quoteTripRoute } from '../../rides/trip-route-quote';
+import { clearSearchEnded, markSearchEnded } from '../../rides/booking-lock';
 import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
@@ -398,7 +399,8 @@ export async function handleRideMessage(
     // that sends false, or nothing (an older app), never has a driver booked for it.
     let autoAccept = false;
     if (getBoolean(payload, 'autoAccept') === true && redis) {
-      await autoAcceptOnAtStart(redis, rideId, auth.userId);
+      // The yes is for this price: nothing is booked above it.
+      await autoAcceptOnAtStart(redis, rideId, auth.userId, riderOfferNgn);
       autoAccept = true;
     }
 
@@ -442,13 +444,15 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:auto_accept') {
-    // The rider's switch for this search: on is their yes, off keeps it off.
+    // The rider's switch for this search: on is their yes (at priceNgn, the price they
+    // were asked about; absent: the search's price now), off keeps it off.
     const rideId = requireString(payload, 'rideId');
     const on = getBoolean(payload, 'on') === true;
+    const priceNgn = getNumber(payload, 'priceNgn');
     if (!redis) {
       return { type: 'ride:auto_accept:rejected', payload: { rideId, reason: 'not_searching', message: 'Auto-accept is not available right now.' } };
     }
-    const result = await switchAutoAccept({ redisClient: redis, publisher }, auth.userId, rideId, on);
+    const result = await switchAutoAccept({ redisClient: redis, publisher }, auth.userId, rideId, on, priceNgn);
     if (result.ok) {
       return { type: 'ride:auto_accept:done', payload: { rideId, on: result.on, ...(result.booked ? { reason: 'booked' } : {}) } };
     }
@@ -549,6 +553,20 @@ export async function handleRideMessage(
     };
   }
 
+  if (type === 'ride:route:quote') {
+    // What a route change would cost, before it is made (nothing moves): the
+    // trip's new price and how much more the wallet would hold for it.
+    const rideId = requireString(payload, 'rideId');
+    const destination = parseLatLng(payload, 'destination');
+    const stops = parseStopList(payload, 'stops');
+    assertInServiceArea([destination, ...stops]);
+    if (!redis) throw new Error('Route prices are not available right now.');
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+    const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
+    return { type: 'ride:route:quote:result', payload: { rideId, fareNgn: quote.fareNgn, extraNgn: quote.extraNgn } };
+  }
+
   if (type === 'ride:route:update') {
     const riderId = getString(payload, 'riderId') ?? auth.userId;
     const origin = getRecord(payload, 'origin') ? parseLatLng(payload, 'origin') : undefined;
@@ -556,13 +574,31 @@ export async function handleRideMessage(
     const stops = parseStopList(payload, 'stops');
     // A new destination or stop mid-trip stays in Lagos too; where the car is now does not matter.
     assertInServiceArea([destination, ...stops]);
-    const plannedRoute = origin
+    // The price the rider was shown for this route (ride:route:quote): the change goes ahead only
+    // at that price, and the wallet's hold moves to exactly it. Absent (an older app): as before.
+    const acceptedFareNgn = getNumber(payload, 'acceptedFareNgn');
+    let quotedRoute: Awaited<ReturnType<typeof quoteTripRoute>>['planned'] | null = null;
+    if (acceptedFareNgn !== undefined && !auth.driverId) {
+      const rideId = requireString(payload, 'rideId');
+      if (!redis) throw new Error('Route changes are not available right now.');
+      const ride = await rideClient.findById(rideId).catch(() => null);
+      if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+      const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
+      if (Math.round(acceptedFareNgn) !== quote.fareNgn) {
+        return {
+          type: 'ride:route:update:rejected',
+          payload: { rideId, reason: 'PRICE_CHANGED', fareNgn: quote.fareNgn, extraNgn: quote.extraNgn, message: `The price is now ₦${quote.fareNgn.toLocaleString('en-NG')}.` },
+        };
+      }
+      quotedRoute = quote.planned;
+    }
+    const plannedRoute = quotedRoute ?? (origin
       ? await routePlanner.planRoute({
           origin,
           stops,
           destination,
         })
-      : null;
+      : null);
     const event = RideRouteUpdateRequestedEvent.parse({
       eventType: 'RIDE_ROUTE_UPDATE_REQUESTED',
       rideId: requireString(payload, 'rideId'),
@@ -579,6 +615,7 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    if (quotedRoute && redis) await forgetTripRouteQuote(redis, event.rideId);
     return {
       type: 'ride:route:update:accepted',
       payload: {
@@ -648,7 +685,13 @@ export async function handleRideMessage(
       timestamp,
     });
 
-    await publisher.publishRideEvent(event);
+    try {
+      await publisher.publishRideEvent(event);
+    } catch (error) {
+      // Not cancelled after all: the search is not over.
+      if (cancelledBy === 'rider' && redis) await clearSearchEnded(redis, rideId);
+      throw error;
+    }
 
     return {
       type: 'ride:cancel:accepted',

@@ -33,8 +33,12 @@ function searchClock(pending: PendingRideMatch | undefined): Date {
 
 /** A rider has one search at a time: a new request ends the older one, wherever it came from. */
 const SUPERSEDED_REASON = 'Replaced by a newer request';
-/** A ride for later replaced this soon after it started was caught in a race with the rider's own search. */
-const SCHEDULED_RACE_MS = 2 * 60_000;
+/**
+ * A WhatsApp ride for later replaced by a request the rider made this soon after
+ * its search began was caught in a race: they asked before they could have seen
+ * it start (it is put back to wait). Later than this, they replaced it on purpose.
+ */
+const SCHEDULED_RACE_MS = 20_000;
 
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
@@ -177,9 +181,13 @@ export function createRideRequestedConsumer(params: {
         cancelledBy: 'system',
         timestamp: new Date().toISOString(),
       }).catch((err) => console.warn('[ride-service] could not cancel a superseded search', { rideId: ride.id, error: (err as any)?.message ?? err }));
-      // A WhatsApp ride for later that started in the very second the rider started this
-      // search: it was not theirs to lose. It waits for them, and starts after.
-      if (ride.channel === 'WHATSAPP' && Date.now() - ride.createdAt.getTime() < SCHEDULED_RACE_MS) {
+      // A WhatsApp ride for later that started in the very seconds the rider started this
+      // search: it was not theirs to lose. It waits for them, and starts after. One they
+      // had time to see and replaced on purpose is not put back (only a ride for later
+      // still DISPATCHED for this search is ever requeued).
+      const askedAt = Date.parse(event.timestamp);
+      const askedSoonAfter = (Number.isFinite(askedAt) ? askedAt : Date.now()) - ride.createdAt.getTime() < SCHEDULED_RACE_MS;
+      if (ride.channel === 'WHATSAPP' && askedSoonAfter) {
         const requeued = await scheduledRideClient.requeueDispatched(ride.id).catch(() => false);
         if (requeued) console.info('[ride-service] superseded ride for later put back to wait', { rideId: ride.id, by: event.rideId });
       }
@@ -188,11 +196,12 @@ export function createRideRequestedConsumer(params: {
   }
 
   /**
-   * A WhatsApp ride for later reaching its search. The scheduler held it while
-   * the rider was busy; busy again by the time it got here (they started a
-   * search in the same second), it goes back to waiting instead of replacing
-   * what they are doing. Delivered again after that (Kafka), or after it was
-   * put back by the gateway: nothing. True when it searches now.
+   * A WhatsApp ride for later reaching its search. Whether the rider is busy is
+   * the gateway's decision alone (it sets up the WhatsApp search, or puts the
+   * ride for later back and ends this search quietly): two services asking the
+   * same question a moment apart could answer it differently and leave a search
+   * nobody sees. Here only: is it still this ride for later's start? Delivered
+   * again after it was put back (Kafka): nothing. True when it searches now.
    */
   async function scheduledWhatsappMayStart(event: RideRequestedEvent): Promise<boolean> {
     const scheduled = await scheduledRideClient.findByRequestedRideId(event.rideId).catch(() => undefined);
@@ -202,12 +211,7 @@ export function createRideRequestedConsumer(params: {
       console.info('[ride-service] scheduled start no longer current, ignored', { rideId: event.rideId });
       return false;
     }
-    const busy = await rideClient.findOtherLiveRide(event.riderId, event.rideId).catch(() => null);
-    if (!busy) return true;
-    await scheduledRideClient.requeueDispatched(event.rideId).catch((err) =>
-      console.warn('[ride-service] could not put a held ride for later back', { rideId: event.rideId, error: (err as any)?.message ?? err }));
-    console.info('[ride-service] rider busy, ride for later waits', { rideId: event.rideId, busyWith: busy.id });
-    return false;
+    return true;
   }
 
   async function handleRideRequested(event: RideRequestedEvent): Promise<void> {

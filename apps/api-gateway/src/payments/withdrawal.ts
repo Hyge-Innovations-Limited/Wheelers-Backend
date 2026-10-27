@@ -38,6 +38,22 @@ const FLOAT_TOO_LOW = /balance is not enough|insufficient (?:account )?balance|n
 
 export const FLOAT_SHORT_MESSAGE = 'Withdrawals are paused for a short while. Your money is back in your wallet. Try again later.';
 
+/** The Paystack top-up alert: at most once in this long (every refused withdrawal would otherwise send one). */
+const FLOAT_ALERT_EVERY_MS = 30 * 60 * 1000;
+let lastFloatAlertAt = 0;
+
+/** "Top up Paystack", unless it was said in the last half hour (across gateway processes when Redis is given). */
+async function alertFloatShort(payoutNgn: number, redis?: { setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> }): Promise<void> {
+  const now = Date.now();
+  if (now - lastFloatAlertAt < FLOAT_ALERT_EVERY_MS) return;
+  if (redis) {
+    const first = await redis.setIfNotExists('alerts:paystack-float-short', String(now), FLOAT_ALERT_EVERY_MS / 1000).catch(() => true);
+    if (!first) { lastFloatAlertAt = now; return; }
+  }
+  lastFloatAlertAt = now;
+  await sendAlert('Paystack balance too low for withdrawals', `A ₦${payoutNgn.toLocaleString()} withdrawal was refused and returned to the wallet. Top up the Paystack balance.`).catch(() => false);
+}
+
 export const WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE =
   'Your withdrawal was submitted but the bank has not confirmed it yet. Your money stays reserved until it does, and your wallet balance is safe.';
 
@@ -67,7 +83,7 @@ export interface SubmitWithdrawalInput {
  *     Releasing on a maybe is how a user gets paid twice.
  */
 export async function submitWithdrawal(
-  deps: { paymentsClient: PaymentsClient; publisher: GatewayPublisher },
+  deps: { paymentsClient: PaymentsClient; publisher: GatewayPublisher; redis?: { setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> } },
   input: SubmitWithdrawalInput,
 ): Promise<{ requestId: string; breakdown: WithdrawalBreakdown }> {
   const { paymentsClient, publisher } = deps;
@@ -109,14 +125,17 @@ export async function submitWithdrawal(
   });
   const requestId = reserved.request.id;
 
-  const release = async (reason: string) => {
-    await withdrawalClient
+  /** True when the reservation went back to the wallet. */
+  const release = async (reason: string): Promise<boolean> => {
+    return withdrawalClient
       .releaseFailedRequest({ withdrawalRequestId: requestId, failureReason: reason, status: 'FAILED' })
+      .then(() => true)
       .catch((releaseError) => {
         console.error(`${TAG} CRITICAL: could not release reservation`, {
           requestId,
           error: releaseError instanceof Error ? releaseError.message : String(releaseError),
         });
+        return false;
       });
   };
 
@@ -141,12 +160,14 @@ export async function submitWithdrawal(
       throw new WithdrawalError(WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE, 'PENDING_CONFIRMATION', true);
     }
     const reason = error instanceof Error ? error.message : 'Transfer could not be created';
-    await release(reason);
+    const released = await release(reason);
     console.warn(`${TAG} transfer refused by provider`, { requestId, reason, code: (error as { code?: string })?.code ?? null });
     // Wheelers' Paystack balance is too low to send it: nothing is wrong with
     // their account, so do not tell them to check it; tell us to top up.
     if (FLOAT_TOO_LOW.test(reason)) {
-      void sendAlert('Paystack balance too low for withdrawals', `A ₦${breakdown.payoutNgn.toLocaleString()} withdrawal was refused and returned to the wallet. Top up the Paystack balance.`).catch(() => false);
+      void alertFloatShort(breakdown.payoutNgn, deps.redis);
+      // "Back in your wallet" only when it is: otherwise it is still reserved, and the reconciler returns it.
+      if (!released) throw new WithdrawalError(WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE, 'PENDING_CONFIRMATION', true);
       throw new WithdrawalError(FLOAT_SHORT_MESSAGE, 'FLOAT_SHORT');
     }
     throw new WithdrawalError(

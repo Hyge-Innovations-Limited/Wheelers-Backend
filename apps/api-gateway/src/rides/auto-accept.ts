@@ -15,10 +15,12 @@ import { confirmRideWithOffer, offerKey } from './whatsapp-ride.service';
  * Find), or switched on for it since (ride:auto_accept, POST /ride-page/auto-accept).
  * Every other search — the WhatsApp chat's price, the offers form, an app that
  * never sends the field, a ride for later — never books by itself. Then: the first
- * driver whose offer is at or below the rider's current price and who is at
- * most 10 minutes away is booked and paid from the wallet — if the wallet
- * covers that offer at that moment. When it does not, nothing is booked and
- * the rider chooses as before.
+ * driver whose offer is at or below the rider's current price — and never
+ * above the price the rider said yes at — and who is at most 10 minutes away
+ * is booked and paid from the wallet, if the wallet covers that offer at that
+ * moment. When it does not, nothing is booked and the rider chooses as before.
+ * A yes is for a price: raising the price above it switches auto-accept off
+ * until a new yes at the new price arrives (the app and the page ask again).
  *
  * It books through the very accepts a tap uses — confirmRideWithOffer for a
  * search begun on WhatsApp or the ride page, acceptOfferInApp for the app —
@@ -26,8 +28,8 @@ import { confirmRideWithOffer, offerKey } from './whatsapp-ride.service';
  * open, one rider per driver, one booking per ride, the hold before anything
  * is published.
  *
- *   ride:{rideId}:auto-accept        { off?, riderId?, offerNgn? }   an explicit "off" (ride:auto_accept / POST /ride-page/auto-accept),
- *                                    and the app's latest price (the database lags a change)
+ *   ride:{rideId}:auto-accept        { off?, riderId?, offerNgn?, priceNgn? }   an explicit "off" (ride:auto_accept / POST /ride-page/auto-accept),
+ *                                    the app's latest price (the database lags a change), and the price the yes was for
  *   ride:{rideId}:auto-accept:lock   one booking attempt at a time, across both gateway processes
  *   ride:{rideId}:auto-accept:booked it has booked this ride: never again (Kafka redelivery)
  *
@@ -51,6 +53,8 @@ interface AutoAcceptRecord {
   off?: boolean;
   /** The rider's price when it was last changed (the app's price lags in the database). */
   offerNgn?: number;
+  /** The price the rider said yes at: nothing is ever booked above it. */
+  priceNgn?: number;
 }
 
 export interface AutoAcceptDeps {
@@ -134,12 +138,18 @@ async function ownsSearch(redis: RedisClient, riderId: string, rideId: string): 
   return meta?.riderId === riderId;
 }
 
+/** A whole naira price, or undefined when it is not one. */
+function priceOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+}
+
 /**
  * The rider's explicit switch (ride:auto_accept, POST /ride-page/auto-accept):
- * off is kept for this search; on is their yes, and books any offer on the
+ * off is kept for this search; on is their yes at `priceNgn` (absent: the
+ * search's price now, as an older app sends it), and books any offer on the
  * table that qualifies.
  */
-export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, rideId: string, on: boolean): Promise<AutoAcceptSwitch> {
+export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, rideId: string, on: boolean, priceNgn?: number): Promise<AutoAcceptSwitch> {
   // Only the rider whose search it is: nobody switches it for someone else's ride.
   if (!(await ownsSearch(deps.redisClient, riderId, rideId))) return { ok: false, reason: 'not_searching', message: 'This search has ended.' };
   const record = (await readRecord(deps.redisClient, rideId)) ?? {};
@@ -150,7 +160,8 @@ export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, ri
   }
   const search = await openSearch(deps.redisClient, rideId, riderId, record.offerNgn);
   if (!search) return { ok: false, reason: 'not_searching', message: 'This search has ended.' };
-  await writeRecord(deps.redisClient, rideId, { ...record, riderId, off: false });
+  const current = search.kind === 'whatsapp' ? search.offerNgn : record.offerNgn ?? search.offerNgn;
+  await writeRecord(deps.redisClient, rideId, { ...record, riderId, off: false, priceNgn: priceOf(priceNgn) ?? current });
   const { booked } = await tryAutoAccept(deps, rideId);
   return booked ? { ok: true, on: false, booked: true } : { ok: true, on: true };
 }
@@ -160,10 +171,25 @@ export async function autoAcceptOffAtStart(redis: RedisClient, rideId: string, r
   await writeRecord(redis, rideId, { riderId, off: true });
 }
 
-/** On for a search the rider is starting right now and said yes to (autoAccept: true): theirs by construction. */
-export async function autoAcceptOnAtStart(redis: RedisClient, rideId: string, riderId: string): Promise<void> {
+/** On for a search the rider is starting right now and said yes to (autoAccept: true) at `priceNgn`: theirs by construction. */
+export async function autoAcceptOnAtStart(redis: RedisClient, rideId: string, riderId: string, priceNgn: number): Promise<void> {
   const record = (await readRecord(redis, rideId)) ?? {};
-  await writeRecord(redis, rideId, { ...record, riderId, off: false });
+  await writeRecord(redis, rideId, { ...record, riderId, off: false, priceNgn: priceOf(priceNgn) });
+}
+
+/**
+ * The price was changed where nobody asks about auto-booking (the chat, the
+ * offers form): a yes never carries over to it. Off, if it was on.
+ */
+export async function autoAcceptOffForChatPrice(redis: RedisClient, rideId: string): Promise<void> {
+  const record = await readRecord(redis, rideId);
+  if (record && record.off === false) await writeRecord(redis, rideId, { ...record, off: true });
+}
+
+/** Is auto-accept on for this search, and at what price was the yes (for the app's restore and the page)? */
+export async function autoAcceptStatus(redis: RedisClient, rideId: string): Promise<{ on: boolean; priceNgn: number | null }> {
+  const record = await readRecord(redis, rideId);
+  return { on: record?.off === false, priceNgn: record?.off === false ? record.priceNgn ?? null : null };
 }
 
 /** The driver auto-accept booked on this ride, if it did (its booking was nobody's tap). */
@@ -182,10 +208,24 @@ export async function autoAcceptToldChat(redis: RedisClient, rideId: string): Pr
   return Boolean(await redis.get(toldKey(rideId)).catch(() => null));
 }
 
-/** The rider changed their price: an offer now at or under it may be booked. */
+/**
+ * The rider changed their price: an offer now at or under it (and under the
+ * price of their yes) may be booked. A price above the yes's switches it off:
+ * that yes was not for this price (a new yes at it, sent with or after the
+ * change, switches it back on).
+ */
 export async function autoAcceptPriceChanged(deps: AutoAcceptDeps, rideId: string, offerNgn: number): Promise<void> {
   const record = (await readRecord(deps.redisClient, rideId)) ?? {};
-  await writeRecord(deps.redisClient, rideId, { ...record, offerNgn });
+  // A yes kept before its price was (an older record): the price it was last at.
+  const agreed = record.off === false ? record.priceNgn ?? record.offerNgn ?? 0 : 0;
+  const raisedPastYes = record.off === false && offerNgn > agreed;
+  await writeRecord(deps.redisClient, rideId, { ...record, offerNgn, ...(raisedPastYes ? { off: true } : {}) });
+  if (raisedPastYes) {
+    await Promise.resolve()
+      .then(() => record.riderId ? deps.registry?.sendToUser(record.riderId, 'ride:auto_accept:done', { rideId, on: false, reason: 'price_changed' }) : undefined)
+      .catch(() => undefined);
+    return;
+  }
   await tryAutoAccept(deps, rideId);
 }
 
@@ -295,7 +335,9 @@ export async function tryAutoAccept(deps: AutoAcceptDeps, rideId: string): Promi
     // Money already held on the ride is the accepts' to judge, under the booking lock: a booking
     // still going through is refused there, and a stale hold from a failed accept is let go.
     // The app's price in the database lags a change; the record has the latest.
-    const priceNgn = search.kind === 'whatsapp' ? search.offerNgn : record?.offerNgn ?? search.offerNgn;
+    const currentNgn = search.kind === 'whatsapp' ? search.offerNgn : record?.offerNgn ?? search.offerNgn;
+    // Never above the price the rider said yes at (a yes from before prices were kept: today's price).
+    const priceNgn = Math.min(currentNgn, record?.priceNgn ?? currentNgn);
     const tried = new Set<string>();
     // A second look: an offer that landed while the first was being tried.
     for (let pass = 0; pass < 2; pass++) {

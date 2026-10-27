@@ -24,6 +24,49 @@ type DispatchContext = {
 
 /** Meta's customer-service window: plain messages reach a rider this long after their last message to us. */
 const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
+/**
+ * A WhatsApp ride for later that still has not started this long after its
+ * pickup time (it waited for a busy rider, or its start kept failing) is given
+ * up on: a ride hours late is no use to anyone.
+ */
+export const SCHEDULED_GIVE_UP_AFTER_MS = 60 * 60 * 1000;
+
+/**
+ * Gives up on a WhatsApp ride for later: the rider is told once (the gateway:
+ * in the chat when it can reach them, else on the ride page's Home and the app),
+ * then it is cancelled and any cashback on it goes back. The notice goes out
+ * first: when it cannot be sent, the ride is put back and the next scan tries
+ * again, so it is never cancelled unsaid.
+ */
+async function giveUp(
+  claimed: NonNullable<Awaited<ReturnType<typeof scheduledRideClient.claimForDispatch>>>,
+  ctx: DispatchContext,
+  reason: 'window_closed' | 'waited_too_long',
+): Promise<void> {
+  const onceKey = `scheduled-ride:${claimed.id}:gave-up-told`;
+  const first = await ctx.redis.set(onceKey, '1', 'EX', 3 * 24 * 60 * 60, 'NX').then((ok) => ok === 'OK').catch(() => true);
+  if (first) {
+    try {
+      await ctx.rideEventsProducer.scheduledRideGaveUp({
+        eventType: 'SCHEDULED_RIDE_GAVE_UP',
+        rideId: claimed.id,
+        riderId: claimed.riderId,
+        scheduledFor: claimed.scheduledFor.toISOString(),
+        pickupAddress: claimed.pickupAddress,
+        reason,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      await ctx.redis.del(onceKey).catch(() => undefined);
+      await scheduledRideClient.releaseClaim(claimed.id).catch(() => undefined);
+      console.warn('[ride-service:dispatcher] give-up notice not published, tried again next scan', { scheduledRideId: claimed.id, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+  }
+  await scheduledRideClient.cancel(claimed.id, claimed.riderId, reason === 'window_closed' ? 'whatsapp_window_closed' : 'waited_too_long');
+  await referralClient.releaseRideCashback(claimed.id).catch(() => undefined);
+  console.info('[ride-service:dispatcher] ride for later given up', { scheduledRideId: claimed.id, reason });
+}
 
 /**
  * Can a WhatsApp ride for later start now? Its start message must reach the
@@ -183,14 +226,17 @@ export async function dispatchSingleRide(
   }
 
   if (claimed.channel === 'WHATSAPP') {
+    // An hour past its time and still not started (it waited, or its start kept failing): given up.
+    if (Date.now() > claimed.scheduledFor.getTime() + SCHEDULED_GIVE_UP_AFTER_MS) {
+      await giveUp(claimed, ctx, 'waited_too_long');
+      return;
+    }
     // Busy now: it waits for them (never replacing what they are doing).
     if (await holdWhileBusy(claimed, ctx)) return;
     // Its start must reach them in the chat: outside their 24 h window, with no
     // approved template to say it, it does not start (drivers are not called to nobody).
     if (!(await whatsappStartCanReachRider(ctx.redis, claimed.riderId))) {
-      await scheduledRideClient.cancel(claimed.id, claimed.riderId, 'whatsapp_window_closed');
-      await referralClient.releaseRideCashback(claimed.id).catch(() => undefined);
-      console.info('[ride-service:dispatcher] ride for later not started: outside the WhatsApp window', { scheduledRideId: claimed.id });
+      await giveUp(claimed, ctx, 'window_closed');
       return;
     }
   }

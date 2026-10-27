@@ -17,6 +17,7 @@ import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
 import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
+import { SCHEDULED_TEMPLATE_REPLY_ID } from '../whatsapp/scheduled-template';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { CHANGE_PRICE_REPLY_ID, parseOfferReplyId } from '../whatsapp-flows/whatsapp-notifier';
 import { readRawBody, sendJson } from './utils';
@@ -184,6 +185,10 @@ async function handleIncomingMetaMessage(
     // ── A form completed. Nothing goes out: a form only completes when it has already put a
     // message with a fresh button in the chat, and every other ending keeps the old button alive.
     if (msgInfo.flowCompleted) return;
+
+    // ── "OK" on a ride for later's start template: it opened their window (above); nothing to answer.
+    // What waited for them is said by the page catch-up now the chat can reach them.
+    if (msgInfo.replyId === SCHEDULED_TEMPLATE_REPLY_ID) return;
 
     // ── SOS. Before consent, before any booking step, before anything. ────
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {

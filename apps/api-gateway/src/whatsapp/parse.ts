@@ -204,6 +204,19 @@ export function parseMetaMessage(
         }
       }
 
+      // A template's quick-reply button (the ride for later's start): its text, and the payload we set as its id.
+      if (msg.type === 'button') {
+        const button = msg.button as Record<string, unknown> | undefined;
+        return {
+          messageId: wamid,
+          phone,
+          profileName,
+          messageBody: typeof button?.text === 'string' ? button.text : '',
+          isLocation: false,
+          replyId: typeof button?.payload === 'string' ? button.payload : undefined,
+        };
+      }
+
       // Ignore reactions, read receipts, and other non-content message types
       const msgType = msg.type as string | undefined;
       if (msgType === 'reaction' || msgType === 'system' || msgType === 'unsupported' || msgType === 'order' || msgType === 'ephemeral') {

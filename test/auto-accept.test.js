@@ -17,6 +17,7 @@ const { driverBidClient } = require('../packages/db/dist/index.js');
 const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handlers/ride.handler.js');
 const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
 const { handleRidePageRoute } = require('../apps/api-gateway/dist/http/ride-page.route.js');
+const { handleActiveRideRoute } = require('../apps/api-gateway/dist/http/ride.route.js');
 const { tryAutoAccept, autoAcceptOnAtStart, AUTO_ACCEPT_MAX_ETA_SECONDS } = require('../apps/api-gateway/dist/rides/auto-accept.js');
 const { pendingCatchup } = require('../apps/api-gateway/dist/whatsapp-flows/page-catchup.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
@@ -63,10 +64,10 @@ async function driver() {
   made.drivers.push(d.id);
   return { id: d.id, userId };
 }
-/** A search the rider started with autoAccept: true (ride:request writes this; tested below). */
+/** A search the rider started with autoAccept: true at its price (ride:request writes this; tested below). */
 async function consented(riderId, offerNgn = 7900) {
   const r = await searching(riderId, offerNgn);
-  await autoAcceptOnAtStart(sharedRedis.current, r.id, riderId);
+  await autoAcceptOnAtStart(sharedRedis.current, r.id, riderId, offerNgn);
   return r;
 }
 const sharedRedis = { current: null };
@@ -181,7 +182,7 @@ test('not a driver more than 10 minutes away, nor one asking more than the price
   assert.deepEqual(accepted(w, r.id).map((e) => e.driverId), [near.id]);
 });
 
-test('a raised price books an offer now under it while the wallet covers it; raised past the wallet, nothing is booked', async () => {
+test('a yes is for a price: a raised price switches auto-accept off (the app is told) and books nothing above the yes; a new yes at it books; past the wallet, nothing', async () => {
   const w = world();
   const riderId = await rider(8_500);
   const r = await consented(riderId, 7900);
@@ -190,19 +191,64 @@ test('a raised price books an offer now under it while the wallet covers it; rai
   await handleRideEvent(counterOffer(r, d, row, 8400, 200), w.deps, new Map());
   assert.equal(accepted(w, r.id).length, 0, '₦8,400 is over the ₦7,900 offered');
 
+  // Raised to ₦8,500 with no new yes: the yes was for ₦7,900, so nothing is booked and it is off.
   const raised = { eventType: 'RIDE_RIDER_COUNTER_OFFER', rideId: r.id, riderId, counterOfferNgn: 8500, timestamp: new Date().toISOString() };
   await handleRideEvent(raised, w.deps, new Map());
+  assert.equal(accepted(w, r.id).length, 0, 'never above the price the rider said yes at');
+  assert.match(w.redis.store.get(`ride:${r.id}:auto-accept`), /"off":true/);
+  assert.deepEqual(w.toApp.filter((m) => m.type === 'ride:auto_accept:done').map((m) => [m.payload.on, m.payload.reason]), [[false, 'price_changed']], 'the app shows it off');
+
+  // The rider says yes again, at ₦8,500 (the app's ride:auto_accept with priceNgn): the offer under it is booked.
+  const yes = await say(w, riderId, 'ride:auto_accept', { rideId: r.id, on: true, priceNgn: 8500 });
+  assert.equal(yes.payload.reason, 'booked');
   assert.deepEqual(accepted(w, r.id).map((e) => e.agreedFareNgn), [8400]);
 
-  // Another search: raised to ₦9,500 with ₦8,500 in the wallet — an ₦8,800 offer is the rider's to choose.
+  // The yes may come before the price reaches the gateway (Kafka): the change then keeps it.
+  const w3 = world();
+  const r3 = await consented(riderId, 7900);
+  await say(w3, riderId, 'ride:auto_accept', { rideId: r3.id, on: true, priceNgn: 8200 });
+  await handleRideEvent({ ...raised, rideId: r3.id, counterOfferNgn: 8200 }, w3.deps, new Map());
+  assert.match(w3.redis.store.get(`ride:${r3.id}:auto-accept`), /"off":false/);
+  // A lower price keeps the yes (nothing above either price is ever booked).
+  await handleRideEvent({ ...raised, rideId: r3.id, counterOfferNgn: 7000 }, w3.deps, new Map());
+  assert.match(w3.redis.store.get(`ride:${r3.id}:auto-accept`), /"off":false/);
+  const d3 = await driver();
+  const row3 = await bid(r3, d3, 7500, 100);
+  await handleRideEvent(counterOffer(r3, d3, row3, 7500, 100), w3.deps, new Map());
+  assert.equal(accepted(w3, r3.id).length, 0, '₦7,500 is over the ₦7,000 asked now');
+
+  // Another search: a yes at ₦9,500 with ₦8,500 in the wallet — an ₦8,800 offer is the rider's to choose.
   const w2 = world();
-  const r2 = await consented(riderId, 7900);
-  await handleRideEvent({ ...raised, rideId: r2.id, counterOfferNgn: 9_500 }, w2.deps, new Map());
+  const r2 = await consented(riderId, 9_500);
   const d2 = await driver();
   const row2 = await bid(r2, d2, 8_800, 100);
   await handleRideEvent(counterOffer(r2, d2, row2, 8_800, 100), w2.deps, new Map());
   assert.equal(accepted(w2, r2.id).length, 0);
   assert.equal(await prisma.rideHold.count({ where: { rideId: r2.id } }), 0);
+});
+
+test('ride:request with autoAccept: true keeps the price of the yes; GET /rides/active reports it for the app\'s restore', async () => {
+  const w = world();
+  const riderId = await rider(10_000);
+  const planner = { planRoute: async () => ({ distanceKm: 10, durationSeconds: 1500, suggestedFareNgn: 5000, minOfferNgn: 4100, ratePerKmNgn: 400, geometry: { coordinates: [{ lat: 6.6, lng: 3.35 }, { lat: 6.5, lng: 3.36 }], bounds: { northEast: { lat: 6.6, lng: 3.4 }, southWest: { lat: 6.5, lng: 3.3 } } } }) };
+  const sent = await handleRideMessage('ride:request', {
+    pickup: { lat: 6.6018, lng: 3.3515, address: 'Opebi' }, destination: { lat: 6.4969, lng: 3.3556, address: 'Surulere' }, offerNgn: 5200, autoAccept: true,
+  }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
+  assert.match(w.redis.store.get(`ride:${sent.payload.rideId}:auto-accept`), /"priceNgn":5200/);
+  await searching(riderId, 5200, sent.payload.rideId);
+
+  const active = async () => {
+    const res = { statusCode: 0, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+    const bearer = local.createLocalAccessToken(riderId, JWT_SECRET);
+    await handleActiveRideRoute({ method: 'GET', headers: { authorization: `Bearer ${bearer}` } }, res, { jwtSecret: JWT_SECRET, redisClient: w.redis });
+    return res;
+  };
+  const restored = await active();
+  assert.equal(restored.statusCode, 200, JSON.stringify(restored.body));
+  assert.equal(restored.body.ride.search.autoAccept, true);
+  assert.equal(restored.body.ride.search.autoAcceptPriceNgn, 5200);
+  await say(w, riderId, 'ride:auto_accept', { rideId: sent.payload.rideId, on: false });
+  assert.equal((await active()).body.ride.search.autoAccept, false);
 });
 
 test('an explicit off (ride:auto_accept) is honoured; on again books the offer on the table', async () => {

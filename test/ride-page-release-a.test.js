@@ -29,6 +29,7 @@ const { handleRidePageRoute } = require('../apps/api-gateway/dist/http/ride-page
 const { handleRideEvent, deliverPageCatchup, scheduledHeldText } = require('../apps/api-gateway/dist/kafka/consumer.js');
 const { sayRidePageEventInChat } = require('../apps/api-gateway/dist/whatsapp/ride-card.js');
 const { SCHEDULED_START_HELD_REASON } = require('../apps/api-gateway/dist/rides/scheduled-whatsapp.js');
+const template = require('../apps/api-gateway/dist/whatsapp/scheduled-template.js');
 const { dispatchSingleRide } = require('../apps/ride-service/dist/handlers/scheduled-rides.handler.js');
 const { createRideRequestedConsumer } = require('../apps/ride-service/dist/consumers/ride-requested.consumer.js');
 
@@ -57,6 +58,7 @@ function memoryRedis() {
     async send(cmd, key) {
       if (cmd === 'INCR') { const n = Number(store.get(`n:${key}`) ?? 0) + 1; store.set(`n:${key}`, String(n)); return n; }
       if (cmd === 'TTL') return store.has(key) ? (ttls.get(key) ?? -1) : -2;
+      if (cmd === 'GETDEL') { const v = store.has(key) ? store.get(key) : null; store.delete(key); return v; }
       return null;
     },
   };
@@ -73,7 +75,7 @@ function ioRedis(gatewayRedis) {
 }
 
 function plannerFor() {
-  return { planRoute: async () => ({ distanceKm: 11.4, durationSeconds: 1680, suggestedFareNgn: 5200, minOfferNgn: 4700, ratePerKmNgn: 420, priceReason: null, geometry: { coordinates: [], bounds: { northEast: VI, southWest: YABA } } }) };
+  return { planRoute: async () => ({ distanceKm: 11.4, durationSeconds: 1680, suggestedFareNgn: 5200, minOfferNgn: 4700, ratePerKmNgn: 420, priceReason: null, geometry: { coordinates: [{ lat: YABA.lat, lng: YABA.lng }, { lat: IKEJA.lat, lng: IKEJA.lng }, { lat: VI.lat, lng: VI.lng }], bounds: { northEast: VI, southWest: YABA } } }) };
 }
 
 function world() {
@@ -148,6 +150,14 @@ const started = (riderId, extra = {}) => ({
   fareEstimateNgn: 5200, riderOfferNgn: 5200, suggestedFareNgn: 5200, minOfferNgn: 4700, ratePerKmNgn: 420,
   paymentMethod: 'WALLET', timestamp: new Date().toISOString(), ...extra,
 });
+
+/** A ride for later's start as the scheduler sends it: its ScheduledRide row is DISPATCHED for this search. */
+async function startedRow(riderId, extra = {}) {
+  const event = started(riderId, extra);
+  const row = await prisma.scheduledRide.create({ data: { riderId, scheduledFor: new Date(Date.now() + 5 * 60_000), status: 'DISPATCHED', requestedRideId: event.rideId, channel: event.channel === 'APP' ? null : 'WHATSAPP', ...place } });
+  made.scheduled.push(row.id);
+  return event;
+}
 
 /** Meta, recorded: every message body sent. */
 function recordMeta() {
@@ -252,18 +262,27 @@ test('an expired link says the whole sentence (a page from before this release s
   assert.equal(gone.body.error, 'This link has expired. Go back to WhatsApp and send any message for a new one.');
 });
 
-test('the start template\'s button opens the page with its link (the token in the fragment)', async () => {
-  const { deps } = world();
+test('the start template\'s button carries a one-time code: it opens the page with a fresh link (in the fragment), once', async () => {
+  const { deps, redis } = world();
   const rider = await makeRider();
-  const token = local.createWalletPageToken(rider, 'ride', JWT_SECRET, local.RIDE_PAGE_TOKEN_TTL_SECONDS);
-  const opened = await call(deps, rider, 'GET', `/ride-page/open/${token}`);
+  const code = await template.createRidePageOpenCode(redis, rider);
+  assert.match(code, /^[A-Za-z0-9_-]{16,64}$/);
+  assert.equal((await call(deps, rider, 'POST', `/ride-page/open/${code}`)).status, 405);
+  const opened = await call(deps, rider, 'GET', `/ride-page/open/${code}`);
   assert.equal(opened.status, 302);
-  assert.equal(opened.headers.location, `/widget/ride/ride.html#t=${token}`);
+  const token = /^\/widget\/ride\/ride\.html#t=(.+)$/.exec(opened.headers.location)?.[1];
+  assert.ok(token, opened.headers.location);
+  assert.equal(local.verifyWalletPageToken(token, JWT_SECRET).userId, rider, 'a fresh link to this rider\'s page');
   assert.equal(opened.headers['cache-control'], 'no-store');
+  // Spent: the page, which says the link has expired.
+  const again = await call(deps, rider, 'GET', `/ride-page/open/${code}`);
+  assert.equal(again.status, 302);
+  assert.equal(again.headers.location, '/widget/ride/ride.html#expired=1');
+  // A JWT in the path (the old button) is not a code: nothing in it is ever honoured.
+  assert.equal((await call(deps, rider, 'GET', `/ride-page/open/${local.createWalletPageToken(rider, 'ride', JWT_SECRET, 60)}`)).status, 404);
   const junk = await call(deps, rider, 'GET', '/ride-page/open/<script>');
   assert.equal(junk.status, 404);
   assert.equal(junk.headers.location, '/widget/ride/ride.html');
-  assert.equal((await call(deps, rider, 'POST', `/ride-page/open/${token}`)).status, 405);
 });
 
 test('a start outside the window goes out as the template, with the page link on its button; inside it, "Your bid is in" as before', async () => {
@@ -282,12 +301,19 @@ test('a start outside the window goes out as the template, with the page link on
   assert.equal(message.template.name, 'scheduled_ride_started');
   assert.equal(message.template.language.code, 'en');
   assert.deepEqual(message.template.components[0].parameters.map((p) => p.text), ['12 Herbert Macaulay Way', 'Adeola Odeku Street']);
-  const token = message.template.components[1].parameters[0].text;
+  const code = message.template.components[1].parameters[0].text;
   assert.equal(message.template.components[1].sub_type, 'url');
-  assert.equal(local.verifyWalletPageToken(token, JWT_SECRET).userId, rider, 'the button opens this rider\'s ride page');
+  assert.doesNotMatch(code, /\./, 'never the link itself (a path ends up in logs)');
+  assert.equal(await redis.get(`ride_page:open:${code}`), rider, 'the button opens this rider\'s ride page');
+  assert.deepEqual(message.template.components[2], { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: 'ride_later_ok' }] });
+  // Until they answer, the chat cannot reach them: the first offer adds no bubble, the rest waits for the page.
+  assert.equal(await bidState.hasOffersMessage(redis, event.rideId), true, 'the offers message counts as sent');
+  assert.equal(await bidState.isRidePageOpen(redis, rider), true);
+  assert.equal(await bidState.isRidePageSeen(redis, rider), false);
 
-  // Inside the window: the plain message, never the template.
+  // Inside the window (they answered): the plain message, never the template.
   await bidState.markWhatsappInbound(redis, rider);
+  assert.equal(await bidState.isRidePageOpen(redis, rider), false, 'their answer lets the chat speak again');
   sent = recordMeta();
   await sayRidePageEventInChat(metaDeps, event);
   assert.ok(sent.length >= 1);
@@ -296,22 +322,28 @@ test('a start outside the window goes out as the template, with the page link on
 
 /* ── when it starts: busy, auto-accept, a failure ─────────────────────── */
 
-test('a rider searching when it starts keeps their search: it waits, nothing is touched, never the app\'s', async () => {
+test('a rider searching when it starts keeps their search: it waits (put back, its own search ended quietly), never the app\'s', async () => {
   const redis = memoryRedis();
   const { deps, pushes, said, events } = consumerDeps(redis);
   const rider = await makeRider();
   const search = await makeRide(rider, { status: 'MATCHING' });
   await bidState.setActiveRide(redis, rider, search.id);
 
-  const event = started(rider);
+  const event = await startedRow(rider);
   await handleRideEvent(event, deps, new Map());
   assert.equal(await bidState.getActiveRide(redis, rider), search.id, 'their search keeps the chat');
   assert.equal(await bidState.getRideMeta(redis, event.rideId), null);
   assert.equal(said.length, 0);
   assert.equal(pushes.length, 0);
-  assert.equal(events.length, 0);
+  assert.deepEqual(events.map((e) => [e.eventType, e.rideId, e.reason]), [['RIDE_CANCELLED', event.rideId, SCHEDULED_START_HELD_REASON]], 'the search ride-service may have started ends quietly');
   assert.equal(await redis.get(`ride:${event.rideId}:app-only`), null);
-  assert.equal(await redis.get(`ride:${event.rideId}:wa-scheduled`), null, 'not marked done: it starts later');
+  assert.equal(await redis.get(`ride:${event.rideId}:wa-scheduled`), 'undone', 'this start is done with: the ride for later starts later, as a new search');
+  const row = await prisma.scheduledRide.findFirst({ where: { riderId: rider } });
+  assert.deepEqual([row.status, row.requestedRideId], ['SCHEDULED', null], 'back to waiting');
+
+  // Delivered again: nothing more.
+  await handleRideEvent(event, deps, new Map());
+  assert.equal(events.length, 1);
 });
 
 test('a search of their own started a moment ago (not in the database yet) is theirs too', async () => {
@@ -321,14 +353,14 @@ test('a search of their own started a moment ago (not in the database yet) is th
   const own = randomUUID();
   await bidState.storeWhatsappRide(redis, own, { riderId: rider, phone: '+2348030000001', pickupAddress: YABA.address, destinationAddress: VI.address, offerNgn: 5000, createdAt: new Date().toISOString() });
   await bidState.setActiveRide(redis, rider, own);
-  const event = started(rider);
+  const event = await startedRow(rider);
   await handleRideEvent(event, deps, new Map());
   assert.equal(await bidState.getActiveRide(redis, rider), own);
   assert.equal(said.length, 0);
 
   // An old pointer left behind (the database has nothing live): the ride for later goes ahead.
   await bidState.storeWhatsappRide(redis, own, { riderId: rider, phone: '+2348030000001', pickupAddress: YABA.address, destinationAddress: VI.address, offerNgn: 5000, createdAt: new Date(Date.now() - 10 * 60_000).toISOString() });
-  const later = started(rider);
+  const later = await startedRow(rider);
   await handleRideEvent(later, deps, new Map());
   assert.equal(await bidState.getActiveRide(redis, rider), later.rideId);
   assert.equal(said.length, 1);
@@ -338,7 +370,7 @@ test('auto-accept is off for every ride for later: page-booked and app-booked', 
   const redis = memoryRedis();
   const { deps } = consumerDeps(redis);
   const rider = await makeRider();
-  const page = started(rider);
+  const page = await startedRow(rider);
   await handleRideEvent(page, deps, new Map());
   assert.equal(await autoAccept.isAutoAcceptOn(redis, page.rideId), false);
 
@@ -378,7 +410,7 @@ test('a start that cannot be set up is undone, not left half WhatsApp and half a
 
   await handleRideEvent(event, deps, new Map());
   assert.equal(await bidState.getActiveRide(redis, rider), null);
-  assert.equal(await redis.get(`ride:${event.rideId}:wa-scheduled`), null, 'free to start again');
+  assert.equal(await redis.get(`ride:${event.rideId}:wa-scheduled`), 'undone', 'never set up again for this search (the ride for later starts again as a new one)');
   assert.equal(said.length, 0);
   assert.equal(pushes.length, 0, 'not the app\'s');
   assert.equal(await redis.get(`ride:${event.rideId}:app-only`), null);
@@ -450,7 +482,7 @@ function recordProducer() {
   return {
     out,
     producer: {
-      scheduledRideHeld: record('held'), rideCancelled: record('cancelled'), rideBidTimeout: record('timeout'),
+      scheduledRideHeld: record('held'), scheduledRideGaveUp: record('gaveUp'), rideCancelled: record('cancelled'), rideBidTimeout: record('timeout'),
       broadcastRideOffer: async (params) => { out.push({ name: 'broadcast', event: params.rideRequested }); },
       rideRequested: record('requested'), rideDriverAssigned: record('assigned'), rideDriverRejected: record('rejected'),
       rideCompleted: record('completed'), rideRouteUpdated: record('route'), rideAssignmentFailed: record('failed'),
@@ -524,7 +556,7 @@ test('an app ride for later is dispatched as before, busy or not', async () => {
 
 test('a WhatsApp ride for later whose start could not reach the rider (window closed, no template) does not start', async () => {
   const gateway = memoryRedis();
-  const { producer } = recordProducer();
+  const { producer, out } = recordProducer();
   const ctx = { rideEventsProducer: producer, redis: ioRedis(gateway) };
   const rider = await makeRider();
   await bidState.markWhatsappInbound(gateway, rider, Date.now() - 25 * 60 * 60_000);
@@ -534,6 +566,7 @@ test('a WhatsApp ride for later whose start could not reach the rider (window cl
   assert.equal(row.status, 'CANCELLED');
   assert.equal(row.cancellationReason, 'whatsapp_window_closed');
   assert.equal(outbox.length, 0, 'no driver is called for nobody');
+  assert.deepEqual(out.map((o) => [o.name, o.event.rideId, o.event.reason]), [['gaveUp', scheduled.id, 'window_closed']], 'never silent: the gateway tells them');
 
   // With the template set, it starts (the template reaches them).
   process.env.WHATSAPP_SCHEDULED_TEMPLATE = 'scheduled_ride_started';
@@ -552,7 +585,7 @@ function rideService() {
   return { out, state, handle, stop() { for (const p of state.pendingMatchesByRideId.values()) if (p.timeout) clearTimeout(p.timeout); } };
 }
 
-test('ride-service never ends a live search for a WhatsApp ride for later: busy at that second, it goes back to wait', async () => {
+test('ride-service never ends a live search for a WhatsApp ride for later; whether the rider is busy is the gateway\'s call, and its put-back ends the search', async () => {
   const service = rideService();
   const rider = await makeRider();
   const live = await makeRide(rider, { status: 'MATCHING' });
@@ -562,15 +595,22 @@ test('ride-service never ends a live search for a WhatsApp ride for later: busy 
 
   await service.handle(event);
   assert.equal((await prisma.ride.findUnique({ where: { id: live.id } })).status, 'MATCHING', 'their search goes on');
-  assert.equal(await prisma.ride.findUnique({ where: { id: event.rideId } }), null, 'no search for the ride for later');
-  assert.equal(service.out.filter((o) => o.name === 'cancelled').length, 0);
-  const row = await prisma.scheduledRide.findUnique({ where: { id: scheduled.id } });
-  assert.equal(row.status, 'SCHEDULED');
-  assert.equal(row.requestedRideId, null);
+  assert.equal(service.out.filter((o) => o.name === 'cancelled').length, 0, 'nothing of theirs is replaced');
 
-  // Delivered again: put back already, so nothing.
+  // The gateway found them busy: it puts the ride for later back and ends this search quietly.
+  const redis = memoryRedis();
+  const { deps, events } = consumerDeps(redis);
+  await handleRideEvent(event, deps, new Map());
+  assert.equal(events.length, 1);
+  await service.handle(events[0]);
+  const row = await prisma.scheduledRide.findUnique({ where: { id: scheduled.id } });
+  assert.deepEqual([row.status, row.requestedRideId], ['SCHEDULED', null]);
+  assert.equal(service.state.pendingMatchesByRideId.has(event.rideId), false, 'no search left that nobody sees');
+
+  // Delivered again after it was put back: nothing.
+  const before = service.out.length;
   await service.handle(event);
-  assert.equal(await prisma.ride.findUnique({ where: { id: event.rideId } }), null);
+  assert.equal(service.out.length, before);
   service.stop();
 });
 
@@ -668,11 +708,15 @@ test('cancel during the trip is allowed (as in the app); with no driver yet it i
   assert.equal((await call(deps, searching, 'POST', '/ride-page/cancel-ride', { reason: 'My plans changed' })).body.code, 'NO_TRIP');
 });
 
-test('change a booked trip\'s route: the app\'s ride:route:update (the ride service plans and prices it, the driver is told)', async () => {
+test('change a booked trip\'s route: the app\'s ride:route:update at the price the rider was shown (the driver is told)', async () => {
   const { deps, events } = world();
   const { rider, driver, ride } = await bookedTrip('IN_PROGRESS');
 
-  const changed = await call(deps, rider, 'POST', '/ride-page/trip-route', { stops: [IKEJA] });
+  // Never moved without the rider seeing the price: no acceptedFareNgn, the price to ask about.
+  const unasked = await call(deps, rider, 'POST', '/ride-page/trip-route', { stops: [IKEJA] });
+  assert.deepEqual([unasked.status, unasked.body.code, unasked.body.fareNgn, unasked.body.extraNgn], [409, 'PRICE_CHANGED', 5200, 0]);
+  assert.equal(events.length, 0);
+  const changed = await call(deps, rider, 'POST', '/ride-page/trip-route', { stops: [IKEJA], acceptedFareNgn: 5200 });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   assert.equal(changed.body.phase, 'confirmed');
   assert.equal(events.length, 1);
@@ -683,18 +727,20 @@ test('change a booked trip\'s route: the app\'s ride:route:update (the ride serv
   assert.equal(events[0].updatedBy, 'rider');
   assert.deepEqual(events[0].destination, VI, 'no destination sent: the trip\'s own');
   assert.deepEqual(events[0].stops, [IKEJA]);
-  assert.equal(events[0].fareEstimateNgn, undefined, 'priced by the ride service, as the app\'s');
+  assert.equal(events[0].fareEstimateNgn, 5200, 'priced as quoted: the wallet holds exactly what the rider agreed to');
+  // The road drawn under the car is the new route's.
+  assert.deepEqual(changed.body.trip.line, [{ lat: YABA.lat, lng: YABA.lng }, { lat: IKEJA.lat, lng: IKEJA.lng }, { lat: VI.lat, lng: VI.lng }]);
 
-  await call(deps, rider, 'POST', '/ride-page/trip-route', { destination: SURULERE, stops: [] });
+  await call(deps, rider, 'POST', '/ride-page/trip-route', { destination: SURULERE, stops: [], acceptedFareNgn: 5200 });
   assert.deepEqual(events[1].destination, SURULERE);
   assert.deepEqual(events[1].stops, []);
 
-  assert.equal((await call(deps, rider, 'POST', '/ride-page/trip-route', { destination: { lat: 7.1475, lng: 3.3619, address: 'Kuto, Abeokuta' }, stops: [] })).body.code, 'OUTSIDE_SERVICE_AREA');
-  assert.equal((await call(deps, rider, 'POST', '/ride-page/trip-route', { stops: [{ lat: 'x', address: '' }] })).body.code, 'PLACE_INVALID');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/trip-route', { destination: { lat: 7.1475, lng: 3.3619, address: 'Kuto, Abeokuta' }, stops: [], acceptedFareNgn: 5200 })).body.code, 'OUTSIDE_SERVICE_AREA');
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/trip-route', { stops: [{ lat: 'x', address: '' }], acceptedFareNgn: 5200 })).body.code, 'PLACE_INVALID');
   assert.equal(events.length, 2);
 
   const stranger = await makeRider();
-  assert.equal((await call(deps, stranger, 'POST', '/ride-page/trip-route', { stops: [IKEJA] })).body.code, 'NO_TRIP');
+  assert.equal((await call(deps, stranger, 'POST', '/ride-page/trip-route', { stops: [IKEJA], acceptedFareNgn: 5200 })).body.code, 'NO_TRIP');
 });
 
 test('the Emergency button raises the same alert as the ride card\'s SOS, once; "I\'m safe" withdraws it', async () => {

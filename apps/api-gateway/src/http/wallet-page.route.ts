@@ -263,7 +263,7 @@ async function handleWithdraw(req: IncomingMessage, res: ServerResponse, deps: W
     requestBody: fingerprint,
     execute: async () => {
       const { requestId, breakdown } = await submitWithdrawal(
-        { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
+        { paymentsClient: deps.paymentsClient, publisher: deps.publisher, redis: deps.redisClient },
         { userId, walletId: wallet.id, amountNgn, bankCode, accountNumber, accountName, pin, pinPolicy: 'required' },
       );
       const request = await withdrawalClient.findById(requestId);

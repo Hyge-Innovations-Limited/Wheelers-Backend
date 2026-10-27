@@ -16,13 +16,13 @@ import {
   isRidePageOpen,
   lookupPhoneByUserId,
   setActiveRide,
-  setPhoneLookup,
   storeLastRoute,
   storeWhatsappRide,
 } from '../whatsapp-flows/bid-state';
 import { startSearchClock } from './search-status';
 import { autoAcceptOffAtStart } from './auto-accept';
 import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
+import { ChatUnreachableError } from '../whatsapp/scheduled-template';
 
 /** Kafka may deliver a start again long after (a rebalance, a restart): it is done once. */
 const DONE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -33,11 +33,14 @@ const SET_UP_ATTEMPTS = 3;
 /**
  * A ride for later that could not become a WhatsApp search and was put back
  * to wait: its search is ended quietly (the chat says nothing; it starts again
- * when the scheduler next finds the rider free).
+ * when the scheduler next finds the rider free, or is given up on and they are told).
  */
 export const SCHEDULED_START_HELD_REASON = 'Ride for later waits for the rider';
 
 export type ScheduledStart = 'started' | 'held' | 'app';
+
+/** The once-mark's value for a start that was put back to wait: done with, never set up again. */
+const UNDONE = 'undone';
 
 /**
  * A ride for later booked on the WhatsApp ride page has just started its
@@ -46,12 +49,16 @@ export type ScheduledStart = 'started' | 'held' | 'app';
  * same Redis state publishWhatsappRide leaves (so offers, accept, the timeout
  * and the ride page all treat it as theirs), auto-accept off (the rider picks
  * the driver), and the chat's one "Your bid is in" — held for the catch-up
- * while the rider is on the page.
+ * while the rider is on the page, and the approved template outside their 24 h
+ * window (never a plain message there).
  *
  *   started  it is a WhatsApp search now (or was already: delivered again)
- *   held     the rider is busy (searching, a driver being confirmed, on a trip):
- *            nothing is touched; ride-service puts it back to wait and the
- *            scheduler starts it once they are free
+ *   held     it did not go ahead, and waits again: the rider is busy (searching,
+ *            a driver being confirmed, on a trip), it could not be set up, or its
+ *            start could not reach them. This decision is final, whatever
+ *            ride-service decided: the ride for later goes back to waiting, the
+ *            search ride-service may have started is ended quietly, and the
+ *            scheduler starts it again once they are free (or gives up on it)
  *   app      no phone on the account: the app's path is the only way to reach them
  */
 export async function startScheduledWhatsappSearch(
@@ -60,22 +67,40 @@ export async function startScheduledWhatsappSearch(
 ): Promise<ScheduledStart> {
   const redis = deps.redisClient;
   const doneKey = `ride:${event.rideId}:wa-scheduled`;
-  if (await redis.get(doneKey).catch(() => null)) return 'started';
+  const done = await redis.get(doneKey).catch(() => null);
+  // Delivered again: started already, or put back already (never set up a second time).
+  if (done === UNDONE) return 'held';
+  if (done) return 'started';
 
   const user = await userClient.findById(event.riderId).catch(() => null);
   const found = (await lookupPhoneByUserId(redis, event.riderId).catch(() => null)) ?? user?.phone ?? null;
   if (!found) return 'app';
   const phone: string = found;
 
-  // Busy: the same question ride-service asks (the database), so both hold it together.
-  if (await rideClient.findOtherLiveRide(event.riderId, event.rideId).catch(() => null)) return 'held';
-  // A search they started a moment ago, not in the database yet: theirs. ride-service puts this one back when it replaces it.
+  // Still this ride for later's start? (Put back meanwhile, or no longer waiting: nothing to set up.)
+  // The database not answering: as before, it goes ahead.
+  const scheduled = await scheduledRideClient.findByRequestedRideId(event.rideId).catch(() => undefined);
+  if (scheduled !== undefined && (!scheduled || scheduled.status !== 'DISPATCHED')) {
+    await putBack('no longer current', false);
+    return 'held';
+  }
+
+  // Busy: in the database (on a trip, a search, a booking being confirmed)...
+  const busy = await rideClient.findOtherLiveRide(event.riderId, event.rideId).catch(() => null);
+  if (busy) {
+    await putBack('rider busy', false);
+    return 'held';
+  }
+  // ...or a search they started a moment ago, not in the database yet.
   const current = await getActiveRide(redis, event.riderId).catch(() => null);
   if (current && current !== event.rideId) {
     const [state, meta] = await Promise.all([getRideState(redis, current).catch(() => null), getRideMeta(redis, current).catch(() => null)]);
     const started = meta?.createdAt ? Date.parse(meta.createdAt) : NaN;
     const searching = state === null || state === 'setup' || state === 'searching' || state === 'bidding';
-    if (meta?.riderId === event.riderId && searching && Number.isFinite(started) && Date.now() - started < FRESH_SEARCH_MS) return 'held';
+    if (meta?.riderId === event.riderId && searching && Number.isFinite(started) && Date.now() - started < FRESH_SEARCH_MS) {
+      await putBack('rider searching', false);
+      return 'held';
+    }
   }
 
   // Once per search, however often it is delivered.
@@ -100,33 +125,59 @@ export async function startScheduledWhatsappSearch(
 
   // Redis refusing a step: tried again here (Kafka does not retry a failed handler).
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= SET_UP_ATTEMPTS; attempt++) {
+  let setUpDone = false;
+  for (let attempt = 1; attempt <= SET_UP_ATTEMPTS && !setUpDone; attempt++) {
     try {
       await setUp();
-      await tellChat();
-      return 'started';
+      setUpDone = true;
     } catch (error) {
       lastError = error;
       if (attempt < SET_UP_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     }
   }
+  if (!setUpDone) {
+    // Never half a WhatsApp search and half the app's: what was set up is undone.
+    console.warn('[gateway] scheduled ride: WhatsApp search not set up, put back to wait', { rideId: event.rideId, error: lastError instanceof Error ? lastError.message : String(lastError) });
+    await putBack('not set up', true);
+    return 'held';
+  }
 
-  // Never half a WhatsApp search and half the app's: what was set up is undone, the
-  // search ride-service started is ended quietly, and the ride for later waits again.
-  console.warn('[gateway] scheduled ride: WhatsApp search not set up, put back to wait', { rideId: event.rideId, error: lastError instanceof Error ? lastError.message : String(lastError) });
-  await clearActiveRideIfMatches(redis, event.riderId, event.rideId).catch(() => undefined);
-  await cleanupRideKeys(redis, event.rideId).catch(() => undefined);
-  await redis.del(doneKey).catch(() => undefined);
-  await scheduledRideClient.requeueDispatched(event.rideId).catch(() => false);
-  await deps.publisher?.publishRideEvent(RideCancelledEvent.parse({
-    eventType: 'RIDE_CANCELLED',
-    rideId: event.rideId,
-    riderId: event.riderId,
-    cancelledBy: 'system',
-    reason: SCHEDULED_START_HELD_REASON,
-    timestamp: new Date().toISOString(),
-  })).catch((error) => console.warn('[gateway] scheduled ride: search not ended', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
-  return 'held';
+  try {
+    await tellChat();
+  } catch (error) {
+    if (!(error instanceof ChatUnreachableError)) throw error;
+    // Its start cannot reach them (window closed, the template not sent): drivers are not called to
+    // nobody. It waits again; the scheduler tries once more, or gives up on it and tells them.
+    console.warn('[gateway] scheduled ride: start could not reach the rider, put back to wait', { rideId: event.rideId });
+    await putBack('unreachable', true);
+    return 'held';
+  }
+  return 'started';
+
+  /**
+   * Back to waiting: the ride for later is SCHEDULED again (if it is still this
+   * start), the search ride-service may have started is ended quietly (the chat
+   * says nothing), and this start is marked done with, never set up again.
+   * Each step is safe to repeat.
+   */
+  async function putBack(why: string, undoSetUp: boolean): Promise<void> {
+    if (undoSetUp) {
+      await clearActiveRideIfMatches(redis, event.riderId, event.rideId).catch(() => undefined);
+      await cleanupRideKeys(redis, event.rideId).catch(() => undefined);
+    }
+    // Never deleted: a redelivery finds it and does nothing (the ride for later has a new search id next time).
+    await redis.set(doneKey, UNDONE, DONE_TTL_SECONDS).catch(() => undefined);
+    const requeued = await scheduledRideClient.requeueDispatched(event.rideId).catch(() => false);
+    await deps.publisher?.publishRideEvent(RideCancelledEvent.parse({
+      eventType: 'RIDE_CANCELLED',
+      rideId: event.rideId,
+      riderId: event.riderId,
+      cancelledBy: 'system',
+      reason: SCHEDULED_START_HELD_REASON,
+      timestamp: new Date().toISOString(),
+    })).catch((error) => console.warn('[gateway] scheduled ride: search not ended', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
+    console.info('[gateway] scheduled ride put back to wait', { rideId: event.rideId, why, requeued });
+  }
 
   async function setUp(): Promise<void> {
     // The rider picks the driver: auto-accept is off for every ride for later. First,
@@ -154,16 +205,17 @@ export async function startScheduledWhatsappSearch(
       createdAt: new Date().toISOString(),
     });
     await setActiveRide(redis, event.riderId, event.rideId);
-    // The consumer finds the chat by this (it lapses a day after the rider's last message).
-    if (!(await lookupPhoneByUserId(redis, event.riderId).catch(() => null))) {
-      await setPhoneLookup(redis, event.riderId, phone).catch(() => undefined);
-    }
+    // The phone lookup is NOT renewed here: it is the rider's own (24 h after their last
+    // message), and renewing it on a start would make a closed window look open.
     await startSearchClock(redis, event.rideId);
     await storeLastRoute(redis, event.riderId, { ...trip, offerNgn });
     await clearSearchTimedOut(redis, event.riderId);
   }
 
-  /** "Your bid is in", with the way to the offers. On the page: when they leave, if still searching. */
+  /**
+   * "Your bid is in", with the way to the offers. On the page: when they leave, if still searching.
+   * Outside their window: the template, or ChatUnreachableError.
+   */
   async function tellChat(): Promise<void> {
     const said: RidePageChatEvent = {
       kind: 'search_started', userId: event.riderId, phone, rideId: event.rideId, offerNgn,
@@ -173,9 +225,12 @@ export async function startScheduledWhatsappSearch(
     };
     if (await isRidePageOpen(redis, event.riderId).catch(() => false)) {
       await deferUntilPageLeft(redis, event.riderId, { kind: 'search_started', rideId: event.rideId, event: said as unknown as Record<string, unknown> }).catch(() => undefined);
-    } else {
-      await deps.ridePageChat?.(said).catch((error) =>
-        console.warn('[gateway] scheduled ride: chat message failed', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
+      return;
     }
+    if (!deps.ridePageChat) return;
+    await deps.ridePageChat(said).catch((error) => {
+      if (error instanceof ChatUnreachableError) throw error;
+      console.warn('[gateway] scheduled ride: chat message failed', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) });
+    });
   }
 }

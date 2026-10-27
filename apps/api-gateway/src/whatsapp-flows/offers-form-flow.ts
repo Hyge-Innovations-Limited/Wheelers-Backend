@@ -11,10 +11,11 @@ import {
   publishWhatsappRide,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
-import { clearBids, clearPendingAccept, markCancelledOnPage, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
+import { clearBids, clearPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
 import type { LastRouteData, PendingRouteData, SearchTimedOut, WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
+import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
 
 /**
@@ -255,6 +256,8 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (action === 'update_price') {
     const amount = Math.round(Number(String(data['new_price'] ?? '').replace(/[,\s₦]/g, '')));
     if (!Number.isFinite(amount) || amount <= 0) return priceScreen(deps, rideId, 'Enter your price in figures, e.g. 3000.');
+    // Nobody is asked about auto-booking here: a yes given elsewhere does not carry over to this price.
+    await autoAcceptOffForChatPrice(deps.redisClient, rideId).catch(() => undefined);
     const result = await changeRiderOffer(service, userId, rideId, amount);
     if (!result.ok) {
       if (result.code === 'BELOW_MINIMUM') return priceScreen(deps, rideId, `${naira(amount)} is below the lowest price for this trip, ${naira(result.minOfferNgn)}. It's in the box now: tap Update price to offer it, or type a higher price.`, result.minOfferNgn);
@@ -269,7 +272,13 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     if (!reason) return cancelScreen('Pick a reason to continue.');
     // The form says it in the chat (onSearchCancelled): the cancellation event says nothing more.
     await markCancelledOnPage(deps.redisClient, rideId).catch(() => undefined);
-    await cancelWhatsappRide(service, userId, rideId, reason);
+    try {
+      await cancelWhatsappRide(service, userId, rideId, reason);
+    } catch (error) {
+      // Not cancelled: the chat may speak of this search again.
+      await unmarkCancelledOnPage(deps.redisClient, rideId).catch(() => undefined);
+      throw error;
+    }
     // The offers message this form hung from is dead now, so the chat would be
     // left with no button at all: one line, with Quick Actions on it.
     await deps.onSearchCancelled?.(userId).catch((error) => console.warn('[offers-form] cancel not said in the chat', { userId, error: error instanceof Error ? error.message : String(error) }));

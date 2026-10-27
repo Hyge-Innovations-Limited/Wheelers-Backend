@@ -119,6 +119,11 @@ export async function markSearchEnded(redis: RedisClient, rideId: string): Promi
   await redis.set(endedKey(rideId), '1', ENDED_SECONDS).catch(() => undefined);
 }
 
+/** The cancel that ended it never went out: the search is not over after all. */
+export async function clearSearchEnded(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(endedKey(rideId)).catch(() => undefined);
+}
+
 export async function isSearchEnded(redis: RedisClient, rideId: string): Promise<boolean> {
   return Boolean(await redis.get(endedKey(rideId)).catch(() => null));
 }

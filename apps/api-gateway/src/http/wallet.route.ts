@@ -569,7 +569,7 @@ export async function handleCreateWalletWithdrawalRoute(
       requestBody: { ...rawBody, pin: undefined },
       execute: async () => {
         const { requestId } = await submitWithdrawal(
-          { paymentsClient: deps.paymentsClient, publisher: deps.publisher },
+          { paymentsClient: deps.paymentsClient, publisher: deps.publisher, redis: deps.redisClient },
           {
             userId: user.id,
             walletId: wallet.id,

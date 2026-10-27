@@ -16,6 +16,7 @@ import {
   type RideRouteUpdatedEvent,
   type RideRequestedEvent,
   type ScheduledRideHeldEvent,
+  type ScheduledRideGaveUpEvent,
 } from '@wheleers/kafka-schemas';
 import { randomUUID } from 'node:crypto';
 
@@ -43,6 +44,8 @@ export type RideEventsProducer = {
   rideBidTimeout(event: RideBidTimeoutEvent): Promise<void>;
   /** A WhatsApp ride for later is due while the rider is busy: it waits (the gateway tells them once). */
   scheduledRideHeld(event: ScheduledRideHeldEvent): Promise<void>;
+  /** A WhatsApp ride for later given up on (cancelled): the gateway tells the rider once. */
+  scheduledRideGaveUp(event: ScheduledRideGaveUpEvent): Promise<void>;
   rideAssignmentFailed(event: RideAssignmentFailedEvent): Promise<void>;
   groupRideDriverAssigned(event: GroupRideDriverAssignedEvent): Promise<void>;
   rideOfferAccepted(event: RideOfferAcceptedEvent): Promise<void>;
@@ -95,6 +98,10 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
     },
 
     async scheduledRideHeld(event) {
+      await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
+    },
+
+    async scheduledRideGaveUp(event) {
       await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
     },
 

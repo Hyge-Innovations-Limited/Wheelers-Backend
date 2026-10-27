@@ -1,4 +1,5 @@
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, markSearchEnded, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../../rides/booking-lock';
+import { autoAcceptOffForChatPrice } from '../../rides/auto-accept';
 import { cleanupRideKeys, clearAcceptedSeats, clearActiveRide, clearPendingAccept, getAcceptedBid, getGroupSeat, getGroupSeatMembers, getLastBatch, getPendingAccept, getRideMeta, getRideState, recordAcceptedSeat, setActiveRide, setBookingStage, storePendingRoute, storeRiderOfferChange } from '../../whatsapp-flows/bid-state';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, isMoreCommand, parseAcceptCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { replyAndLog, sendMetaLinkButton, sendMetaReply } from '../../whatsapp/send';
@@ -366,6 +367,8 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
           return true;
         }
 
+        // A price typed in the chat is never one the rider said yes to auto-booking at: off.
+        await autoAcceptOffForChatPrice(deps.redisClient, activeRideId).catch(() => undefined);
         // Update the rider's offer in Redis (the search's TTL, and the remembered route)
         await storeRiderOfferChange(deps.redisClient, activeRideId, meta, counterOffer);
 

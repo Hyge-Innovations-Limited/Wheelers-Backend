@@ -1,4 +1,4 @@
-import { rideClient, safetyAlertClient } from '@wheleers/db';
+import { rideClient, safetyAlertClient, type SafetyAlertKind } from '@wheleers/db';
 
 /**
  * The emergency button for a WhatsApp rider: one tap on the ride card's SOS
@@ -12,7 +12,21 @@ import { rideClient, safetyAlertClient } from '@wheleers/db';
  * A chat tap carries no position, so the car's last known one is recorded:
  * during a trip that IS where the rider is.
  */
-export async function raiseRiderSos(userId: string, from: 'ride_card' | 'ride_page' = 'ride_card'): Promise<{ alertId: string; alreadyOpen: boolean }> {
+/** The app's Emergency choices, in its order (components/emergency-button.tsx, lib/safety.ts describeAlertKind). */
+export const SOS_KINDS: ReadonlyArray<{ kind: SafetyAlertKind; label: string }> = [
+  { kind: 'SOS', label: 'I need help now' },
+  { kind: 'UNSAFE_DRIVING', label: 'Unsafe driving' },
+  { kind: 'ROUTE_DEVIATION', label: 'We are off the route' },
+  { kind: 'ACCIDENT', label: 'There has been an accident' },
+  { kind: 'MEDICAL', label: 'Medical emergency' },
+];
+
+/** How the app names an alert's kind. */
+export function sosLabel(kind: string): string {
+  return SOS_KINDS.find((k) => k.kind === kind)?.label ?? 'I need help now';
+}
+
+export async function raiseRiderSos(userId: string, from: 'ride_card' | 'ride_page' = 'ride_card', kind: SafetyAlertKind = 'SOS'): Promise<{ alertId: string; alreadyOpen: boolean }> {
   const rideId = (await rideClient.findActiveByRider(userId).catch(() => null))?.id ?? null;
   const open = await safetyAlertClient.findOpenForUser(userId, rideId);
   if (open) return { alertId: open.id, alreadyOpen: true };
@@ -22,7 +36,7 @@ export async function raiseRiderSos(userId: string, from: 'ride_card' | 'ride_pa
   const alert = await safetyAlertClient.raise({
     userId,
     raisedByRole: 'RIDER',
-    kind: 'SOS',
+    kind,
     rideId,
     counterpartUserId: ride?.driver?.userId ?? null,
     lat: car?.lat ?? null,

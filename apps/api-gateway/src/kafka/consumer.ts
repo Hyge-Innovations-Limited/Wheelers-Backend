@@ -53,6 +53,9 @@ import {
   isRidePageOpen,
   clearBids,
   whatsappWindowEnd,
+  storeTripLine,
+  setPageNotice,
+  isRidePageSeen,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
@@ -80,6 +83,7 @@ import { loadTripChat } from '../trip-chat/access';
 import { hasRideCard, setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
 import { SCHEDULED_START_HELD_REASON, startScheduledWhatsappSearch } from '../rides/scheduled-whatsapp';
+import { ChatUnreachableError } from '../whatsapp/scheduled-template';
 import type { StellarService } from '../stellar/service';
 import { createPageCatchup, deferUntilPageLeft, deliverCatchup, pendingCatchup } from '../whatsapp-flows/page-catchup';
 import type { CatchupItem } from '../whatsapp-flows/page-catchup';
@@ -430,6 +434,29 @@ async function tellScheduledRideHeld(deps: StartGatewayConsumerDeps, event: Extr
   await sayScheduledHeld(deps, event.riderId, text);
 }
 
+/** "Your 3:30 PM ride could not start, so it was cancelled." Lagos time. */
+export function scheduledGaveUpText(scheduledFor: string): string {
+  const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Africa/Lagos' }).format(new Date(scheduledFor));
+  return `Your ${time} ride could not start, so it was cancelled.`;
+}
+
+/**
+ * A WhatsApp ride for later the scheduler gave up on (its start could not reach
+ * them, or it waited an hour past its time): never silent, said once. In the
+ * chat when it can reach them (their window open) and they are not on the ride
+ * page; otherwise on the page's Home (state.notice, until seen) and in the app.
+ */
+async function tellScheduledRideGaveUp(deps: StartGatewayConsumerDeps, event: Extract<RideEvent, { eventType: 'SCHEDULED_RIDE_GAVE_UP' }>): Promise<void> {
+  if (!(await deps.redisClient.setIfNotExists(`scheduled-ride:${event.rideId}:gave-up-said`, '1', 3 * 24 * 60 * 60).catch(() => true))) return;
+  const text = scheduledGaveUpText(event.scheduledFor);
+  const onPage = await isRidePageSeen(deps.redisClient, event.riderId).catch(() => false);
+  // isRidePageOpen is also true while a start template waits for their answer: the chat cannot reach them then.
+  const chatReaches = !onPage && !(await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false));
+  if (chatReaches && await sayScheduledHeld(deps, event.riderId, text)) return;
+  await setPageNotice(deps.redisClient, event.riderId, { id: event.rideId, text }).catch(() => undefined);
+  await tellAppRider(deps, event.riderId, { title: 'Your ride for later', body: text, type: 'scheduled:cancelled', rideId: event.rideId, inApp: true });
+}
+
 async function sayScheduledHeld(deps: StartGatewayConsumerDeps, riderId: string, text: string): Promise<boolean> {
   if (!deps.whatsappNotifier) return false;
   if (!(await whatsappWindowEnd(deps.redisClient, riderId).catch(() => null))) return false;
@@ -530,7 +557,13 @@ export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId:
   }
   // search_started: "Your bid is in", with the offers already on the table counted on it.
   if (!deps.ridePageChat || !searching) return false;
-  await deps.ridePageChat(item.event as unknown as RidePageChatEvent);
+  try {
+    await deps.ridePageChat(item.event as unknown as RidePageChatEvent);
+  } catch (error) {
+    // A ride for later's start outside their window, the template not sent: nothing reaches them (the page shows it).
+    if (error instanceof ChatUnreachableError) return false;
+    throw error;
+  }
   await showCount();
   return true;
 }
@@ -876,6 +909,11 @@ export async function handleRideEvent(
 
   if (event.eventType === 'SCHEDULED_RIDE_HELD') {
     await tellScheduledRideHeld(deps, event);
+    return;
+  }
+
+  if (event.eventType === 'SCHEDULED_RIDE_GAVE_UP') {
+    await tellScheduledRideGaveUp(deps, event);
     return;
   }
 
@@ -1534,6 +1572,8 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_ROUTE_UPDATED') {
+    // The trip's road from now on (the ride page draws it under the car); a stop reached carries none.
+    if (event.route?.coordinates?.length) await storeTripLine(deps.redisClient, event.rideId, event.route.coordinates).catch(() => undefined);
     const routePayload = {
       rideId: event.rideId,
       destination: event.destination,
