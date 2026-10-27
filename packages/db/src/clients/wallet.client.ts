@@ -666,7 +666,7 @@ export const walletClient = {
 
   /** The ride's hold as it stands: whose driver it is for, and whether it still holds money. */
   rideHoldOf: (rideId: string) =>
-    prisma.rideHold.findUnique({ where: { rideId }, select: { status: true, driverUserId: true, amountNgn: true } }),
+    prisma.rideHold.findUnique({ where: { rideId }, select: { status: true, driverUserId: true, amountNgn: true, createdAt: true, updatedAt: true } }),
 
   /**
    * `forDriverUserId`: release only a hold taken for that driver. A late

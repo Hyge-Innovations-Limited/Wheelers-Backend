@@ -10,7 +10,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
-import { acceptSentFor, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -377,15 +377,33 @@ async function handleAcceptBid(
   meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
-  const busy = async () => ({ screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your driver is being confirmed — one moment.') });
-  if (!(await takeBookingLock(deps.redisClient, rideId))) return busy();
+  const guarded = await acceptBidGuarded(rideId, userId, selectedBid, meta, deps);
+  if (guarded === 'busy') return { screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your ride is being booked — one moment.') };
+  if (guarded === 'booked') return { screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your ride is already booked.') };
+  return guarded;
+}
+
+/** The accept under the lock: 'busy' (a booking is going through), 'booked' (one went out already), or the form's next screen. */
+async function acceptBidGuarded(
+  rideId: string,
+  userId: string,
+  selectedBid: string,
+  meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<'busy' | 'booked' | { screen: string; data: Record<string, unknown> }> {
+  const lock = await takeBookingLock(deps.redisClient, rideId, BOOKING_LOCK_WAIT_MS);
+  if (!lock) return 'busy';
   try {
     const state = await getRideState(deps.redisClient, rideId).catch(() => null);
-    const held = await walletClient.rideHoldOf(rideId).catch(() => null);
-    if (state === 'confirmed' || state === 'in_progress' || (await acceptSentFor(deps.redisClient, rideId)) || held?.status === 'ACTIVE') return busy();
+    if (state === 'confirmed' || state === 'in_progress' || (await acceptSentFor(deps.redisClient, rideId))) return 'booked';
+    // Money held for another driver: a booking in flight ('busy'), unless it is stale (an accept that failed) and let go.
+    const bids = await getBids(deps.redisClient, rideId);
+    const key = selectedBid.replace('bid-', '');
+    const chosen = bids.find((b) => b.driverId === key) ?? bids[parseInt(key, 10)];
+    if (chosen && (await releaseStaleHoldForOther(deps.redisClient, rideId, chosen.driverUserId)) === 'blocked') return 'busy';
     return await acceptBidOnce(rideId, userId, selectedBid, meta, deps);
   } finally {
-    await releaseBookingLock(deps.redisClient, rideId);
+    await releaseBookingLock(deps.redisClient, lock);
   }
 }
 
@@ -576,7 +594,19 @@ async function handleTopUpCheck(
 
   // Funded — run the same guarded accept. From TOP_UP the routing model
   // cannot go back to BID_LIST, so a driver-side failure exits via SUCCESS.
-  const result = await handleAcceptBid(rideId, userId, `bid-${pending.driverId}`, meta, deps);
+  const result = await acceptBidGuarded(rideId, userId, `bid-${pending.driverId}`, meta, deps);
+  // A booking going through right now: the choice stays, and the button asks again shortly.
+  if (result === 'busy') {
+    const { virtualAccount } = await getWalletInfo(userId);
+    return {
+      screen: 'TOP_UP',
+      data: buildTopUpData({ fareNgn: bid.counterOfferNgn, balanceNgn, virtualAccount, status: 'Your ride is being booked — tap again in a moment.' }),
+    };
+  }
+  if (result === 'booked') {
+    await clearFlowPendingAccept(deps.redisClient, userId);
+    return { screen: 'SUCCESS', data: buildNotifyExitData('Your ride is already booked.') };
+  }
   if (result.screen === 'BID_LIST') {
     await clearFlowPendingAccept(deps.redisClient, userId);
     return {

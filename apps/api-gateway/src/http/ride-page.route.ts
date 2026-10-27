@@ -13,6 +13,7 @@ import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { clearPendingAccept, getPendingAccept, markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
+import { releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { autoAcceptOffAtStart, isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
@@ -58,6 +59,7 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *                                               what the rider did on the page, step by step, for analytics
  *                                               (RidePageEvent; the ride_page_sessions view)
  *   GET  /ride-page/topup?amount=            what to send for ₦amount to land
+ *   POST /ride-page/keep-looking  { key? }      backed out of adding money for that offer's driver: let go of them
  *
  * The page polls /state every few seconds, and that poll is also how we know
  * the rider is looking: while it keeps coming, offers are toasts on the page
@@ -534,7 +536,8 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
   DRIVER_TAKEN: { status: 409, message: 'Another rider is confirming that driver right now. Pick another offer.' },
   HOLD_FAILED: { status: 503, message: 'Could not hold the fare in your wallet. Please try again.' },
   CONFIRM_FAILED: { status: 503, message: 'Could not confirm just now — your money is held safely. Tap Accept again.' },
-  ALREADY_CONFIRMING: { status: 409, message: 'Your driver is being confirmed — one moment.' },
+  ALREADY_CONFIRMING: { status: 409, message: 'Your ride is being booked — one moment.' },
+  ALREADY_BOOKED: { status: 409, message: 'Your ride is already booked.' },
   XLM_UNAVAILABLE: { status: 409, message: "Paying with XLM isn't available right now. Pay in naira instead — your XLM has not moved." },
 };
 
@@ -615,9 +618,18 @@ async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: Ri
 async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  // The offer they backed out of (optional; older pages send none): only that driver is let go.
+  const body = await readJsonBody(req).catch(() => null);
+  const key = isRecord(body) && typeof body.key === 'string' && body.key ? body.key : null;
   const rideId = await getActiveRide(deps.redisClient, userId);
   const paying = await getPendingAccept(deps.redisClient, userId).catch(() => null);
-  if (paying && (!rideId || paying.rideId === rideId)) await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
+  const sameOffer = !key || (paying !== null && (paying.bidId === key || `driver:${paying.driverId}` === key));
+  if (paying && sameOffer && (!rideId || paying.rideId === rideId)) {
+    // Under the booking lock: a deposit landing and booking them right now is not raced.
+    await whileNotConfirming(deps, paying.rideId, async () => {
+      await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
+    });
+  }
   sendJson(res, 200, await buildState(deps, userId));
 }
 
@@ -688,13 +700,12 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: Rid
  * it: a deposit landing or an Accept in the chat in the same second.
  */
 async function whileNotConfirming(deps: RidePageRouteDeps, rideId: string, work: () => Promise<void>): Promise<void> {
-  const key = `whatsapp:ride:${rideId}:confirming`;
-  const mine = await deps.redisClient.setIfNotExists(key, '1', 20).catch(() => true);
-  if (!mine) throw new PageError('A driver is being confirmed for this trip right now. Give it a moment.', 409, 'CONFIRMING');
+  const lock = await takeBookingLock(deps.redisClient, rideId);
+  if (!lock) throw new PageError('A driver is being confirmed for this trip right now. Give it a moment.', 409, 'CONFIRMING');
   try {
     await work();
   } finally {
-    await deps.redisClient.del(key).catch(() => undefined);
+    await releaseBookingLock(deps.redisClient, lock);
   }
 }
 

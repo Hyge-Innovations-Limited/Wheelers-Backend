@@ -3058,3 +3058,32 @@ test('QUICK ACTIONS FORM · a referral code is typed in its own box, not sent as
   await prisma.referralCode.deleteMany({ where: { userId: { in: [friend.id, at.user.id] } } });
   await prisma.user.delete({ where: { id: friend.id } });
 });
+
+test('a deposit for a chosen driver while another booking went out (auto-accept, another tap): nothing booked by it, so the plain "₦X received" is still said', async () => {
+  const { redis, deps, who, user, rideId, accepted } = await searchingRider(0);
+  const chosen = offerFrom(await onlineDriver('Tunde Ade'), 2400);
+  await bidState.addBid(redis, rideId, chosen);
+  await tapButton(deps, who, offerId(chosen), 'Accept ₦2,400');     // wallet short: Tunde remembered
+  assert.ok(await bidState.getPendingAccept(redis, user.id));
+  const { noteAcceptSent } = require('../apps/api-gateway/dist/rides/booking-lock.js');
+  await noteAcceptSent(redis, rideId, 'another-driver-user');        // auto-accept booked someone else meanwhile
+  await prisma.wallet.update({ where: { userId: user.id }, data: { balanceNgn: 2400 } });
+  assert.equal(await createWhatsappDepositFinisher(deps)({ userId: user.id, amountNgn: 2400, newBalanceNgn: 2400 }), false, 'not swallowed');
+  assert.equal(accepted().length, 0);
+  assert.equal(await bidState.getPendingAccept(redis, user.id), null, 'the choice is over');
+});
+
+test('GROUP SEAT · the last seat books the car once: a repeat of the last accept sends nothing more', async () => {
+  const { redis, deps, sent, who, rideId, accepted } = await searchingRider(0);
+  const seatDriver = offerFrom(await onlineDriver('Ngozi Eze'), 1500);
+  await bidState.addBid(redis, rideId, seatDriver);
+  await bidState.storeLastBatch(redis, rideId, [seatDriver]);
+  const anchorRideId = require('node:crypto').randomUUID();
+  await bidState.storeGroupSeat(redis, rideId, { anchorRideId, groupId: 'group-guard', memberCount: 1 });
+  await say(deps, who, 'accept 1');
+  assert.equal(accepted().filter((e) => e.rideId === anchorRideId).length, 1);
+  await bidState.setActiveRide(redis, (await bidState.getRideMeta(redis, rideId)).riderId, rideId);
+  await say(deps, who, 'accept 1');
+  assert.equal(accepted().filter((e) => e.rideId === anchorRideId).length, 1, 'booked once');
+  assert.match(textOf(last(sent)), /already booked/);
+});

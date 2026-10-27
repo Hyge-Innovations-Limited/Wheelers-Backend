@@ -3,7 +3,7 @@ import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schem
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { HandlerResponse } from '../websocket/handlers/types';
-import { acceptSentFor, noteAcceptSent, releaseBookingLock, takeBookingLock } from './booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
 export interface AppAcceptInput {
   rideId: string;
@@ -34,16 +34,19 @@ export async function acceptOfferInApp(
 ): Promise<HandlerResponse> {
   const { redis } = deps;
   // One booking at a time on the ride, whichever door it came through (rides/booking-lock.ts).
-  if (redis && !(await takeBookingLock(redis, input.rideId))) {
+  // A booking in progress gets a moment to finish; still busy, the app is told to try again
+  // ('busy': an app that does not know it goes back to the offers, which stay).
+  const lock = redis ? await takeBookingLock(redis, input.rideId, BOOKING_LOCK_WAIT_MS) : null;
+  if (redis && !lock) {
     return {
       type: 'ride:accept_offer:rejected',
-      payload: { rideId: input.rideId, driverId: input.driverId, reason: 'already_matched', message: 'Your ride is being booked — one moment.' },
+      payload: { rideId: input.rideId, driverId: input.driverId, reason: 'busy', message: 'Try again.' },
     };
   }
   try {
     return await acceptOnce(deps, riderId, input, timestamp);
   } finally {
-    if (redis) await releaseBookingLock(redis, input.rideId);
+    if (redis) await releaseBookingLock(redis, lock);
   }
 }
 
@@ -162,8 +165,10 @@ async function acceptOnce(
   // another driver, a second accept would book two drivers. The app fetches
   // where the booking stands instead. The same driver's hold is adopted: a
   // retry after an accept that did not go out.
+  // A stale one (an accept that failed, no acceptance sent, older than the lock) is let go instead.
   const heldFor = await walletClient.rideHoldOf(rideId).catch(() => null);
-  if (heldFor?.status === 'ACTIVE' && heldFor.driverUserId && heldFor.driverUserId !== driverUserId) {
+  const otherDriversHold = heldFor?.status === 'ACTIVE' && Boolean(heldFor.driverUserId) && heldFor.driverUserId !== driverUserId;
+  if (otherDriversHold && (!redis || (await releaseStaleHoldForOther(redis, rideId, driverUserId)) === 'blocked')) {
     return {
       type: 'ride:accept_offer:rejected',
       payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },

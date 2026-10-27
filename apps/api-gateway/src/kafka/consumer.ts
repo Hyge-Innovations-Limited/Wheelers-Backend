@@ -439,14 +439,18 @@ const PUSH_DEDUPE_SECONDS = 10 * 60;
 async function pushDriverIfAway(
   deps: StartGatewayConsumerDeps,
   driverUserId: string,
-  message: { title: string; body: string; type: string; rideId: string },
+  /**
+   * `generation` names this piece of news: the same event delivered again (or a
+   * second event saying the same thing) is one banner, real news is another —
+   * a new price, another driver booked, a later booking.
+   */
+  message: { title: string; body: string; type: string; rideId: string; generation: string },
 ): Promise<void> {
   const connected = await Promise.resolve().then(() => deps.registry.isUserConnected(driverUserId)).catch(() => true);
   if (connected) return;
-  // Once per ride, driver and message: a redelivered event (or two events saying the same) is not a second banner.
-  const first = await deps.redisClient.setIfNotExists(`push:driver:${message.rideId}:${driverUserId}:${message.title}`, '1', PUSH_DEDUPE_SECONDS).catch(() => true);
-  if (!first) return;
-  await deps.publisher.publishNotificationEvent({
+  const key = `push:driver:${message.rideId}:${driverUserId}:${message.type}:${message.generation}`;
+  if (await deps.redisClient.get(key).catch(() => null)) return;
+  const sent = await deps.publisher.publishNotificationEvent({
     eventType: 'PUSH_SEND',
     notificationId: randomUUID(),
     userId: driverUserId,
@@ -455,7 +459,9 @@ async function pushDriverIfAway(
     data: { type: message.type, rideId: message.rideId },
     priority: 'high',
     timestamp: new Date().toISOString(),
-  }).catch(() => {});
+  }).then(() => true, () => false);
+  // Remembered only once it went: a push that failed is tried again on redelivery.
+  if (sent) await deps.redisClient.set(key, '1', PUSH_DEDUPE_SECONDS).catch(() => undefined);
 }
 
 /** What auto-accept needs from the consumer: Redis, the publisher, and the rider's app to tell. */
@@ -609,6 +615,8 @@ export async function handleRideEvent(
         body: `${event.pickup.address} → ${event.destination.address}`,
         type: 'ride:offer_updated',
         rideId: event.rideId,
+        // Each price change restarts the clock: the price and its clock name it.
+        generation: `${event.riderOfferNgn ?? 0}@${event.bidsCloseAt ?? event.expiresAt}`,
       });
     }
     return;
@@ -839,7 +847,7 @@ export async function handleRideEvent(
     await markSearchEnded(deps.redisClient, event.rideId);
     // A bidder away from the app hears the search ended by push.
     for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
-      await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId: event.rideId });
+      await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `timed_out@${event.timestamp}` });
     }
 
     await driverBidClient.resolvePending(event.rideId, 'EXPIRED').catch(() => {});
@@ -924,7 +932,12 @@ export async function handleRideEvent(
         // Another driver has this ride (or it is over): that trip is left
         // exactly as it is; this driver only hears they did not get it.
         void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId, reason: 'booked_other' });
-        await pushDriverIfAway(deps, event.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId });
+        // The money this driver's accept held (if it is still theirs) goes back; the winner's hold is another driver's and stays.
+        const losingHold = await walletClient.rideHoldOf(event.rideId).catch(() => null);
+        if (losingHold?.status === 'ACTIVE' && losingHold.driverUserId === event.driverUserId) {
+          await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
+        }
+        await pushDriverIfAway(deps, event.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${ride?.driverId ?? 'none'}` });
         return;
       }
       // The rider ended it first and was told then; the driver, told they
@@ -1016,7 +1029,7 @@ export async function handleRideEvent(
         reason: 'booked_other',
       });
       // Away from the app: a push, so the driver is not left waiting on this rider.
-      await pushDriverIfAway(deps, losing.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId });
+      await pushDriverIfAway(deps, losing.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${event.driverId}` });
     }
     // Drivers who were offered it but never bid: their request card closes as
     // "Taken by another driver" instead of lingering until it expires.
@@ -1182,6 +1195,7 @@ export async function handleRideEvent(
       body: rideSnapshot?.pickup?.address ? `Pick up at ${rideSnapshot.pickup.address}` : 'Open Wheelers to see the pickup.',
       type: 'ride:matched',
       rideId: event.rideId,
+      generation: `${event.driverId}@${event.timestamp}`,
     });
 
     return;
@@ -1368,7 +1382,7 @@ export async function handleRideEvent(
         reason: searchEndReason,
       });
       if (searchEndReason === 'rider_cancelled') {
-        await pushDriverIfAway(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId });
+        await pushDriverIfAway(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
       }
     }
 
@@ -1506,7 +1520,7 @@ export async function handleRideEvent(
         });
         // The rider called off a booked trip: a driver away from the app (driving to them) hears it by push.
         if ((event.cancelledBy ?? 'rider') === 'rider' && driverUserId !== event.driverUserId) {
-          await pushDriverIfAway(deps, driverUserId, { title: 'Rider cancelled', body: 'This trip is off.', type: 'ride:cancelled', rideId: event.rideId });
+          await pushDriverIfAway(deps, driverUserId, { title: 'Rider cancelled', body: 'This trip is off.', type: 'ride:cancelled', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
         }
       } else {
         console.warn('[gateway] ride cancelled but the driver could not be notified', {

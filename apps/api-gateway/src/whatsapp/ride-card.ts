@@ -457,7 +457,15 @@ export async function acceptOfferInChat(
       await log(await sendCurrentOffers(deps, phone, rideId, `Another rider is booking ${bid.driverName} right now. Nothing was charged. Pick another driver.`));
       return;
     case 'ALREADY_CONFIRMING': {
-      const reply = `One moment, booking ${driver}…`;
+      // Maybe another driver: never named here.
+      const reply = 'One moment, your ride is being booked…';
+      await log(reply);
+      await sendMetaReply(deps, phone, reply);
+      return;
+    }
+    case 'ALREADY_BOOKED': {
+      await clearPendingAccept(deps.redisClient, user.id);
+      const reply = 'Your ride is already booked.';
       await log(reply);
       await sendMetaReply(deps, phone, reply);
       return;
@@ -582,7 +590,13 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
         `${received} That's not quite enough for this ride yet.`));
       return true;
     }
-    if (result.code === 'ALREADY_CONFIRMING') return true;   // their own tap got there first and is speaking
+    // Another booking got there first (theirs, or auto-accept): this deposit booked nothing, so the
+    // plain "₦X received" is still said. A booking still going through keeps the choice; a done one ends it.
+    if (result.code === 'ALREADY_BOOKED') {
+      await clearPendingAccept(deps.redisClient, deposit.userId);
+      return false;
+    }
+    if (result.code === 'ALREADY_CONFIRMING') return false;
     if (result.code === 'DRIVER_AWAY') {
       // Their app is closed for a moment and they have been pinged: the choice stays, "pay" books them.
       const reply = `${received}\n\n*${pending.driverName}*'s app is closed for a moment — we've sent them a notification. Reply *pay* in a minute to book them, or pick another driver. Your money is safe in your wallet.`;

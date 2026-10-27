@@ -27,7 +27,7 @@ import {
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
 import { startSearchClock } from './search-status';
-import { acceptSentFor, markSearchEnded, noteAcceptSent, releaseBookingLock, takeBookingLock } from './booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, markSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -281,7 +281,8 @@ export interface XlmPayer {
 
 export type ConfirmResult =
   | { ok: true; ride: ConfirmedRide }
-  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' }
+  /** ALREADY_CONFIRMING: a booking is going through right now. ALREADY_BOOKED: the ride is booked (or an acceptance went out), maybe with another driver. */
+  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' | 'ALREADY_BOOKED' }
   | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }
   /** No Stellar account yet, or no XLM price to be had right now: pay in naira instead. */
   | { ok: false; code: 'XLM_UNAVAILABLE' }
@@ -307,11 +308,12 @@ export async function confirmRideWithOffer(
   // accept and auto-accept take the same lock: rides/booking-lock.ts). A deposit
   // landing can finish the ride in the same second the rider taps Accept again;
   // without this both would publish the acceptance.
-  if (!(await takeBookingLock(deps.redisClient, rideId))) return { ok: false, code: 'ALREADY_CONFIRMING' };
+  const lock = await takeBookingLock(deps.redisClient, rideId, BOOKING_LOCK_WAIT_MS);
+  if (!lock) return { ok: false, code: 'ALREADY_CONFIRMING' };
   try {
     return await confirmOnce(deps, riderId, rideId, key, options);
   } finally {
-    await releaseBookingLock(deps.redisClient, rideId);
+    await releaseBookingLock(deps.redisClient, lock);
   }
 }
 
@@ -337,9 +339,9 @@ async function confirmOnce(
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
   // Booked already (inside the lock, so not by a booking still on its way): never a second driver.
   const state = await getRideState(deps.redisClient, rideId).catch(() => null);
-  if (state === 'confirmed' || state === 'in_progress') return { ok: false, code: 'ALREADY_CONFIRMING' };
+  if (state === 'confirmed' || state === 'in_progress') return { ok: false, code: 'ALREADY_BOOKED' };
   // An acceptance already went out on this ride (the app, or auto-accept): not a second one.
-  if (await acceptSentFor(deps.redisClient, rideId)) return { ok: false, code: 'ALREADY_CONFIRMING' };
+  if (await acceptSentFor(deps.redisClient, rideId)) return { ok: false, code: 'ALREADY_BOOKED' };
 
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) return { ok: false, code: 'OFFER_GONE' };
@@ -396,9 +398,10 @@ async function confirmOnce(
     const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
     return existing?.status === 'ACTIVE' && Boolean(existing.driverUserId) && existing.driverUserId !== bid.driverUserId;
   };
-  if (await heldForOther()) {
+  // A stale one (an accept that failed: no acceptance sent, older than the lock) is let go so the search goes on.
+  if (await heldForOther() && (await releaseStaleHoldForOther(deps.redisClient, rideId, bid.driverUserId)) === 'blocked') {
     await deps.redisClient.del(driverClaimKey).catch(() => undefined);
-    return { ok: false, code: 'ALREADY_CONFIRMING' };
+    return { ok: false, code: 'ALREADY_BOOKED' };
   }
 
   if (wallet) try {
@@ -411,7 +414,7 @@ async function confirmOnce(
     });
     if (!hold.applied && await heldForOther()) {
       await deps.redisClient.del(driverClaimKey).catch(() => undefined);
-      return { ok: false, code: 'ALREADY_CONFIRMING' };
+      return { ok: false, code: 'ALREADY_BOOKED' };
     }
     // A hold left by an earlier attempt on this ride (this driver's) may carry a different fare.
     if (!hold.applied && hold.holdAmountNgn !== fareNgn) {

@@ -323,7 +323,9 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     case 'DRIVER_TAKEN':
       return offersScreen(deps, rideId, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`);
     case 'ALREADY_CONFIRMING':
-      return offersScreen(deps, rideId, `${bid.driverName} is being confirmed. Their details are on their way to your chat.`);
+      return offersScreen(deps, rideId, 'Your ride is being booked — one moment.');
+    case 'ALREADY_BOOKED':
+      return done('Your ride is already booked', 'The driver\'s details are in your chat.', false);
     case 'HOLD_FAILED':
       return offersScreen(deps, rideId, 'Could not hold the fare in your wallet just now — nothing was charged. Try again.');
     case 'CONFIRM_FAILED':

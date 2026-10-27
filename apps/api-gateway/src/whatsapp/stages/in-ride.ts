@@ -1,3 +1,4 @@
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../../rides/booking-lock';
 import { cleanupRideKeys, clearAcceptedSeats, clearActiveRide, clearPendingAccept, getAcceptedBid, getGroupSeat, getGroupSeatMembers, getLastBatch, getPendingAccept, getRideMeta, getRideState, recordAcceptedSeat, setActiveRide, setBookingStage, storePendingRoute, storeRiderOfferChange } from '../../whatsapp-flows/bid-state';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, isMoreCommand, parseAcceptCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { replyAndLog, sendMetaLinkButton, sendMetaReply } from '../../whatsapp/send';
@@ -268,32 +269,45 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
         const members = await getGroupSeatMembers(deps.redisClient, seatInfo.anchorRideId);
 
         if (allAgreed) {
-          const totalNgn = sameDriverSeats.reduce((sum, s) => sum + s.amountNgn, 0);
-          // CASH, deliberately: a WALLET acceptance makes wallet-service
-          // escrow the ENTIRE group total from whichever member accepted
-          // last. Until per-seat wallet settlement exists, each rider pays
-          // the driver their own seat price directly.
-          await deps.publisher.publishRideEvent(RideOfferAcceptedEvent.parse({
-            eventType: 'RIDE_OFFER_ACCEPTED',
-            rideId: seatInfo.anchorRideId,
-            riderId: user.id,
-            driverId: selectedBid.driverId,
-            driverUserId: selectedBid.driverUserId,
-            agreedFareNgn: totalNgn,
-            paymentMethod: 'CASH',
-            timestamp: new Date().toISOString(),
-          }));
-          await clearAcceptedSeats(deps.redisClient, seatInfo.anchorRideId);
-
-          // Every member's active ride moves onto the trip itself so trip
-          // updates (started, GPS, completed) reach them all.
-          for (const member of members) {
-            await setActiveRide(deps.redisClient, member.riderId, seatInfo.anchorRideId).catch(() => {});
+          // The anchor ride's one booking lock, like every other accept: two last seats at
+          // once (or a repeat) book the car once.
+          const lock = await takeBookingLock(deps.redisClient, seatInfo.anchorRideId, BOOKING_LOCK_WAIT_MS);
+          if (!lock || await acceptSentFor(deps.redisClient, seatInfo.anchorRideId)) {
+            await releaseBookingLock(deps.redisClient, lock);
+            await replyAndLog(deps, phone, incomingMessage, lock ? 'Your group is already booked.' : 'One moment, your group is being booked…');
+            return true;
           }
+          try {
+            const totalNgn = sameDriverSeats.reduce((sum, s) => sum + s.amountNgn, 0);
+            // CASH, deliberately: a WALLET acceptance makes wallet-service
+            // escrow the ENTIRE group total from whichever member accepted
+            // last. Until per-seat wallet settlement exists, each rider pays
+            // the driver their own seat price directly.
+            await deps.publisher.publishRideEvent(RideOfferAcceptedEvent.parse({
+              eventType: 'RIDE_OFFER_ACCEPTED',
+              rideId: seatInfo.anchorRideId,
+              riderId: user.id,
+              driverId: selectedBid.driverId,
+              driverUserId: selectedBid.driverUserId,
+              agreedFareNgn: totalNgn,
+              paymentMethod: 'CASH',
+              timestamp: new Date().toISOString(),
+            }));
+            await noteAcceptSent(deps.redisClient, seatInfo.anchorRideId, selectedBid.driverUserId);
+            await clearAcceptedSeats(deps.redisClient, seatInfo.anchorRideId);
 
-          await replyAndLog(deps, phone, incomingMessage,
-            `Seat booked with *${selectedBid.driverName}* at ₦${selectedBid.counterOfferNgn.toLocaleString()}.\n\nThat was the last seat — your group is confirmed! Driver details coming right up.`);
-          return true;
+            // Every member's active ride moves onto the trip itself so trip
+            // updates (started, GPS, completed) reach them all.
+            for (const member of members) {
+              await setActiveRide(deps.redisClient, member.riderId, seatInfo.anchorRideId).catch(() => {});
+            }
+
+            await replyAndLog(deps, phone, incomingMessage,
+              `Seat booked with *${selectedBid.driverName}* at ₦${selectedBid.counterOfferNgn.toLocaleString()}.\n\nThat was the last seat — your group is confirmed! Driver details coming right up.`);
+            return true;
+          } finally {
+            await releaseBookingLock(deps.redisClient, lock);
+          }
         }
 
         const remaining = seatInfo.memberCount - sameDriverSeats.length;

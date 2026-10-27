@@ -232,7 +232,7 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
     }
     // The wallet no longer covers it, the search is gone, a booking is already going through, or the
     // money or the message could not be handled: stop here (a failed acceptance has let go of its hold).
-    if (['WALLET_SHORT', 'RIDE_GONE', 'ALREADY_CONFIRMING', 'CONFIRM_FAILED', 'HOLD_FAILED'].includes(result.code)) return 'stop';
+    if (['WALLET_SHORT', 'RIDE_GONE', 'ALREADY_CONFIRMING', 'ALREADY_BOOKED', 'CONFIRM_FAILED', 'HOLD_FAILED'].includes(result.code)) return 'stop';
     return 'next';
   }
   const reply = await acceptOfferInApp({ publisher: deps.publisher, redis: deps.redisClient }, riderId, {
@@ -250,7 +250,7 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
     return 'booked';
   }
   const reason = reply.payload['reason'];
-  if (reason === 'insufficient_funds' || reason === 'already_matched') return 'stop';
+  if (reason === 'insufficient_funds' || reason === 'already_matched' || reason === 'busy') return 'stop';
   return 'next';
 }
 
@@ -272,9 +272,8 @@ export async function tryAutoAccept(deps: AutoAcceptDeps, rideId: string): Promi
     // The rider chose a driver and is adding money for them: that choice stands.
     const paying = await getPendingAccept(deps.redisClient, search.riderId).catch(() => null);
     if (paying?.rideId === rideId) return { booked: false };
-    // A booking is already going through (the fare is held): this is not a second one.
-    const hold = await walletClient.rideHoldOf(rideId).catch(() => null);
-    if (hold?.status === 'ACTIVE') return { booked: false };
+    // Money already held on the ride is the accepts' to judge, under the booking lock: a booking
+    // still going through is refused there, and a stale hold from a failed accept is let go.
     // The app's price in the database lags a change; the record has the latest.
     const priceNgn = search.kind === 'whatsapp' ? search.offerNgn : record?.offerNgn ?? search.offerNgn;
     const tried = new Set<string>();

@@ -121,7 +121,7 @@ test('two accepts at once on one ride (two drivers, app and chat): one acceptanc
   const again = await appAccept(w, riderId, r, loser, 7000);
   assert.equal(again.payload.reason, 'already_matched');
   const viaChat = await confirmRideWithOffer(w.deps, riderId, r.id, loserRow.id);
-  assert.equal(viaChat.code, 'ALREADY_CONFIRMING');
+  assert.equal(viaChat.code, 'ALREADY_BOOKED', 'its own code: the ride is booked, maybe with another driver');
   if (winner === a) {
     const repeat = await appAccept(w, riderId, r, a, 7000);
     assert.equal(repeat.type, 'ride:accept_offer:accepted');
@@ -264,4 +264,131 @@ test('a redelivered booking is one "You\'re booked" push; a driver can only with
   await bid(r3, noPosition, 6000, { distanceKm: undefined });
   assert.equal((await tryAutoAccept(w.deps, r3.id)).booked, false);
   assert.equal(accepted(w, r3.id).length, 0);
+});
+
+/* ── final audit ──────────────────────────────────────────────────────── */
+
+const { walletClient } = require('../packages/db/dist/index.js');
+const lockLib = require('../apps/api-gateway/dist/rides/booking-lock.js');
+const { handleRidePageRoute } = require('../apps/api-gateway/dist/http/ride-page.route.js');
+const local = require('../apps/api-gateway/dist/auth/local.js');
+
+async function holdFor(riderId, r, d, amountNgn, ageSeconds) {
+  const wallet = await prisma.wallet.findUnique({ where: { userId: riderId } });
+  await walletClient.createRideHold({ rideId: r.id, walletId: wallet.id, riderId, driverUserId: d.userId, amountNgn });
+  if (ageSeconds) await prisma.$executeRaw`UPDATE "RideHold" SET "updatedAt" = now() - make_interval(secs => ${ageSeconds}), "createdAt" = now() - make_interval(secs => ${ageSeconds}) WHERE "rideId" = ${r.id}`;
+}
+
+test('a stale hold from a failed accept (no acceptance sent, older than the lock) no longer blocks the search: it goes back and another driver is booked; a fresh one still refuses', async () => {
+  const w = world();
+  const riderId = await rider(20_000);
+  const r = await searching(riderId);
+  const a = await driver();
+  const b = await driver();
+  await bid(r, b, 6500);
+  await holdFor(riderId, r, a, 7000, 30);
+  const answer = await appAccept(w, riderId, r, b, 6500);
+  assert.equal(answer.type, 'ride:accept_offer:accepted', JSON.stringify(answer.payload));
+  const hold = await prisma.rideHold.findUnique({ where: { rideId: r.id } });
+  assert.deepEqual([hold.status, hold.driverUserId, Number(hold.amountNgn)], ['ACTIVE', b.userId, 6500], 'the old hold went back; this one is B\'s');
+  assert.equal(Number((await prisma.wallet.findUnique({ where: { userId: riderId } })).lockedNgn), 6500);
+
+  // The chat door too.
+  const r2 = await searching(riderId);
+  const c = await driver();
+  const rowC = await bid(r2, c, 6000);
+  await whatsappSearch(w, riderId, r2, [[c, rowC, 6000]]);
+  await holdFor(riderId, r2, a, 7000, 30);
+  assert.equal((await confirmRideWithOffer(w.deps, riderId, r2.id, rowC.id)).ok, true);
+
+  // A hold seconds old may be a booking still on its way: refused.
+  const r3 = await searching(riderId);
+  await bid(r3, b, 6500);
+  await holdFor(riderId, r3, a, 3000, 0);
+  assert.equal((await appAccept(w, riderId, r3, b, 6500)).payload.reason, 'already_matched');
+});
+
+test('a busy booking lock is waited on briefly, then answered "busy · Try again." (not "already matched"); a lock is only let go by its own holder', async () => {
+  const w = world();
+  const riderId = await rider(20_000);
+  const r = await searching(riderId);
+  const d = await driver();
+  await bid(r, d, 6000);
+  await w.redis.set(lockLib.bookingLockKey(r.id), 'someone-else');
+  const started = Date.now();
+  const busy = await appAccept(w, riderId, r, d, 6000);
+  assert.deepEqual([busy.payload.reason, busy.payload.message], ['busy', 'Try again.']);
+  assert.ok(Date.now() - started >= 2_000, 'it waited for the booking in progress');
+
+  // Freed during the wait: it goes through.
+  setTimeout(() => { w.redis.store.delete(lockLib.bookingLockKey(r.id)); }, 500);
+  await w.redis.set(lockLib.bookingLockKey(r.id), 'someone-else');
+  assert.equal((await appAccept(w, riderId, r, d, 6000)).type, 'ride:accept_offer:accepted');
+
+  // A holder past its time cannot delete the next holder's lock.
+  const first = await lockLib.takeBookingLock(w.redis, 'ride-x');
+  w.redis.store.set(lockLib.bookingLockKey('ride-x'), 'the-next-holder');
+  await lockLib.releaseBookingLock(w.redis, first);
+  assert.equal(w.redis.store.get(lockLib.bookingLockKey('ride-x')), 'the-next-holder');
+});
+
+test('driver pushes: real repeats push again (a new price, a later booking), redelivery does not, and a failed push is tried again', async () => {
+  const w = world();
+  const riderId = await rider(0);
+  const r = await searching(riderId);
+  const d = await driver();
+  const offer = (price, closes) => ({ eventType: 'RIDE_OFFER_SENT', rideId: r.id, riderId, driverId: d.id, driverUserId: d.userId, pickup: { address: 'A' }, destination: { address: 'B' }, stops: [], riderOfferNgn: price, expiresAt: closes, bidsCloseAt: closes, repriced: true, timestamp: new Date().toISOString() });
+  const t1 = new Date(Date.now() + 60_000).toISOString();
+  const t2 = new Date(Date.now() + 120_000).toISOString();
+  const t3 = new Date(Date.now() + 180_000).toISOString();
+  await handleRideEvent(offer(8000, t1), w.deps, new Map());
+  await handleRideEvent(offer(8000, t1), w.deps, new Map());          // redelivered
+  await handleRideEvent(offer(8500, t2), w.deps, new Map());          // raised
+  await handleRideEvent(offer(8000, t3), w.deps, new Map());          // back to ₦8,000: real news again
+  assert.deepEqual(w.pushes.map((p) => p.title), ['New price ₦8,000', 'New price ₦8,500', 'New price ₦8,000']);
+
+  const failing = world();
+  let fail = true;
+  failing.publisher.publishNotificationEvent = async (e) => { if (fail) throw new Error('down'); failing.pushes.push(e); };
+  await handleRideEvent(offer(9000, t1), failing.deps, new Map());
+  fail = false;
+  await handleRideEvent(offer(9000, t1), failing.deps, new Map());
+  assert.deepEqual(failing.pushes.map((p) => p.title), ['New price ₦9,000'], 'sent on the redelivery after the failure');
+});
+
+test('ride closed for another driver: the losing accept\'s hold goes back, the winner\'s stays', async () => {
+  const w = world();
+  const riderId = await rider(20_000);
+  const winner = await driver();
+  const loser = await driver();
+  const r = await searching(riderId, { status: 'DRIVER_ASSIGNED', driverId: winner.id });
+  await holdFor(riderId, r, loser, 6000, 0);
+  await handleRideEvent({ eventType: 'RIDE_ASSIGNMENT_FAILED', rideId: r.id, riderId, driverId: loser.id, driverUserId: loser.userId, reason: 'ride_closed', timestamp: new Date().toISOString() }, w.deps, new Map());
+  assert.notEqual((await prisma.rideHold.findUnique({ where: { rideId: r.id } })).status, 'ACTIVE', 'the loser\'s hold went back');
+
+  const r2 = await searching(riderId, { status: 'DRIVER_ASSIGNED', driverId: winner.id });
+  await holdFor(riderId, r2, winner, 6000, 0);
+  await handleRideEvent({ eventType: 'RIDE_ASSIGNMENT_FAILED', rideId: r2.id, riderId, driverId: loser.id, driverUserId: loser.userId, reason: 'ride_closed', timestamp: new Date().toISOString() }, w.deps, new Map());
+  assert.equal((await prisma.rideHold.findUnique({ where: { rideId: r2.id } })).status, 'ACTIVE', 'the winner\'s stays');
+});
+
+test('keep-looking with an offer key lets go only of that offer\'s driver', async () => {
+  const w = world();
+  const riderId = await rider(0);
+  const r = await searching(riderId);
+  const d = await driver();
+  const rowD = await bid(r, d, 6000);
+  await whatsappSearch(w, riderId, r, [[d, rowD, 6000]]);
+  await bidState.storePendingAccept(w.redis, riderId, { bidId: rowD.id, rideId: r.id, driverId: d.id, driverUserId: d.userId, driverName: 'Guard', driverPhone: '', driverRating: 5, totalRides: 1, vehicleModel: 'Corolla', vehiclePlate: 'KJA1', etaSeconds: 300, fareNgn: 6000 });
+  const call = async (body) => {
+    const bearer = local.createWalletPageToken(riderId, 'ride', 'test-secret-that-is-at-least-32-characters-long', local.RIDE_PAGE_TOKEN_TTL_SECONDS);
+    const req = { method: 'POST', headers: { authorization: `Bearer ${bearer}` }, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } };
+    const res = { statusCode: 200, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+    await handleRidePageRoute(req, res, { jwtSecret: 'test-secret-that-is-at-least-32-characters-long', redisClient: w.redis, publisher: w.publisher, paymentsClient: {} }, new URL('http://x/ride-page/keep-looking'));
+    return res;
+  };
+  await call({ key: 'some-other-offer' });
+  assert.ok(await bidState.getPendingAccept(w.redis, riderId), 'another offer: the choice stays');
+  await call({ key: rowD.id });
+  assert.equal(await bidState.getPendingAccept(w.redis, riderId), null);
 });
