@@ -222,6 +222,25 @@ test('the driver resends only the licence; everything approved is kept and the r
   assert.equal(again.body.code, 'NOT_REJECTED');
 });
 
+test('sent back for the NIN, an app that no longer asks for it can still resend: the rest is taken, the NIN is not demanded', async () => {
+  const { ninImage, ...rest } = fullApplication();
+  const both = await rejectedFor(['nin', 'licence']);
+  const r = await call('POST', '/drivers/kyc/resubmit', { token: both.token, body: { licenceImage: JPEG } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(r.body.resubmitted, ['licence']);
+
+  const ninOnly = await rejectedFor(['nin']);
+  const all = await call('POST', '/drivers/kyc/resubmit', { token: ninOnly.token, body: rest });
+  assert.equal(all.status, 200, JSON.stringify(all.body));
+  assert.deepEqual(all.body.resubmitted, ['licence', 'selfie', 'vehicle', 'vehiclePhotos']);
+  assert.equal(await kycOf(ninOnly.driverId), 'SUBMITTED');
+
+  // An older app that still sends the NIN resends it as before.
+  const old = await rejectedFor(['nin']);
+  const withNin = await call('POST', '/drivers/kyc/resubmit', { token: old.token, body: { ninImage } });
+  assert.deepEqual(withNin.body.resubmitted, ['nin']);
+});
+
 test('a resubmission missing a rejected item changes nothing', async () => {
   const d = await rejectedFor(['licence', 'vehiclePhotos']);
   const before = await submission(d.driverId);

@@ -236,7 +236,7 @@ export async function handleDriverKycResubmitRoute(
   }
 
   const rejected = (submission.rejectedFields ?? []).filter(isKycField);
-  const fields: KycField[] = rejected.length > 0 ? KYC_FIELDS.filter((f) => rejected.includes(f)) : [...KYC_FIELDS];
+  let fields: KycField[] = rejected.length > 0 ? KYC_FIELDS.filter((f) => rejected.includes(f)) : [...KYC_FIELDS];
 
   try {
     const rawBody = await readJsonBody(req);
@@ -246,6 +246,12 @@ export async function handleDriverKycResubmitRoute(
     }
 
     const input = readKycInput(rawBody);
+    // The NIN is no longer asked for: an app that sends none is not held to it.
+    // Sent back for the NIN alone, that app walks every other step and sends those.
+    if (!input.ninImage && fields.includes('nin')) {
+      fields = fields.filter((f) => f !== 'nin');
+      if (fields.length === 0) fields = KYC_FIELDS.filter((f) => f !== 'nin');
+    }
     const missing = missingFields(input, fields);
     if (missing.length > 0) {
       sendJson(res, 400, {
