@@ -544,6 +544,34 @@ export async function handleRideMessage(
         };
       }
       agreedFareNgn = Number(bid.amountNgn);
+    } else {
+      // The app names the driver, not the bid: their bid on this ride is
+      // still the price truth, and one they withdrew or the rider declined
+      // can no longer be booked.
+      const bids = await driverBidClient.findByRide(rideId).catch(() => []);
+      const theirs = bids.filter((b) => b.driverId === driverId);
+      const open = theirs.find((b) => b.status === 'PENDING');
+      if (theirs.length > 0 && !open) {
+        return {
+          type: 'ride:accept_offer:rejected',
+          payload: { rideId, driverId, reason: 'offer_changed', message: 'That offer is no longer open.' },
+        };
+      }
+      if (open) agreedFareNgn = Number(open.amountNgn);
+    }
+
+    // ── One driver, one rider: the same claim the WhatsApp accept takes, so
+    // two riders (app or chat) cannot book the same driver at the same moment.
+    if (redis) {
+      const claimKey = `whatsapp:driver:${driverId}:accepting`;
+      const claimed = await redis.setIfNotExists(claimKey, rideId, 60).catch(() => true);
+      const owner = claimed ? rideId : await redis.get(claimKey).catch(() => null);
+      if (!claimed && owner !== rideId) {
+        return {
+          type: 'ride:accept_offer:rejected',
+          payload: { rideId, driverId, reason: 'driver_unavailable', message: 'That driver is no longer available.' },
+        };
+      }
     }
 
     // ── No hold, no match. WhatsApp riders were already checked at "pay";

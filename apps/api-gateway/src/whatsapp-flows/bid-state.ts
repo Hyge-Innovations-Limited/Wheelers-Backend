@@ -416,6 +416,10 @@ function acceptedBidKey(rideId: string): string {
   return `whatsapp:ride:${rideId}:accepted_bid`;
 }
 
+export async function clearAcceptedBid(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(acceptedBidKey(rideId));
+}
+
 export async function storeAcceptedBid(
   redis: RedisClient,
   rideId: string,

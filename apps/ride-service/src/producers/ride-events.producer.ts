@@ -5,6 +5,7 @@ import {
   type GpsStaleWarningEvent,
   type InAppSendEvent,
   type PushSendEvent,
+  type RideAssignmentFailedEvent,
   type RideBidTimeoutEvent,
   type RideCancelledEvent,
   type RideCompletedEvent,
@@ -39,6 +40,7 @@ export type RideEventsProducer = {
   rideCompleted(event: RideCompletedEvent): Promise<void>;
   rideRouteUpdated(event: RideRouteUpdatedEvent): Promise<void>;
   rideBidTimeout(event: RideBidTimeoutEvent): Promise<void>;
+  rideAssignmentFailed(event: RideAssignmentFailedEvent): Promise<void>;
   groupRideDriverAssigned(event: GroupRideDriverAssignedEvent): Promise<void>;
   rideOfferAccepted(event: RideOfferAcceptedEvent): Promise<void>;
   broadcastRideOffer(params: {
@@ -86,6 +88,10 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
     },
 
     async rideBidTimeout(event) {
+      await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
+    },
+
+    async rideAssignmentFailed(event) {
       await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
     },
 

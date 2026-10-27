@@ -310,6 +310,19 @@ export const RideRiderPayingEvent = BaseRideEvent.extend({
   driverUserId: z.string().uuid(),
 });
 
+// Fired by ride-service when a driver the rider chose cannot be given the
+// ride: already on another trip (driver_busy: the search goes on, the rider
+// picks again), or the ride ended while the assignment was on its way
+// (ride_closed). Consumed by: api-gateway (release the hold, tell the driver,
+// put the rider back to choosing).
+export const RideAssignmentFailedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_ASSIGNMENT_FAILED'),
+  riderId:      z.string().uuid(),
+  driverId:     z.string().uuid(),
+  driverUserId: z.string().uuid(),
+  reason:       z.enum(['driver_busy', 'ride_closed']),
+});
+
 // Fired by ride-service after 3 minutes with no counter-offers.
 // Consumed by: api-gateway (relay to rider as ride:bid_timeout).
 export const RideBidTimeoutEvent = BaseRideEvent.extend({
@@ -339,6 +352,7 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideDispatchDirectedEvent,
   RideBidsDeclinedEvent,
   RideRiderPayingEvent,
+  RideAssignmentFailedEvent,
   RideOfferAcceptedEvent,
   RideDriverAssignedEvent,
   RideRouteUpdatedEvent,
@@ -370,6 +384,7 @@ export type RideRiderCounterOfferEvent = z.infer<typeof RideRiderCounterOfferEve
 export type RideDispatchDirectedEvent = z.infer<typeof RideDispatchDirectedEvent>;
 export type RideBidsDeclinedEvent = z.infer<typeof RideBidsDeclinedEvent>;
 export type RideRiderPayingEvent = z.infer<typeof RideRiderPayingEvent>;
+export type RideAssignmentFailedEvent = z.infer<typeof RideAssignmentFailedEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
 export type ChatMessageSentEvent     = z.infer<typeof ChatMessageSentEvent>;
 export type RideEvent                = z.infer<typeof RideEvent>;

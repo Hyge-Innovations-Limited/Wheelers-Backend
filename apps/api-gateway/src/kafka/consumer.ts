@@ -38,6 +38,7 @@ import {
   getRideMeta,
   getBids,
   storeAcceptedBid,
+  clearAcceptedBid,
   storeLastBatch,
   getGroupRequestRider,
   storeWhatsappRide,
@@ -65,6 +66,7 @@ import {
   rideCancelledText,
   sendBidTimeoutNotification,
   sendOfferWithdrawnNotification,
+  sendMetaWhatsappMessage,
   sendRiderPaidNotification,
   sendDepositConfirmation,
   sendGroupRideGroupedNotification,
@@ -725,6 +727,8 @@ export async function handleRideEvent(
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
       await endOfferCount(deps, event.rideId);
       await cleanupRideKeys(deps.redisClient, event.rideId);
+      // An app open on the same search (begun on WhatsApp) ends it too.
+      await registry.sendToUser(event.riderId, 'ride:bid_timeout', { rideId: event.rideId });
     } else {
       await registry.sendToUser(event.riderId, 'ride:bid_timeout', {
         rideId: event.rideId,
@@ -751,6 +755,44 @@ export async function handleRideEvent(
     // The rider declined every offer: each driver's card turns to "Declined".
     for (const userId of new Set(event.driverUserIds)) {
       void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
+    }
+    return;
+  }
+
+  // The driver the rider chose could not be given the ride (ride-service).
+  if (event.eventType === 'RIDE_ASSIGNMENT_FAILED') {
+    if (event.reason === 'ride_closed') {
+      // The rider ended it first and was told then; the driver, told they
+      // won, hears it is off. Undo what the assignment re-set for WhatsApp.
+      void registry.sendToUser(event.driverUserId, 'ride:cancelled', { rideId: event.rideId, reason: 'rider_cancelled', cancelledBy: 'rider' });
+      await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => undefined);
+      await cleanupRideKeys(deps.redisClient, event.rideId).catch(() => undefined);
+      return;
+    }
+    // driver_busy: the search goes on. The money comes back, the driver's
+    // offer goes, and the rider picks another.
+    await walletClient.cancelRideHold(event.rideId).catch(() => {});
+    await driverBidClient.markWithdrawn(event.rideId, event.driverId).catch(() => {});
+    void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId });
+    void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
+      rideId: event.rideId,
+      driverId: event.driverId,
+      reason: 'driver_unavailable',
+      message: 'That driver is no longer available.',
+    });
+    const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId).catch(() => null);
+    if (phone && deps.whatsappNotifier) {
+      const chosen = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
+      await setRideState(deps.redisClient, event.rideId, 'bidding').catch(() => undefined);
+      await clearAcceptedBid(deps.redisClient, event.rideId).catch(() => undefined);
+      const pageMessage = await hasOffersPageMessage(deps.redisClient, event.rideId).catch(() => false);
+      await dropBidFromWhatsappRide(deps, event.rideId, event.riderId, event.driverId);
+      // The chat already had "Your ride is booked": say it did not hold. (Without the
+      // offers page, dropping the bid above has just said so, with the offers left.)
+      if (pageMessage) {
+        const who = chosen?.driverName ? `*${chosen.driverName}*` : 'That driver';
+        await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, [`${who} couldn't take this ride after all. Nothing was charged.`, '', 'Pick another offer.'].join('\n')).catch(() => {});
+      }
     }
     return;
   }
@@ -813,9 +855,39 @@ export async function handleRideEvent(
     const tripCode = isGroupSeat ? null : await tripCodeClient.ensure(event.rideId).catch(() => null);
     const tripCodeNeeded = tripCode ? await tripCodeStillNeeded(event.rideId).catch(() => false) : false;
 
-    // Notify rider
+    // Notify rider. The app hears "matched" whenever it is open, wherever the
+    // search began: a WhatsApp search accepted in the app waited on
+    // "Confirming your driver" for a message that only went to the chat.
+    const sendMatchedToApp = async () => {
+      const riderMatchFees = calculateRideFees(event.agreedFareNgn, await rideClient.pricingVersionOf(event.rideId));
+      // Look up driver phone so rider can call them
+      let driverPhone: string | undefined;
+      try {
+        const driver = await driverClient.findById(event.driverId);
+        driverPhone = driver.user.phone ?? undefined;
+      } catch { /* non-critical */ }
+      await registry.sendToUser(event.riderId, 'ride:matched', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        // Feedback is addressed to a *user*, not a driver record, so without
+        // this the rider's app has nobody to attach a rating to.
+        driverUserId: event.driverUserId,
+        driverName: event.driverName,
+        driverRating: event.driverRating,
+        vehiclePlate: event.vehiclePlate,
+        vehicleModel: event.vehicleModel,
+        etaSeconds: event.etaSeconds,
+        agreedFareNgn: riderMatchFees.totalNgn,
+        lockedFareNgn: event.lockedFareNgn,
+        paymentMethod: event.paymentMethod,
+        driverPhone,
+        // Only ever to the rider: they give it to the driver at pickup.
+        tripCode,
+      });
+    };
     const waRider = (await whatsappRiderPhone(deps, event.riderId, event.rideId)) !== null;
     if (waRider && deps.whatsappNotifier) {
+      await sendMatchedToApp();
       await setRideState(deps.redisClient, event.rideId, 'confirmed', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
 
@@ -842,33 +914,7 @@ export async function handleRideEvent(
       // the accept itself — the chat tap, the offers form, the page and the deposit finisher
       // all send it. A second "Ride confirmed!" text here was the same news twice.
     } else {
-      const riderMatchFees = calculateRideFees(event.agreedFareNgn, await rideClient.pricingVersionOf(event.rideId));
-
-      // Look up driver phone so rider can call them
-      let driverPhone: string | undefined;
-      try {
-        const driver = await driverClient.findById(event.driverId);
-        driverPhone = driver.user.phone ?? undefined;
-      } catch { /* non-critical */ }
-
-      await registry.sendToUser(event.riderId, 'ride:matched', {
-        rideId: event.rideId,
-        driverId: event.driverId,
-        // Feedback is addressed to a *user*, not a driver record, so without
-        // this the rider's app has nobody to attach a rating to.
-        driverUserId: event.driverUserId,
-        driverName: event.driverName,
-        driverRating: event.driverRating,
-        vehiclePlate: event.vehiclePlate,
-        vehicleModel: event.vehicleModel,
-        etaSeconds: event.etaSeconds,
-        agreedFareNgn: riderMatchFees.totalNgn,
-        lockedFareNgn: event.lockedFareNgn,
-        paymentMethod: event.paymentMethod,
-        driverPhone,
-        // Only ever to the rider: they give it to the driver at pickup.
-        tripCode,
-      });
+      await sendMatchedToApp();
 
       // Push too — the socket only reaches a foregrounded app, and "driver
       // on the way" is exactly the message a backgrounded rider must see.
@@ -1194,6 +1240,16 @@ export async function handleRideEvent(
         } else {
           await sendRideCancelledNotification(deps.whatsappNotifier, phone, details).catch(() => {});
         }
+      }
+      // An app open on the same ride hears it too (a WhatsApp search followed in the app).
+      if (!superseded) {
+        await registry.sendToUser(event.riderId, 'ride:cancelled', {
+          rideId: event.rideId,
+          reason: event.reason,
+          cancelledBy: event.cancelledBy ?? 'rider',
+          refundedNgn: holdRelease?.holdAmountNgn ?? 0,
+          ...(driverBailed ? { searchingAgain: true } : {}),
+        });
       }
       if (driverBailed) {
         // Back to bidding on the same ride: new offers land in the same chat.

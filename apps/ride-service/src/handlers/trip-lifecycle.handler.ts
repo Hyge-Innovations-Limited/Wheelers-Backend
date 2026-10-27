@@ -51,6 +51,16 @@ export function createTripLifecycleHandler(params?: {
                 actualDriverId: ride?.driverId ?? null,
                 status: ride?.status ?? null,
               });
+              // The gateway has already told this driver they won: say it did not hold.
+              await rideEventsProducer?.rideAssignmentFailed({
+                eventType: 'RIDE_ASSIGNMENT_FAILED',
+                rideId: event.rideId,
+                riderId: event.riderId,
+                driverId: event.driverId,
+                driverUserId: event.driverUserId,
+                reason: 'ride_closed',
+                timestamp: new Date().toISOString(),
+              }).catch(() => undefined);
               return;
             }
           }

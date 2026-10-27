@@ -445,20 +445,24 @@ export function createRideRequestedConsumer(params: {
     // used to go through and overwrite the first on the driver's app.
     const busyWith = await rideClient.findActiveByDriver(event.driverId).catch(() => null);
     if (busyWith && busyWith.id !== event.rideId) {
-      console.warn('[ride-service] offer accepted for a driver already on a trip — cancelling this ride', {
+      // The rider's search goes on: they pick another offer. Cancelling the
+      // whole ride here threw away every other driver's offer for one who
+      // had just been taken.
+      console.warn('[ride-service] offer accepted for a driver already on a trip — back to choosing', {
         rideId: event.rideId,
         driverId: event.driverId,
         busyRideId: busyWith.id,
       });
-      await rideEventsProducer.rideCancelled({
-        eventType: 'RIDE_CANCELLED',
+      await rideEventsProducer.rideAssignmentFailed({
+        eventType: 'RIDE_ASSIGNMENT_FAILED',
         rideId: event.rideId,
         riderId: event.riderId,
-        reason: 'driver_unavailable',
-        cancelledBy: 'system',
+        driverId: event.driverId,
+        driverUserId: event.driverUserId,
+        reason: 'driver_busy',
         timestamp: new Date().toISOString(),
       }).catch((err) => {
-        console.error('[ride-service] could not cancel double-booked ride', {
+        console.error('[ride-service] could not report a failed assignment', {
           rideId: event.rideId,
           error: (err as any)?.message ?? err,
         });
