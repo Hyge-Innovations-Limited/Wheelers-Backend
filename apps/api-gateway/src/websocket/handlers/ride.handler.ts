@@ -33,6 +33,7 @@ import type { GatewayPublisher } from '../publisher';
 import type { HandlerResponse } from './types';
 import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
+import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
@@ -643,6 +644,19 @@ export async function handleRideMessage(
         agreedFareNgn: event.agreedFareNgn,
       },
     };
+  }
+
+  if (type === 'ride:decline_offer') {
+    // One driver's offer, declined: they are told and can send a new price.
+    const rideId = requireString(payload, 'rideId');
+    const driverId = requireString(payload, 'driverId');
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (ride && ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+    const open = ride?.status === 'REQUESTED' || ride?.status === 'MATCHING';
+    const { declined } = open && redis
+      ? await declineOneOffer({ redisClient: redis, publisher }, auth.userId, rideId, driverId)
+      : { declined: false };
+    return { type: 'ride:decline_offer:done', payload: { rideId, driverId, declined } };
   }
 
   if (type === 'ride:rider_counter_offer') {

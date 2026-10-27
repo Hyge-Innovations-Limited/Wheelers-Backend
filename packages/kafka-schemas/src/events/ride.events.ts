@@ -294,12 +294,14 @@ export const RideDispatchDirectedEvent = BaseRideEvent.extend({
   driverUserId: z.string().uuid(),
 });
 
-// Fired by api-gateway when the rider declines every offer on the table.
+// Fired by api-gateway when the rider declines one offer or every offer on the table.
 // The search goes on. Consumed by: api-gateway (tell each driver: ride:bid_declined).
 export const RideBidsDeclinedEvent = BaseRideEvent.extend({
   eventType:     z.literal('RIDE_BIDS_DECLINED'),
   riderId:       z.string().uuid(),
   driverUserIds: z.array(z.string().uuid()),
+  // Declining one offer leaves the others: the count on the rider's chat message. Absent: none left.
+  remainingOffers: z.number().int().nonnegative().optional(),
 });
 
 // Fired by api-gateway when the rider chose a driver but must add money first.

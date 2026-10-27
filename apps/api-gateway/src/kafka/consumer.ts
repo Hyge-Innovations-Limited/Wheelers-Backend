@@ -751,10 +751,22 @@ export async function handleRideEvent(
 
   if (event.eventType === 'RIDE_BIDS_DECLINED') {
     const countDeps = offerCountDeps(deps);
-    if (countDeps) await showOfferCount(countDeps, event.rideId, 0).catch(() => false);
-    // The rider declined every offer: each driver's card turns to "Declined".
+    if (countDeps) await showOfferCount(countDeps, event.rideId, event.remainingOffers ?? 0).catch(() => false);
+    // The rider declined (one offer or all): each driver's card turns to
+    // "Declined" and they can send a new price. Away from the app: a push.
     for (const userId of new Set(event.driverUserIds)) {
       void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
+      if (await registry.isUserConnected(userId).catch(() => true)) continue;
+      await deps.publisher.publishNotificationEvent({
+        eventType: 'PUSH_SEND',
+        notificationId: randomUUID(),
+        userId,
+        title: 'Offer declined',
+        body: 'Send a new price.',
+        data: { type: 'bid_declined', rideId: event.rideId },
+        priority: 'high',
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
     }
     return;
   }

@@ -410,6 +410,8 @@
           dismissed[offer.key] = true;
           drawnOffers = null;
           if (state && state.phase === 'offers') drawSent(state);
+          // The driver is told and can send a new price (a new offer, a new key).
+          W.api('POST', '/ride-page/decline', { key: offer.key }).then(apply).catch(function () {});
         });
         var accept = el('button', 'btn accept', 'Accept ' + W.naira(offer.priceNgn));
         accept.type = 'button';

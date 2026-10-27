@@ -13,6 +13,7 @@ import {
   cleanupRideKeys,
   getBids,
   getRideMeta,
+  removeBid,
   setActiveRide,
   setRideState,
   storeAcceptedBid,
@@ -188,6 +189,36 @@ export async function declineAllOffers(deps: RideServiceDeps, riderId: string, r
     timestamp: new Date().toISOString(),
   });
   return { declined: declined.length };
+}
+
+/**
+ * The rider declined one driver's offer. That driver is told at once ("Offer
+ * declined") and can send a new price; the other offers and the search stay.
+ * The app and the offers page both use this.
+ */
+export async function declineOneOffer(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  driverId: string,
+): Promise<{ declined: boolean }> {
+  const bids = await getBids(deps.redisClient, rideId).catch(() => []);
+  let remaining = bids;
+  if (bids.some((bid) => bid.driverId === driverId)) {
+    remaining = await removeBid(deps.redisClient, rideId, driverId).catch(() => bids);
+    await storeLastBatch(deps.redisClient, rideId, remaining).catch(() => undefined);
+  }
+  const declined = await driverBidClient.declineOne(rideId, driverId).catch(() => null);
+  if (!declined) return { declined: false };
+  await deps.publisher.publishRideEvent({
+    eventType: 'RIDE_BIDS_DECLINED',
+    rideId,
+    riderId,
+    driverUserIds: [declined.driverUserId],
+    remainingOffers: remaining.length,
+    timestamp: new Date().toISOString(),
+  });
+  return { declined: true };
 }
 
 /* ── accept an offer ────────────────────────────────────────────────────── */

@@ -96,6 +96,20 @@ export const driverBidClient = {
     return open;
   },
 
+  /** The rider declined this one driver's open offer (the search goes on; they can bid again). */
+  declineOne: async (rideId: string, driverId: string): Promise<{ driverId: string; driverUserId: string } | null> => {
+    const open = await prisma.driverBid.findFirst({
+      where: { rideId, driverId, status: 'PENDING' },
+      select: { driverId: true, driverUserId: true },
+    });
+    if (!open) return null;
+    await prisma.driverBid.updateMany({
+      where: { rideId, driverId, status: 'PENDING' },
+      data: { status: 'DECLINED', resolvedAt: new Date() },
+    });
+    return open;
+  },
+
   /** The driver took their own bid back before the rider answered. */
   markWithdrawn: (rideId: string, driverId: string) =>
     prisma.driverBid.updateMany({

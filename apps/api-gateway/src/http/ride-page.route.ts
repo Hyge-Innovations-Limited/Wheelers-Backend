@@ -22,6 +22,7 @@ import {
   changeRiderOffer,
   confirmRideWithOffer,
   declineAllOffers,
+  declineOneOffer,
   offerKey,
   publishWhatsappRide,
   type ConfirmedRide,
@@ -40,6 +41,7 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/find         { amountNgn }  name a price → drivers are asked
  *   POST /ride-page/offer        { amountNgn }  change the bid
  *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
+ *   POST /ride-page/decline      { key }        decline one driver's offer; they can send a new price
  *   POST /ride-page/decline-all                 decline every offer; the search goes on
  *   POST /ride-page/cancel        { reason, detail? }   stop the search, saying why (the app's reasons)
  *   GET  /ride-page/places?q=&field=            places matching what the rider types (the chat's lookup)
@@ -448,6 +450,26 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   sendJson(res, 200, await buildState(deps, userId));
 }
 
+/* ── POST /ride-page/decline ──────────────────────────────────────────── */
+
+async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  const key = isRecord(body) && typeof body.key === 'string' ? body.key : '';
+  if (!key) throw new PageError('Pick an offer first.', 400, 'BAD_REQUEST');
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+  const state = await getRideState(deps.redisClient, rideId);
+  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
+  const offer = (await getBids(deps.redisClient, rideId)).find((bid) => offerKey(bid) === key);
+  if (offer) {
+    await declineOneOffer(deps, userId, rideId, offer.driverId);
+    logActivity({ userId, eventType: 'ride_offer_declined', source: 'ride_page', rideId, metadata: { driverId: offer.driverId } });
+  }
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
 /* ── POST /ride-page/decline-all ──────────────────────────────────────── */
 
 async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -757,6 +779,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/find': { method: 'POST', run: handleFind },
   '/ride-page/offer': { method: 'POST', run: handleOffer },
   '/ride-page/accept': { method: 'POST', run: handleAccept },
+  '/ride-page/decline': { method: 'POST', run: handleDecline },
   '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
   '/ride-page/places': { method: 'GET', run: handlePlaces },

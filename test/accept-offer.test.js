@@ -108,3 +108,35 @@ test('a driver another rider is booking at this moment cannot be booked twice', 
   assert.equal(answer.type, 'ride:accept_offer:rejected');
   assert.equal(answer.payload.reason, 'driver_unavailable');
 });
+
+test('declining one offer tells that driver, and their new price can be booked', async () => {
+  const rider = await person('RIDER');
+  const driver = await onlineDriver();
+  const ride = await searching(rider.id);
+  const bid = { rideId: ride.id, driverId: driver.driver.id, driverUserId: driver.user.id, riderId: rider.id, etaSeconds: 300, amountNgn: 8600 };
+  await driverBidClient.record(bid);
+  const redis = memoryRedis();
+  const answer = await handleRideMessage('ride:decline_offer', { rideId: ride.id, driverId: driver.driver.id }, { userId: rider.id, role: 'RIDER' }, publisher, {}, redis);
+  assert.equal(answer.payload.declined, true);
+  const told = published.find((e) => e.rideId === ride.id && e.eventType === 'RIDE_BIDS_DECLINED');
+  assert.deepEqual(told.driverUserIds, [driver.user.id]);
+  assert.equal(told.remainingOffers, 0);
+  assert.equal((await prisma.driverBid.findFirst({ where: { rideId: ride.id } })).status, 'DECLINED');
+
+  // The driver sends a new price: open again, and it is the price.
+  await driverBidClient.record({ ...bid, amountNgn: 8000 });
+  const again = await accept(rider, ride, driver, 8600, redis);
+  assert.equal(again.payload.reason, 'insufficient_funds');
+  assert.equal(again.payload.requiredNgn, 8000);
+});
+
+test("another rider cannot decline someone else's offer", async () => {
+  const owner = await person('RIDER');
+  const stranger = await person('RIDER');
+  const driver = await onlineDriver();
+  const ride = await searching(owner.id);
+  await assert.rejects(
+    handleRideMessage('ride:decline_offer', { rideId: ride.id, driverId: driver.driver.id }, { userId: stranger.id, role: 'RIDER' }, publisher, {}, memoryRedis()),
+    /not yours/,
+  );
+});
