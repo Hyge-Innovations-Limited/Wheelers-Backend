@@ -423,8 +423,9 @@
     if (!W.$('sheet-cancel').hidden) track('cancel_kept');
   }
   /** The rider backed out of paying for a driver: the server forgets the accept it was holding for the deposit. */
-  function keepLooking() {
-    api('POST', '/ride-page/keep-looking').then(function (next) {
+  function keepLooking(key) {
+    // The offer they backed out of: the server lets go of that choice only, not a newer one.
+    api('POST', '/ride-page/keep-looking', key ? { key: key } : undefined).then(function (next) {
       if (next && typeof next.phase === 'string' && !busy) apply(next);
     }).catch(function () { /* an older server has no such step: nothing to forget there */ });
   }
@@ -434,7 +435,7 @@
     var leftAdd = addStepOpen();
     noteSheetLeft();
     closeSheets();
-    if (leftAdd) keepLooking();
+    if (leftAdd) keepLooking(paying && paying.key);
     paying = null;
     payWith = null;
     if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state);
@@ -1072,8 +1073,9 @@
     var keys = (s.offers || []).map(function (offer) { return offer.key; });
     if (paying && !local.confirming && keys.indexOf(paying.key) < 0) {
       var wasAdding = addStepOpen();
+      var leftKey = paying.key;
       paying = null;
-      if (wasAdding) { closeSheets(); keepLooking(); }
+      if (wasAdding) { closeSheets(); keepLooking(leftKey); }
     }
     if (payWith && !W.$('sheet-pay').hidden && keys.indexOf(payWith.offer.key) < 0) { payWith = null; closeSheets(); }
     noteEndedOffers(s);
