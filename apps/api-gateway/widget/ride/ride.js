@@ -202,6 +202,35 @@
     if (unsent.length) sendSteps(leaving);
   }
 
+  /**
+   * Every request from this page, with a 20-second limit: a request that hangs
+   * (a dead connection in WhatsApp's browser) fails with one short line instead
+   * of leaving a spinner up for ever. A late answer is dropped; the next poll
+   * shows the truth. Only this page: the wallet pages keep Wheelers.api as it is.
+   */
+  var REQUEST_MS = 20000;
+  function api(method, path, body) {
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        reject({ status: 0, code: 'TIMEOUT', message: 'No answer. Try again.', body: {} });
+      }, REQUEST_MS);
+      W.api(method, path, body).then(function (value) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(value);
+      }, function (error) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
   function secondsHere() { return Math.round((Date.now() - openedAt) / 1000); }
 
   /* ── Google Maps: loaded once, only when the server gives a key ───────── */
@@ -393,9 +422,19 @@
     if (!W.$('sheet-pay').hidden) track('pay_sheet_closed');
     if (!W.$('sheet-cancel').hidden) track('cancel_kept');
   }
+  /** The rider backed out of paying for a driver: the server forgets the accept it was holding for the deposit. */
+  function keepLooking() {
+    api('POST', '/ride-page/keep-looking').then(function (next) {
+      if (next && typeof next.phase === 'string' && !busy) apply(next);
+    }).catch(function () { /* an older server has no such step: nothing to forget there */ });
+  }
+  function addStepOpen() { return !W.$('sheet-pay').hidden && !W.$('pay-add').hidden; }
+
   function sheetPutAway() {
+    var leftAdd = addStepOpen();
     noteSheetLeft();
     closeSheets();
+    if (leftAdd) keepLooking();
     paying = null;
     payWith = null;
     if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state);
@@ -420,7 +459,7 @@
         loc.pos = { lat: position.coords.latitude, lng: position.coords.longitude };
         placeMe();
         redrawLocation();
-        W.api('GET', '/ride-page/where?lat=' + encodeURIComponent(loc.pos.lat) + '&lng=' + encodeURIComponent(loc.pos.lng)).then(function (answer) {
+        api('GET', '/ride-page/where?lat=' + encodeURIComponent(loc.pos.lat) + '&lng=' + encodeURIComponent(loc.pos.lng)).then(function (answer) {
           loc.place = answer && answer.place && validPoint(answer.place) && answer.place.address ? answer.place : null;
           loc.inArea = answer && typeof answer.inArea === 'boolean' ? answer.inArea : null;
           // The pickup follows the phone while the rider leaves it alone (as the app's).
@@ -503,6 +542,7 @@
     return row;
   }
 
+  var homeRecentsSig = null;
   function drawHome(s, changed) {
     // A trip that just ended: said once here, with the way back to the chat.
     W.show(W.$('home-ended'), Boolean(local.endedNote));
@@ -514,9 +554,14 @@
     W.show(W.$('loc-off'), loc.state === 'denied');
     W.show(W.$('not-area'), loc.state !== 'denied' && loc.inArea === false);
 
+    var recents = readRecents().slice(0, 5);
     var holder = W.$('home-recents');
-    holder.innerHTML = '';
-    readRecents().slice(0, 5).forEach(function (place) {
+    var recentsSig = JSON.stringify(recents);
+    if (recentsSig !== homeRecentsSig) {
+      homeRecentsSig = recentsSig;
+      holder.innerHTML = '';
+    }
+    if (!holder.firstChild) recents.forEach(function (place) {
       holder.appendChild(placeRow(place, ICON_CLOCK, false, function () {
         track('place_picked', { field: 'destination', from: 'home_recent' });
         openPlan({ destination: place });
@@ -648,11 +693,19 @@
     render();
   }
   // The phone's own back (Android's button, the iOS swipe) closes Plan your trip, not the page.
-  window.addEventListener('popstate', function () {
-    if (local.plan) { local.plan = false; clearTimeout(planTimer); render(); }
+  window.addEventListener('popstate', function (event) {
+    var toPlan = Boolean(event.state && event.state.view === 'plan');
+    if (local.plan && !toPlan) { local.plan = false; clearTimeout(planTimer); render(); return; }
+    // A forward swipe onto an old Plan entry: stay on the screen that is true now
+    // (the shared handler may already have switched to it).
+    if (toPlan && !local.plan) {
+      if (shownView && shownView !== 'fatal') W.showOnly(shownView);
+      try { history.replaceState(null, ''); } catch (e) { /* ignore */ }
+    }
   });
   W.$('plan-back').addEventListener('click', leavePlan);
 
+  var planListSig = null;
   function drawPlan() {
     var typing = plan.query.trim().length > 0;
     ['pickup', 'destination'].forEach(function (field) {
@@ -673,15 +726,21 @@
     W.$('plan-heading').textContent = typing ? 'Matching places' : fromActive ? 'Pickup' : listedRecents.length ? 'Your places' : '';
     W.show(W.$('plan-spin'), plan.searching);
 
+    var showError = typing && plan.error && !plan.searching;
+    var showNothing = typing && plan.query.trim().length >= 3 && !plan.searching && !plan.error && plan.searchedFor === plan.query.trim() && !listedRecents.length && !results.length;
+    var hereRow = fromActive && !typing;
+    var sig = JSON.stringify([hereRow, hereRow && loc.place ? loc.place.address : '', showError ? plan.error : '', listedRecents, results, showNothing]);
     var holder = W.$('plan-list');
+    if (sig === planListSig) return;
+    planListSig = sig;
     holder.innerHTML = '';
-    if (fromActive && !typing) {
+    if (hereRow) {
       holder.appendChild(placeRow({
         title: 'Use my current location',
         subtitle: loc.place ? loc.place.address : 'Turn on location to use this'
       }, ICON_LOCATE, true, useMyLocation));
     }
-    if (typing && plan.error && !plan.searching) {
+    if (showError) {
       holder.appendChild(el('div', 'notice bad', plan.error));
     }
     listedRecents.forEach(function (place) {
@@ -690,7 +749,7 @@
     results.forEach(function (place) {
       holder.appendChild(placeRow(place, ICON_PIN, false, function () { pickPlace(place); }));
     });
-    if (typing && plan.query.trim().length >= 3 && !plan.searching && !plan.error && plan.searchedFor === plan.query.trim() && !listedRecents.length && !results.length) {
+    if (showNothing) {
       holder.appendChild(el('p', 'nothing', 'No place found. Check the spelling.'));
     }
   }
@@ -782,7 +841,7 @@
     var seq = ++plan.seq;
     plan.searching = true;
     drawPlan();
-    W.api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
+    api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
       if (seq !== plan.seq) return;   // a newer search is on its way
       plan.results = ((answer && answer.places) || []).filter(validPoint);
       plan.error = null;
@@ -811,7 +870,7 @@
     button.className = 'btn primary busy';
     W.show(W.$('plan-err'), false);
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    W.api('POST', '/ride-page/route', { pickup: pickup, destination: destination, stops: [] }).then(function (next) {
+    api('POST', '/ride-page/route', { pickup: pickup, destination: destination, stops: [] }).then(function (next) {
       track('trip_saved', { from: 'plan', distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: 0 });
       if (next.route) rememberPlaces(next.route, { pickup: pickup, destination: destination, stops: [] });
       local.plan = false;
@@ -832,6 +891,7 @@
   var noDriverClosed = readStore('sessionStorage', NODRIVER_KEY);
   var ndPicked = null;
   var ndDrawnFor = null;
+  var ndOptionsSig = null;
 
   function lastSearchOf(s) {
     var last = s && s.lastSearch;
@@ -867,8 +927,12 @@
 
     W.show(W.$('nd-retry'), prices.length > 0);
     var holder = W.$('nd-options');
-    holder.innerHTML = '';
-    prices.forEach(function (price) {
+    var optionsSig = JSON.stringify([prices, ndPicked]);
+    if (optionsSig !== ndOptionsSig) {
+      ndOptionsSig = optionsSig;
+      holder.innerHTML = '';
+    }
+    if (!holder.firstChild) prices.forEach(function (price) {
       var option = el('button', 'retry-option' + (price === ndPicked ? ' on' : ''), W.naira(price));
       option.type = 'button';
       option.setAttribute('aria-pressed', String(price === ndPicked));
@@ -888,7 +952,7 @@
     if (busy || !(amount > 0)) return;
     busy = true;
     track('find_tapped', { amountNgn: amount, again: true });
-    W.api('POST', '/ride-page/search-again', { amountNgn: amount }).then(function (next) {
+    api('POST', '/ride-page/search-again', { amountNgn: amount }).then(function (next) {
       if (fromSheet) closeSheets();
       seenOffers = null;
       apply(next);
@@ -978,7 +1042,7 @@
     button.className = 'btn primary busy';
     button.textContent = 'Asking drivers…';
     track('find_tapped', { amountNgn: W.parseAmount(W.$('price-input').value), suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0 });
-    W.api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
+    api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
@@ -1004,6 +1068,14 @@
     W.$('offers-route').textContent = [shortPlace(s.route && s.route.pickupAddress), shortPlace(s.route && s.route.destAddress)].filter(Boolean).join(' to ');
     W.$('my-offer').textContent = W.naira(s.offerNgn);
 
+    // The driver being paid for (or asked about) withdrew or sent a new price: that sheet goes.
+    var keys = (s.offers || []).map(function (offer) { return offer.key; });
+    if (paying && !local.confirming && keys.indexOf(paying.key) < 0) {
+      var wasAdding = addStepOpen();
+      paying = null;
+      if (wasAdding) { closeSheets(); keepLooking(); }
+    }
+    if (payWith && !W.$('sheet-pay').hidden && keys.indexOf(payWith.offer.key) < 0) { payWith = null; closeSheets(); }
     noteEndedOffers(s);
 
     // Declined one by one on this page, as in the app: off the list here, the search goes on.
@@ -1218,7 +1290,7 @@
           drawnOffers = null;
           if (state && state.phase === 'offers') drawSent(state);
           // The driver is told and can send a new price (a new offer, a new key).
-          W.api('POST', '/ride-page/decline', { key: offer.key }).then(apply).catch(function () {});
+          api('POST', '/ride-page/decline', { key: offer.key }).then(apply).catch(function () {});
         });
         var accept = el('button', 'btn accept', 'Accept ' + W.naira(offer.priceNgn));
         accept.type = 'button';
@@ -1301,13 +1373,17 @@
     paying = { key: offer.key, driverName: offer.driverName || 'your driver' };
     local.confirming = { name: offer.driverName || '', fareNgn: offer.priceNgn };
     render();
-    W.api('POST', '/ride-page/accept', { key: offer.key, method: method }).then(function (next) {
+    api('POST', '/ride-page/accept', { key: offer.key, method: method }).then(function (next) {
+      busy = false;
       paying = null;
       local.confirming = null;
       apply(next);
     }).catch(function (error) {
+      busy = false;   // before the redraw: the offers come back live, not greyed out
       local.confirming = null;
       if (error.status === 401) return fatal(error.message);
+      // The poll already found the ride confirmed (or ended) while this was on its way.
+      if (!state || state.phase !== 'offers') { paying = null; return; }
       if (error.code === 'WALLET_SHORT') {
         track('wallet_short_shown', { shortNgn: error.body && error.body.shortNgn ? error.body.shortNgn : 0 });
         render();
@@ -1361,7 +1437,7 @@
     if (busy || !state || state.phase !== 'offers') return;
     busy = true;
     var shownOffers = (state.offers || []).slice();
-    W.api('POST', '/ride-page/decline-all').then(function (next) {
+    api('POST', '/ride-page/decline-all').then(function (next) {
       declined = { offers: shownOffers, until: Date.now() + 1800 };
       track('decline_all', { count: shownOffers.length });
       apply(next);
@@ -1456,7 +1532,7 @@
     busy = true;
     button.className = 'btn primary busy';
     var before = state ? state.offerNgn : 0;
-    W.api('POST', '/ride-page/offer', { amountNgn: amount }).then(function (next) {
+    api('POST', '/ride-page/offer', { amountNgn: amount }).then(function (next) {
       closeSheets();
       apply(next);
       track('price_updated', { fromNgn: before, toNgn: amount });
@@ -1532,7 +1608,7 @@
     var body = { reason: cancelReason };
     var words = W.$('cancel-other').value.trim();
     if (cancelReason === OTHER && words) body.detail = words;
-    W.api('POST', '/ride-page/cancel', body).then(function (next) {
+    api('POST', '/ride-page/cancel', body).then(function (next) {
       track('cancel_confirmed', body);
       closeSheets();
       local.cancelledHere = true;
@@ -1561,7 +1637,7 @@
       track(yes ? 'edit_trip_back_confirmed' : 'edit_trip_back_kept');
       if (!yes) return;
       busy = true;
-      W.api('POST', '/ride-page/edit-trip').then(function (next) {
+      api('POST', '/ride-page/edit-trip').then(function (next) {
         apply(next);
       }).catch(function (error) {
         if (error.status === 401) return fatal(error.message);
@@ -1646,7 +1722,7 @@
     looking.appendChild(el('span', 'spinner'));
     looking.appendChild(document.createTextNode('Looking for places…'));
     holder.appendChild(looking);
-    W.api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
+    api('GET', '/ride-page/places?field=' + encodeURIComponent(field) + '&q=' + encodeURIComponent(query)).then(function (answer) {
       if (seq !== searchSeq) return;   // a newer search is on its way
       holder.innerHTML = '';
       var places = (answer && answer.places) || [];
@@ -1685,7 +1761,7 @@
     busy = true;
     button.className = 'btn primary busy';
     button.textContent = 'Working out the new price…';
-    W.api('POST', '/ride-page/route', { pickup: trip.pickup, destination: trip.destination, stops: trip.stops }).then(function (next) {
+    api('POST', '/ride-page/route', { pickup: trip.pickup, destination: trip.destination, stops: trip.stops }).then(function (next) {
       closeSheets();
       apply(next);
       track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
@@ -1758,7 +1834,17 @@
 
   /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
 
-  var tripMap = null, carMarker = null, tripLine = null, followCar = true, mapFitted = false;
+  var tripMap = null, carMarker = null, tripLine = null, tripPins = [], tripFor = null, followCar = true, mapFitted = false;
+
+  /** A new ride on the same page: the last one's pins, road and car go, and the map frames afresh. */
+  function clearTripMap() {
+    tripPins.forEach(function (pin) { pin.setMap(null); });
+    tripPins = [];
+    if (tripLine) { tripLine.setMap(null); tripLine = null; }
+    if (carMarker) { if (carMarker.gliding) cancelAnimationFrame(carMarker.gliding); carMarker.setMap(null); carMarker = null; }
+    mapFitted = false;
+    followCar = true;
+  }
 
   var TRIP_COPY = {
     DRIVER_ASSIGNED: ['Ride confirmed', 'Your driver is ', 'on the way'],
@@ -1792,10 +1878,15 @@
       if (shownView !== 'confirmed') return;
       if (!tripMap) {
         tripMap = makeMap(g, W.$('map'), t.pickup, 14);
-        new HtmlMarker(tripMap, t.pickup, 'pin-pickup');
-        new HtmlMarker(tripMap, t.destination, 'pin-dest');
         // Once they move the map themselves, stop dragging it back to the car.
         tripMap.addListener('dragstart', function () { followCar = false; });
+      }
+      var rideKey = (state && foundId(state)) || (t.tripId || '');
+      if (tripFor !== rideKey) {
+        clearTripMap();
+        tripFor = rideKey;
+        tripPins = [new HtmlMarker(tripMap, t.pickup, 'pin-pickup'), new HtmlMarker(tripMap, t.destination, 'pin-dest')];
+        tripMap.setCenter(t.pickup);
       }
       // The planned road, once: pickup to destination through the stops.
       var line = Array.isArray(t.line) ? t.line.filter(validPoint) : [];
@@ -1909,7 +2000,12 @@
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;
     if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; }
-    if (next.phase !== 'idle') local.plan = false;
+    // The trip moved on while Plan was open (a price, a search, a ride): its history entry goes too, so Back works.
+    if (next.phase !== 'idle' && local.plan) {
+      local.plan = false;
+      clearTimeout(planTimer);
+      if (history.state && history.state.view === 'plan') { try { history.back(); } catch (e) { /* ignore */ } }
+    }
 
     if (before !== next.phase) {
       track('phase_shown', { from: before || 'none' });
@@ -1925,7 +2021,7 @@
   }
 
   function refresh() {
-    return W.api('GET', '/ride-page/state').then(apply).catch(function (error) {
+    return api('GET', '/ride-page/state').then(apply).catch(function (error) {
       if (error.status === 401) fatal(error.message);
       // Anything else — a dropped connection, a slow server — just waits for the next tick.
     });
@@ -1935,7 +2031,8 @@
     if (stopped) return;
     var wait = state && state.phase === 'confirmed' ? TRACK_MS : POLL_MS;
     polling = setTimeout(function () {
-      if (document.hidden || busy) return loop();
+      // Confirming keeps asking: the poll may see the driver confirmed before the accept answers.
+      if (document.hidden || (busy && !local.confirming)) return loop();
       refresh().then(loop);
     }, wait);
   }
