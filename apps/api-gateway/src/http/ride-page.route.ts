@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { rideClient, ridePageEventClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, validateRiderOffer, formatTripId } from '@wheleers/config';
+import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { verifyWalletPageToken } from '../auth/local';
 import { extractBearerToken } from './authenticate';
@@ -14,7 +14,7 @@ import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
-import { findPlaceOptions, kmBetween, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
+import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { overLimit } from '../trip-chat/limits';
 import {
@@ -45,7 +45,8 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/decline-all                 decline every offer; the search goes on
  *   POST /ride-page/cancel        { reason, detail? }   stop the search, saying why (the app's reasons)
  *   GET  /ride-page/places?q=&field=            places matching what the rider types (the chat's lookup)
- *   POST /ride-page/route         { pickup, destination, stops? }   change the trip before pricing it
+ *   GET  /ride-page/where?lat=&lng=             the rider's position as a place (Use my current location)
+ *   POST /ride-page/route         { pickup, destination, stops? }   plan the trip (from Home) or change it before pricing it
  *   POST /ride-page/edit-trip                   go back from the search to the trip: the search stops,
  *                                               the trip comes back to Set your price to change
  *   POST /ride-page/events        { sessionId, events: [{ seq, event, phase?, rideId?, at, props? }] }
@@ -571,6 +572,27 @@ async function handlePlaces(req: IncomingMessage, res: ServerResponse, deps: Rid
   });
 }
 
+/* ── GET /ride-page/where ─────────────────────────────────────────────── */
+
+/** Where the rider's phone says they are, as a place: the pickup "Use my current location" fills in. */
+async function handleWhere(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
+  const userId = authenticate(req, deps);
+  if (!deps.googleMapsApiKey) throw new PageError('Type your pickup instead.', 503, 'EDIT_OFF');
+  const lat = Number(url.searchParams.get('lat'));
+  const lng = Number(url.searchParams.get('lng'));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 3 || lat > 14.5 || lng < 2 || lng > 15) {
+    throw new PageError('Type your pickup instead.', 400, 'PLACE_INVALID');
+  }
+  if (await overLimit(deps.redisClient, `ride-page:where:${userId}`, 20, 60)) {
+    throw new PageError('Type your pickup instead.', 429, 'TOO_MANY');
+  }
+  const inArea = !firstOutsideServiceArea([{ lat, lng }]);
+  const found = await reverseGeocode(deps.googleMapsApiKey, lat, lng).catch(() => null);
+  const address = found?.formattedAddress ?? '';
+  const [name, ...rest] = address.split(',');
+  sendJson(res, 200, { place: address ? { lat, lng, address, name: (name ?? address).trim(), area: rest.join(',').trim() } : null, inArea });
+}
+
 /* ── POST /ride-page/route ────────────────────────────────────────────── */
 
 function readPlace(value: unknown, label: string): RouteStop {
@@ -595,8 +617,8 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   if (!deps.routePlanner) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
   if (await getActiveRide(deps.redisClient, userId)) throw new PageError('Drivers are already looking at this trip. Go back to change it.', 409, 'ALREADY_SEARCHING');
+  // No trip yet: one planned on the page (Home → Plan your trip) starts here.
   const trip = await getPendingRoute(deps.redisClient, userId);
-  if (!trip) throw new PageError('This quote has expired. Send your trip to the Wheelers bot again for a fresh one.', 409, 'QUOTE_EXPIRED');
 
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
@@ -607,6 +629,7 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
   const far = [{ label: 'destination', place: destination }, ...stops.map((place, index) => ({ label: `stop ${index + 1}`, place }))]
     .find(({ place }) => kmBetween(pickup, place) > SAME_CITY_KM);
   if (far) throw new PageError(`That ${far.label} is about ${Math.round(kmBetween(pickup, far.place)).toLocaleString()} km from your pickup. Pick a place in Lagos.`, 400, 'TOO_FAR');
+  if (firstOutsideServiceArea([pickup, ...stops, destination])) throw new PageError(OUTSIDE_SERVICE_AREA_LINE, 400, 'OUTSIDE_SERVICE_AREA');
   const named = [{ label: 'pickup', place: pickup }, ...stops.map((place, index) => ({ label: `stop ${index + 1}`, place })), { label: 'destination', place: destination }];
   for (let a = 0; a < named.length; a++) {
     for (let b = a + 1; b < named.length; b++) {
@@ -616,8 +639,8 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
     }
   }
 
-  const before = trip.stops ?? [];
-  const unchanged = trip.pickupAddress === pickup.address && trip.destAddress === destination.address
+  const before = trip?.stops ?? [];
+  const unchanged = trip !== null && trip.pickupAddress === pickup.address && trip.destAddress === destination.address
     && before.length === stops.length && stops.every((stop, index) => stop.address === before[index]!.address);
   if (!unchanged) {
     const planned = await deps.routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
@@ -784,6 +807,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
   '/ride-page/places': { method: 'GET', run: handlePlaces },
   '/ride-page/route': { method: 'POST', run: handleRoute },
+  '/ride-page/where': { method: 'GET', run: handleWhere },
   '/ride-page/edit-trip': { method: 'POST', run: handleEditTrip },
   '/ride-page/events': { method: 'POST', run: handleEvents },
   '/ride-page/topup': { method: 'GET', run: handleTopup },

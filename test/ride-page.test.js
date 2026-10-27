@@ -567,6 +567,39 @@ test('the trip is changed on the page before a price: planned again, new suggest
   assert.equal((await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_B, destination: PLACE_A })).body.code, 'ALREADY_SEARCHING');
 });
 
+test('from Home: a trip planned on the page with no quote yet goes straight to its price; outside Lagos is refused', async () => {
+  const { deps, redis } = world();
+  deps.routePlanner = { planRoute: async () => ({ distanceKm: 8.2, durationSeconds: 1500, suggestedFareNgn: 4100, minOfferNgn: 3700, ratePerKmNgn: 350, geometry: { coordinates: [], bounds: { northEast: PLACE_A, southWest: PLACE_B } } }) };
+  deps.googleMapsApiKey = 'test-key';
+  const rider = await makeRider(10_000);
+  assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.phase, 'idle');
+  const abeokuta = { lat: 7.1475, lng: 3.3619, address: 'Kuto, Abeokuta' };
+  assert.equal((await call(deps, rider, 'POST', '/ride-page/route', { pickup: abeokuta, destination: { lat: 7.16, lng: 3.35, address: 'Ibara, Abeokuta' } })).body.code, 'OUTSIDE_SERVICE_AREA');
+  const planned = await call(deps, rider, 'POST', '/ride-page/route', { pickup: PLACE_A, destination: PLACE_B });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.equal(planned.body.phase, 'price');
+  assert.equal(planned.body.route.suggestedFareNgn, 4100);
+  assert.equal((await bidState.getPendingRoute(redis, rider)).pickupAddress, PLACE_A.address);
+});
+
+test('Use my current location: the phone\'s position comes back as a place, and whether it is in Lagos', async () => {
+  const { deps } = world();
+  deps.googleMapsApiKey = 'test-key';
+  const rider = await makeRider(0);
+  global.fetch = async () => ({ ok: true, json: async () => ({ status: 'OK', results: [{ formatted_address: '12 Herbert Macaulay Way, Yaba, Lagos', address_components: [], types: ['street_address'] }] }) });
+  try {
+    const here = await call(deps, rider, 'GET', '/ride-page/where?lat=6.5095&lng=3.3711');
+    assert.equal(here.status, 200, JSON.stringify(here.body));
+    assert.equal(here.body.inArea, true);
+    assert.ok(here.body.place.address.length > 0);
+    assert.equal(here.body.place.lat, 6.5095);
+    assert.equal((await call(deps, rider, 'GET', '/ride-page/where?lat=7.1475&lng=3.3619')).body.inArea, false);
+    assert.equal((await call(deps, rider, 'GET', '/ride-page/where?lat=51.5&lng=-0.12')).body.code, 'PLACE_INVALID');
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
 test('going back from the search to change the trip stops the search and brings the trip back, price and all; the chat is not told it was cancelled', async () => {
   const { deps, redis, events, chat } = world();
   const rider = await makeRider(10_000);
