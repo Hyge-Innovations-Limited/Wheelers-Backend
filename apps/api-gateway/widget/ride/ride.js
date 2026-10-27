@@ -9,7 +9,8 @@
  * It holds no booking state of its own: every few seconds it asks the server
  * where the booking is and redraws, so leaving, refreshing or coming back an
  * hour later shows the truth. Fields a newer server adds (priceReason,
- * driversNotified, bidsCloseAt, lastSearch) are all optional:
+ * driversNotified, bidsCloseAt, lastSearch, scheduleUntil, rideCancelReasons,
+ * supportContact, places on the trip) are all optional:
  * missing, their part of the screen is simply not shown. */
 (function () {
   'use strict';
@@ -33,7 +34,8 @@
     plan: false,             // Plan your trip is open (over the home)
     confirming: null,        // { name, fareNgn }: Pay was tapped, the accept is on its way
     endedNote: null,         // "Trip ended": said once on the home after a trip
-    cancelledHere: false     // the search was cancelled on this page: no "Search ended" too
+    cancelledHere: false,    // the search was cancelled on this page: no "Search ended" too
+    rideCancelledHere: false // the ride was cancelled on this page: "Ride cancelled", not "Trip ended"
   };
 
   /* ── screens over Home: Plan your trip, Later, saved places ──────────────
@@ -64,9 +66,12 @@
   /** Straight back to Home (a trip planned, a ride booked for later): every screen's entry goes too. */
   function navHome() {
     var entries = history.state && typeof history.state.depth === 'number' ? history.state.depth : 0;
+    // A sheet open over the screens has its own entry on top: it goes too.
+    if (history.state && history.state.sheet) entries += 1;
     nav = [];
     syncNav();
     clearTimeout(planTimer);
+    hideSheets();
     if (entries > 0) { try { history.go(-entries); } catch (e) { /* ignore */ } }
   }
   /** The history moved (Back, or a forward swipe): the screens follow it. */
@@ -206,6 +211,7 @@
       stops.forEach(function (address, index) {
         // A row as the app's route card draws one: the hollow dot on the rail, "Stop 1", the address.
         var row = el('div', 'route-row stop mid');
+        row.setAttribute('data-edit', String(index));
         var rail = el('span', 'rail');
         rail.appendChild(el('span', 'dot mid'));
         rail.appendChild(el('span', 'rail-line'));
@@ -460,7 +466,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-trip', 'sheet-cancel', 'sheet-time', 'sheet-scheduled'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
@@ -487,13 +493,7 @@
     }
   }
   function hideSheets() {
-    W.show(W.$('sheet-offer'), false);
-    W.show(W.$('sheet-pay'), false);
-    W.show(W.$('sheet-confirm'), false);
-    W.show(W.$('sheet-trip'), false);
-    W.show(W.$('sheet-cancel'), false);
-    W.show(W.$('sheet-time'), false);
-    W.show(W.$('sheet-scheduled'), false);
+    SHEETS.forEach(function (id) { W.show(W.$(id), false); });
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
   }
@@ -551,6 +551,9 @@
   }
   W.$('overlay').addEventListener('click', sheetPutAway);
   window.addEventListener('popstate', function (event) {
+    // The link's time is up (or it was refused): Back shows nothing under it (common.js's own
+    // listener may have shown a screen's view from the history entry: put the note back).
+    if (shownView === 'expired' || shownView === 'fatal') { W.showOnly(shownView); return; }
     if (sheetBackPending) {
       sheetBackPending = false;
       // A sheet opened while that step back was on its way: it gets its entry again.
@@ -826,7 +829,9 @@
 
   // pickup / destination / each stop: { lat, lng, address, name?, area? }, null while being typed.
   // A field is named 'pickup', 'destination', or a stop's place in line ('0', '1', '2').
-  var plan = { pickup: null, destination: null, stops: [], active: 'destination', query: '', results: [], searching: false, searchedFor: null, error: null, seq: 0, autoPickup: false, session: null, picking: false };
+  // mode: 'book' (a trip to price) or 'route' (the trip under way: "Change your route", as the app's
+  // trip-edit); over: the phase it was opened over ('idle', 'price' from Set your price, 'confirmed' from the trip).
+  var plan = { pickup: null, destination: null, stops: [], active: 'destination', query: '', results: [], searching: false, searchedFor: null, error: null, seq: 0, autoPickup: false, session: null, picking: false, mode: 'book', over: 'idle' };
   var planTimer = null;
   var MAX_STOPS_DEFAULT = 3;   // the chat's limit; the server says its own (maxStops)
 
@@ -853,24 +858,52 @@
     return 's' + Math.random().toString(36).slice(2, 14) + Date.now().toString(36);
   }
 
+  function placeOf(p) { return { lat: p.lat, lng: p.lng, address: p.address, name: p.name, area: p.area }; }
+  /**
+   * options: destination (a place picked on Home), or trip ({ pickup, destination, stops }: the trip
+   * as it is, from Set your price or the trip), field (the one to open on, selected), mode, over.
+   */
   function openPlan(options) {
     options = options || {};
-    plan.destination = options.destination || null;
-    plan.stops = [];
-    if (!plan.pickup && loc.place) { plan.pickup = loc.place; plan.autoPickup = true; }
+    var trip = options.trip || null;
+    // The trip under way's pickup is not the next booking's: Home starts from the phone again.
+    if (!trip && plan.mode === 'route') { plan.pickup = null; plan.autoPickup = false; }
+    plan.mode = options.mode === 'route' ? 'route' : 'book';
+    plan.over = options.over || 'idle';
+    if (trip) {
+      plan.pickup = placeOf(trip.pickup);
+      plan.autoPickup = false;
+      plan.destination = placeOf(trip.destination);
+      plan.stops = (trip.stops || []).filter(function (stop) { return validPoint(stop) && stop.address; }).map(placeOf).slice(0, maxStops());
+    } else {
+      plan.destination = options.destination || null;
+      plan.stops = [];
+      if (!plan.pickup && loc.place) { plan.pickup = loc.place; plan.autoPickup = true; }
+    }
     plan.query = '';
     plan.results = [];
     plan.error = null;
+    plan.searching = false;
+    plan.seq++;
     plan.session = newSession();
     W.show(W.$('plan-err'), false);
+    // A stop asked for that is not on the trip (no place for it): the destination.
+    if (options.field && isStop(options.field) && !(Number(options.field) < plan.stops.length)) options.field = 'destination';
     plan.active = options.field || (!plan.pickup ? 'pickup' : 'destination');
     W.$('plan-from').value = plan.pickup ? plan.pickup.address : '';
     W.$('plan-to').value = plan.destination ? plan.destination.address : '';
+    // Changing the route of a trip under way: the pickup stays (the driver is coming there).
+    W.$('plan-from').disabled = plan.mode === 'route';
+    W.$('plan-title').textContent = plan.mode === 'route' ? 'Change your route' : 'Plan your trip';
+    W.$('plan-go').textContent = plan.mode === 'route' ? 'Update trip route' : 'Continue';
+    planListSig = null;
     drawPlanStops(true);
-    track('trip_edit_opened', { from: sched.at ? 'schedule' : 'home' });
+    track('trip_edit_opened', { from: trip ? plan.over : sched.at ? 'schedule' : 'home', field: options.field || undefined });
     pushScreen('plan');
-    // The cursor in the field that needs filling (in the same tap, so the keyboard opens).
-    if (!(plan.pickup && plan.destination) || options.field) inputFor(plan.active).focus();
+    // The cursor in the field asked for, selected to type over; or in the one that needs filling
+    // (in the same tap, so the keyboard opens). The trip as it is opens showing the whole of it.
+    if (options.field) focusField(options.field);
+    else if (!trip && !(plan.pickup && plan.destination)) inputFor(plan.active).focus();
   }
 
   // The phone's own back (Android's button, the iOS swipe) closes Plan your trip, not the page (onScreenEntry).
@@ -956,7 +989,14 @@
       .sort(function (a, b) { return savedRank(a.place) - savedRank(b.place) || a.index - b.index; })
       .map(function (item) { return item.place; });
   }
-  function writeSaved(list) { writeStore('localStorage', SAVED_KEY, list.slice(0, MAX_SAVED)); }
+  /** False when the phone would not keep it (private mode, storage full or blocked). */
+  function writeSaved(list) {
+    try {
+      var text = JSON.stringify(list.slice(0, MAX_SAVED));
+      window.localStorage.setItem(SAVED_KEY, text);
+      return window.localStorage.getItem(SAVED_KEY) === text;
+    } catch (e) { return false; }
+  }
   var ICON_HOME = ['M4 10.5L12 4l8 6.5', 'M6 9v10.5h4.5V15h3v4.5H18V9'];
   var ICON_WORK = ['M4 8.5A1.5 1.5 0 0 1 5.5 7h13A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z', 'M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7', 'M4 12.5h16'];
   var ICON_BOOKMARK = ['M7 4h10v16l-5-3.5L7 20z'];
@@ -973,7 +1013,7 @@
     planFields().forEach(function (field) {
       var input = inputFor(field);
       var clear = document.querySelector('[data-plan-clear="' + field + '"]');
-      if (clear) W.show(clear, input.value.length > 0);
+      if (clear) W.show(clear, input.value.length > 0 && !input.disabled);
       var line = document.querySelector('[data-plan-line="' + field + '"]');
       if (line) line.classList.toggle('active', plan.active === field);
     });
@@ -1055,6 +1095,7 @@
   }
 
   function pickPlace(place, notRecent) {
+    clearTimeout(planTimer);   // a search about to start is for the words this place replaces
     var field = plan.active;
     var picked = { lat: place.lat, lng: place.lng, address: place.address, name: place.name || place.label, area: place.area };
     setFieldPlace(field, picked);
@@ -1068,10 +1109,11 @@
     W.show(W.$('plan-err'), false);
     if (!notRecent) saveRecent(picked);
     if (!notRecent || !place.label) track('place_picked', { field: isStop(field) ? 'stop' : field });
-    // As the app: on to what is missing; the destination picked last goes straight to the price.
+    // As the app: on to what is missing; the destination picked last goes straight to the price
+    // (changing the route of a trip under way waits for "Update trip route").
     var missing = emptyField();
     if (missing) return focusField(missing);
-    if (field === 'destination') return submitPlan();
+    if (field === 'destination' && plan.mode === 'book') return submitPlan();
     drawPlan();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   }
@@ -1079,6 +1121,7 @@
   /** A Google suggestion tapped: where it is (by its id, in the same session), then it is the place. */
   function pickSuggestion(suggestion) {
     if (plan.picking || !suggestion || !suggestion.placeId) return;
+    clearTimeout(planTimer);
     var field = plan.active;
     var seq = ++plan.seq;
     plan.picking = true;
@@ -1114,6 +1157,10 @@
   function onPlanFocus() {
     var field = this.getAttribute('data-plan-input');
     if (plan.active === field) return;
+    // A search or a pick still on its way was for the field just left.
+    clearTimeout(planTimer);
+    plan.seq++;
+    plan.searching = false;
     plan.active = field;
     plan.query = '';
     plan.results = [];
@@ -1122,6 +1169,9 @@
   }
   function onPlanTyping() {
     var field = this.getAttribute('data-plan-input');
+    // What is on its way (a search, a pick) was for the words just typed over.
+    plan.seq++;
+    plan.searching = false;
     plan.active = field;
     setFieldPlace(field, null);               // typed over: not a place until one is picked
     if (field === 'pickup') plan.autoPickup = false;
@@ -1195,9 +1245,13 @@
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     // Later: the trip is priced for the pickup time chosen, and nothing is booked yet.
     if (sched.at) return quoteSchedule(pickup, destination, stops, button);
+    // The trip under way: the new destination and stops go to the driver (the app's ride:route:update).
+    if (plan.mode === 'route') return changeRoute(destination, stops, button);
     api('POST', '/ride-page/route', { pickup: pickup, destination: destination, stops: stops }).then(function (next) {
-      track('trip_saved', { from: 'plan', distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: stops.length });
+      track('trip_saved', { from: plan.over === 'price' ? 'price' : 'plan', distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: stops.length });
       if (next.route) rememberPlaces(next.route, { pickup: pickup, destination: destination, stops: stops });
+      // Set your price's Back now comes back here (the trip was planned on this page).
+      setPlanned(true);
       navHome();
       apply(next);
     }).catch(function (error) {
@@ -1210,6 +1264,30 @@
 
   W.$('plan-go').addEventListener('click', submitPlan);
 
+  function changeRoute(destination, stops, button) {
+    api('POST', '/ride-page/trip-route', { destination: destination, stops: stops }).then(function (next) {
+      track('route_changed', { stops: stops.length });
+      navHome();
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('route_change_failed', { code: error.code || String(error.status) });
+      W.$('plan-err').textContent = error.message;
+      W.show(W.$('plan-err'), true);
+      // The trip moved on (it ended, or was cancelled): the next look shows where it is.
+      if (error.status === 409 || error.status === 404) refresh();
+    }).then(function () { busy = false; button.className = 'btn primary'; });
+  }
+
+  /** The trip was planned on this page: Set your price's Back goes to Plan your trip, not WhatsApp. */
+  var PLANNED_KEY = 'wheelers.ride.planned';
+  var planned = readStore('sessionStorage', PLANNED_KEY) === true;
+  function setPlanned(on) {
+    if (planned === on) return;
+    planned = on;
+    writeStore('sessionStorage', PLANNED_KEY, on);
+  }
+
   /* ── Later: a ride for later, as the app's (app/schedule-ride.tsx, lib/trip-words.ts) ── */
 
   var MIN_LEAD_MINUTES = 15;          // a pickup at least this far away
@@ -1221,8 +1299,10 @@
   var ICON_CALENDAR = ['M7 3v3M17 3v3', 'M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z', 'M4 10h16'];
 
   // at: the pickup chosen (a Date) once Continue is tapped; quote: the trip priced for it.
-  var sched = { day: null, minutes: null, at: null, quote: null, requestId: null };
-  var tp = { hour12: 12, minute: 0, pm: false, soon: false };
+  // requestId: one booking however often Schedule ride is tapped; a new one for each trip or time quoted.
+  var sched = { day: null, minutes: null, at: null, quote: null, requestId: null, quotedSig: null };
+  function newRequestId() { return 'r' + newSession().replace(/[^A-Za-z0-9]/g, '').slice(0, 30); }
+  var tp = { hour12: 12, minute: 0, pm: false, soon: false, late: false };
 
   function startOfDay(date) { return new Date(date.getFullYear(), date.getMonth(), date.getDate()); }
   function dayOffset(date, now) { return Math.round((startOfDay(date).getTime() - startOfDay(now).getTime()) / 86400000); }
@@ -1244,12 +1324,31 @@
   function pickupAt(dayStart, minutesOfDay) {
     return new Date(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate(), Math.floor(minutesOfDay / 60), minutesOfDay % 60);
   }
-  function isPickupAllowed(pickup, now) { return pickup.getTime() - now.getTime() >= MIN_LEAD_MINUTES * 60000; }
-  function dayHasTime(dayStart, now) { return isPickupAllowed(pickupAt(dayStart, 23 * 60 + 59), now); }
+  /**
+   * The latest pickup the server takes (state.scheduleUntil: the end of the rider's WhatsApp
+   * window, when the start message could not reach them later), in ms; null: the 7 days.
+   */
+  function scheduleLimit() {
+    var until = state && typeof state.scheduleUntil === 'string' ? Date.parse(state.scheduleUntil) : NaN;
+    return isFinite(until) ? until : null;
+  }
+  function tooLate(pickup) { var limit = scheduleLimit(); return limit !== null && pickup.getTime() > limit; }
+  function isPickupAllowed(pickup, now) { return pickup.getTime() - now.getTime() >= MIN_LEAD_MINUTES * 60000 && !tooLate(pickup); }
+  /** Some minute of the day is at least 15 minutes away and not after the limit. */
+  function dayHasTime(dayStart, now) {
+    var earliest = Math.max(dayStart.getTime(), now.getTime() + MIN_LEAD_MINUTES * 60000);
+    var latest = pickupAt(dayStart, 23 * 60 + 59).getTime();
+    var limit = scheduleLimit();
+    if (limit !== null) latest = Math.min(latest, limit);
+    return earliest <= latest;
+  }
   function scheduleDays(now) {
     var days = [];
+    var limit = scheduleLimit();
     for (var index = 0; index < SCHEDULE_DAYS; index++) {
       var start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + index);
+      // Only the days up to the limit are offered.
+      if (index > 0 && limit !== null && start.getTime() > limit) break;
       days.push({ index: index, top: index === 0 ? 'Today' : WEEKDAYS[start.getDay()].slice(0, 3), num: start.getDate(), start: start });
     }
     return days;
@@ -1271,8 +1370,8 @@
   /** What the screen shows now: the day (the first with time left when the one picked has none), the time, the pickup. */
   function scheduleChoice(now) {
     var days = scheduleDays(now);
-    var day = (sched.day !== null && dayHasTime(days[sched.day].start, now) ? days[sched.day] : null)
-      || days.filter(function (d) { return dayHasTime(d.start, now); })[0] || days[1];
+    var day = (sched.day !== null && days[sched.day] && dayHasTime(days[sched.day].start, now) ? days[sched.day] : null)
+      || days.filter(function (d) { return dayHasTime(d.start, now); })[0] || days[1] || days[0];
     var slots = halfHourSlots(day.start, now);
     var minutes = sched.minutes !== null && isPickupAllowed(pickupAt(day.start, sched.minutes), now) ? sched.minutes : (slots.length ? slots[0] : null);
     var choices = minutes === null || slots.indexOf(minutes) >= 0 ? slots : slots.concat([minutes]).sort(function (a, b) { return a - b; });
@@ -1318,7 +1417,13 @@
       chip.addEventListener('click', function () { sched.minutes = value; sched.day = c.day.index; W.show(W.$('sch-err'), false); drawSchedule(); });
       times.appendChild(chip);
     });
+    // As the app: no half hour left on the day; nothing at all when no day has a time.
+    var anyDay = c.days.some(function (d) { return dayHasTime(d.start, now); });
+    var otherDay = c.days.some(function (d) { return d.index !== c.day.index && dayHasTime(d.start, now); });
     W.show(W.$('sch-none'), c.choices.length === 0);
+    W.$('sch-none').textContent = !anyDay ? 'No pickup times left.'
+      : 'No half-hour times are left' + (dayOffset(c.day.start, now) === 0 ? ' today' : '') + '. Choose another time' + (otherDay ? ' or another day' : '') + '.';
+    W.show(W.$('sch-another'), anyDay);
     W.$('sch-when').textContent = c.pickup ? dayWords(c.pickup, now) + ', ' + minutesWords(c.minutes) : 'Choose a time';
     W.$('sch-go').disabled = !c.pickup;
   }
@@ -1329,12 +1434,15 @@
     var now = new Date();
     var c = scheduleChoice(now);
     if (!c.pickup || !isPickupAllowed(c.pickup, now)) {
-      W.$('sch-err').textContent = c.pickup ? 'That time is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.' : 'Choose a pickup time.';
+      W.$('sch-err').textContent = !c.pickup ? 'Choose a pickup time.'
+        : tooLate(c.pickup) ? lateWords(now)
+        : 'That time is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.';
       W.show(W.$('sch-err'), true);
       return drawSchedule();
     }
     sched.at = c.pickup;
-    sched.requestId = 'r' + newSession().replace(/[^A-Za-z0-9]/g, '').slice(0, 30);
+    sched.requestId = newRequestId();
+    sched.quotedSig = null;
     openPlan({});
   });
 
@@ -1353,12 +1461,20 @@
     tp.minute = from % 60;
     tp.pm = from >= 12 * 60;
     tp.soon = false;
+    tp.late = false;
     tp.day = c.day;
     W.$('tp-day').textContent = dayWords(c.day.start, new Date());
     drawTimePicker();
     openSheet('sheet-time');
   });
   function tpValue() { return ((tp.hour12 % 12) + (tp.pm ? 12 : 0)) * 60 + tp.minute; }
+  /** "Choose a time by 3:30 pm." (or "by tomorrow, 9:00 am."): the latest the server takes. */
+  function lateWords(now, limit) {
+    if (limit === undefined) limit = scheduleLimit();
+    if (limit === null || !isFinite(limit)) return 'Choose an earlier time.';
+    var by = new Date(limit);
+    return 'Choose a time by ' + (dayOffset(by, now) === 0 ? timeWords(by) : homeWhen(by, now)) + '.';
+  }
   function drawTimePicker() {
     W.$('tp-hour').textContent = String(tp.hour12);
     W.$('tp-min').textContent = pad2(tp.minute);
@@ -1368,10 +1484,11 @@
     W.$('tp-pm').setAttribute('aria-pressed', String(tp.pm));
     W.$('tp-set').textContent = 'Set ' + minutesWords(tpValue());
     var soon = W.$('tp-soon');
-    W.show(soon, tp.soon);
-    soon.textContent = tp.soon ? minutesWords(tpValue()) + ' is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.' : '';
+    W.show(soon, tp.soon || tp.late);
+    soon.textContent = tp.late ? minutesWords(tpValue()) + ' is too late. ' + lateWords(new Date())
+      : tp.soon ? minutesWords(tpValue()) + ' is too close. Choose a time at least ' + MIN_LEAD_MINUTES + ' minutes from now.' : '';
   }
-  function tpChange(apply) { return function () { apply(); tp.soon = false; drawTimePicker(); }; }
+  function tpChange(apply) { return function () { apply(); tp.soon = false; tp.late = false; drawTimePicker(); }; }
   W.$('tp-hour-up').addEventListener('click', tpChange(function () { tp.hour12 = tp.hour12 === 12 ? 1 : tp.hour12 + 1; }));
   W.$('tp-hour-down').addEventListener('click', tpChange(function () { tp.hour12 = tp.hour12 === 1 ? 12 : tp.hour12 - 1; }));
   W.$('tp-min-up').addEventListener('click', tpChange(function () { tp.minute = (tp.minute + 5) % 60; }));
@@ -1380,7 +1497,8 @@
   W.$('tp-pm').addEventListener('click', tpChange(function () { tp.pm = true; }));
   W.$('tp-set').addEventListener('click', function () {
     var value = tpValue();
-    if (!tp.day || !isPickupAllowed(pickupAt(tp.day.start, value), new Date())) { tp.soon = true; return drawTimePicker(); }
+    if (tp.day && tooLate(pickupAt(tp.day.start, value))) { tp.late = true; tp.soon = false; return drawTimePicker(); }
+    if (!tp.day || !isPickupAllowed(pickupAt(tp.day.start, value), new Date())) { tp.soon = true; tp.late = false; return drawTimePicker(); }
     sched.minutes = value;
     sched.day = tp.day.index;
     closeSheets();
@@ -1394,15 +1512,30 @@
     var trip = { pickup: pickup, destination: destination, stops: stops };
     api('POST', '/ride-page/schedule/quote', { scheduledFor: sched.at.toISOString(), pickup: pickup, destination: destination, stops: stops }).then(function (answer) {
       if (!sched.at || !local.plan) return;
+      var quotedSig = JSON.stringify([sched.at.toISOString(), trip]);
+      if (sched.quotedSig !== null && quotedSig !== sched.quotedSig) sched.requestId = newRequestId();
+      sched.quotedSig = quotedSig;
       sched.quote = { trip: trip, route: answer.route };
       W.show(W.$('sr-err'), false);
       pushScreen('schedule-confirm');
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       track('schedule_failed', { code: error.code || String(error.status), step: 'quote' });
-      W.$('plan-err').textContent = error.message;
+      W.$('plan-err').textContent = scheduleRefusal(error);
       W.show(W.$('plan-err'), true);
     }).then(function () { busy = false; button.className = 'btn primary'; });
+  }
+
+  /** The server's refusals of a ride for later, in one short line. */
+  function scheduleRefusal(error) {
+    var body = (error && error.body) || {};
+    if (error.code === 'SCHEDULE_OUTSIDE_WINDOW') {
+      refresh();   // the latest time the page offers may have moved
+      return lateWords(new Date(), typeof body.scheduleUntil === 'string' ? Date.parse(body.scheduleUntil) : scheduleLimit());
+    }
+    if (error.code === 'SCHEDULE_LIMIT') return 'You already have ' + (Number(body.limit) > 0 ? Number(body.limit) : 5) + ' rides booked for later.';
+    if (error.code === 'SCHEDULE_TOO_CLOSE') return 'You have a ride for later within ' + (Number(body.minutes) > 0 ? Number(body.minutes) : 30) + ' minutes of this time.';
+    return error.message;
   }
 
   function drawScheduleConfirm() {
@@ -1453,7 +1586,7 @@
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       track('schedule_failed', { code: error.code || String(error.status), step: 'book' });
-      W.$('sr-err').textContent = error.message;
+      W.$('sr-err').textContent = scheduleRefusal(error);
       W.show(W.$('sr-err'), true);
     }).then(function () { busy = false; button.className = 'btn primary'; });
   });
@@ -1644,6 +1777,9 @@
 
   W.$('pe-name').addEventListener('input', function () { W.show(W.$('pe-name-err'), false); W.$('pe-save').disabled = !editing.address || !editName(); });
   W.$('pe-query').addEventListener('input', function () {
+    // A search or a pick still on its way was for the words just typed over.
+    editing.seq++;
+    editing.searching = false;
     editing.query = this.value;
     editing.error = null;
     clearTimeout(editTimer);
@@ -1673,6 +1809,7 @@
   }
   function pickEditPlace(suggestion) {
     if (editing.picking) return;
+    clearTimeout(editTimer);
     var seq = ++editing.seq;
     editing.picking = true;
     drawPlaceEdit();
@@ -1715,7 +1852,11 @@
       if (list.length >= MAX_SAVED) return;
       list.push({ id: Date.now().toString(36) + '-' + list.length, label: name.slice(0, 24), address: where.address, lat: where.lat, lng: where.lng });
     }
-    writeSaved(list);
+    if (!writeSaved(list)) {
+      track('saved_place_save_failed');
+      say('Could not save this place on this phone.', 'bad');
+      return;
+    }
     track('saved_place_saved', { label: savedRank({ label: name }) === 2 ? 'other' : norm(name), changed: Boolean(place) });
     backScreen();
   });
@@ -1812,13 +1953,31 @@
 
   var priceDrawnFor = null;
 
+  /** The trip on Set your price can be changed here: Plan your trip opens with it (as the app's Edit). */
+  function priceTrip(s) {
+    var p = s && s.phase === 'price' && s.canEditTrip ? s.places : null;
+    return p && validPoint(p.pickup) && validPoint(p.destination) && p.pickup.address && p.destination.address ? p : null;
+  }
+  function backToPlan(s) { return planned && Boolean(priceTrip(s)); }
+
   function drawPrice(s) {
     drawRoute(s.route);
     rememberPlaces(s.route, s.places);
-    W.show(W.$('route-edit'), Boolean(s.canEditTrip));
+    var editable = Boolean(priceTrip(s));
+    W.show(W.$('route-edit'), editable);
+    var card = W.$('price-route');
+    card.classList.toggle('editable', editable);
+    Array.prototype.forEach.call(card.querySelectorAll('[data-edit]'), function (row) {
+      var label = row.querySelector('.route-label');
+      if (editable) { row.setAttribute('role', 'button'); row.setAttribute('tabindex', '0'); row.setAttribute('aria-label', 'Change ' + (label ? label.textContent.toLowerCase() : 'the trip')); }
+      else { row.removeAttribute('role'); row.removeAttribute('tabindex'); row.removeAttribute('aria-label'); }
+    });
+    // Back: to Plan your trip when the trip was planned here (as the app's price → search), else to WhatsApp.
     var back = W.$('price-back');
-    W.show(back, Boolean(s.chatUrl));
-    if (s.chatUrl) back.setAttribute('href', s.chatUrl);
+    var toPlan = backToPlan(s);
+    W.show(back, toPlan || Boolean(s.chatUrl));
+    back.setAttribute('href', toPlan ? '#' : s.chatUrl || '#');
+    back.setAttribute('aria-label', toPlan ? 'Back to Plan your trip' : 'Back to WhatsApp');
     var reason = reasonText(s.route.priceReason);
     W.$('price-reason').textContent = reason;
     W.show(W.$('price-reason'), Boolean(reason));
@@ -1868,7 +2027,33 @@
   }
   W.$('price-down').addEventListener('click', function () { stepPrice(false); });
   W.$('price-up').addEventListener('click', function () { stepPrice(true); });
-  W.$('price-back').addEventListener('click', function () { track('chat_link_tapped', { from: 'price' }); });
+  W.$('price-back').addEventListener('click', function (event) {
+    if (backToPlan(state)) {
+      event.preventDefault();
+      track('price_back_tapped', { to: 'plan' });
+      return editTrip(null);
+    }
+    track('chat_link_tapped', { from: 'price' });
+  });
+
+  /** Edit, or a place on the route card: Plan your trip with this trip, on that field (none: as it was left). */
+  function editTrip(field) {
+    var trip = priceTrip(state);
+    if (!trip || busy || topScreen()) return;
+    openPlan({ trip: trip, over: 'price', field: field });
+  }
+  W.$('route-edit').addEventListener('click', function () { editTrip('destination'); });
+  W.$('price-route').addEventListener('click', function (event) {
+    var row = event.target.closest('[data-edit]');
+    if (row && priceTrip(state)) editTrip(row.getAttribute('data-edit'));
+  });
+  W.$('price-route').addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    var row = event.target.closest('[data-edit]');
+    if (!row || !priceTrip(state)) return;
+    event.preventDefault();
+    editTrip(row.getAttribute('data-edit'));
+  });
 
   W.$('find').addEventListener('click', function () {
     var button = this;
@@ -2433,7 +2618,9 @@
     }).then(function () { busy = false; button.className = 'btn primary'; });
   });
 
-  /* cancel: why, as the app asks (app/rider-cancel.tsx) — nothing chosen for them */
+  /* cancel: why, as the app asks (app/rider-cancel.tsx) — nothing chosen for them.
+   * While drivers are being found (and while one is being confirmed): "Stop looking for a driver?".
+   * Once a driver is coming: "Cancel this ride?", with the reasons the server gives (the app's). */
 
   var CANCEL_REASONS = [
     "It's taking too long to find a driver",
@@ -2445,11 +2632,20 @@
   ];
   var OTHER = 'Other reason';
   var cancelReason = null;
+  var cancelMode = 'search';   // 'search' | 'ride'
+  var cancelling = false;
+
+  /** The matched ride's reasons (state.rideCancelReasons); none: the page cannot cancel the ride. */
+  function rideCancelReasons(s) {
+    var list = s && Array.isArray(s.rideCancelReasons) ? s.rideCancelReasons : [];
+    return list.filter(function (reason) { return typeof reason === 'string' && reason.trim(); });
+  }
+  function cancelReasons() { return cancelMode === 'ride' ? rideCancelReasons(state) : CANCEL_REASONS; }
 
   function drawReasons() {
     var holder = W.$('cancel-reasons');
     holder.innerHTML = '';
-    CANCEL_REASONS.forEach(function (reason) {
+    cancelReasons().forEach(function (reason) {
       var chosen = cancelReason === reason;
       var row = el('button', 'reason' + (chosen ? ' on' : ''));
       row.type = 'button';
@@ -2458,7 +2654,7 @@
       row.appendChild(el('span', 'radio'));
       row.appendChild(el('span', 'reason-text', reason));
       row.addEventListener('click', function () {
-        track('cancel_reason_picked', { reason: reason });
+        track('cancel_reason_picked', { reason: reason, mode: cancelMode });
         cancelReason = reason;
         drawReasons();
         W.show(W.$('cancel-other-field'), reason === OTHER);
@@ -2472,42 +2668,65 @@
   function syncCancel() {
     var button = W.$('cancel-yes');
     button.disabled = !cancelReason;
-    button.textContent = cancelReason ? 'Cancel search' : 'Choose a reason';
+    button.textContent = cancelReason ? (cancelMode === 'ride' ? 'Cancel ride' : 'Cancel search') : 'Choose a reason';
     W.show(W.$('cancel-err'), false);
   }
   W.$('cancel-other').addEventListener('input', syncCancel);
 
-  W.$('cancel-search').addEventListener('click', function () {
-    if (busy) return;
+  function openCancel(mode) {
+    // Confirming a driver keeps the page busy: the search can still be stopped then, as in the app.
+    if (cancelling || (busy && !local.confirming)) return;
+    if (mode === 'ride' && !rideCancelReasons(state).length) return;
+    cancelMode = mode;
     cancelReason = null;
+    W.$('cx-title').textContent = mode === 'ride' ? 'Cancel this ride?' : 'Stop looking for a driver?';
+    // As the app: how far the driver is, while they are on the way.
+    var trip = state && state.trip;
+    var eta = mode === 'ride' && trip && (trip.status === 'DRIVER_ASSIGNED' || trip.status === 'DRIVER_EN_ROUTE') ? Number(trip.etaMin) : 0;
+    W.$('cx-sub').textContent = eta > 0 ? 'Your driver is ' + eta + (eta === 1 ? ' minute' : ' minutes') + ' away.' : '';
+    W.show(W.$('cx-sub'), eta > 0);
     W.$('cancel-other').value = '';
     W.show(W.$('cancel-other-field'), false);
     drawReasons();
     syncCancel();
-    track('cancel_opened');
+    track('cancel_opened', { mode: mode, from: shownView });
     openSheet('sheet-cancel');
-  });
+  }
+  W.$('cancel-search').addEventListener('click', function () { openCancel('search'); });
+  W.$('cf-cancel').addEventListener('click', function () { openCancel('search'); });
+  W.$('fd-cancel').addEventListener('click', function () { openCancel('ride'); });
+  W.$('d-cancel').addEventListener('click', function () { openCancel('ride'); });
 
   W.$('cancel-yes').addEventListener('click', function () {
-    if (busy || !cancelReason) return;
+    if (cancelling || !cancelReason || (busy && !local.confirming)) return;
     var button = this;
-    busy = true;
+    var mode = cancelMode;
+    var ownBusy = !busy;
+    cancelling = true;
+    if (ownBusy) busy = true;
     button.className = 'btn danger busy';
     var body = { reason: cancelReason };
     var words = W.$('cancel-other').value.trim();
     if (cancelReason === OTHER && words) body.detail = words;
-    api('POST', '/ride-page/cancel', body).then(function (next) {
-      track('cancel_confirmed', body);
+    api('POST', mode === 'ride' ? '/ride-page/cancel-ride' : '/ride-page/cancel', body).then(function (next) {
+      track(mode === 'ride' ? 'ride_cancel_confirmed' : 'cancel_confirmed', body);
       closeSheets();
-      local.cancelledHere = true;
+      if (mode === 'ride') local.rideCancelledHere = true;
+      else local.cancelledHere = true;
       apply(next);
-      say('Search cancelled. Nothing was charged.');
+      if (mode === 'search') say('Search cancelled. Nothing was charged.');
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
-      track('cancel_failed', { code: error.code || String(error.status) });
+      track(mode === 'ride' ? 'ride_cancel_failed' : 'cancel_failed', { code: error.code || String(error.status) });
       W.$('cancel-err').textContent = error.message;
       W.show(W.$('cancel-err'), true);
-    }).then(function () { busy = false; button.className = 'btn danger'; });
+      // The ride moved on meanwhile (a driver confirmed, the trip started or ended): show where it is.
+      if (error.status === 409) refresh();
+    }).then(function () {
+      cancelling = false;
+      if (ownBusy) busy = false;
+      button.className = 'btn danger';
+    });
   });
 
   /* back from the search, to change the trip or the price */
@@ -2532,149 +2751,6 @@
         say(error.message, 'bad');
       }).then(function () { busy = false; });
     });
-  });
-
-  /* change the trip: type a place, pick it from the list (the chat's own lookup) */
-
-  var trip = null;          // { pickup, destination, stops: [] } — each { lat, lng, address }, null while being typed
-  var searchTimer = null;
-  var searchSeq = 0;
-  var tripSession = null;   // Google's session: the typing and the pick billed as one
-
-  function openTrip() {
-    if (!state || state.phase !== 'price' || !state.places) return;
-    trip = {
-      pickup: state.places.pickup,
-      destination: state.places.destination,
-      stops: (state.places.stops || []).slice()
-    };
-    tripSession = newSession();
-    W.$('trip-pickup').value = trip.pickup.address;
-    W.$('trip-dest').value = trip.destination.address;
-    drawTripStops();
-    clearPlaces();
-    W.show(W.$('trip-err'), false);
-    syncTrip();
-    track('trip_edit_opened');
-    openSheet('sheet-trip');
-  }
-  W.$('route-edit').addEventListener('click', openTrip);
-
-  /** The stops on the way: each can be taken off (adding one is done in the chat). */
-  function drawTripStops() {
-    var holder = W.$('trip-stops');
-    holder.innerHTML = '';
-    trip.stops.forEach(function (stop, index) {
-      var row = el('div', 'trip-field stop-row');
-      row.appendChild(el('span', 'trip-dot mid'));
-      row.appendChild(el('span', 'stop-text', 'Stop ' + (index + 1) + ': ' + stop.address));
-      var remove = el('button', 'stop-remove', '×');
-      remove.type = 'button';
-      remove.setAttribute('aria-label', 'Remove stop ' + (index + 1));
-      remove.addEventListener('click', function () {
-        track('stop_removed');
-        trip.stops.splice(index, 1);
-        drawTripStops();
-        syncTrip();
-      });
-      row.appendChild(remove);
-      holder.appendChild(row);
-    });
-  }
-
-  function syncTrip() {
-    W.$('trip-save').disabled = !(trip && trip.pickup && trip.destination);
-  }
-
-  function clearPlaces() {
-    W.$('place-list').innerHTML = '';
-  }
-
-  function onTripTyping() {
-    var input = this;
-    var field = input.getAttribute('data-field');
-    trip[field] = null;              // typed over: not a place until one is picked
-    syncTrip();
-    W.show(W.$('trip-err'), false);
-    clearTimeout(searchTimer);
-    var query = input.value.trim();
-    if (query.length < 3) { clearPlaces(); return; }
-    searchTimer = setTimeout(function () { findPlaces(field, query); }, 350);
-  }
-  W.$('trip-pickup').addEventListener('input', onTripTyping);
-  W.$('trip-dest').addEventListener('input', onTripTyping);
-
-  function findPlaces(field, query) {
-    var seq = ++searchSeq;
-    var holder = W.$('place-list');
-    holder.innerHTML = '';
-    var looking = el('div', 'place-status');
-    looking.appendChild(el('span', 'spinner'));
-    looking.appendChild(document.createTextNode('Looking for places…'));
-    holder.appendChild(looking);
-    api('GET', '/ride-page/suggest?q=' + encodeURIComponent(query) + '&session=' + encodeURIComponent(tripSession || '')).then(function (answer) {
-      if (seq !== searchSeq) return;   // a newer search is on its way
-      holder.innerHTML = '';
-      var places = ((answer && answer.places) || []).filter(function (p) { return p && p.placeId && p.address; });
-      track('place_searched', { field: field, letters: query.length, results: places.length });
-      if (!places.length) {
-        holder.appendChild(el('div', 'place-status', 'No place found. Add the area or a landmark, e.g. "Shoprite, Ikeja".'));
-        return;
-      }
-      places.forEach(function (place) {
-        var option = el('button', 'place');
-        option.type = 'button';
-        option.setAttribute('role', 'option');
-        option.appendChild(el('strong', '', place.name || place.address));
-        if (place.area) option.appendChild(el('span', '', place.area));
-        option.addEventListener('click', function () {
-          // Where it is, by its id in the same session; then it is the place.
-          var pickSeq = ++searchSeq;
-          option.disabled = true;
-          api('GET', '/ride-page/place?id=' + encodeURIComponent(place.placeId) + '&session=' + encodeURIComponent(tripSession || '')).then(function (found) {
-            if (pickSeq !== searchSeq || !trip) return;
-            var spot = found && found.place;
-            if (!validPoint(spot)) throw { message: 'Could not look that up. Try again.' };
-            tripSession = newSession();
-            track('place_picked', { field: field });
-            trip[field] = { lat: spot.lat, lng: spot.lng, address: place.address };
-            saveRecent({ lat: spot.lat, lng: spot.lng, address: place.address, name: place.name, area: place.area });
-            W.$(field === 'pickup' ? 'trip-pickup' : 'trip-dest').value = place.address;
-            clearPlaces();
-            syncTrip();
-          }).catch(function (error) {
-            if (linkDead(error)) return dead(error);
-            if (pickSeq !== searchSeq) return;
-            holder.innerHTML = '';
-            holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
-          });
-        });
-        holder.appendChild(option);
-      });
-    }).catch(function (error) {
-      if (seq !== searchSeq) return;
-      if (linkDead(error)) return dead(error);
-      holder.innerHTML = '';
-      holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
-    });
-  }
-
-  W.$('trip-save').addEventListener('click', function () {
-    if (busy || !trip || !trip.pickup || !trip.destination) return;
-    var button = this;
-    busy = true;
-    button.className = 'btn primary busy';
-    button.textContent = 'Working out the new price…';
-    api('POST', '/ride-page/route', { pickup: trip.pickup, destination: trip.destination, stops: trip.stops }).then(function (next) {
-      closeSheets();
-      apply(next);
-      track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
-    }).catch(function (error) {
-      if (linkDead(error)) return dead(error);
-      track('trip_save_failed', { code: error.code || String(error.status) });
-      W.$('trip-err').textContent = error.message;
-      W.show(W.$('trip-err'), true);
-    }).then(function () { busy = false; button.className = 'btn primary'; button.textContent = 'Save trip'; });
   });
 
   /* ── 3a · Driver found (Contract E): once per ride, then the trip ──────── */
@@ -2727,6 +2803,7 @@
       holder.appendChild(line);
     });
     W.show(holder, rows.length > 0);
+    W.show(W.$('fd-cancel'), rideCancelReasons(s).length > 0);
   }
 
   W.$('fd-track').addEventListener('click', function () {
@@ -2785,7 +2862,8 @@
         // Once they move the map themselves, stop dragging it back to the car.
         tripMap.addListener('dragstart', function () { followCar = false; });
       }
-      var rideKey = (state && foundId(state)) || (t.tripId || '');
+      // A changed route (another destination) draws its pins afresh too.
+      var rideKey = ((state && foundId(state)) || (t.tripId || '')) + '|' + t.destination.lat + ',' + t.destination.lng;
       if (tripFor !== rideKey) {
         clearTripMap();
         tripFor = rideKey;
@@ -2861,9 +2939,183 @@
     // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';
+    drawTripFoot(s);
   }
 
+  /* the trip's lower part, as the app's: how much is done, Add or change stop, then Cancel ride · Support · Emergency */
+
+  /** The trip's places with their spots (state.places), for "Change your route"; null: not offered. */
+  function routeTrip(s) {
+    var p = s && s.phase === 'confirmed' ? s.places || (s.route && s.route.places) : null;
+    if (!p || !validPoint(p.pickup) || !validPoint(p.destination) || !p.pickup.address || !p.destination.address) return null;
+    return { pickup: p.pickup, destination: p.destination, stops: Array.isArray(p.stops) ? p.stops : [] };
+  }
+
+  function drawTripFoot(s) {
+    var t = s.trip || {};
+    // How much of the planned distance has been driven, when the server says (0..1).
+    var done = t.status === 'IN_PROGRESS' && typeof t.progress === 'number' && isFinite(t.progress) ? Math.min(1, Math.max(0, t.progress)) : null;
+    var track_ = W.$('d-progress');
+    W.show(track_, done !== null);
+    if (done !== null) {
+      W.$('d-progress-fill').style.width = Math.round(done * 100) + '%';
+      track_.setAttribute('aria-valuenow', String(Math.round(done * 100)));
+      track_.setAttribute('aria-label', Math.round(done * 100) + ' percent of the trip done');
+    }
+
+    var trip = routeTrip(s);
+    W.show(W.$('d-stops'), Boolean(trip));
+    var extra = trip ? trip.stops.length : 0;
+    W.$('d-stops-count').textContent = extra > 0 ? extra + ' extra stop' + (extra === 1 ? '' : 's') + ' on this trip' : '';
+    W.show(W.$('d-stops-count'), extra > 0);
+
+    W.show(W.$('d-cancel'), rideCancelReasons(s).length > 0);
+    var support = supportLink(s.supportContact);
+    var link = W.$('d-support');
+    W.show(link, Boolean(support));
+    if (support) link.setAttribute('href', support.href || '#');
+    drawSos(s);
+    W.show(W.$('d-trip-foot'), rideCancelReasons(s).length > 0 || Boolean(support) || sosOffered(s));
+  }
+
+  W.$('d-stops').addEventListener('click', function () {
+    var trip = routeTrip(state);
+    if (!trip || busy || topScreen()) return;
+    openPlan({ trip: trip, mode: 'route', over: 'confirmed' });
+  });
+
+  /**
+   * Support, as the Quick Actions' (state.supportContact, free text): a link opens it (WhatsApp for
+   * a wa.me link or a number said to be on WhatsApp, the phone for a number, mail for an address);
+   * anything else is shown as it is.
+   */
+  function supportLink(contact) {
+    if (typeof contact !== 'string' || !contact.trim()) return null;
+    var text = contact.trim();
+    var url = text.match(/https:\/\/[^\s]+/);
+    if (url) return { href: url[0] };
+    var mail = text.match(/[^\s@]+@[^\s@]+\.[a-z]{2,}/i);
+    var phone = text.match(/\+?\d[\d\s-]{8,}\d/);
+    if (phone) {
+      var digits = phone[0].replace(/[^\d+]/g, '');
+      if (/whatsapp|wa\.me/i.test(text)) {
+        var intl = digits.replace(/^\+/, '').replace(/^0(\d{10})$/, '234$1');
+        return { href: 'https://wa.me/' + intl };
+      }
+      return { href: 'tel:' + digits };
+    }
+    if (mail) return { href: 'mailto:' + mail[0] };
+    return { href: null, text: text };
+  }
+  W.$('d-support').addEventListener('click', function (event) {
+    track('support_tapped');
+    var support = supportLink(state && state.supportContact);
+    if (support && !support.href) { event.preventDefault(); say(support.text); }
+  });
+
+  /* Emergency, as the app's (components/emergency-button.tsx): the sheet asks, then the alert goes */
+
+  var SOS_KEY = 'wheelers.ride.sos';
+  var sosLive = readStore('sessionStorage', SOS_KEY) || {};   // { rideId: true } — raised from this page
+  var sosStep = 'ask';   // 'ask' | 'sent' | 'live'
+  var sosSending = false;
+  /** Offered while there is a trip and the server takes the alert (a newer one sends these fields). */
+  function sosOffered(s) { return Boolean(s && s.phase === 'confirmed' && ('supportContact' in s || 'rideCancelReasons' in s || 'sosActive' in s)); }
+  function sosIsLive(s) {
+    if (s && typeof s.sosActive === 'boolean') return s.sosActive;
+    return Boolean(s && s.rideId && sosLive[s.rideId]);
+  }
+  function setSosLive(on) {
+    if (!state || !state.rideId) return;
+    sosLive = {};
+    if (on) sosLive[state.rideId] = true;
+    writeStore('sessionStorage', SOS_KEY, sosLive);
+  }
+  function drawSos(s) {
+    var button = W.$('d-sos');
+    W.show(button, sosOffered(s));
+    var live = sosIsLive(s);
+    button.classList.toggle('live', live);
+    W.$('d-sos-text').textContent = live ? 'Alert active' : 'Emergency';
+    button.setAttribute('aria-label', live ? 'Emergency alert is active' : 'Emergency');
+  }
+  function drawSosSheet(alreadyOpen) {
+    var step = sosStep;
+    W.$('sos-title').textContent = step === 'sent' ? 'Help is on the way' : step === 'live' ? 'Your alert is active' : 'Get help now';
+    var sub = step === 'sent'
+      ? (alreadyOpen ? 'Our safety team is already on your alert. Stay on the line if you can.' : 'Our safety team will contact you. If you are in immediate danger, call 112 now.')
+      : step === 'live' ? 'Our safety team has your details and is working on it.' : '';
+    W.$('sos-sub').textContent = sub;
+    W.show(W.$('sos-sub'), Boolean(sub));
+    W.show(W.$('sos-send'), step === 'ask');
+    W.$('sos-send').disabled = sosSending;
+    W.$('sos-send').className = 'btn sos-send' + (sosSending ? ' busy' : '');
+    W.show(W.$('sos-cancel'), step === 'live');
+    W.$('sos-close').textContent = step === 'sent' ? 'OK' : 'Close';
+  }
+  W.$('d-sos').addEventListener('click', function () {
+    if (!state) return;
+    sosStep = sosIsLive(state) ? 'live' : 'ask';
+    W.show(W.$('sos-err'), false);
+    drawSosSheet(false);
+    track('sos_opened', { live: sosStep === 'live' });
+    openSheet('sheet-sos');
+  });
+  W.$('sos-call').addEventListener('click', function () { track('sos_call_112_tapped'); });
+  W.$('sos-send').addEventListener('click', function () {
+    if (sosSending) return;
+    sosSending = true;
+    W.show(W.$('sos-err'), false);
+    drawSosSheet(false);
+    api('POST', '/ride-page/sos').then(function (answer) {
+      track('sos_sent', { alreadyOpen: Boolean(answer && answer.alreadyOpen) });
+      setSosLive(true);
+      sosStep = 'sent';
+      drawSosSheet(Boolean(answer && answer.alreadyOpen));
+      if (state && state.phase === 'confirmed') drawSos(state);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('sos_failed', { code: error.code || String(error.status) });
+      // As the app: the alert did not go; 112 is one tap above.
+      W.$('sos-err').textContent = 'We could not send your alert. Call 112 now if you are in danger.';
+      W.show(W.$('sos-err'), true);
+    }).then(function () {
+      sosSending = false;
+      if (sosStep === 'ask') drawSosSheet(false);
+    });
+  });
+  W.$('sos-cancel').addEventListener('click', function () {
+    if (sosSending) return;
+    sosSending = true;
+    W.show(W.$('sos-err'), false);
+    api('POST', '/ride-page/sos/cancel').then(function () {
+      track('sos_cancelled');
+      setSosLive(false);
+      if (state && state.phase === 'confirmed') drawSos(state);
+      closeSheets();
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('sos_cancel_failed', { code: error.code || String(error.status) });
+      W.$('sos-err').textContent = 'Our safety team is already handling this alert. They will call you.';
+      W.show(W.$('sos-err'), true);
+    }).then(function () { sosSending = false; });
+  });
+
   /* ── the loop ─────────────────────────────────────────────────────────── */
+
+  /**
+   * Plan your trip over Set your price (the trip to change) or over the trip (its route to change):
+   * open while the phase it was opened over lasts. Over Home, every screen stays while the home does.
+   */
+  function planOver(phase) {
+    return nav.length === 1 && nav[0] === 'plan' && plan.over === phase && (plan.mode === 'route') === (phase === 'confirmed');
+  }
+  /** The screens open now still belong over this phase. */
+  function screensFit(phase) {
+    if (!nav.length) return true;
+    if (phase === 'idle') return !(nav.indexOf('plan') >= 0 && plan.mode === 'route');
+    return planOver(phase);
+  }
 
   /** The screen for the state, with what only this page knows on top. */
   function viewFor(s) {
@@ -2875,12 +3127,13 @@
       return 'idle';
     }
     if (s.phase === 'offers') return local.confirming ? 'confirming' : 'offers';
-    if (s.phase === 'confirmed') return showFound(s) ? 'found' : 'confirmed';
-    return s.phase === 'price' ? 'price' : 'idle';
+    if (s.phase === 'confirmed') return planOver('confirmed') ? 'plan' : showFound(s) ? 'found' : 'confirmed';
+    if (s.phase === 'price') return planOver('price') ? 'plan' : 'price';
+    return 'idle';
   }
 
   function render() {
-    if (!state || shownView === 'fatal') return;
+    if (!state || shownView === 'fatal' || shownView === 'expired') return;
     var view = viewFor(state);
     var changed = view !== shownView;
     if (changed) {
@@ -2915,6 +3168,8 @@
 
   function applyState(next) {
     if (!next || typeof next.phase !== 'string') return;
+    // The link's time is up (or it was refused): an answer arriving late changes nothing.
+    if (shownView === 'expired' || shownView === 'fatal') return;
     var before = state && state.phase;
     state = next;
     // Each answer carries the map key (null: no maps on this server).
@@ -2922,16 +3177,20 @@
     if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; addFor = null; }
     // An accept that timed out, and the server still shows the offers: back to them, quietly.
     if (next.phase === 'offers' && local.confirming && local.confirming.timedOut) { local.confirming = null; paying = null; }
-    // The trip moved on while a screen was open over Home (a price, a search, a ride): their history entries go too, so Back works.
-    if (next.phase !== 'idle' && nav.length) navHome();
+    // The trip moved on while a screen was open over Home (a price, a search, a ride), or the trip
+    // whose route was being changed ended: their history entries go too, so Back works.
+    if (!screensFit(next.phase)) navHome();
+    // Planned on this page: until the trip is booked or let go.
+    if (next.phase === 'idle' || next.phase === 'confirmed') setPlanned(false);
 
     if (before !== next.phase) {
       track('phase_shown', { from: before || 'none' });
       if (next.phase !== 'offers') closeSheets();
-      if (before === 'confirmed' && next.phase === 'idle') local.endedNote = 'Trip ended';
+      if (before === 'confirmed' && next.phase === 'idle') local.endedNote = local.rideCancelledHere ? 'Ride cancelled' : 'Trip ended';
       if (before === 'offers' && next.phase === 'idle' && !lastSearchOf(next) && !local.cancelledHere) say('Search ended');
       if (next.phase !== 'idle') local.endedNote = null;
       local.cancelledHere = false;
+      local.rideCancelledHere = false;
     }
     // Back from a search to change the trip: the box holds the price they had out (raised or not).
     if (before === 'offers' && next.phase === 'price' && next.lastOfferNgn) W.$('price-input').value = Number(next.lastOfferNgn).toLocaleString('en-NG');

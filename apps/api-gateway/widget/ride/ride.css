@@ -15,6 +15,10 @@
   --placeholder: #8C837A;
   --handle: #B8AE9E;
   --card-shadow: 0 4px 14px rgba(13, 13, 13, 0.07);
+  /* the app's emergency button (components/emergency-button.tsx) */
+  --sos: #CC3333;
+  --sos-soft: #FFF0F0;
+  --sos-live: #8A1F1F;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -126,6 +130,9 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .route-label { font-size: 12px; line-height: 16px; color: var(--muted); }
 .route-value { font-size: 15px; line-height: 20px; font-weight: 700; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .route-edit { flex: 0 0 auto; align-self: center; }
+/* a place on the route card opens Plan your trip on it */
+.route-card.editable [data-edit] { cursor: pointer; border-radius: 10px; }
+.route-card.editable [data-edit]:active { opacity: 0.72; }
 .tint-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .tint-chip { padding: 6px 10px; border-radius: 999px; background: var(--soft); font-size: 13px; line-height: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tint-chip:empty { display: none; }
@@ -270,6 +277,33 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .agreed-to { font-size: 15px; line-height: 20px; font-weight: 700; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .agreed-amount { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 24px; line-height: 28px; font-variant-numeric: tabular-nums; }
 
+/* the trip's lower part (app/rider/active-trip.tsx): progress, Add or change stop, the foot */
+.trip-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.trip-fill { display: block; width: 0; height: 8px; border-radius: 4px; background: var(--orange); transition: width 0.4s ease; }
+.stops-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 16px;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); color: var(--ink); text-align: left;
+}
+.stops-row:active { opacity: 0.72; }
+.stops-add { width: 22px; height: 22px; flex: 0 0 auto; fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; }
+.stops-words { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.stops-words strong { font-size: 16px; line-height: 22px; font-weight: 700; }
+.stops-words span { font-size: 14px; line-height: 20px; color: var(--muted); }
+.trip-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rlink.danger { color: var(--bad); }
+a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
+.sos-btn {
+  position: relative; overflow: hidden; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px;
+  height: 48px; padding: 0 18px; border: 1.5px solid var(--line); border-radius: var(--r-sm); background: var(--sos); color: #FFFFFF;
+  font-size: 16px; line-height: 22px; font-weight: 500; box-shadow: var(--card-shadow);
+}
+.sos-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.sos-btn:active { opacity: 0.72; }
+.sos-btn.live { background: var(--sos-live); }
+.sos-btn.live::before { content: ""; position: absolute; inset: 0; background: #FF3333; opacity: 0.3; animation: sos-pulse 1.24s ease-in-out infinite alternate; }
+.sos-btn > * { position: relative; }
+@keyframes sos-pulse { from { opacity: 0.25; } to { opacity: 0.85; } }
+
 /* ── sheets ──────────────────────────────────────────────────────────── */
 .overlay { position: fixed; inset: 0; z-index: 20; background: rgba(13, 13, 13, 0.45); animation: fade 0.2s ease; }
 @keyframes fade { from { opacity: 0; } }
@@ -305,6 +339,20 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 }
 .other-words::placeholder { color: var(--placeholder); }
 
+/* Emergency */
+.sos-call {
+  display: flex; align-items: center; gap: 12px; padding: 12px; border: 1.5px solid var(--sos); border-radius: var(--r-md);
+  background: var(--sos-soft); color: var(--ink); text-decoration: none;
+}
+.sos-call:active { opacity: 0.72; }
+.sos-call-icon { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 20px; background: var(--sos); display: flex; align-items: center; justify-content: center; }
+.sos-call-icon svg { width: 20px; height: 20px; fill: #FFFFFF; }
+.sos-call-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sos-call-words strong { font-size: 16px; line-height: 22px; font-weight: 600; }
+.sos-call-words span { font-size: 14px; line-height: 20px; color: var(--muted); }
+.btn.sos-send { background: var(--sos); border-color: var(--sos); color: #FFFFFF; }
+.rlink.muted-link { align-self: center; color: var(--muted); font-size: 14px; }
+
 /* naira or XLM */
 .pay-options { display: flex; flex-direction: column; gap: 10px; }
 .pay-option {
@@ -338,26 +386,6 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .waiting { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 16px; background: var(--good-soft); }
 .waiting strong { display: block; font-size: 14px; color: var(--good); }
 .waiting span { display: block; font-size: 13px; color: #2F5E49; }
-
-/* changing the trip */
-.trip-fields { display: flex; flex-direction: column; gap: 8px; }
-.trip-field { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); }
-.trip-field:focus-within { border-color: var(--ink); }
-.trip-field input { flex: 1; min-width: 0; height: 50px; border: 0; outline: 0; background: transparent; font: inherit; font-size: 16px; font-weight: 600; color: var(--ink); }
-.trip-field input::placeholder { color: var(--placeholder); }
-.trip-dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 6px; background: var(--ink); }
-.trip-dot.to { border-radius: 3px; background: var(--orange); }
-.trip-dot.mid { border: 2px solid var(--ink); background: var(--bg); }
-.stop-row { background: var(--soft); border-style: dashed; }
-.stop-text { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stop-remove { flex: 0 0 auto; width: 36px; height: 36px; border: 0; border-radius: 18px; background: var(--bg); color: var(--ink); font-size: 20px; line-height: 1; cursor: pointer; }
-.place-list { display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow-y: auto; }
-.place-list:empty { display: none; }
-.place { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); color: var(--ink); font: inherit; text-align: left; cursor: pointer; animation: slide-in 0.2s ease; }
-.place strong { font-size: 15px; font-weight: 700; }
-.place span { font-size: 13px; color: var(--muted); }
-.place:active { background: var(--orange-soft); border-color: var(--orange); }
-.place-status { display: flex; align-items: center; gap: 10px; padding: 10px 4px; font-size: 14px; color: var(--muted); }
 
 /* ── toasts ──────────────────────────────────────────────────────────── */
 .toasts { position: fixed; z-index: 40; top: 12px; left: 12px; right: 12px; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
@@ -479,6 +507,8 @@ section[data-view="plan"] { gap: 12px; min-height: calc(100vh - 36px); }
 .plan-label { flex: 0 0 48px; font-size: 12px; line-height: 16px; font-weight: 700; color: var(--muted); }
 .plan-field input { flex: 1; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 16px; font-weight: 600; color: var(--ink); }
 .plan-field input::placeholder { color: var(--placeholder); }
+/* the pickup of a trip under way: shown, not changed */
+.plan-field input:disabled { opacity: 1; color: var(--muted); -webkit-text-fill-color: var(--muted); }
 .plan-clear { flex: 0 0 auto; width: 44px; height: 44px; margin-right: -10px; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
 .plan-clear svg { width: 21px; height: 21px; fill: var(--muted); stroke: var(--bg); stroke-width: 2; stroke-linecap: round; }
 .plan-line { height: 1px; margin: 1px 0; background: var(--line); }

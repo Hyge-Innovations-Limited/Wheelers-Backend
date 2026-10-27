@@ -78,7 +78,7 @@
   <section data-view="plan" hidden>
     <div class="screen-head">
       <button class="rback" type="button" id="plan-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
-      <h1 class="title head-title plan-title">Plan your trip</h1>
+      <h1 class="title head-title plan-title" id="plan-title">Plan your trip</h1>
     </div>
     <div class="plan-card">
       <div class="plan-field" data-plan="pickup">
@@ -225,8 +225,8 @@
 
     <div class="card route-card" id="price-route">
       <div class="route-rows">
-        <div class="route-row stop"><span class="rail"><span class="dot from"></span><span class="rail-line"></span></span><div class="route-text"><span class="route-label">Pickup</span><span class="route-value where" data-route="pickup"></span></div></div>
-        <div class="route-row stop"><span class="rail"><span class="dot to"></span></span><div class="route-text"><span class="route-label">Destination</span><span class="route-value where" data-route="dest"></span></div></div>
+        <div class="route-row stop" data-edit="pickup"><span class="rail"><span class="dot from"></span><span class="rail-line"></span></span><div class="route-text"><span class="route-label">Pickup</span><span class="route-value where" data-route="pickup"></span></div></div>
+        <div class="route-row stop" data-edit="destination"><span class="rail"><span class="dot to"></span></span><div class="route-text"><span class="route-label">Destination</span><span class="route-value where" data-route="dest"></span></div></div>
       </div>
       <button class="rlink orange route-edit" type="button" id="route-edit" aria-label="Edit route" hidden>Edit</button>
     </div>
@@ -313,6 +313,7 @@
       <h1 class="title center">Confirming your driver</h1>
       <p class="muted center" id="cf-who"></p>
     </div>
+    <button class="btn quiet danger-link" type="button" id="cf-cancel">Cancel search</button>
   </section>
 
   <!-- the driver is confirmed: as the app's app/driver-found.tsx -->
@@ -330,6 +331,7 @@
     </div>
     <div class="card detail-card" id="fd-details" hidden></div>
     <button class="btn primary" type="button" id="fd-track">Track your driver</button>
+    <button class="btn quiet danger-link" type="button" id="fd-cancel" hidden>Cancel ride</button>
   </section>
 
   <!-- 3 · the trip — as the app's trip screen (app/rider/active-trip.tsx) -->
@@ -346,6 +348,7 @@
       <h1 class="trip-title" id="trip-title">Your driver is on the way</h1>
       <p class="trip-sub" id="map-stale" hidden></p>
     </div>
+    <div class="trip-track" id="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" hidden><span class="trip-fill" id="d-progress-fill"></span></div>
 
     <div class="driver-row">
       <div class="avatar ink" id="d-initial"></div>
@@ -371,7 +374,17 @@
       <div class="agreed-text"><span class="agreed-label">Agreed price</span><strong class="agreed-to">To <span data-route="dest"></span></strong></div>
       <strong class="agreed-amount" id="d-fare"></strong>
     </div>
+    <button class="stops-row" type="button" id="d-stops" aria-label="Add or change stop" hidden>
+      <svg class="stops-add" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+      <span class="stops-words"><strong>Add or change stop</strong><span id="d-stops-count"></span></span>
+      <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
     <p class="foot" id="d-foot" hidden></p>
+    <div class="trip-foot" id="d-trip-foot">
+      <button class="rlink danger" type="button" id="d-cancel" hidden>Cancel ride</button>
+      <a class="rlink" id="d-support" href="#" hidden>Support</a>
+      <button class="sos-btn" type="button" id="d-sos" aria-label="Emergency" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z"/><path d="M12 8v5M12 16.2v.3"/></svg><span id="d-sos-text">Emergency</span></button>
+    </div>
   </section>
 </div>
 
@@ -439,22 +452,10 @@
   </div>
 </div>
 
-<div class="sheet" id="sheet-trip" hidden role="dialog" aria-modal="true" aria-labelledby="st-title">
-  <h2 id="st-title">Change your trip</h2>
-  <div class="trip-fields">
-    <label class="trip-field"><span class="trip-dot from" aria-hidden="true"></span><span class="visually-hidden">Pickup</span><input id="trip-pickup" data-field="pickup" autocomplete="off" placeholder="Pickup"></label>
-    <div id="trip-stops"></div>
-    <label class="trip-field"><span class="trip-dot to" aria-hidden="true"></span><span class="visually-hidden">Destination</span><input id="trip-dest" data-field="destination" autocomplete="off" placeholder="Where to?"></label>
-  </div>
-  <div class="place-list" id="place-list" role="listbox" aria-label="Matching places"></div>
-  <div class="notice bad" id="trip-err" hidden></div>
-  <button class="btn primary" type="button" id="trip-save" disabled>Save trip</button>
-  <button class="btn quiet" type="button" data-close>Keep this trip</button>
-</div>
-
 <!-- as the app's app/rider-cancel.tsx -->
 <div class="sheet" id="sheet-cancel" hidden role="dialog" aria-modal="true" aria-labelledby="cx-title">
   <h2 id="cx-title">Stop looking for a driver?</h2>
+  <p class="sub" id="cx-sub" hidden></p>
   <span class="label-caps" id="cx-label">Why are you cancelling?</span>
   <div class="reasons" id="cancel-reasons" role="radiogroup" aria-labelledby="cx-label"></div>
   <label class="field" id="cancel-other-field" hidden>
@@ -511,6 +512,21 @@
   <div class="notice bad" id="ss-err" hidden></div>
   <button class="btn primary" type="button" data-close>Done</button>
   <button class="btn danger" type="button" id="ss-cancel">Cancel scheduled ride</button>
+</div>
+
+<!-- Emergency: as the app's components/emergency-button.tsx -->
+<div class="sheet" id="sheet-sos" hidden role="dialog" aria-modal="true" aria-labelledby="sos-title">
+  <h2 id="sos-title">Get help now</h2>
+  <p class="sub" id="sos-sub" hidden></p>
+  <a class="sos-call" id="sos-call" href="tel:112">
+    <span class="sos-call-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg></span>
+    <span class="sos-call-words"><strong>Call 112</strong><span>Police, fire, ambulance</span></span>
+    <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+  </a>
+  <button class="btn sos-send" type="button" id="sos-send">I need help now</button>
+  <button class="rlink muted-link" type="button" id="sos-cancel" hidden>It was a false alarm. Cancel my alert</button>
+  <div class="notice bad" id="sos-err" hidden></div>
+  <button class="btn ghost" type="button" id="sos-close" data-close>Close</button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
