@@ -324,6 +324,14 @@ const WIDGET_CSP =
   // system font stack, so Google Fonts is no longer allowed either.
   `default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${MAP_TILE_ORIGIN}; connect-src 'self' ${WIDGET_SOCKET_ORIGIN}; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 
+// The ride page draws its maps with Google Maps (as the app does): Google's own
+// list of hosts for its script, tiles and data. Its <style> tags need inline styles.
+const GOOGLE_MAPS_HOSTS = "https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com";
+const RIDE_PAGE_CSP =
+  `default-src 'self'; script-src 'self' ${GOOGLE_MAPS_HOSTS} blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; ` +
+  `img-src 'self' data: blob: ${MAP_TILE_ORIGIN} ${GOOGLE_MAPS_HOSTS}; connect-src 'self' ${WIDGET_SOCKET_ORIGIN} ${GOOGLE_MAPS_HOSTS} data: blob:; ` +
+  `frame-src *.google.com; worker-src blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
   const ext = extname(pathname);
@@ -358,7 +366,7 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
       "X-Frame-Options": "DENY",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": WIDGET_CSP,
+      "Content-Security-Policy": relative.startsWith("ride/") ? RIDE_PAGE_CSP : WIDGET_CSP,
     });
     res.end(data);
   } catch {
@@ -1119,6 +1127,8 @@ async function bootstrap(): Promise<void> {
         notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
         // Changing the trip on the page: the chat's place lookup and route planner.
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+        // The page's own map: a key locked to our web address, never the server's key.
+        googleMapsBrowserKey: process.env.GOOGLE_MAPS_BROWSER_KEY?.trim() || undefined,
         routePlanner,
         // Paying with XLM (testnet): only when Stellar is on.
         stellar: stellar ?? null,

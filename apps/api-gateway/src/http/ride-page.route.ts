@@ -73,6 +73,8 @@ export interface RidePageRouteDeps {
   paymentsClient: PaymentsClient;
   /** Looking places up and planning a changed trip. Absent: the trip cannot be changed on the page. */
   googleMapsApiKey?: string;
+  /** The page's Google map (a key restricted to our web address). Absent: the page keeps its old map. */
+  googleMapsBrowserKey?: string;
   routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'>;
   /** Tells the chat what happened on the page (search started, ride confirmed). Absent in tests. */
   notifyChat?: (event: RidePageChatEvent) => Promise<void>;
@@ -197,7 +199,12 @@ async function liveTripFor(userId: string) {
 
 /* ── GET /ride-page/state ─────────────────────────────────────────────── */
 
+/** Every answer the page gets: where the rider is, and the key for its map. */
 async function buildState(deps: RidePageRouteDeps, userId: string) {
+  return { ...(await buildPhaseState(deps, userId)), mapsKey: deps.googleMapsBrowserKey ?? null };
+}
+
+async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
   const [rideId, balanceNgn, trip] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId), liveTripFor(userId)]);
 
   // A driver is assigned: this is the tracking page now.
