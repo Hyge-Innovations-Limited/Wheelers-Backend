@@ -529,6 +529,14 @@
   <button class="btn ghost" type="button" id="sos-close" data-close>Close</button>
 </div>
 
+<!-- Find drivers with the wallet covering the price: auto-book the first driver at it? (asked once per search) -->
+<div class="sheet" id="sheet-auto" hidden role="dialog" aria-modal="true" aria-labelledby="au-title" aria-describedby="au-text">
+  <h2 id="au-title"></h2>
+  <p class="sub" id="au-text"></p>
+  <button class="btn primary" type="button" id="au-yes">Yes, auto-book</button>
+  <button class="btn quiet" type="button" id="au-no">No, I'll choose</button>
+</div>
+
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <div id="toast" hidden></div>
 <script src="../wallet/common.js"></script>

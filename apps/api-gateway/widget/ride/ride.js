@@ -466,7 +466,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
@@ -496,6 +496,8 @@
     SHEETS.forEach(function (id) { W.show(W.$(id), false); });
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
+    // Put away without an answer: no search starts.
+    if (askingAuto) { var auto = askingAuto; askingAuto = null; auto(null); }
   }
 
   /**
@@ -1924,11 +1926,45 @@
     same.className = 'btn ' + (ndPicked !== null ? 'ghost' : 'primary');
   }
 
+  /**
+   * Auto-book (owner's D4): only when the rider says so. The wallet covers the price: asked once, in a
+   * sheet; true / false as answered, null when put away (nothing starts). Wallet short: false, no question.
+   */
+  var askingAuto = null;
+  function askAutoBook(amount) {
+    var covers = state && typeof state.balanceNgn === 'number' && state.balanceNgn + 0.004 >= amount && amount > 0;
+    if (!covers) return Promise.resolve(false);
+    return new Promise(function (resolve) {
+      openSheet('sheet-auto');
+      W.$('au-title').textContent = 'Auto-book a driver at ' + W.naira(amount) + '?';
+      W.$('au-text').textContent = W.naira(amount) + ' will be held from your wallet.';
+      askingAuto = resolve;
+      track('auto_book_asked', { amountNgn: amount });
+    });
+  }
+  function answerAuto(yes) {
+    var answer = askingAuto;
+    askingAuto = null;
+    closeSheets();
+    track('auto_book_answered', { yes: yes });
+    if (answer) answer(yes);
+  }
+  W.$('au-yes').addEventListener('click', function () { answerAuto(true); });
+  W.$('au-no').addEventListener('click', function () { answerAuto(false); });
+
   function searchAgain(amount, fromSheet) {
-    if (busy || !(amount > 0)) return;
+    if (busy || askingAuto || !(amount > 0)) return;
+    askAutoBook(amount).then(function (autoAccept) {
+      if (autoAccept === null) return;
+      // The question took the price sheet's place: its errors go on the screen now.
+      sendSearchAgain(amount, autoAccept, fromSheet && !W.$('sheet-offer').hidden);
+    });
+  }
+  function sendSearchAgain(amount, autoAccept, fromSheet) {
+    if (busy) return;
     busy = true;
-    track('find_tapped', { amountNgn: amount, again: true });
-    api('POST', '/ride-page/search-again', { amountNgn: amount }).then(function (next) {
+    track('find_tapped', { amountNgn: amount, again: true, autoAccept: autoAccept });
+    api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept }).then(function (next) {
       if (fromSheet) closeSheets();
       seenOffers = null;
       apply(next);
@@ -2057,12 +2093,20 @@
 
   W.$('find').addEventListener('click', function () {
     var button = this;
+    if (busy || askingAuto) return;
+    var amount = W.parseAmount(W.$('price-input').value);
+    askAutoBook(amount).then(function (autoAccept) {
+      if (autoAccept === null || !state || state.phase !== 'price') return;
+      find(button, amount, autoAccept);
+    });
+  });
+  function find(button, amount, autoAccept) {
     if (busy) return;
     busy = true;
     button.className = 'btn primary busy';
     button.textContent = 'Asking drivers…';
-    track('find_tapped', { amountNgn: W.parseAmount(W.$('price-input').value), suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0 });
-    api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
+    track('find_tapped', { amountNgn: amount, suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0, autoAccept: autoAccept });
+    api('POST', '/ride-page/find', { amountNgn: amount, autoAccept: autoAccept }).then(function (next) {
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
@@ -2075,7 +2119,7 @@
       button.className = 'btn primary';
       syncPrice();
     });
-  });
+  }
 
   /* ── 2 · the price is out — drivers' offers, live ─────────────────────── */
 
@@ -2246,10 +2290,11 @@
     if (shownView === 'offers' && state && state.phase === 'offers') drawClock(state);
   }, 1000);
 
-  /* auto-accept (Contract C): automatic on the server whenever the wallet covers the price; the page only says so */
+  /* auto-accept (Contract C, D4): on only when the rider said yes at Find; the page only says so */
 
   function drawAuto(s) {
-    var covered = s.autoAccept !== false && typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= (Number(s.offerNgn) || 0) && Number(s.offerNgn) > 0;
+    // Only when the rider said yes to auto-book (D4).
+    var covered = s.autoAccept === true && typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= (Number(s.offerNgn) || 0) && Number(s.offerNgn) > 0;
     var line = W.$('auto-line');
     W.show(line, covered);
     line.textContent = covered ? 'A driver at ' + W.naira(s.offerNgn) + ' is booked for you' : '';
