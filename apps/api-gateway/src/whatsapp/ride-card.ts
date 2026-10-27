@@ -278,7 +278,7 @@ export async function sayRidePageEventInChat(deps: MetaWhatsappRouteDeps, event:
     if (event.kind === 'search_started') {
       const text = await sendSearchStarted(deps, { id: event.userId }, event.phone, event);
       await appendWhatsappConversation(deps.redisClient, event.phone, [
-        { role: 'user', content: `[named a price on the offers page: ₦${event.offerNgn.toLocaleString()}]` },
+        { role: 'user', content: event.scheduled ? `[a ride scheduled on the offers page started its search: ₦${event.offerNgn.toLocaleString()}]` : `[named a price on the offers page: ₦${event.offerNgn.toLocaleString()}]` },
         { role: 'assistant', content: text },
       ]);
       return;

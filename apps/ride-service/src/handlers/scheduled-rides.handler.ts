@@ -165,8 +165,9 @@ async function doDispatch(
     suggestedFareNgn: pricing.suggestedFareNgn,
     minOfferNgn: pricing.minOfferNgn,
     ratePerKmNgn: pricing.ratePerKmNgn,
-    // Scheduling exists only in the app, and the rider is not watching it now.
-    channel: 'APP',
+    // Where it was booked: a ride for later from the WhatsApp ride page searches as a
+    // WhatsApp search (offers on the page and in the chat); everything else is the app's.
+    channel: claimed.channel === 'WHATSAPP' ? 'WHATSAPP' : 'APP',
     scheduled: true,
     timestamp: new Date().toISOString(),
   };

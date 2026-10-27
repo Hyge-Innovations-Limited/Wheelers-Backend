@@ -564,6 +564,8 @@ model ScheduledRide {
   plannedDistanceKm      Float?
   plannedDurationSeconds Int?
   fareEstimateNgn        Decimal?                   @db.Decimal(18, 2)
+  /// Where it was booked: "WHATSAPP" (the ride page); null for the app. Its search goes to the same place.
+  channel                String?
   cancellationReason     String?
   cancelledAt            DateTime?
   dispatchedAt           DateTime?

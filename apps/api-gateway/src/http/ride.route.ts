@@ -40,7 +40,7 @@ type LatLngAddress = {
   address: string;
 };
 
-function buildScheduledRideJobId(scheduledRideId: string): string {
+export function buildScheduledRideJobId(scheduledRideId: string): string {
   return `scheduled-ride-${scheduledRideId}`;
 }
 

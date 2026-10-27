@@ -150,8 +150,20 @@ export type WalletPageScope = 'deposit' | 'withdraw' | 'ride' | 'trip';
  */
 export const TRIP_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
 
-/** A search for drivers can outlast 15 minutes; the link has to as well. */
-export const RIDE_PAGE_TOKEN_TTL_SECONDS = 2 * 60 * 60;
+/**
+ * A search for drivers can outlast 15 minutes, and the rider comes back to
+ * the same link from the chat for the trip, the next booking and a ride for
+ * later: six hours. Past that the page says so, with the way back to WhatsApp.
+ */
+export const RIDE_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+
+/** A genuine page link (its signature checks) whose time is up: told apart from a bad link. */
+export class PageLinkExpiredError extends Error {
+  constructor() {
+    super('This link has expired.');
+    this.name = 'PageLinkExpiredError';
+  }
+}
 
 interface WalletPageTokenPayload {
   sub: string;
@@ -225,8 +237,11 @@ export function verifyWalletPageToken(
   if (scope === 'trip' && (typeof rid !== 'string' || rid.length === 0)) {
     throw new Error('Page token is missing its ride.');
   }
-  if (typeof exp !== 'number' || exp <= Math.floor(Date.now() / 1000)) {
-    throw new Error('This link has expired.');
+  if (typeof exp !== 'number') {
+    throw new Error('Page token expiry is invalid.');
+  }
+  if (exp <= Math.floor(Date.now() / 1000)) {
+    throw new PageLinkExpiredError();
   }
   return { userId: sub, scope, ...(scope === 'trip' ? { rideId: rid as string } : {}) };
 }

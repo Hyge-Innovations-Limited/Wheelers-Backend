@@ -54,6 +54,8 @@ export const scheduledRideClient = {
     plannedDistanceKm?: number;
     plannedDurationSeconds?: number;
     fareEstimateNgn?: number;
+    /** "WHATSAPP" for a ride booked on the ride page: its search is a WhatsApp search. Absent: the app. */
+    channel?: 'WHATSAPP';
   }) =>
     prisma.scheduledRide.create({
       data: {
@@ -71,6 +73,7 @@ export const scheduledRideClient = {
         plannedDistanceKm: data.plannedDistanceKm,
         plannedDurationSeconds: data.plannedDurationSeconds,
         fareEstimateNgn: data.fareEstimateNgn,
+        ...(data.channel ? { channel: data.channel } : {}),
       },
     }),
 

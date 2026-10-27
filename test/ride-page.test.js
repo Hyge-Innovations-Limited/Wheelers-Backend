@@ -107,12 +107,24 @@ test('the link opens the bidding page and nothing else; money links cannot open 
     assert.equal((await call(deps, rider, 'GET', '/ride-page/state', undefined, wrong)).status, 403, `${scope} link`);
   }
   assert.equal((await call(deps, rider, 'GET', '/ride-page/state', undefined, local.createLocalAccessToken(rider, JWT_SECRET))).status, 401, 'a login token is not a page link');
+  // An expired link says so, with the one way back: the bot's chat. A bad one is told apart.
   const expired = local.createWalletPageToken(rider, 'ride', JWT_SECRET, -1);
-  assert.equal((await call(deps, rider, 'GET', '/ride-page/state', undefined, expired)).status, 401);
+  const gone = await call(deps, rider, 'GET', '/ride-page/state', undefined, expired);
+  assert.equal(gone.status, 401);
+  assert.equal(gone.body.code, 'LINK_EXPIRED');
+  assert.match(gone.body.chatUrl, /^https:\/\/wa\.me\/\d+$/);
+  for (const path of ['/ride-page/suggest?q=yaba', '/ride-page/scheduled']) {
+    assert.equal((await call(deps, rider, 'GET', path, undefined, expired)).body.code, 'LINK_EXPIRED', path);
+  }
+  const forged = expired.slice(0, -4) + (expired.endsWith('AAAA') ? 'BBBB' : 'AAAA');
+  const bad = await call(deps, rider, 'GET', '/ride-page/state', undefined, forged);
+  assert.equal(bad.status, 401);
+  assert.equal(bad.body.code, 'LINK_INVALID', 'a tampered link is not "expired"');
+  assert.equal(bad.body.chatUrl, undefined);
 
-  // A ride link lives as long as a search does — not the 15 minutes of a money link.
+  // A ride link lasts six hours — not the 30 minutes of a money link.
   const payload = JSON.parse(Buffer.from(local.createWalletPageToken(rider, 'ride', JWT_SECRET, local.RIDE_PAGE_TOKEN_TTL_SECONDS).split('.')[1], 'base64url').toString());
-  assert.equal(payload.exp - payload.iat, 2 * 60 * 60);
+  assert.equal(payload.exp - payload.iat, 6 * 60 * 60);
 });
 
 /* ── name your price ──────────────────────────────────────────────────── */

@@ -78,6 +78,7 @@ import { clearOfferCount, hasOffersPageMessage, sendOffersPageMessage, showOffer
 import { loadTripChat } from '../trip-chat/access';
 import { hasRideCard, setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
+import { startScheduledWhatsappSearch } from '../rides/scheduled-whatsapp';
 import type { StellarService } from '../stellar/service';
 import { createPageCatchup, deferUntilPageLeft, deliverCatchup, pendingCatchup } from '../whatsapp-flows/page-catchup';
 import type { CatchupItem } from '../whatsapp-flows/page-catchup';
@@ -817,6 +818,9 @@ export async function handleRideEvent(
     // did not start it and is not looking at the app, and no driver is theirs
     // until they pick one: without this they never knew, and the search died.
     if (event.scheduled) {
+      // Booked on the WhatsApp ride page: a WhatsApp search (the page shows it, the chat says
+      // "Your bid is in"). When it cannot be one (on a trip, no phone), it is the app's, as below.
+      if (event.channel === 'WHATSAPP' && await startScheduledWhatsappSearch(deps, event)) return;
       await deps.redisClient.set(appOnlyRideKey(event.rideId), '1', APP_ONLY_RIDE_TTL_SECONDS).catch(() => undefined);
       await tellAppRider(deps, event.riderId, {
         title: 'Your scheduled ride',

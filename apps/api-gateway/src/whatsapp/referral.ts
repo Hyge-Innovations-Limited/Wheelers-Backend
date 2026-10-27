@@ -31,7 +31,7 @@ export function referralCodeIn(text: string): string | null {
 export const referralChatMessage = (code: string) => `Hi Wheelers. My referral code is ${code}`;
 
 /** The Wheelers WhatsApp number when WHATSAPP_BOT_NUMBER is not set (the website's too). */
-const WHEELERS_NUMBER = '2348141979106';
+export const WHEELERS_NUMBER = '2348141979106';
 
 /**
  * A person's referral link, what their QR code holds and what the app and

@@ -1133,6 +1133,8 @@ async function bootstrap(): Promise<void> {
         // The page's own map: a key locked to our web address, never the server's key.
         googleMapsBrowserKey: process.env.GOOGLE_MAPS_BROWSER_KEY?.trim() || undefined,
         routePlanner,
+        // Rides for later ("Later" on the page's home): the same queue and lead time as the app's.
+        scheduling: { dispatcherQueue, leadTimeMs },
         // Paying with XLM (testnet): only when Stellar is on.
         stellar: stellar ?? null,
       }, url);
