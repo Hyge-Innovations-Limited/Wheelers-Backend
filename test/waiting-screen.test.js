@@ -81,20 +81,14 @@ test('the price line names the single biggest lift and what it added, in ₦50s;
   assert.ok(stormReason.extraNgn > reason.extraNgn);
 });
 
-test('rush hour: this hour clearly above the day\'s quiet hours says so; the night never does', () => {
+test('rush hour is never named under the price, however busy the hour', () => {
   const curve = config.seedHourCurve(config.normalizePricingSettings(live));
   const flat = curve.weekday.map((v, h) => (config.isNightHour(h) ? v : 1));
   flat[8] = 1.15;
   config.setPricingSettings({ ...live, hourCurveOn: true, hourCurve: { ...curve, weekday: flat } });
   const trip = { durationSeconds: 2400, origin: { lat: 6.6018, lng: 3.3515 }, destination: { lat: 6.4969, lng: 3.3556 } };
   const rush = { ...trip, at: lagos(WEDNESDAY, 8, 30) };
-  const reason = config.priceReasonOf(15, rush, config.calculateSuggestedFare(15, rush));
-  assert.equal(reason.label, 'Rush hour');
-  assert.ok(reason.extraNgn > 0 && reason.extraNgn % 50 === 0);
-  const quiet = { ...trip, at: lagos(WEDNESDAY, 14) };
-  assert.equal(config.priceReasonOf(15, quiet, config.calculateSuggestedFare(15, quiet)), null);
-  const night = { ...trip, at: lagos(WEDNESDAY, 23) };
-  assert.equal(config.priceReasonOf(15, night, config.calculateSuggestedFare(15, night)), null, 'night is dearer, but not rush hour');
+  assert.equal(config.priceReasonOf(15, rush, config.calculateSuggestedFare(15, rush)), null);
   config.setPricingSettings({});
 });
 

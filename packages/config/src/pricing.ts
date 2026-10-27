@@ -1202,27 +1202,21 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
 }
 
 /** The one line under a price that says why it is up: the biggest lift, and what it added. */
-export type PriceReason = { label: 'Busy in this area' | 'Raining' | 'Rush hour'; extraNgn: number };
+export type PriceReason = { label: 'Busy in this area' | 'Raining'; extraNgn: number };
 
-/** A surge this far over 1 is worth a line; a rush hour this far over the day's quiet hours. */
+/** A surge this far over 1 is worth a line. */
 const BUSY_SURGE_MIN = 1.05;
-const RUSH_OVER_QUIET = 1.05;
 
 /**
  * Why this trip's price is up, if anything notable lifted it: a busy pickup
- * area (the live surge), rain, or a rush hour (this hour's lift clearly above
- * the same day's quiet hours, never at night). The single biggest lift wins;
+ * area (the live surge) or rain. The bigger lift wins;
  * what it added is rounded to ₦50 and is always above 0. Null when nothing did.
  *
  * Surge and rain are worked out by pricing the same trip again without them
- * (so whatever the price is set by, the difference is the real one). The hour
- * cannot be taken out of a quote, so its share is the price's lifted part
- * times (1 − quiet ÷ now).
+ * (so whatever the price is set by, the difference is the real one).
  */
 export function priceReasonOf(distanceKm: number, factors: RateFactors, fare: SuggestedFare): PriceReason | null {
   if (!Number.isFinite(distanceKm) || distanceKm <= 0) return null;
-  const settings = pricingSettings;
-  const at = factors.at ?? new Date();
   const found: PriceReason[] = [];
   const add = (label: PriceReason['label'], extra: number) => {
     const extraNgn = Math.round(extra / 50) * 50;
@@ -1238,24 +1232,7 @@ export function priceReasonOf(distanceKm: number, factors: RateFactors, fare: Su
     add('Raining', fare.suggestedFareNgn - without.suggestedFareNgn);
   }
 
-  const clock = lagosClock(at);
-  if (!clock.night) {
-    if (fare.setBy === 'linc' && fare.lincNgn !== null) {
-      // Linc's lift for this part of the day against the day's quietest daytime part.
-      const lifts = lincPeriodLifts(settings).lifts;
-      const day = clock.weekend ? 'weekend' : 'weekday';
-      const now = lifts[lincSlotOf(at)];
-      const quiet = Math.min(...(['morning', 'afternoon', 'evening'] as const).map((period) => lifts[`${day}-${period}` as LincSlot]));
-      if (quiet > 0 && now >= quiet * RUSH_OVER_QUIET) add('Rush hour', fare.lincNgn * (1 - quiet / now));
-    } else if (fare.hourFactor !== null && fare.marketFareNgn !== null && settings.hourCurve) {
-      // The hour curve: this hour against the same kind of day's quietest daytime hour.
-      const hours = curveDay(settings.hourCurve, clock.dayKind).filter((_, hour) => !isNightHour(hour));
-      const quiet = hours.length ? Math.min(...hours) : 1;
-      const lifted = fare.suggestedFareNgn - settings.extraNgn - (fare.premium?.premiumNgn ?? 0);
-      if (quiet > 0 && fare.hourFactor >= quiet * RUSH_OVER_QUIET && lifted > 0) add('Rush hour', lifted * (1 - quiet / fare.hourFactor));
-    }
-  }
-
+  // The hour of the day is never named ("Rush hour"): only a busy area and rain.
   if (found.length === 0) return null;
   return found.reduce((best, reason) => (reason.extraNgn > best.extraNgn ? reason : best));
 }
