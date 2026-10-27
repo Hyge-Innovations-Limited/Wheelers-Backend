@@ -425,3 +425,4 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+#idle-text:empty { display: none; }

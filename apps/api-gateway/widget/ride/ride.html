@@ -26,10 +26,9 @@
   <section data-view="idle" hidden>
     <div class="note">
       <h1 id="idle-title">Nothing to price</h1>
-      <p id="idle-text">This booking has ended. Send your trip to the Wheelers bot to start a new one.</p>
+      <p id="idle-text">This booking has ended.</p>
     </div>
     <a class="btn primary" id="idle-back" href="#" hidden>Back to WhatsApp</a>
-    <p class="foot">In the chat, tap <strong>Quick Actions</strong> to book again, see your trips or add money.</p>
   </section>
 
   <!-- 1 · set your price — as the app's price screen (app/ride-selection.tsx) -->
@@ -74,7 +73,6 @@
     <div id="offers-steps-3" hidden><div class="steps" role="progressbar" aria-label="Step 3 of 4: You choose"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
     <div class="heading">
       <h1 class="title" id="offers-title">Finding drivers</h1>
-      <p class="small muted" id="sent-text">Your offer has been sent to drivers near you.</p>
       <div class="offers-sub" id="offers-sub">
         <p class="small muted"><span id="offers-route"></span><span id="offers-yours"> · your offer <strong id="my-offer"></strong></span></p>
         <p class="caption" id="offers-suggested" hidden></p>
@@ -90,7 +88,7 @@
         <span class="offer-ink-caption" id="finding-suggested" hidden></span>
       </div>
       <div class="raise">
-        <span class="label-caps">Want a faster answer? Raise your offer</span>
+        <span class="label-caps">Raise your offer</span>
         <div class="raise-row">
           <button class="btn ghost" type="button" data-raise="200" aria-label="Raise your offer by 200 naira">+ ₦200</button>
           <button class="btn ghost" type="button" data-raise="500" aria-label="Raise your offer by 500 naira">+ ₦500</button>
@@ -160,7 +158,6 @@
 
 <div class="sheet" id="sheet-offer" hidden role="dialog" aria-modal="true" aria-labelledby="so-title">
   <h2 id="so-title">Change your price</h2>
-  <p class="sub">Drivers nearby will see your new offer and can reply again.</p>
   <div class="price-card">
     <div class="price-top"><span class="price-label">New offer</span><span class="price-side">Current <strong id="offer-current"></strong></span></div>
     <div class="stepper">
@@ -214,14 +211,13 @@
   </div>
   <div class="waiting">
     <span class="spinner"></span>
-    <div><strong>Waiting for your transfer…</strong><span id="pay-note">Your driver is booked the moment it lands. You don’t need to tap anything again.</span></div>
+    <div><strong>Waiting for your transfer…</strong></div>
   </div>
   <button class="btn quiet" type="button" data-close>Choose another driver</button>
 </div>
 
 <div class="sheet" id="sheet-trip" hidden role="dialog" aria-modal="true" aria-labelledby="st-title">
   <h2 id="st-title">Change your trip</h2>
-  <p class="sub">Type a place, then pick it from the list.</p>
   <div class="trip-fields">
     <label class="trip-field"><span class="trip-dot from" aria-hidden="true"></span><span class="visually-hidden">Pickup</span><input id="trip-pickup" data-field="pickup" autocomplete="off" placeholder="Pickup"></label>
     <div id="trip-stops"></div>
@@ -236,7 +232,6 @@
 <!-- as the app's app/rider-cancel.tsx -->
 <div class="sheet" id="sheet-cancel" hidden role="dialog" aria-modal="true" aria-labelledby="cx-title">
   <h2 id="cx-title">Stop looking for a driver?</h2>
-  <p class="sub">Cancelling is free. You will not be charged.</p>
   <span class="label-caps" id="cx-label">Why are you cancelling?</span>
   <div class="reasons" id="cancel-reasons" role="radiogroup" aria-labelledby="cx-label"></div>
   <label class="field" id="cancel-other-field" hidden>

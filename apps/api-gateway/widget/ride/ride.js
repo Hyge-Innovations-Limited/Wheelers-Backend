@@ -175,6 +175,7 @@
       openSheet('sheet-confirm');
       W.$('sc-title').textContent = options.title;
       W.$('sc-text').textContent = options.text;
+      W.show(W.$('sc-text'), Boolean(options.text));
       W.$('sc-yes').textContent = options.yes;
       W.$('sc-no').textContent = options.no;
       asking = resolve;
@@ -269,7 +270,6 @@
     W.api('POST', '/ride-page/find', { amountNgn: W.parseAmount(W.$('price-input').value) }).then(function (next) {
       seenOffers = null;
       apply(next);
-      say('Your price is out. Offers will show up here.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
       track('find_failed', { code: error.code || String(error.status) });
@@ -299,7 +299,6 @@
 
     var count = offers.length;
     W.show(W.$('searching'), list.length === 0);
-    W.show(W.$('sent-text'), list.length === 0);
     W.$('finding-route').textContent = W.$('offers-route').textContent;
     W.$('finding-offer').textContent = W.naira(s.offerNgn);
     var suggested = s.route && s.route.suggestedFareNgn > 0 ? 'Suggested price ' + W.naira(s.route.suggestedFareNgn) : '';
@@ -506,7 +505,6 @@
       track('account_copied');
       W.copy(account.accountNumber).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
     };
-    W.$('pay-note').textContent = first + ' is booked the moment it lands. You don’t need to tap anything again.';
     openSheet('sheet-pay');
   }
 
@@ -517,7 +515,7 @@
     var count = (state.offers || []).length;
     ask({
       title: count === 1 ? 'Decline this offer?' : 'Decline all ' + count + ' offers?',
-      text: 'We keep looking for a driver. New offers still come in here, and these drivers can send you a new price too.',
+      text: '',
       yes: count === 1 ? 'Decline offer' : 'Decline all',
       no: 'Keep offers'
     }).then(function (yes) { if (yes) declineAll(); });
@@ -680,7 +678,7 @@
       closeSheets();
       apply(next);
       W.$('idle-title').textContent = 'Search cancelled';
-      W.$('idle-text').textContent = 'Nothing was charged. Message Wheelers whenever you need a ride.';
+      W.$('idle-text').textContent = 'Nothing was charged.';
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
       track('cancel_failed', { code: error.code || String(error.status) });
@@ -706,7 +704,6 @@
       busy = true;
       W.api('POST', '/ride-page/edit-trip').then(function (next) {
         apply(next);
-        if (next.phase === 'price') say('Search stopped. Change your trip or your price, then find drivers again.', 'good');
       }).catch(function (error) {
         if (error.status === 401) return W.fatal(error.message);
         say(error.message, 'bad');
@@ -835,7 +832,6 @@
       closeSheets();
       apply(next);
       track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
-      say('Trip changed. The suggested price is ' + W.naira(next.route ? next.route.suggestedFareNgn : 0) + '.', 'good');
     }).catch(function (error) {
       if (error.status === 401) return W.fatal(error.message);
       track('trip_save_failed', { code: error.code || String(error.status) });
@@ -917,8 +913,8 @@
     var stale = W.$('map-stale');
     var showStale = Boolean(position) && !trip.positionFresh && trip.positionAgeSeconds !== null;
     W.show(stale, showStale);
-    if (showStale) stale.textContent = 'Your driver’s signal is weak — this position is from ' + Math.max(1, Math.round(trip.positionAgeSeconds / 60)) + ' min ago.';
-    if (!position) { W.show(stale, true); stale.textContent = 'Waiting for your driver’s location…'; }
+    if (showStale) stale.textContent = 'Location from ' + Math.max(1, Math.round(trip.positionAgeSeconds / 60)) + ' min ago';
+    if (!position) { W.show(stale, true); stale.textContent = 'Waiting for location…'; }
   }
 
   W.$('d-call').addEventListener('click', function () { track('call_driver_tapped'); });
@@ -979,11 +975,11 @@
       if (next.phase !== 'offers') closeSheets();
       if (before === 'offers' && next.phase === 'idle') {
         W.$('idle-title').textContent = 'Search ended';
-        W.$('idle-text').textContent = 'This search has ended. Send your trip to the Wheelers bot to look again — you can name a higher price this time.';
+        W.$('idle-text').textContent = '';
       }
       if (before === 'confirmed' && next.phase === 'idle') {
         W.$('idle-title').textContent = 'Trip ended';
-        W.$('idle-text').textContent = 'Thanks for riding with Wheelers! Your receipt is in the chat.';
+        W.$('idle-text').textContent = 'Receipt is in the chat.';
       }
       W.showOnly(next.phase);
     }
