@@ -9,16 +9,22 @@
    * browser never sends to a server or a referrer. Read it, keep it for this
    * tab only (so a refresh still works), then wipe it from the address bar so
    * it cannot be copied out of a screenshot or the history.
+   *
+   * `storeKey` (optional): a page that shares its tab with another link (the
+   * ride page and the Trip chat it opens) keeps its token under its own name,
+   * so coming back to it does not pick up the other page's token. Without it,
+   * the wallet's key, as always.
    */
-  function takeToken() {
+  function takeToken(storeKey) {
+    var key = storeKey || TOKEN_KEY;
     var match = /(?:^#|&)t=([^&]+)/.exec(window.location.hash);
     if (match) {
-      try { sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(match[1])); } catch (e) { /* private mode */ }
+      try { sessionStorage.setItem(key, decodeURIComponent(match[1])); } catch (e) { /* private mode */ }
       window.__wheelersToken = decodeURIComponent(match[1]);
       history.replaceState(null, '', window.location.pathname);
     }
     if (!window.__wheelersToken) {
-      try { window.__wheelersToken = sessionStorage.getItem(TOKEN_KEY); } catch (e) { /* ignore */ }
+      try { window.__wheelersToken = sessionStorage.getItem(key); } catch (e) { /* ignore */ }
     }
     return window.__wheelersToken || null;
   }

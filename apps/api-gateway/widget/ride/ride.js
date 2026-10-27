@@ -36,7 +36,11 @@
     cancelledHere: false     // the search was cancelled on this page: no "Search ended" too
   };
 
-  if (!W.takeToken()) { W.fatal('This link is not valid.'); return; }
+  // Its own name in the tab's storage: the Trip chat opened from here (same tab) keeps another link's token.
+  if (!W.takeToken('wheelers.ride.page.token')) { W.fatal('This link is not valid.'); return; }
+
+  /** The link itself is no good here (expired, or made for another page): nothing more to ask. */
+  function linkDead(error) { return Boolean(error) && (error.status === 401 || error.status === 403); }
 
   function fatal(message) {
     stopped = true;
@@ -236,7 +240,15 @@
   /* ── Google Maps: loaded once, only when the server gives a key ───────── */
 
   var mapsKey = null;
-  var mapsBroken = false;
+  var mapsBroken = false;     // the key was refused: no maps on this visit
+  var mapsFailedAt = 0;       // the script did not load: no maps for a while, then another try
+  var MAPS_RETRY_MS = 30000;
+  function mapsOff() { return mapsBroken || (mapsFailedAt > 0 && Date.now() - mapsFailedAt < MAPS_RETRY_MS); }
+  function hideMaps() {
+    ['home-map-wrap', 'find-map-wrap', 'map-card'].forEach(function (id) { W.show(W.$(id), false); });
+    var offers = document.querySelector('section[data-view="offers"]');
+    if (offers) offers.classList.remove('with-map');
+  }
   var mapsLoading = null;
   var HtmlMarker = null;
 
@@ -244,13 +256,11 @@
   // every map goes away, and the rest of each screen works as without one.
   window.gm_authFailure = function () {
     mapsBroken = true;
-    ['home-map-wrap', 'find-map-wrap', 'map-card'].forEach(function (id) { W.show(W.$(id), false); });
-    var offers = document.querySelector('section[data-view="offers"]');
-    if (offers) offers.classList.remove('with-map');
+    hideMaps();
   };
 
   function loadMaps() {
-    if (!mapsKey || mapsBroken) return Promise.resolve(null);
+    if (!mapsKey || mapsOff()) return Promise.resolve(null);
     if (mapsLoading) return mapsLoading;
     mapsLoading = new Promise(function (resolve) {
       window.__wheelersMapsReady = function () {
@@ -270,7 +280,14 @@
       // web address, so this one request says where it comes from: the origin
       // only, and the link's token was already wiped from the address bar.
       script.referrerPolicy = 'origin';
-      script.onerror = function () { resolve(null); };
+      script.onerror = function () {
+        // Blocked or offline: the boxes go, and the next draw after a while loads it again.
+        mapsFailedAt = Date.now();
+        mapsLoading = null;
+        if (script.parentNode) script.parentNode.removeChild(script);
+        hideMaps();
+        resolve(null);
+      };
       document.head.appendChild(script);
     });
     return mapsLoading;
@@ -279,7 +296,7 @@
   /** Runs `draw` once the maps are in; never when there is no key or it was refused. */
   function withMaps(draw) {
     loadMaps().then(function (g) {
-      if (!g || mapsBroken) return;
+      if (!g || mapsOff()) return;
       try { draw(g); } catch (e) { /* a map that fails leaves the screen as it is */ }
     });
   }
@@ -374,12 +391,33 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-trip', 'sheet-cancel'];
+  var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
+  function openSheetId() {
+    for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
+    return null;
+  }
+  function onSheetEntry() { return Boolean(history.state && history.state.sheet); }
+
   function openSheet(id) {
-    closeSheets();
+    hideSheets();
     W.show(W.$('overlay'), true);
     W.show(W.$(id), true);
+    // One history entry per open sheet (a sheet opened over another takes its place).
+    try {
+      if (onSheetEntry()) history.replaceState({ sheet: id }, '');
+      else history.pushState({ sheet: id }, '');
+    } catch (e) { /* ignore */ }
   }
   function closeSheets() {
+    var hadSheet = Boolean(openSheetId());
+    hideSheets();
+    if (hadSheet && onSheetEntry()) {
+      sheetBackPending = true;
+      try { history.back(); } catch (e) { sheetBackPending = false; }
+    }
+  }
+  function hideSheets() {
     W.show(W.$('sheet-offer'), false);
     W.show(W.$('sheet-pay'), false);
     W.show(W.$('sheet-confirm'), false);
@@ -441,6 +479,24 @@
     if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state);
   }
   W.$('overlay').addEventListener('click', sheetPutAway);
+  window.addEventListener('popstate', function (event) {
+    if (sheetBackPending) {
+      sheetBackPending = false;
+      // A sheet opened while that step back was on its way: it gets its entry again.
+      var open = openSheetId();
+      if (open) { try { history.pushState({ sheet: open }, ''); } catch (e) { /* ignore */ } }
+      return;
+    }
+    var toSheet = Boolean(event.state && event.state.sheet);
+    // Back with a sheet open: the sheet goes, as its Back/Keep button would.
+    if (openSheetId() && !toSheet) { sheetPutAway(); return; }
+    // A forward swipe onto an old sheet entry: nothing to show.
+    if (toSheet && !openSheetId()) { try { history.replaceState(null, ''); } catch (e) { /* ignore */ } }
+  });
+  // A reload keeps the tab's history state: an entry left from a sheet or Plan means nothing now.
+  if (history.state && (history.state.sheet || history.state.view === 'plan')) {
+    try { history.replaceState(null, ''); } catch (e) { /* ignore */ }
+  }
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (button) {
     button.addEventListener('click', sheetPutAway);
   });
@@ -471,7 +527,7 @@
           }
           redrawLocation();
         }).catch(function (error) {
-          if (error.status === 401) fatal(error.message);
+          if (linkDead(error)) fatal(error.message);
         });
       }, function (error) {
         loc.state = error && error.code === 1 ? 'denied' : 'unavailable';
@@ -492,7 +548,7 @@
   var homeMap = null, meMarker = null, homeCentered = false;
 
   function drawHomeMap() {
-    if (!mapsKey || mapsBroken) { W.show(W.$('home-map-wrap'), false); return; }
+    if (!mapsKey || mapsOff()) { W.show(W.$('home-map-wrap'), false); return; }
     W.show(W.$('home-map-wrap'), true);
     withMaps(function (g) {
       if (shownView !== 'idle') return;
@@ -849,7 +905,7 @@
       track('place_searched', { field: field, letters: query.length, results: plan.results.length });
     }).catch(function (error) {
       if (seq !== plan.seq) return;
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       plan.results = [];
       plan.error = error.message || 'Could not look that up. Try again.';
     }).then(function () {
@@ -878,7 +934,7 @@
       if (history.state && history.state.view === 'plan') { try { history.back(); } catch (e) { /* ignore */ } }
       apply(next);
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('trip_save_failed', { code: error.code || String(error.status) });
       W.$('plan-err').textContent = error.message;
       W.show(W.$('plan-err'), true);
@@ -958,7 +1014,7 @@
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('find_failed', { code: error.code || String(error.status), again: true });
       var box = W.$(fromSheet ? 'offer-err' : 'nd-err');
       box.textContent = error.message;
@@ -1047,7 +1103,7 @@
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('find_failed', { code: error.code || String(error.status) });
       W.$('price-err').textContent = error.message;
       W.show(W.$('price-err'), true);
@@ -1078,6 +1134,7 @@
       if (wasAdding) { closeSheets(); keepLooking(leftKey); }
     }
     if (payWith && !W.$('sheet-pay').hidden && keys.indexOf(payWith.offer.key) < 0) { payWith = null; closeSheets(); }
+    watchAddStep(s);
     noteEndedOffers(s);
 
     // Declined one by one on this page, as in the app: off the list here, the search goes on.
@@ -1125,6 +1182,34 @@
     drawClock(s);
     drawAuto(s);
     drawFindMap(s, searching);
+  }
+
+  /**
+   * While "Add ₦Y" is open: the driver changed the price (the figure to send is
+   * wrong now), or the money is in but nothing was booked (the server let the
+   * choice go): the step closes, and the offers are there to tap again.
+   */
+  function watchAddStep(s) {
+    if (!addFor || !paying || paying.key !== addFor.key || !addStepOpen()) { if (!addStepOpen()) addFor = null; return; }
+    var offer = (s.offers || []).filter(function (o) { return o.key === addFor.key; })[0];
+    if (!offer) return;   // gone: handled above, with "offer ended"
+    var leave = null;
+    if (Math.round(offer.priceNgn) !== Math.round(addFor.fareNgn)) {
+      leave = (firstName(addFor.name) || 'The driver') + ' changed the price';
+    } else if (typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= addFor.fareNgn) {
+      // Twice in a row (a poll apart): a deposit being booked right now is not mistaken for one that was not.
+      addFor.coveredSeen += 1;
+      if (addFor.coveredSeen >= 2) leave = 'Money in. Tap Accept again.';
+    } else {
+      addFor.coveredSeen = 0;
+    }
+    if (!leave) return;
+    var key = addFor.key;
+    addFor = null;
+    paying = null;
+    closeSheets();
+    keepLooking(key);
+    say(leave);
   }
 
   /**
@@ -1191,7 +1276,7 @@
   /* auto-accept (Contract C): automatic on the server whenever the wallet covers the price; the page only says so */
 
   function drawAuto(s) {
-    var covered = typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= (Number(s.offerNgn) || 0) && Number(s.offerNgn) > 0;
+    var covered = s.autoAccept !== false && typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= (Number(s.offerNgn) || 0) && Number(s.offerNgn) > 0;
     var line = W.$('auto-line');
     W.show(line, covered);
     line.textContent = covered ? 'A driver at ' + W.naira(s.offerNgn) + ' is booked for you' : '';
@@ -1204,14 +1289,15 @@
   function drawFindMap(s, searching) {
     var wrap = W.$('find-map-wrap');
     var section = wrap.parentNode;
-    var want = searching && Boolean(mapsKey) && !mapsBroken;
+    var want = searching && Boolean(mapsKey) && !mapsOff();
     W.show(wrap, want);
     section.classList.toggle('with-map', want);
     if (!want) return;
     withMaps(function (g) {
       if (shownView !== 'offers' || wrap.hidden) return;
       var places = placesFor(s);
-      var line = s.route && Array.isArray(s.route.line) ? s.route.line.filter(validPoint) : [];
+      var src = Array.isArray(s.line) ? s.line : (s.route && s.route.line);
+      var line = Array.isArray(src) ? src.filter(validPoint) : [];
       if (!findMap) findMap = makeMap(g, W.$('find-map'), (places && places.pickup) || loc.pos || HOME_CENTER, 13);
       var sig = JSON.stringify([places, line.length]);
       if (sig === findSig) return;
@@ -1383,8 +1469,15 @@
       apply(next);
     }).catch(function (error) {
       busy = false;   // before the redraw: the offers come back live, not greyed out
+      if (linkDead(error)) { local.confirming = null; return fatal(error.message); }
+      // No answer in time: it may have gone through. Stay on Confirming and ask; the
+      // next look decides (confirmed: Driver found; still offers: back to them, quietly).
+      if (error.code === 'TIMEOUT' && local.confirming) {
+        local.confirming.timedOut = true;
+        refresh();
+        return;
+      }
       local.confirming = null;
-      if (error.status === 401) return fatal(error.message);
       // The poll already found the ride confirmed (or ended) while this was on its way.
       if (!state || state.phase !== 'offers') { paying = null; return; }
       if (error.code === 'WALLET_SHORT') {
@@ -1397,11 +1490,15 @@
       paying = null;
       render();
       say(error.message, 'bad');
+      // The driver's price moved: show the new one now, not at the next poll.
+      if (error.code === 'OFFER_CHANGED') refresh();
     }).then(function () { busy = false; });
   }
 
   /** Short: the account to send to. The deposit landing confirms the driver, with no further tap. */
+  var addFor = null;   // the offer the add-money step is for: { key, fareNgn, name, coveredSeen }
   function openAdd(offer, info) {
+    addFor = { key: offer.key, fareNgn: Number(info.fareNgn) || offer.priceNgn, name: offer.driverName || '', coveredSeen: 0 };
     W.$('add-title').textContent = 'Add ' + W.naira(info.sendNgn);
     W.$('add-sub').textContent = 'Fare ' + W.naira(info.fareNgn) + ' · wallet ' + W.naira(info.balanceNgn);
     var account = info.account;
@@ -1446,7 +1543,7 @@
       apply(next);
       setTimeout(function () { if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state); }, 1900);
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       say(error.message, 'bad');
     }).then(function () { busy = false; });
   }
@@ -1541,7 +1638,7 @@
       track('price_updated', { fromNgn: before, toNgn: amount });
       say('Offer updated to ' + W.naira(amount) + '. Drivers notified.', 'good');
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('price_update_failed', { code: error.code || String(error.status) });
       W.$('offer-err').textContent = error.message;
       W.show(W.$('offer-err'), true);
@@ -1618,7 +1715,7 @@
       apply(next);
       say('Search cancelled. Nothing was charged.');
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('cancel_failed', { code: error.code || String(error.status) });
       W.$('cancel-err').textContent = error.message;
       W.show(W.$('cancel-err'), true);
@@ -1643,7 +1740,7 @@
       api('POST', '/ride-page/edit-trip').then(function (next) {
         apply(next);
       }).catch(function (error) {
-        if (error.status === 401) return fatal(error.message);
+        if (linkDead(error)) return fatal(error.message);
         say(error.message, 'bad');
       }).then(function () { busy = false; });
     });
@@ -1752,7 +1849,7 @@
       });
     }).catch(function (error) {
       if (seq !== searchSeq) return;
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       holder.innerHTML = '';
       holder.appendChild(el('div', 'place-status', error.message || 'Could not look that up. Try again.'));
     });
@@ -1769,7 +1866,7 @@
       apply(next);
       track('trip_saved', { distanceKm: next.route ? next.route.distanceKm : 0, suggestedNgn: next.route ? next.route.suggestedFareNgn : 0, stops: trip.stops.length });
     }).catch(function (error) {
-      if (error.status === 401) return fatal(error.message);
+      if (linkDead(error)) return fatal(error.message);
       track('trip_save_failed', { code: error.code || String(error.status) });
       W.$('trip-err').textContent = error.message;
       W.show(W.$('trip-err'), true);
@@ -1874,7 +1971,7 @@
     if (!position) { W.show(stale, true); stale.textContent = 'Waiting for location…'; }
 
     // No key, or Google refused it: the card below still says everything.
-    if (!mapsKey || mapsBroken || !validPoint(t.pickup) || !validPoint(t.destination)) { W.show(W.$('map-card'), false); return; }
+    if (!mapsKey || mapsOff() || !validPoint(t.pickup) || !validPoint(t.destination)) { W.show(W.$('map-card'), false); return; }
     W.show(W.$('map-card'), true);
 
     withMaps(function (g) {
@@ -1996,13 +2093,25 @@
     else if (view === 'confirmed') drawConfirmed(state);
   }
 
+  // Every state shown is numbered. A poll's number is taken when it is sent; an
+  // action's answer (accept, cancel, …) is the newest truth when it arrives. An
+  // answer to a poll sent before the last state shown is older than it: dropped.
+  var stateSeq = 0;
+  var appliedSeq = 0;
   function apply(next) {
+    appliedSeq = ++stateSeq;
+    applyState(next);
+  }
+
+  function applyState(next) {
     if (!next || typeof next.phase !== 'string') return;
     var before = state && state.phase;
     state = next;
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;
-    if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; }
+    if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; addFor = null; }
+    // An accept that timed out, and the server still shows the offers: back to them, quietly.
+    if (next.phase === 'offers' && local.confirming && local.confirming.timedOut) { local.confirming = null; paying = null; }
     // The trip moved on while Plan was open (a price, a search, a ride): its history entry goes too, so Back works.
     if (next.phase !== 'idle' && local.plan) {
       local.plan = false;
@@ -2024,8 +2133,13 @@
   }
 
   function refresh() {
-    return api('GET', '/ride-page/state').then(apply).catch(function (error) {
-      if (error.status === 401) fatal(error.message);
+    var seq = ++stateSeq;
+    return api('GET', '/ride-page/state').then(function (next) {
+      if (seq < appliedSeq) return;
+      appliedSeq = seq;
+      applyState(next);
+    }).catch(function (error) {
+      if (linkDead(error)) fatal(error.message);
       // Anything else — a dropped connection, a slow server — just waits for the next tick.
     });
   }
