@@ -188,7 +188,8 @@ async function resolveScreen(
 
 // ── Main flow action handler ───────────────────────────────────────────────
 
-async function handleFlowAction(
+/** Exported for the tests that drive a form request without Meta's encryption. */
+export async function handleFlowAction(
   body: FlowRequestBody,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
