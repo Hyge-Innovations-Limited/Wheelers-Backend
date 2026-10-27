@@ -774,18 +774,38 @@ export async function handleRideEvent(
   // The driver the rider chose could not be given the ride (ride-service).
   if (event.eventType === 'RIDE_ASSIGNMENT_FAILED') {
     if (event.reason === 'ride_closed') {
+      const ride = await rideClient.findById(event.rideId).catch(() => null);
+      if (ride?.status !== 'CANCELLED') {
+        // Another driver has this ride (or it is over): that trip is left
+        // exactly as it is; this driver only hears they did not get it.
+        void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId });
+        return;
+      }
       // The rider ended it first and was told then; the driver, told they
-      // won, hears it is off. Undo what the assignment re-set for WhatsApp.
+      // won, hears it is off. Undo what the assignment re-set for WhatsApp,
+      // and any hold an assignment re-armed (released once, whoever is first).
       void registry.sendToUser(event.driverUserId, 'ride:cancelled', { rideId: event.rideId, reason: 'rider_cancelled', cancelledBy: 'rider' });
+      await walletClient.cancelRideHold(event.rideId).catch(() => {});
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => undefined);
       await cleanupRideKeys(deps.redisClient, event.rideId).catch(() => undefined);
       return;
     }
     // driver_busy: the search goes on. The money comes back, the driver's
     // offer goes, and the rider picks another.
-    await walletClient.cancelRideHold(event.rideId).catch(() => {});
     await driverBidClient.markWithdrawn(event.rideId, event.driverId).catch(() => {});
     void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId });
+    // Only once, and only while this driver is still the one being booked: a
+    // late or repeated event must not undo the rider's next choice (their
+    // hold, their WhatsApp state) or say "couldn't take this ride" twice.
+    const [busyRide, hold] = await Promise.all([
+      rideClient.findById(event.rideId).catch(() => null),
+      walletClient.rideHoldOf(event.rideId).catch(() => null),
+    ]);
+    const stillChoosing = busyRide?.status === 'REQUESTED' || busyRide?.status === 'MATCHING';
+    const holdIsAnothers = hold?.status === 'ACTIVE' && hold.driverUserId != null && hold.driverUserId !== event.driverUserId;
+    const first = await deps.redisClient.setIfNotExists(`ride:${event.rideId}:busy:${event.driverId}`, '1', 120).catch(() => true);
+    if (!stillChoosing || holdIsAnothers || !first) return;
+    await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
     void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
       rideId: event.rideId,
       driverId: event.driverId,
@@ -800,8 +820,9 @@ export async function handleRideEvent(
       const pageMessage = await hasOffersPageMessage(deps.redisClient, event.rideId).catch(() => false);
       await dropBidFromWhatsappRide(deps, event.rideId, event.riderId, event.driverId);
       // The chat already had "Your ride is booked": say it did not hold. (Without the
-      // offers page, dropping the bid above has just said so, with the offers left.)
-      if (pageMessage) {
+      // offers page or the offers form, dropping the bid above has just said so,
+      // with the offers left; with the form it says nothing.)
+      if (chosen && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
         const who = chosen?.driverName ? `*${chosen.driverName}*` : 'That driver';
         await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, [`${who} couldn't take this ride after all. Nothing was charged.`, '', 'Pick another offer.'].join('\n')).catch(() => {});
       }

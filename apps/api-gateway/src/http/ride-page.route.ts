@@ -626,6 +626,10 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
   if (await getActiveRide(deps.redisClient, userId)) throw new PageError('Drivers are already looking at this trip. Go back to change it.', 409, 'ALREADY_SEARCHING');
   // No trip yet: one planned on the page (Home → Plan your trip) starts here.
   const trip = await getPendingRoute(deps.redisClient, userId);
+  // Each new trip is a paid Google route: plenty for a rider, not for a script.
+  if (await overLimit(deps.redisClient, `ride-page:route:${userId}`, 15, 60)) {
+    throw new PageError('Too many changes at once. Wait a moment and try again.', 429, 'TOO_MANY');
+  }
 
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');

@@ -12,6 +12,7 @@ import {
   clearPendingRoute,
   cleanupRideKeys,
   getBids,
+  getPendingAccept,
   getRideMeta,
   removeBid,
   setActiveRide,
@@ -208,6 +209,9 @@ export async function declineOneOffer(
     remaining = await removeBid(deps.redisClient, rideId, driverId).catch(() => bids);
     await storeLastBatch(deps.redisClient, rideId, remaining).catch(() => undefined);
   }
+  // Paying for this very driver (adding money)? That payment no longer books them.
+  const paying = await getPendingAccept(deps.redisClient, riderId).catch(() => null);
+  if (paying?.rideId === rideId && paying.driverId === driverId) await clearPendingAccept(deps.redisClient, riderId).catch(() => undefined);
   const declined = await driverBidClient.declineOne(rideId, driverId).catch(() => null);
   if (!declined) return { declined: false };
   await deps.publisher.publishRideEvent({

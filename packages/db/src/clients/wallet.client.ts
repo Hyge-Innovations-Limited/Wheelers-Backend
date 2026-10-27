@@ -664,7 +664,16 @@ export const walletClient = {
     });
   },
 
-  cancelRideHold: async (rideId: string): Promise<RideHoldMutationResult | null> => {
+  /** The ride's hold as it stands: whose driver it is for, and whether it still holds money. */
+  rideHoldOf: (rideId: string) =>
+    prisma.rideHold.findUnique({ where: { rideId }, select: { status: true, driverUserId: true, amountNgn: true } }),
+
+  /**
+   * `forDriverUserId`: release only a hold taken for that driver. A late
+   * "that driver was busy" must never release the hold of the driver the
+   * rider chose after them.
+   */
+  cancelRideHold: async (rideId: string, forDriverUserId?: string): Promise<RideHoldMutationResult | null> => {
     return prisma.$transaction(async (tx: TxClient) => {
       const hold = await tx.rideHold.findUnique({ where: { rideId } });
       if (!hold) return null;
@@ -676,7 +685,7 @@ export const walletClient = {
       // gate: Postgres row-locks the hold, the loser re-evaluates after the
       // winner commits, matches zero rows, and moves no money.
       const claimed = await tx.rideHold.updateMany({
-        where: { rideId, status: 'ACTIVE' },
+        where: { rideId, status: 'ACTIVE', ...(forDriverUserId ? { OR: [{ driverUserId: forDriverUserId }, { driverUserId: null }] } : {}) },
         data: { status: 'RELEASED', settledAt: new Date() },
       });
 

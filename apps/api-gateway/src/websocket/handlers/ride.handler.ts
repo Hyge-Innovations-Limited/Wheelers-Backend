@@ -561,13 +561,27 @@ export async function handleRideMessage(
       if (open) agreedFareNgn = Number(open.amountNgn);
     }
 
+    // ── One booking at a time on a ride: while the rider's money is held for
+    // one driver (that accept still going through), a second accept would
+    // book two drivers. The app fetches where the booking stands instead.
+    const heldFor = await walletClient.rideHoldOf(rideId).catch(() => null);
+    if (heldFor?.status === 'ACTIVE' && heldFor.driverUserId && heldFor.driverUserId !== driverUserId) {
+      return {
+        type: 'ride:accept_offer:rejected',
+        payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },
+      };
+    }
+
     // ── One driver, one rider: the same claim the WhatsApp accept takes, so
     // two riders (app or chat) cannot book the same driver at the same moment.
+    // Let go of it whenever this accept does not go through.
+    const claimKey = `whatsapp:driver:${driverId}:accepting`;
+    let claimedNow = false;
+    const releaseClaim = async () => { if (claimedNow && redis) await redis.del(claimKey).catch(() => undefined); };
     if (redis) {
-      const claimKey = `whatsapp:driver:${driverId}:accepting`;
-      const claimed = await redis.setIfNotExists(claimKey, rideId, 60).catch(() => true);
-      const owner = claimed ? rideId : await redis.get(claimKey).catch(() => null);
-      if (!claimed && owner !== rideId) {
+      claimedNow = await redis.setIfNotExists(claimKey, rideId, 60).catch(() => false);
+      const owner = claimedNow ? rideId : await redis.get(claimKey).catch(() => null);
+      if (!claimedNow && owner !== null && owner !== rideId) {
         return {
           type: 'ride:accept_offer:rejected',
           payload: { rideId, driverId, reason: 'driver_unavailable', message: 'That driver is no longer available.' },
@@ -591,7 +605,10 @@ export async function handleRideMessage(
           message: `You need ₦${Math.max(0, agreedFareNgn - balanceNgn).toLocaleString()} more in your wallet to book this ride.`,
         },
       });
-      if (!wallet || balanceNgn < agreedFareNgn) return insufficient();
+      if (!wallet || balanceNgn < agreedFareNgn) {
+        await releaseClaim();
+        return insufficient();
+      }
       try {
         const hold = await walletClient.createRideHold({
           rideId,
@@ -600,6 +617,11 @@ export async function handleRideMessage(
           driverUserId,
           amountNgn: agreedFareNgn,
         });
+        // A hold left by an earlier attempt on this ride may carry a different fare.
+        if (!hold.applied && hold.holdAmountNgn !== agreedFareNgn) {
+          const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: agreedFareNgn });
+          if (!adjusted) throw new Error('hold could not be adjusted');
+        }
         if (hold.applied) {
           // The lock used to be wallet-service's to announce; now that the
           // hold happens here, the announcement moves here with it — the
@@ -618,6 +640,7 @@ export async function handleRideMessage(
         }
       } catch {
         // Race between the balance check and the hold — same honest answer.
+        await releaseClaim();
         return insufficient();
       }
     }
@@ -634,7 +657,14 @@ export async function handleRideMessage(
       timestamp,
     });
 
-    await publisher.publishRideEvent(event);
+    try {
+      await publisher.publishRideEvent(event);
+    } catch (error) {
+      // Not sent: nothing will book this driver, so neither the claim nor the money stays.
+      await releaseClaim();
+      if (paymentMethod !== 'CASH') await walletClient.cancelRideHold(rideId, driverUserId).catch(() => undefined);
+      throw error;
+    }
 
     return {
       type: 'ride:accept_offer:accepted',

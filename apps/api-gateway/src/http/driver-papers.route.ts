@@ -127,7 +127,8 @@ export async function driverPapersView(driverId: string, now = new Date()) {
   });
 
   const licenceExpired = Boolean(details?.licenceExpiresOn && details.licenceExpiresOn.getTime() < today.getTime());
-  const detailsComplete = Boolean(details?.legalName && details.licenceNumber && details.licenceExpiresOn) && !licenceExpired;
+  // The name is all sign-up asks for now; a licence number and date are optional (an expired date still counts).
+  const detailsComplete = Boolean(details?.legalName) && !licenceExpired;
   // What the driver still has to do: a required need with nothing good against it, or the details.
   const toDo = needs.filter((n) => n.required && (n.state === 'missing' || n.state === 'rejected' || n.state === 'expired')).length + (detailsComplete ? 0 : 1);
 

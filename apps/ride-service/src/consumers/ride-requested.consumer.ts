@@ -470,6 +470,39 @@ export function createRideRequestedConsumer(params: {
       return;
     }
 
+    // The ride may have ended (the rider cancelled while the accept was in
+    // flight) or gone to another driver: no assignment then. Assigning anyway
+    // re-armed the rider's released hold on a cancelled ride.
+    const ride = await rideClient.findById(event.rideId).catch(() => null);
+    const closed = ride && (
+      ride.status === 'CANCELLED' || ride.status === 'COMPLETED' || ride.status === 'DISPUTED'
+      || (ride.driverId !== null && ride.driverId !== event.driverId)
+    );
+    if (closed) {
+      console.warn('[ride-service] offer accepted for a ride that is closed or taken — not assigned', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        status: ride.status,
+        actualDriverId: ride.driverId,
+      });
+      if (pending?.timeout && ride.status === 'CANCELLED') clearTimeout(pending.timeout);
+      await rideEventsProducer.rideAssignmentFailed({
+        eventType: 'RIDE_ASSIGNMENT_FAILED',
+        rideId: event.rideId,
+        riderId: event.riderId,
+        driverId: event.driverId,
+        driverUserId: event.driverUserId,
+        reason: 'ride_closed',
+        timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        console.error('[ride-service] could not report a failed assignment', {
+          rideId: event.rideId,
+          error: (err as any)?.message ?? err,
+        });
+      });
+      return;
+    }
+
     // Pending match state is in-memory only, so a restart or a consumer-group
     // rebalance between RIDE_REQUESTED and the rider accepting wipes it. This
     // used to `return` silently — and on the WhatsApp path the rider's fare is
