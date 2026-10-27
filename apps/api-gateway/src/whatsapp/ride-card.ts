@@ -6,7 +6,7 @@ import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
 import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
 import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { logActivity } from '../analytics/log-activity';
-import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept } from '../whatsapp-flows/bid-state';
+import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept, isRidePageOpen } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
@@ -431,7 +431,9 @@ export async function acceptOfferInChat(
     return;
   }
 
-  const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, user.id, rideId, key);
+  // The price they saw must still be the price when the booking takes its lock.
+  const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, user.id, rideId, key,
+    shownPriceNgn !== null ? { expectedFareNgn: shownPriceNgn } : {});
   if (result.ok) {
     logActivity({ userId: user.id, eventType: 'ride_offer_accepted', source: 'whatsapp', rideId, metadata: { fareNgn: result.ride.fareNgn, driverId: result.ride.driverId } });
     await log(await sendRideConfirmation(deps, user.id, phone, result.ride));
@@ -440,6 +442,11 @@ export async function acceptOfferInChat(
 
   const driver = `*${bid.driverName}*`;
   switch (result.code) {
+    case 'OFFER_CHANGED':
+      await clearPendingAccept(deps.redisClient, user.id);
+      await log(await sendCurrentOffers(deps, phone, rideId,
+        `${bid.driverName} changed their price to ₦${result.fareNgn.toLocaleString()} (was ₦${bid.counterOfferNgn.toLocaleString()}). Nothing was charged.`));
+      return;
     case 'WALLET_SHORT':
       await rememberChosenOffer(deps, user.id, rideId, bid);
       await log(await sendRideTopupButton(deps, user.id, phone, { driverName: bid.driverName, ...result }));
@@ -550,21 +557,25 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
       { role: 'user', content: `[deposit of ₦${deposit.amountNgn.toLocaleString()} landed]` },
       { role: 'assistant', content: reply },
     ]);
+    // On the ride page the page shows all of it (the booking, the balance, what went wrong): the chat
+    // stays quiet, and a booking's card waits for them to leave (page-catchup). Returning true
+    // keeps the plain "₦X received" out of the chat too.
+    const onPage = await isRidePageOpen(deps.redisClient, deposit.userId).catch(() => false);
+    const say = async (reply: string) => { if (onPage) return; await log(reply); await sendMetaReply(deps, phone, reply); };
+    const offersSaying = async (rideId: string, news: string) => { if (!onPage) await log(await sendCurrentOffers(deps, phone, rideId, news)); };
 
     const activeRideId = await getActiveRide(deps.redisClient, deposit.userId);
     if (activeRideId !== pending.rideId) {
       // The search they were paying for is over. The money is theirs, in the wallet.
       await clearPendingAccept(deps.redisClient, deposit.userId);
       if (activeRideId) return false;
-      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`;
-      await log(reply);
-      await sendMetaReply(deps, phone, reply);
+      await say(`${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`);
       return true;
     }
     const state = await getRideState(deps.redisClient, pending.rideId).catch(() => null);
     if (state === 'confirmed' || state === 'in_progress') {
       await clearPendingAccept(deps.redisClient, deposit.userId);
-      return false;
+      return onPage;
     }
 
     const key = pending.bidId ?? `driver:${pending.driverId}`;
@@ -574,51 +585,58 @@ export function createWhatsappDepositFinisher(deps: MetaWhatsappRouteDeps) {
       const why = bid
         ? `${pending.driverName} changed their price to ₦${bid.counterOfferNgn.toLocaleString()} while your transfer was on its way, so nothing was booked.`
         : `${pending.driverName} is no longer available, so nothing was booked.`;
-      await log(await sendCurrentOffers(deps, phone, pending.rideId, `${received} ${why} Your money is safe in your wallet.`));
+      await offersSaying(pending.rideId, `${received} ${why} Your money is safe in your wallet.`);
       return true;
     }
 
-    const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, deposit.userId, pending.rideId, key);
+    const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, deposit.userId, pending.rideId, key, { expectedFareNgn: pending.fareNgn });
     if (result.ok) {
       logActivity({ userId: deposit.userId, eventType: 'ride_offer_accepted', source: 'whatsapp_deposit', rideId: pending.rideId, metadata: { fareNgn: result.ride.fareNgn, driverId: result.ride.driverId } });
+      if (onPage) {
+        // The card (the chat's trip, calls, SOS) waits until they leave the page, and is sent once, if still true.
+        const event: RidePageChatEvent = { kind: 'ride_confirmed', userId: deposit.userId, phone, ride: result.ride };
+        await deferUntilPageLeft(deps.redisClient, deposit.userId, { kind: 'ride_confirmed', rideId: pending.rideId, event: event as unknown as Record<string, unknown> }).catch(() => undefined);
+        return true;
+      }
       await log(await sendRideConfirmation(deps, deposit.userId, phone, result.ride));
       return true;
     }
     if (result.code === 'WALLET_SHORT') {
       await rememberChosenOffer(deps, deposit.userId, pending.rideId, bid);   // keep the choice alive for the next transfer
-      await log(await sendRideTopupButton(deps, deposit.userId, phone, { driverName: bid.driverName, ...result },
-        `${received} That's not quite enough for this ride yet.`));
+      if (!onPage) {
+        await log(await sendRideTopupButton(deps, deposit.userId, phone, { driverName: bid.driverName, ...result },
+          `${received} That's not quite enough for this ride yet.`));
+      }
       return true;
     }
     // Another booking got there first (theirs, or auto-accept): this deposit booked nothing, so the
-    // plain "₦X received" is still said. A booking still going through keeps the choice; a done one ends it.
+    // plain "₦X received" is still said, once — off the page. A booking still going through keeps
+    // the choice; a done one ends it.
     if (result.code === 'ALREADY_BOOKED') {
       await clearPendingAccept(deps.redisClient, deposit.userId);
-      return false;
+      return onPage;
     }
-    if (result.code === 'ALREADY_CONFIRMING') return false;
+    if (result.code === 'ALREADY_CONFIRMING') return onPage;
     if (result.code === 'DRIVER_AWAY') {
       // Their app is closed for a moment and they have been pinged: the choice stays, "pay" books them.
-      const reply = `${received}\n\n*${pending.driverName}*'s app is closed for a moment — we've sent them a notification. Reply *pay* in a minute to book them, or pick another driver. Your money is safe in your wallet.`;
-      await log(reply);
-      await sendMetaReply(deps, phone, reply);
+      await say(`${received}\n\n*${pending.driverName}*'s app is closed for a moment — we've sent them a notification. Reply *pay* in a minute to book them, or pick another driver. Your money is safe in your wallet.`);
       return true;
     }
     if (result.code === 'HOLD_FAILED' || result.code === 'CONFIRM_FAILED') {
-      const reply = `${received}\n\nI couldn't book *${pending.driverName}* just now. Reply *pay* to try again.`;
-      await log(reply);
-      await sendMetaReply(deps, phone, reply);
+      await say(`${received}\n\nI couldn't book *${pending.driverName}* just now. Reply *pay* to try again.`);
       return true;
     }
     await clearPendingAccept(deps.redisClient, deposit.userId);
-    if (result.code === 'RIDE_GONE') {
-      const reply = `${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`;
-      await log(reply);
-      await sendMetaReply(deps, phone, reply);
+    if (result.code === 'OFFER_CHANGED') {
+      await offersSaying(pending.rideId, `${received} ${pending.driverName} changed their price to ₦${result.fareNgn.toLocaleString()} while your transfer was on its way, so nothing was booked. Your money is safe in your wallet.`);
       return true;
     }
-    await log(await sendCurrentOffers(deps, phone, pending.rideId,
-      `${received} ${pending.driverName} ${result.code === 'DRIVER_TAKEN' ? 'was taken by another rider' : "can't be reached right now"}, so nothing was booked. Your money is safe in your wallet.`));
+    if (result.code === 'RIDE_GONE') {
+      await say(`${received}\n\nThe search ended while your transfer was on its way, so *${pending.driverName}* wasn't booked. Your money is safe in your wallet.\n\nReply *search again* to find a driver.`);
+      return true;
+    }
+    await offersSaying(pending.rideId,
+      `${received} ${pending.driverName} ${result.code === 'DRIVER_TAKEN' ? 'was taken by another rider' : "can't be reached right now"}, so nothing was booked. Your money is safe in your wallet.`);
     return true;
   };
 }

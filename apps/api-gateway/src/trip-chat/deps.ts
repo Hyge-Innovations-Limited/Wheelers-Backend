@@ -37,6 +37,12 @@ export interface TripWhatsapp {
    * no card to react to, or Meta refused: send a real message instead.
    */
   setCardStatus(rideId: string, status: 'live' | 'message' | 'call' | 'none'): Promise<boolean>;
+  /**
+   * The rider is on the ride page (it has the trip's chat and call), where the
+   * ride card waits until they leave: with no card, nothing is sent — the
+   * status is kept for the card instead. Absent: a message is sent as before.
+   */
+  heldForPage?(riderId: string, rideId: string, status: 'message' | 'call'): Promise<boolean>;
 }
 
 // WhatsApp riders see 📞 on the ride card, tap it, and open the page: they get a minute.

@@ -87,15 +87,19 @@ test('a bid the driver withdrew (or the rider declined) can no longer be booked'
   assert.equal(published.filter((e) => e.rideId === ride.id).length, 0, 'nothing booked');
 });
 
-test('the open bid is the price, whatever the app sends', async () => {
+test('the open bid is the price, and it must be the price the app showed: a changed offer is refused with the price now, nothing held', async () => {
   const rider = await person('RIDER');
   const driver = await onlineDriver();
   const ride = await searching(rider.id);
   await driverBidClient.record({ rideId: ride.id, driverId: driver.driver.id, driverUserId: driver.user.id, riderId: rider.id, etaSeconds: 300, amountNgn: 9000 });
-  // No wallet: the refusal names what the bid costs, not the stale ₦7,000 on the screen.
+  // The app still showed ₦7,000: never booked at ₦9,000.
   const answer = await accept(rider, ride, driver, 7000, memoryRedis());
-  assert.equal(answer.payload.reason, 'insufficient_funds');
-  assert.equal(answer.payload.requiredNgn, 9000);
+  assert.deepEqual([answer.type, answer.payload.reason, answer.payload.currentFareNgn, answer.payload.driverId], ['ride:accept_offer:rejected', 'offer_changed', 9000, driver.driver.id]);
+  assert.equal(await prisma.rideHold.count({ where: { rideId: ride.id } }), 0);
+  // At the price shown: on to the wallet (none here), named at the bid's price.
+  const atPrice = await accept(rider, ride, driver, 9000, memoryRedis());
+  assert.equal(atPrice.payload.reason, 'insufficient_funds');
+  assert.equal(atPrice.payload.requiredNgn, 9000);
 });
 
 test('a driver another rider is booking at this moment cannot be booked twice', async () => {
@@ -123,9 +127,10 @@ test('declining one offer tells that driver, and their new price can be booked',
   assert.equal(told.remainingOffers, 0);
   assert.equal((await prisma.driverBid.findFirst({ where: { rideId: ride.id } })).status, 'DECLINED');
 
-  // The driver sends a new price: open again, and it is the price.
+  // The driver sends a new price: open again, and it is the price (the old one is refused as changed).
   await driverBidClient.record({ ...bid, amountNgn: 8000 });
-  const again = await accept(rider, ride, driver, 8600, redis);
+  assert.equal((await accept(rider, ride, driver, 8600, redis)).payload.reason, 'offer_changed');
+  const again = await accept(rider, ride, driver, 8000, redis);
   assert.equal(again.payload.reason, 'insufficient_funds');
   assert.equal(again.payload.requiredNgn, 8000);
 });

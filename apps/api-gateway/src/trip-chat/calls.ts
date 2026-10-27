@@ -93,6 +93,8 @@ export function createCallService(deps: TripChatDeps) {
       if (!deps.whatsapp || !info.rider.phone) return;
       // 📞 on the ride card instead of a new message; the message only when there is no card.
       if (await deps.whatsapp.setCardStatus(call.rideId, 'call')) return;
+      // A call rings in the chat even while the rider is on the ride page: the page
+      // cannot ring, and a call cannot wait until they leave it.
       const url = deps.whatsapp.pageUrl(call.calleeId, call.rideId, call.callId);
       const body = `*${call.callerName}, your ${roleWord(call.callerRole)}, is calling.*\n\nTap *Answer call* to talk. It rings for ${Math.round(ringMs.whatsapp / 1000)} seconds.`;
       await deps.whatsapp.send(info.rider.phone, body, url ? { text: 'Answer call', url } : undefined)

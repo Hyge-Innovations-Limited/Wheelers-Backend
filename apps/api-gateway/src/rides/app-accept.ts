@@ -114,10 +114,18 @@ async function acceptOnce(
     };
   }
 
-  // ── Price truth: when the bid's identity is given, the bid ROW is the
-  // price — a stale card on the rider's screen can never set the amount.
+  // ── Price truth: the bid ROW is the price, and it must be the price the
+  // rider saw. A driver who changed their price just before the tap (or while
+  // the accept waited) is never booked at a price the app did not show: the
+  // rider is told the offer changed, and nothing is held.
   if (input.agreedFareNgn === undefined) throw new Error('Missing required field: agreedFareNgn');
   let agreedFareNgn = input.agreedFareNgn;
+  const shownNgn = input.agreedFareNgn;
+  // currentFareNgn: the driver's price now, so the app can show it.
+  const offerChanged = (currentFareNgn: number): HandlerResponse => ({
+    type: 'ride:accept_offer:rejected',
+    payload: { rideId, driverId, reason: 'offer_changed', currentFareNgn, message: 'That offer has changed — check the latest price and try again.' },
+  });
   if (bidId) {
     const bid = await driverBidClient.findById(bidId).catch(() => null);
     if (!bid || bid.rideId !== rideId || bid.driverId !== driverId || bid.status !== 'PENDING') {
@@ -132,6 +140,7 @@ async function acceptOnce(
       };
     }
     agreedFareNgn = Number(bid.amountNgn);
+    if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn);
   } else {
     // The app names the driver, not the bid: their bid on this ride is
     // still the price truth, and one they withdrew or the rider declined
@@ -145,7 +154,10 @@ async function acceptOnce(
         payload: { rideId, driverId, reason: 'offer_changed', message: 'That offer is no longer open.' },
       };
     }
-    if (open) agreedFareNgn = Number(open.amountNgn);
+    if (open) {
+      agreedFareNgn = Number(open.amountNgn);
+      if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn);
+    }
   }
 
   // ── Already accepted: for this driver, it is done (a repeat publishes

@@ -45,7 +45,7 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/auto-accept  { on }         auto-accept is on for every search; this (unused now) switches it
  *   POST /ride-page/search-again { amountNgn }  after "No driver accepted": the same trip again at a new price
  *   POST /ride-page/offer        { amountNgn }  change the bid
- *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
+ *   POST /ride-page/accept       { key, priceNgn? }  take one driver's offer (holds the fare); priceNgn: the price shown
  *   POST /ride-page/decline      { key }        decline one driver's offer; they can send a new price
  *   POST /ride-page/keep-looking                backed out of adding money for a driver: no longer theirs to pay for
  *   POST /ride-page/decline-all                 decline every offer; the search goes on
@@ -558,13 +558,19 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   if (current === 'confirmed' || current === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
 
   const method = isRecord(body) && body.method === 'xlm' ? 'XLM' as const : 'NGN' as const;
-  const result = await confirmRideWithOffer(deps, userId, rideId, key, { method, xlm: deps.stellar ?? null });
+  // The price the page showed for this offer (optional; older pages send none): a driver who
+  // changed it since is not booked at the new one.
+  const shownNgn = isRecord(body) && typeof body.priceNgn === 'number' && Number.isFinite(body.priceNgn) ? body.priceNgn : undefined;
+  const result = await confirmRideWithOffer(deps, userId, rideId, key, { method, xlm: deps.stellar ?? null, ...(shownNgn !== undefined ? { expectedFareNgn: shownNgn } : {}) });
   if (!result.ok) {
     if (result.code === 'XLM_SHORT') {
       throw new PageError(
         `This ride is ${result.amountXlm} XLM and you can spend ${result.spendableXlm} XLM. Pay in naira instead — your XLM has not moved.`,
         402, 'XLM_SHORT', { amountXlm: result.amountXlm, spendableXlm: result.spendableXlm },
       );
+    }
+    if (result.code === 'OFFER_CHANGED') {
+      throw new PageError(`The price changed to ₦${result.fareNgn.toLocaleString()}. Check it and try again.`, 409, 'OFFER_CHANGED', { fareNgn: result.fareNgn });
     }
     if (result.code === 'WALLET_SHORT') {
       // Not an error to apologise for — the page turns this into "Send ₦X",

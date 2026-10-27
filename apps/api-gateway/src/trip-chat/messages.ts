@@ -169,6 +169,8 @@ async function forwardToWhatsappRider(
   if (await deps.sockets.isUserConnected(info.rider.userId).catch(() => false)) return;
   // 💬 on the ride card: no new message, however many the driver sends.
   if (await deps.whatsapp.setCardStatus(info.rideId, 'message')) return;
+  // On the ride page (its chat is there), with the card held until they leave: no bubble; the card shows 💬.
+  if (await deps.whatsapp.heldForPage?.(info.rider.userId, info.rideId, 'message')) return;
   const url = deps.whatsapp.pageUrl(info.rider.userId, info.rideId);
   const body = `*${driverName} (your driver):*\n${content}`.slice(0, 1024);
   await deps.whatsapp.send(info.rider.phone, body, url ? { text: 'Reply', url } : undefined)

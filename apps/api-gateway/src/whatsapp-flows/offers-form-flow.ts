@@ -305,13 +305,15 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     return offersScreen(deps, rideId, `${bid.driverName} changed their price to ${naira(bid.counterOfferNgn)} (it was ${naira(tapped.shownPriceNgn)}) — nothing was charged.`);
   }
 
-  const result = await confirmRideWithOffer(service, userId, rideId, tapped.key);
+  const result = await confirmRideWithOffer(service, userId, rideId, tapped.key, { expectedFareNgn: tapped.shownPriceNgn });
   if (result.ok) {
     // Not awaited: the driver's photos take seconds to send, and WhatsApp cuts a form's request off at ~10.
     void deps.onRideConfirmed?.(userId, result.ride).catch((error) => console.error('[offers-form] ride confirmed but the chat was not told', { userId, error: error instanceof Error ? error.message : String(error) }));
     return done('Ride confirmed', `${bid.driverName} is on the way. Their photo, car and plate are in your chat — with a button to track the trip live.`, false);
   }
   switch (result.code) {
+    case 'OFFER_CHANGED':
+      return offersScreen(deps, rideId, `${bid.driverName} changed their price to ${naira(result.fareNgn)} (it was ${naira(tapped.shownPriceNgn)}) — nothing was charged.`);
     case 'WALLET_SHORT':
       await deps.onWalletShort?.(userId, rideId, bid, result).catch((error) => console.error('[offers-form] wallet short but the Add money button was not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
       return done(`Add ${naira(result.shortNgn)} to ride with ${bid.driverName.split(' ')[0]}`,
@@ -325,7 +327,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     case 'ALREADY_CONFIRMING':
       return offersScreen(deps, rideId, 'Your ride is being booked — one moment.');
     case 'ALREADY_BOOKED':
-      return done('Your ride is already booked', 'The driver\'s details are in your chat.', false);
+      return done('Your ride is already booked', 'Swipe down to close.', false);
     case 'HOLD_FAILED':
       return offersScreen(deps, rideId, 'Could not hold the fare in your wallet just now — nothing was charged. Try again.');
     case 'CONFIRM_FAILED':

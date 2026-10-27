@@ -38,6 +38,8 @@ const recordKey = (rideId: string) => `ride:${rideId}:auto-accept`;
 const lockKey = (rideId: string) => `ride:${rideId}:auto-accept:lock`;
 /** Set once auto-accept has booked a driver for the ride: a redelivered offer finds it and does nothing. */
 const bookedKey = (rideId: string) => `ride:${rideId}:auto-accept:booked`;
+/** Its booking was said in the chat ("Your ride is booked"), not held for the page: a booking that falls through must be unsaid. */
+const toldKey = (rideId: string) => `ride:${rideId}:auto-accept:told-chat`;
 
 interface AutoAcceptRecord {
   riderId?: string;
@@ -163,6 +165,12 @@ export async function autoBookedDriver(redis: RedisClient, rideId: string): Prom
 /** The search goes on after a booking fell through (the driver bailed, or was busy): auto-accept may book again. */
 export async function clearAutoAcceptBooked(redis: RedisClient, rideId: string): Promise<void> {
   await redis.del(bookedKey(rideId)).catch(() => undefined);
+  await redis.del(toldKey(rideId)).catch(() => undefined);
+}
+
+/** Did auto-accept say its booking in the chat (rather than hold the card for the page)? */
+export async function autoAcceptToldChat(redis: RedisClient, rideId: string): Promise<boolean> {
+  return Boolean(await redis.get(toldKey(rideId)).catch(() => null));
 }
 
 /** The rider changed their price: an offer now at or under it may be booked. */
@@ -215,7 +223,7 @@ type Attempt = 'booked' | 'stop' | 'next';
 async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, candidate: Candidate): Promise<Attempt> {
   const riderId = search.riderId;
   if (search.kind === 'whatsapp') {
-    const result = await confirmRideWithOffer(deps, riderId, rideId, candidate.key!, { method: 'NGN', auto: true });
+    const result = await confirmRideWithOffer(deps, riderId, rideId, candidate.key!, { method: 'NGN', auto: true, expectedFareNgn: candidate.priceNgn });
     if (result.ok) {
       logActivity({ userId: riderId, eventType: 'ride_offer_accepted', source: 'auto_accept', rideId, metadata: { fareNgn: result.ride.fareNgn, driverId: result.ride.driverId } });
       // "Your ride is booked" in the chat: now when the rider is not on the ride page, else once they leave it.
@@ -224,6 +232,7 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
         const event: RidePageChatEvent = { kind: 'ride_confirmed', userId: riderId, phone: meta.phone, ride: result.ride };
         const onPage = await isRidePageOpen(deps.redisClient, riderId).catch(() => true);
         const toldNow = !onPage && deps.tellChat ? await deps.tellChat(event).then(() => true, () => false) : false;
+        if (toldNow) await deps.redisClient.set(toldKey(rideId), '1', RECORD_TTL_SECONDS).catch(() => undefined);
         if (!toldNow) {
           await deferUntilPageLeft(deps.redisClient, riderId, { kind: 'ride_confirmed', rideId, event: event as unknown as Record<string, unknown> }).catch(() => undefined);
         }

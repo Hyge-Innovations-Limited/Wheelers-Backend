@@ -85,7 +85,7 @@ import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { noteOfferSent } from '../rides/search-status';
-import { autoAcceptPriceChanged, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
+import { autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { clearAcceptSent, markSearchEnded } from '../rides/booking-lock';
 
 export interface StartGatewayConsumerDeps {
@@ -286,6 +286,8 @@ function scheduleBidFlush(
 
       await storeLastBatch(deps.redisClient, rideId, allBids);
       if (meta.source === 'flow') {
+        // The old form's message: not while the rider is on the ride page.
+        if (await isRidePageOpen(deps.redisClient, riderId)) return;
         await sendFlowOffersMessage(deps.whatsappNotifier, phone, riderId, meta, allBids)
           .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
       } else {
@@ -321,8 +323,14 @@ export async function announceOffers(
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
-  // On the ride page, the offers are there as they come: nothing in the chat.
-  if (!groupSeat && await isRidePageOpen(deps.redisClient, riderId)) return;
+  // On the ride page, the offers are there as they come: nothing in the chat. The number on
+  // "Your bid is in" is put right when they leave.
+  if (!groupSeat && await isRidePageOpen(deps.redisClient, riderId)) {
+    if (await hasOffersPageMessage(deps.redisClient, rideId).catch(() => false)) {
+      await deferUntilPageLeft(deps.redisClient, riderId, { kind: 'offer_count', rideId }).catch(() => undefined);
+    }
+    return;
+  }
   // The offers page: the number of offers on "Your bid is in", changing in place.
   if (!groupSeat && await hasOffersPageMessage(deps.redisClient, rideId)) {
     await showOfferCount(offerCountDeps(deps)!, rideId, bids.length);
@@ -392,28 +400,46 @@ async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, 
  * only if it is still true: the search still on, the booking still standing,
  * the driver still outside.
  */
-export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId: string, item: CatchupItem): Promise<void> {
+export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId: string, item: CatchupItem): Promise<boolean> {
   const ride = await rideClient.findById(item.rideId).catch(() => null);
-  if (!ride || ride.riderId !== userId) return;
+  if (!ride || ride.riderId !== userId) return false;
   if (item.kind === 'arrived') {
-    if (ride.status !== 'ARRIVED') return;
+    if (ride.status !== 'ARRIVED') return false;
     const phone = await whatsappRiderPhone(deps, userId, item.rideId);
-    if (phone) await tellArrivedInChat(deps, phone, item.rideId, item.driverId);
-    return;
+    if (!phone) return false;
+    await tellArrivedInChat(deps, phone, item.rideId, item.driverId);
+    return true;
   }
-  if (!deps.ridePageChat) return;
   const [active, state] = await Promise.all([
     getActiveRide(deps.redisClient, userId).catch(() => null),
     getRideState(deps.redisClient, item.rideId).catch(() => null),
   ]);
-  if (active !== item.rideId) return;
+  if (active !== item.rideId) return false;
   const booked = state === 'confirmed' || state === 'in_progress';
+  const searching = !booked && (ride.status === 'REQUESTED' || ride.status === 'MATCHING');
+  if (item.kind === 'offer_count') {
+    // Silent: the number on "Your bid is in", right again now they are back in the chat.
+    const countDeps = offerCountDeps(deps);
+    if (!searching || !countDeps || !(await hasOffersPageMessage(deps.redisClient, item.rideId).catch(() => false))) return false;
+    await showOfferCount(countDeps, item.rideId, (await getBids(deps.redisClient, item.rideId).catch(() => [])).length).catch(() => false);
+    return true;
+  }
+  if (item.kind === 'driver_cancelled') {
+    if (!searching) return false;
+    const phone = await whatsappRiderPhone(deps, userId, item.rideId);
+    if (!phone || !deps.whatsappNotifier) return false;
+    await tellDriverBailedOrCancelled(deps, phone, item.rideId, userId, item.details as Parameters<typeof rideCancelledText>[0], true);
+    return true;
+  }
+  if (!deps.ridePageChat) return false;
   if (item.kind === 'search_started') {
-    if (booked || (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING')) return;
-  } else if (!booked || ride.status === 'CANCELLED' || ride.status === 'COMPLETED') {
-    return;
+    if (!searching) return false;
+  } else if (!booked || state === 'in_progress' || ride.status === 'IN_PROGRESS' || ride.status === 'CANCELLED' || ride.status === 'COMPLETED') {
+    // The card: only while the booking stands and the trip has not started.
+    return false;
   }
   await deps.ridePageChat(item.event as unknown as RidePageChatEvent);
+  return true;
 }
 
 /** A car's model or plate worth showing a rider — never a placeholder. */
@@ -486,6 +512,32 @@ function sendSearchStatusSoon(deps: StartGatewayConsumerDeps, riderId: string, r
   }, SEARCH_STATUS_DELAY_MS);
   timer.unref?.();
   searchStatusTimers.set(rideId, timer);
+}
+
+/**
+ * The ride is cancelled (or its driver bailed and the search goes on): one message.
+ * A bail's message carries "See driver offers" and becomes the search's offers message.
+ */
+async function tellDriverBailedOrCancelled(
+  deps: StartGatewayConsumerDeps,
+  phone: string,
+  rideId: string,
+  riderId: string,
+  details: Parameters<typeof rideCancelledText>[0],
+  driverBailed: boolean,
+): Promise<void> {
+  if (!deps.whatsappNotifier) return;
+  const pageUrl = driverBailed ? deps.ridePageUrlFor?.(riderId) ?? null : null;
+  const countDeps = offerCountDeps(deps);
+  const sentWithButton = pageUrl && countDeps
+    ? await sendOffersPageMessage(countDeps, phone, rideId, pageUrl, { pickupAddress: '', destAddress: '' }, rideCancelledText(details, { withOffersButton: true }))
+        .catch(() => false)
+    : false;
+  if (sentWithButton) {
+    await markOffersMessageSent(deps.redisClient, rideId).catch(() => undefined);
+  } else {
+    await sendRideCancelledNotification(deps.whatsappNotifier, phone, details).catch(() => {});
+  }
 }
 
 /** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
@@ -731,9 +783,12 @@ export async function handleRideEvent(
           if (meta.source === 'flow') {
             // Bidding lives on the offers screen; each debounced batch sends
             // a 'View offers' button that re-opens the flow on current bids.
-            console.info('[consumer] sending flow offers message', { rideId: event.rideId, bids: allBids.length });
-            await sendFlowOffersMessage(deps.whatsappNotifier, phone, event.riderId, meta, allBids)
-              .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
+            // The old form's message: not while the rider is on the ride page.
+            if (!(await isRidePageOpen(deps.redisClient, event.riderId))) {
+              console.info('[consumer] sending flow offers message', { rideId: event.rideId, bids: allBids.length });
+              await sendFlowOffersMessage(deps.whatsappNotifier, phone, event.riderId, meta, allBids)
+                .catch((err) => console.warn('[consumer] WhatsApp flow offers message failed', err));
+            }
           } else {
             await announceOffers(deps, phone, event.rideId, event.riderId, allBids, meta.offerNgn, changes)
               .catch((err) => console.warn('[consumer] WhatsApp bid notification failed', err));
@@ -967,6 +1022,8 @@ export async function handleRideEvent(
     await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
     // Booked by auto-accept, not by a tap: nobody is told an accept was refused that they never made.
     const byAutoAccept = (await autoBookedDriver(deps.redisClient, event.rideId)) === event.driverId;
+    // Its "Your ride is booked" went to the chat (the rider was off the page): then it is unsaid, as for a tap.
+    const autoToldChat = byAutoAccept && await autoAcceptToldChat(deps.redisClient, event.rideId);
     // The search goes on: another accept may go out, and auto-accept may book another driver.
     await clearAcceptSent(deps.redisClient, event.rideId);
     await clearAutoAcceptBooked(deps.redisClient, event.rideId);
@@ -989,7 +1046,7 @@ export async function handleRideEvent(
       // offers page or the offers form, dropping the bid above has just said so,
       // with the offers left; with the form it says nothing.)
       const onPage = await isRidePageOpen(deps.redisClient, event.riderId);
-      if (!byAutoAccept && chosen && !onPage && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
+      if ((!byAutoAccept || autoToldChat) && chosen && !onPage && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
         const who = chosen?.driverName ? `*${chosen.driverName}*` : 'That driver';
         await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, [`${who} couldn't take this ride after all. Nothing was charged.`, '', 'Pick another offer.'].join('\n')).catch(() => {});
       }
@@ -1367,6 +1424,13 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_CANCELLED') {
+    // A driver bailing, delivered again (Kafka), must not touch the search that
+    // has gone on since: the next driver's bids, their hold, the accept sent for
+    // them, the rider's chat. Once per bail.
+    if (event.cancelledBy === 'driver') {
+      const first = await deps.redisClient.setIfNotExists(`ride:${event.rideId}:bail:${event.driverId ?? event.driverUserId ?? 'driver'}:${event.timestamp}`, '1', 24 * 60 * 60).catch(() => true);
+      if (!first) return;
+    }
     // A rider cancelling BEFORE a match leaves bidders in the same forever-
     // waiting state as a timeout — the assigned-driver notification below
     // only fires when there IS an assigned driver. Same message as a
@@ -1412,7 +1476,11 @@ export async function handleRideEvent(
       await storeLastBatch(deps.redisClient, event.rideId, []).catch(() => {});
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
     }
-    const holdRelease = await walletClient.cancelRideHold(event.rideId).catch(() => null);
+    // A bail releases only the money held for the driver who left (never a next driver's hold).
+    const bailedDriverUserId = driverBailed
+      ? event.driverUserId ?? (event.driverId ? (await driverClient.findById(event.driverId).catch(() => null))?.userId : undefined)
+      : undefined;
+    const holdRelease = await walletClient.cancelRideHold(event.rideId, bailedDriverUserId).catch(() => null);
 
     const releasedReferralCashback = await referralClient.releaseRideCashback(
       event.rideId,
@@ -1440,16 +1508,11 @@ export async function handleRideEvent(
         // carries "See driver offers" — it becomes the search's offers message,
         // with the count of new offers on it. The old "Your bid is in" was closed
         // when the driver was chosen.
-        const pageUrl = driverBailed ? deps.ridePageUrlFor?.(event.riderId) ?? null : null;
-        const countDeps = offerCountDeps(deps);
-        const sentWithButton = pageUrl && countDeps
-          ? await sendOffersPageMessage(countDeps, phone, event.rideId, pageUrl, { pickupAddress: '', destAddress: '' }, rideCancelledText(details, { withOffersButton: true }))
-              .catch(() => false)
-          : false;
-        if (sentWithButton) {
-          await markOffersMessageSent(deps.redisClient, event.rideId).catch(() => undefined);
+        // On the ride page (it shows the search going on): the chat hears it once they leave.
+        if (driverBailed && await isRidePageOpen(deps.redisClient, event.riderId)) {
+          await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'driver_cancelled', rideId: event.rideId, details }).catch(() => undefined);
         } else {
-          await sendRideCancelledNotification(deps.whatsappNotifier, phone, details).catch(() => {});
+          await tellDriverBailedOrCancelled(deps, phone, event.rideId, event.riderId, details, driverBailed);
         }
       }
       // An app open on the same ride hears it too (a WhatsApp search followed in the app).

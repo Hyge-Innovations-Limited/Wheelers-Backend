@@ -284,6 +284,8 @@ export type ConfirmResult =
   /** ALREADY_CONFIRMING: a booking is going through right now. ALREADY_BOOKED: the ride is booked (or an acceptance went out), maybe with another driver. */
   | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' | 'ALREADY_BOOKED' }
   | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }
+  /** The driver's price is no longer the one the rider saw (expectedFareNgn): nothing held, nothing booked. */
+  | { ok: false; code: 'OFFER_CHANGED'; fareNgn: number }
   /** No Stellar account yet, or no XLM price to be had right now: pay in naira instead. */
   | { ok: false; code: 'XLM_UNAVAILABLE' }
   | { ok: false; code: 'XLM_SHORT'; fareNgn: number; amountXlm: string; spendableXlm: number };
@@ -326,6 +328,8 @@ export interface ConfirmOptions {
    * paying…", and an acceptance that does not go out lets go of the hold.
    */
   auto?: boolean;
+  /** The price the rider saw for this offer. When given and the driver's price is different now, nothing is booked. */
+  expectedFareNgn?: number;
 }
 
 async function confirmOnce(
@@ -346,6 +350,7 @@ async function confirmOnce(
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) return { ok: false, code: 'OFFER_GONE' };
   const fareNgn = bid.counterOfferNgn;
+  if (options.expectedFareNgn !== undefined && Math.abs(fareNgn - options.expectedFareNgn) >= 0.5) return { ok: false, code: 'OFFER_CHANGED', fareNgn };
   const payWithXlm = options.method === 'XLM';
 
   // XLM: the fare at the current rate (asked for again every 30 minutes) must

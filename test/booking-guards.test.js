@@ -118,7 +118,7 @@ test('two accepts at once on one ride (two drivers, app and chat): one acceptanc
   const winner = booked[0].driverId === a.id ? a : b;
   const loser = winner === a ? b : a;
   const loserRow = loser === a ? rowA : rowB;
-  const again = await appAccept(w, riderId, r, loser, 7000);
+  const again = await appAccept(w, riderId, r, loser, loser === a ? 7000 : 7500);
   assert.equal(again.payload.reason, 'already_matched');
   const viaChat = await confirmRideWithOffer(w.deps, riderId, r.id, loserRow.id);
   assert.equal(viaChat.code, 'ALREADY_BOOKED', 'its own code: the ride is booked, maybe with another driver');

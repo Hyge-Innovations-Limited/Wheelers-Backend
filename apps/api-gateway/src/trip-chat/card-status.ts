@@ -31,6 +31,13 @@ interface CardRecord {
 }
 
 const cardKey = (rideId: string) => `tripchat:card:${rideId}`;
+/** A status set while the card was held back (the rider on the ride page): worn by the card when it is sent. */
+const heldKey = (rideId: string) => `tripchat:card-held:${rideId}`;
+
+/** No card yet (it waits for the rider to leave the ride page): the card wears this status when it is sent. */
+export async function holdCardStatus(redis: RedisClient, rideId: string, status: CardStatus): Promise<void> {
+  await redis.set(heldKey(rideId), status, CARD_TTL_SECONDS).catch(() => undefined);
+}
 
 export interface CardStatusDeps {
   redis: RedisClient;
@@ -56,7 +63,10 @@ export async function rememberRideCard(deps: CardStatusDeps, rideId: string, pho
   if (!messageId) return;
   const before = await read(deps.redis, rideId);
   if (before?.messageId === messageId) return;
-  const carried = before?.status && before.status !== 'none' ? before.status : 'live';
+  // A message or call that came while the card was held back shows on it now.
+  const held = (await deps.redis.get(heldKey(rideId)).catch(() => null)) as CardStatus | null;
+  if (held) await deps.redis.del(heldKey(rideId)).catch(() => undefined);
+  const carried = before?.status && before.status !== 'none' ? before.status : held && held !== 'none' ? held : 'live';
   if (before?.status) await sendMetaReaction(deps.meta, before.phone, before.messageId, '').catch(() => false);
   await deps.redis.set(cardKey(rideId), JSON.stringify({ messageId, phone, status: null } satisfies CardRecord), CARD_TTL_SECONDS);
   await setCardStatus(deps, rideId, carried);

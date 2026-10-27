@@ -75,6 +75,8 @@ export interface WhatsappFlowEndpointDeps {
   onWithdraw?: QuickActionsFlowDeps['onWithdraw'];
   ensureDepositAccount?: QuickActionsFlowDeps['ensureDepositAccount'];
   onBookInChat?: QuickActionsFlowDeps['onBookInChat'];
+  /** Book a ride on the ride page: the chat gets its one Book a ride button (createQuickActionsChatHooks). */
+  onBookOnPage?: QuickActionsFlowDeps['onBookOnPage'];
   /** A bid placed in the Edit-trip or Quick Actions form: the chat gets the See driver offers button. */
   onBidPlaced?: QuickActionsFlowDeps['onBidPlaced'];
 }
@@ -240,6 +242,7 @@ export async function handleFlowAction(
       onWithdraw: deps.onWithdraw,
       ensureDepositAccount: deps.ensureDepositAccount,
       onBookInChat: deps.onBookInChat,
+      onBookOnPage: deps.onBookOnPage,
       onBidPlaced: deps.onBidPlaced,
     });
   }
