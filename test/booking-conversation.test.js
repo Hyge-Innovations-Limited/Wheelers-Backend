@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrismaClient } = require('@prisma/client');
 
-const { handleMetaWhatsappWebhookRoute, placeChoiceRows, createRidePageChatNotifier, createWhatsappDepositFinisher, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
+const { handleMetaWhatsappWebhookRoute, placeChoiceRows, sayRidePageEventInChat, createWhatsappDepositFinisher, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
@@ -988,7 +988,7 @@ test('ride confirmed is ONE message: the DRIVER\'S photo, every detail under it,
   const order = recordMeta();
   const driver = await driverWithPhotos();
 
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001', ride: confirmedRide(driver.id) });
+  await sayRidePageEventInChat(deps, { kind: 'ride_confirmed', userId: 'rider-1', phone: '+2348030000001', ride: confirmedRide(driver.id) });
 
   assert.deepEqual(order.map((m) => m.type), ['card'], 'ONE message — the separate selfie message is gone');
   const card = order[0].body.interactive;
@@ -1015,14 +1015,14 @@ test('no driver photo on file, or WhatsApp refuses the picture: the SAME card go
 
   let order = recordMeta();
   const noSelfie = await driverWithPhotos({ selfie: false });          // a car photo on file changes nothing here
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
+  await sayRidePageEventInChat(deps, { kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(noSelfie.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive']);
   assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.title), ['Track live trip', 'Chat with driver', 'SOS']);
   assert.match(order[0].body.interactive.body.text, /plate \*LND-174XA\*/);
 
   order = recordMeta({ refuseCards: true });
   const both = await driverWithPhotos();
-  await createRidePageChatNotifier(deps)({ kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
+  await sayRidePageEventInChat(deps, { kind: 'ride_confirmed', userId: 'r', phone: '+2348030000001', ride: confirmedRide(both.id) });
   assert.deepEqual(order.map((m) => m.type), ['interactive'], 'one message still');
   assert.deepEqual(order[0].body.interactive.action.buttons.map((b) => b.reply.id), ['ride_track', 'ride_chat', 'ride_sos']);
   assert.match(order[0].body.interactive.body.text, /Your ride is booked/);

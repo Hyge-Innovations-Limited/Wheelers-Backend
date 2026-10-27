@@ -49,6 +49,8 @@ import {
   storeLastCompletedRide,
   getLastBatch,
   takeChatCancellation,
+  wasCancelledOnPage,
+  isRidePageOpen,
   clearBids,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
@@ -59,7 +61,6 @@ import {
   sortOffers,
   sendFlowOffersMessage,
   sendDriverArrivedNotification,
-  sendRideStartedNotification,
   sendRideCompletedNotification,
   setGroupRideChecker,
   sendRideCancelledNotification,
@@ -67,7 +68,6 @@ import {
   sendBidTimeoutNotification,
   sendOfferWithdrawnNotification,
   sendMetaWhatsappMessage,
-  sendRiderPaidNotification,
   sendDepositConfirmation,
   sendGroupRideGroupedNotification,
   sendGroupRideDriverAssignedNotification,
@@ -79,6 +79,9 @@ import { loadTripChat } from '../trip-chat/access';
 import { setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
 import type { StellarService } from '../stellar/service';
+import { createPageCatchup, deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
+import type { CatchupItem } from '../whatsapp-flows/page-catchup';
+import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 
@@ -100,6 +103,8 @@ export interface StartGatewayConsumerDeps {
   stellar?: StellarService | null;
   /** The rider's own link to the offers page — for the message that reopens a search after a driver bailed. */
   ridePageUrlFor?: (userId: string) => string | null;
+  /** Says a ride-page event in the chat (the catch-up once the rider leaves the page). Absent: no catch-up runs. */
+  ridePageChat?: (event: RidePageChatEvent) => Promise<void>;
 }
 
 interface RideParticipantState {
@@ -121,6 +126,10 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   // The receipt's Repeat / Reverse buttons must not be offered for a group seat.
   setGroupRideChecker(async (rideId) => Boolean(await getGroupSeat(deps.redisClient, rideId).catch(() => null)));
   const rideParticipants = new Map<string, RideParticipantState>();
+  // What waited while riders were on the ride page, said when they leave it.
+  if (deps.ridePageChat) {
+    createPageCatchup({ redis: deps.redisClient, deliver: (userId, item) => deliverPageCatchup(deps, userId, item) }).start();
+  }
 
   await deps.consumer.subscribe(
     [
@@ -309,6 +318,8 @@ export async function announceOffers(
 ): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const groupSeat = await getGroupSeat(deps.redisClient, rideId).catch(() => null);
+  // On the ride page, the offers are there as they come: nothing in the chat.
+  if (!groupSeat && await isRidePageOpen(deps.redisClient, riderId)) return;
   // The offers page: the number of offers on "Your bid is in", changing in place.
   if (!groupSeat && await hasOffersPageMessage(deps.redisClient, rideId)) {
     await showOfferCount(offerCountDeps(deps)!, rideId, bids.length);
@@ -351,6 +362,55 @@ async function carPhotoFor(deps: StartGatewayConsumerDeps, driverId: string): Pr
   } catch {
     return null;   // never let a missing picture delay "your driver is outside"
   }
+}
+
+/** "Your driver is outside": the car, the plate, the trip code. */
+async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, rideId: string, driverId: string | undefined): Promise<void> {
+  if (!deps.whatsappNotifier) return;
+  const arrivedBid = await getAcceptedBid(deps.redisClient, rideId).catch(() => null);
+  // The car as the rider will see it at the kerb: the driver's profile wins
+  // over whatever the bid carried (an old "UNKNOWN" placeholder, or nothing).
+  const car = driverId ? await driverClient.findById(driverId).catch(() => null) : null;
+  await sendDriverArrivedNotification(deps.whatsappNotifier, phone, {
+    driverName: arrivedBid?.driverName ?? car?.user?.name?.split(' ')[0] ?? undefined,
+    vehicleModel: knownVehicleText(car?.vehicleModel) ?? knownVehicleText(arrivedBid?.vehicleModel),
+    vehiclePlate: knownVehicleText(car?.vehiclePlate) ?? knownVehicleText(arrivedBid?.vehiclePlate),
+    driverPhone: arrivedBid?.driverPhone,
+    carPhotoUrl: driverId ? await carPhotoFor(deps, driverId) : null,
+    // The code they give the driver now. Not for a group seat (no code there).
+    tripCode: await getGroupSeat(deps.redisClient, rideId).catch(() => null)
+      ? null
+      : await tripCodeClient.ensure(rideId).catch(() => null),
+  }).catch(() => {});
+}
+
+/**
+ * What waited while the rider was on the ride page, said now they have left —
+ * only if it is still true: the search still on, the booking still standing,
+ * the driver still outside.
+ */
+export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId: string, item: CatchupItem): Promise<void> {
+  const ride = await rideClient.findById(item.rideId).catch(() => null);
+  if (!ride || ride.riderId !== userId) return;
+  if (item.kind === 'arrived') {
+    if (ride.status !== 'ARRIVED') return;
+    const phone = await whatsappRiderPhone(deps, userId, item.rideId);
+    if (phone) await tellArrivedInChat(deps, phone, item.rideId, item.driverId);
+    return;
+  }
+  if (!deps.ridePageChat) return;
+  const [active, state] = await Promise.all([
+    getActiveRide(deps.redisClient, userId).catch(() => null),
+    getRideState(deps.redisClient, item.rideId).catch(() => null),
+  ]);
+  if (active !== item.rideId) return;
+  const booked = state === 'confirmed' || state === 'in_progress';
+  if (item.kind === 'search_started') {
+    if (booked || (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING')) return;
+  } else if (!booked || ride.status === 'CANCELLED' || ride.status === 'COMPLETED') {
+    return;
+  }
+  await deps.ridePageChat(item.event as unknown as RidePageChatEvent);
 }
 
 /** A car's model or plate worth showing a rider — never a placeholder. */
@@ -721,7 +781,9 @@ export async function handleRideEvent(
         // With the form's button already in the chat, the end of the search is not a message:
         // the rider opens the form when they like and finds the two ways forward inside it.
         const formHoldsIt = offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, event.rideId);
-        if (!formHoldsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
+        // On the ride page, the page says the search ended.
+        const pageShowsIt = await isRidePageOpen(deps.redisClient, event.riderId);
+        if (!formHoldsIt && !pageShowsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
       }
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
       await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
@@ -822,7 +884,8 @@ export async function handleRideEvent(
       // The chat already had "Your ride is booked": say it did not hold. (Without the
       // offers page or the offers form, dropping the bid above has just said so,
       // with the offers left; with the form it says nothing.)
-      if (chosen && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
+      const onPage = await isRidePageOpen(deps.redisClient, event.riderId);
+      if (chosen && !onPage && (pageMessage || offersFormIsOn(deps.whatsappNotifier))) {
         const who = chosen?.driverName ? `*${chosen.driverName}*` : 'That driver';
         await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, [`${who} couldn't take this ride after all. Nothing was charged.`, '', 'Pick another offer.'].join('\n')).catch(() => {});
       }
@@ -1049,22 +1112,11 @@ export async function handleRideEvent(
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      {
-        const arrivedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
-        // The car as the rider will see it at the kerb: the driver's profile wins
-        // over whatever the bid carried (an old "UNKNOWN" placeholder, or nothing).
-        const car = event.driverId ? await driverClient.findById(event.driverId).catch(() => null) : null;
-        await sendDriverArrivedNotification(deps.whatsappNotifier, phone, {
-          driverName: arrivedBid?.driverName ?? car?.user?.name?.split(' ')[0] ?? undefined,
-          vehicleModel: knownVehicleText(car?.vehicleModel) ?? knownVehicleText(arrivedBid?.vehicleModel),
-          vehiclePlate: knownVehicleText(car?.vehiclePlate) ?? knownVehicleText(arrivedBid?.vehiclePlate),
-          driverPhone: arrivedBid?.driverPhone,
-          carPhotoUrl: await carPhotoFor(deps, event.driverId),
-          // The code they give the driver now. Not for a group seat (no code there).
-          tripCode: await getGroupSeat(deps.redisClient, event.rideId).catch(() => null)
-            ? null
-            : await tripCodeClient.ensure(event.rideId).catch(() => null),
-        }).catch(() => {});
+      // On the ride page, the page shows the car and the code: the chat gets it when they leave.
+      if (await isRidePageOpen(deps.redisClient, event.riderId)) {
+        await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'arrived', rideId: event.rideId, driverId: event.driverId }).catch(() => undefined);
+      } else {
+        await tellArrivedInChat(deps, phone, event.rideId, event.driverId);
       }
     } else {
       await registry.sendToUser(event.riderId, 'ride:driver_arrived', {
@@ -1095,10 +1147,7 @@ export async function handleRideEvent(
     if (phone && deps.whatsappNotifier) {
       await setRideState(deps.redisClient, event.rideId, 'in_progress', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      {
-        const tripId = formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null));
-        await sendRideStartedNotification(deps.whatsappNotifier, phone, tripId).catch(() => {});
-      }
+      // No "trip started" message: the rider is in the car, and the receipt follows.
     } else {
       await registry.sendToUser(event.riderId, 'ride:started', {
         rideId: event.rideId,
@@ -1245,11 +1294,13 @@ export async function handleRideEvent(
     // Notify rider
     // A search replaced by the rider's own newer request: clean up, say nothing — they asked for it.
     const superseded = event.cancelledBy === 'system' && /newer request/i.test(event.reason ?? '');
+    // Cancelled by the rider on the ride page: they did it there, the chat says nothing.
+    const cancelledOnPage = await wasCancelledOnPage(deps.redisClient, event.rideId).catch(() => false);
     // Cancelled in the chat with a reason: that chat gets one message, reason and refund together.
     const toldInChat = await takeChatCancellation(deps.redisClient, event.rideId).catch(() => null);
     const phone = toldInChat?.phone ?? await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
-      if (!superseded) {
+      if (!superseded && !cancelledOnPage) {
         const details = {
           reason: event.reason,
           cancelledBy: event.cancelledBy,
@@ -1414,13 +1465,8 @@ async function handleWalletEvent(
               riderFunded: true,
               message: 'Rider has funded their wallet. You can start heading to pickup!',
             });
-            // Also send WhatsApp confirmation to rider
-            const phone = await lookupPhoneByUserId(deps.redisClient, event.userId);
-            if (phone) {
-              await sendRiderPaidNotification(deps.whatsappNotifier, phone, event.newBalanceNgn)
-                .catch(() => {});
-            }
-            handledByRide = true;
+            // The rider hears of a deposit from the plain confirmation below; any
+            // other credit (a refund, a cashback) is not a "payment received".
           }
           break;
         }

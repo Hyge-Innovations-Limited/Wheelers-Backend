@@ -274,6 +274,15 @@ export async function isWhatsappRider(
  */
 const cancelChatKey = (rideId: string) => `whatsapp:cancel:${rideId}`;
 
+/** Cancelled by the rider on the ride page: they did it there, so the chat says nothing. */
+const pageCancelKey = (rideId: string) => `whatsapp:cancel:${rideId}:on_page`;
+export async function markCancelledOnPage(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(pageCancelKey(rideId), '1', 15 * 60);
+}
+export async function wasCancelledOnPage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return (await redis.get(pageCancelKey(rideId)).catch(() => null)) !== null;
+}
+
 export async function rememberChatCancellation(redis: RedisClient, rideId: string, phone: string, reason: string): Promise<void> {
   await redis.set(cancelChatKey(rideId), JSON.stringify({ phone, reason }), 15 * 60);
 }

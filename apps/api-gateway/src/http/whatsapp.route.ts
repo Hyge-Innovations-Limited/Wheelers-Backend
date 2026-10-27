@@ -42,7 +42,7 @@ import { requirePrivacyConsent } from '../whatsapp/consent';
 import { cancelGroupRide, convertGroupToNormalRide, handleGroupSelfie, handleGroupStageText, sendGroupStatus, startGroupRideFlow } from '../whatsapp/group';
 import { priceCheckLines } from '../whatsapp-flows/trip-text';
 export { placeChoiceRows } from '../whatsapp/places';
-export { createRidePageChatNotifier, createOffersFormChatHooks, createWhatsappDepositFinisher } from '../whatsapp/ride-card';
+export { createRidePageChatNotifier, sayRidePageEventInChat, createOffersFormChatHooks, createWhatsappDepositFinisher } from '../whatsapp/ride-card';
 export { createQuickActionsChatHooks } from '../whatsapp/menu';
 export { normalizeAmountText, parseCounterOffer } from '../whatsapp/parse';
 export type { MetaWhatsappRouteDeps } from '../whatsapp/deps';

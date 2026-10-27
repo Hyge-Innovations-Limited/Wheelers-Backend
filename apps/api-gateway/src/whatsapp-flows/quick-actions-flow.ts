@@ -484,9 +484,8 @@ async function saveMyCode(typed: string, userId: string, deps: QuickActionsFlowD
   return shareMyCode(userId, code, deps);
 }
 
-/** Their code, sent to the chat to forward, and who has joined with it so far. */
-async function shareMyCode(userId: string, code: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
-  void deps.onReferralCodeSaved?.(userId, code).catch((error) => console.error('[quick-actions] referral code message not sent', { userId, error: error instanceof Error ? error.message : String(error) }));
+/** Their code and link, here in the form (nothing is sent to the chat), and who has joined with it so far. */
+async function shareMyCode(userId: string, code: string, _deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const summary = await referralClient.findSummary(userId).catch(() => null);
   const joined = summary ? summary.pendingReferrals + summary.qualifiedReferrals + summary.expiredNoRideReferrals + summary.closedReferrals : 0;
   const rode = summary?.qualifiedReferrals ?? 0;
@@ -494,7 +493,7 @@ async function shareMyCode(userId: string, code: string, deps: QuickActionsFlowD
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
     rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  return doneScreen(`Your code is ${code}`, `It is in your chat now. Forward that message to friends, or share your link: ${referralShareLink(code)}${stats ? `\n\n${stats}` : ''}`, false);
+  return doneScreen(`Your code is ${code}`, `Your link: ${referralShareLink(code)}${stats ? `\n\n${stats}` : ''}`, false);
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────

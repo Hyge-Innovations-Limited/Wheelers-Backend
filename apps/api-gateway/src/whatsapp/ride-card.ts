@@ -8,6 +8,7 @@ import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { logActivity } from '../analytics/log-activity';
 import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
+import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import { formatBidList, sendOffersInChat, sortOffers } from '../whatsapp-flows/whatsapp-notifier';
 import { MetaWhatsappRouteDeps } from './deps';
@@ -250,8 +251,28 @@ Left something in the car? Tap *Quick Actions*, then *Contact support*.`);
 /** Said when a search is cancelled from the page or a form. Sent as a plain reply, so Quick Actions is on it. */
 export const SEARCH_CANCELLED_REPLY = 'Search cancelled — nothing was charged.\n\nTap *Quick Actions* to book again, or just send your next trip.';
 
+/**
+ * The page's events, told to the chat only once the rider has left the page
+ * (page-catchup): while they are on it, the page is where they see it. A
+ * search they cancelled there is not told at all — they did it.
+ */
 export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
   return async (event: RidePageChatEvent): Promise<void> => {
+    if (!event.phone) return;
+    if (event.kind === 'search_cancelled') {
+      await appendWhatsappConversation(deps.redisClient, event.phone, [
+        { role: 'user', content: '[cancelled the search on the offers page]' },
+      ]).catch(() => undefined);
+      return;
+    }
+    const rideId = event.kind === 'search_started' ? event.rideId : event.ride.rideId;
+    await deferUntilPageLeft(deps.redisClient, event.userId, { kind: event.kind, rideId, event: event as unknown as Record<string, unknown> });
+  };
+}
+
+/** Says a page event in the chat now: the catch-up, once the rider has left the page. */
+export async function sayRidePageEventInChat(deps: MetaWhatsappRouteDeps, event: RidePageChatEvent): Promise<void> {
+  {
     if (!event.phone) return;
 
     if (event.kind === 'search_started') {
@@ -263,16 +284,7 @@ export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
       return;
     }
 
-    if (event.kind === 'search_cancelled') {
-      // Quick Actions (the button on this message) has everything next: book again, trips, add money.
-      const text = SEARCH_CANCELLED_REPLY;
-      await appendWhatsappConversation(deps.redisClient, event.phone, [
-        { role: 'user', content: '[cancelled the search on the offers page]' },
-        { role: 'assistant', content: text },
-      ]);
-      await sendMetaReply(deps, event.phone, text);
-      return;
-    }
+    if (event.kind === 'search_cancelled') return;
 
     const ride = event.ride;
     const text = await sendRideConfirmation(deps, event.userId, event.phone, ride);
@@ -280,7 +292,7 @@ export function createRidePageChatNotifier(deps: MetaWhatsappRouteDeps) {
       { role: 'user', content: `[accepted ${ride.driverName}'s offer on the offers page]` },
       { role: 'assistant', content: text },
     ]);
-  };
+  }
 }
 
 /* ── offers in the chat: tap one and it is yours ────────────────────────── */

@@ -180,7 +180,7 @@ function quickActions(userId, saved = []) {
 const row = (menu, id) => menu.data.choices.find((choice) => choice.id === id);
 const uniqueCode = () => `Q${Math.random().toString(36).slice(2, 9).toUpperCase()}`;
 
-test('QUICK ACTIONS · a rider with no code is offered to create one, and creating it sends it to the chat', async () => {
+test('QUICK ACTIONS · a rider with no code is offered to create one; creating it shows it with their link, and nothing is sent to the chat', async () => {
   const rider = await person();
   const saved = [];
   const tap = quickActions(rider.id, saved);
@@ -206,7 +206,8 @@ test('QUICK ACTIONS · a rider with no code is offered to create one, and creati
   const done = await tap('save_my_code', { code: ` ${code.toLowerCase()} ` });
   assert.equal(done.screen, 'NOTE');
   assert.equal(done.data.headline, `Your code is ${code}`);
-  assert.deepEqual(saved, [{ id: rider.id, code }]);
+  assert.deepEqual(saved, [], 'no chat messages: the code and the link are on the screen');
+  assert.match(done.data.note, /Your link: https:\/\/wa\.me\//);
   assert.equal(await referralClient.findOwnCode(rider.id), code);
 
   const after = await tap('menu_choice', { choice: 'nothing' });
@@ -229,11 +230,11 @@ test('QUICK ACTIONS · a taken code is refused on the same screen; once they hav
   const mine = uniqueCode();
   await tap('save_my_code', { code: mine });
 
-  // Their row now sends the code straight to the chat: no box to type a new one in.
+  // Their row now shows the code and link: no box to type a new one in.
   const shared = await tap('menu_choice', { choice: 'my_code' });
   assert.equal(shared.screen, 'NOTE');
   assert.equal(shared.data.headline, `Your code is ${mine}`);
-  assert.equal(saved.length, 2);
+  assert.equal(saved.length, 0);
 
   // An old form still open on a phone cannot change it either.
   const late = await tap('save_my_code', { code: uniqueCode() });

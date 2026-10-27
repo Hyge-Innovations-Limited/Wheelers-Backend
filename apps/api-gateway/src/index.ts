@@ -219,7 +219,7 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, createWhatsappDepositFinisher, createQuickActionsChatHooks } from "./http/whatsapp.route";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, sayRidePageEventInChat, createWhatsappDepositFinisher, createQuickActionsChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
@@ -2667,6 +2667,8 @@ async function bootstrap(): Promise<void> {
     onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
     stellar,
     ridePageUrlFor: (userId: string) => ridePageUrl(buildMetaWhatsappDeps(), userId),
+    // The ride page's news, told to the chat once the rider has left the page.
+    ridePageChat: (event) => sayRidePageEventInChat(buildMetaWhatsappDeps(), event),
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in

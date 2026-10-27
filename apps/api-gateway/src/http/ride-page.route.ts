@@ -11,7 +11,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import { markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
@@ -529,6 +529,7 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: Rid
         // A driver is on the way: that cancellation has reasons and may carry a fee. The chat handles it.
         throw new PageError('Your driver is already confirmed. To cancel this trip, reply "cancel" in the chat.', 409, 'ALREADY_CONFIRMED');
       }
+      await markCancelledOnPage(deps.redisClient, rideId).catch(() => undefined);
       await cancelWhatsappRide(deps, userId, rideId, reason ?? 'Cancelled on the offers page');
     });
     logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: reason ? { reason } : {} });
@@ -700,6 +701,7 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
     if (state === 'confirmed' || state === 'in_progress') {
       throw new PageError('Your driver is already confirmed. To change this trip, reply in the chat.', 409, 'ALREADY_CONFIRMED');
     }
+    await markCancelledOnPage(deps.redisClient, rideId).catch(() => undefined);
     await cancelWhatsappRide(deps, userId, rideId, 'Changed the trip on the offers page');
   });
   await storePendingRoute(deps.redisClient, userId, { ...last, route: last.route, confirmed: true });
