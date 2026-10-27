@@ -499,6 +499,10 @@ body.on-home .shell { padding: 0; }
 .ink-note-words span { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); }
 .ink-note-act { flex: 0 0 auto; font-size: 14px; line-height: 20px; font-weight: 700; color: var(--orange); text-decoration: none; }
 button.ink-note:active, .ink-note-act:active { opacity: 0.72; }
+#home-notice .ink-note-words strong { font-size: 15px; line-height: 21px; font-weight: 600; }
+.ink-note-close { flex: 0 0 auto; width: 36px; height: 36px; margin: -6px -6px -6px 0; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
+.ink-note-close svg { width: 18px; height: 18px; fill: none; stroke: var(--on-ink-muted); stroke-width: 2.2; stroke-linecap: round; }
+.ink-note-close:active { opacity: 0.72; }
 
 /* place rows (the app's resultRow) */
 .result-list { display: flex; flex-direction: column; }

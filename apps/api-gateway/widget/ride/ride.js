@@ -90,6 +90,18 @@
   }
 
   // Its own name in the tab's storage: the Trip chat opened from here (same tab) keeps another link's token.
+  // The start template's one-time code was spent or unknown (/ride-page/open answers #expired=1):
+  // "This link has expired", and the way back. No link, so nothing is asked of the server; the
+  // number is the one the server's own expired answer falls back to (EXPIRED_CHAT_URL).
+  if (/(?:^#|&)expired=1(?:&|$)/.test(window.location.hash)) {
+    try { history.replaceState(null, '', window.location.pathname); } catch (e) { /* ignore */ }
+    W.showOnly('expired');
+    var expiredBack = W.$('expired-back');
+    expiredBack.setAttribute('href', 'https://wa.me/2348141979106');
+    W.show(expiredBack, true);
+    return;
+  }
+
   if (!W.takeToken('wheelers.ride.page.token')) { W.fatal('This link is not valid.'); return; }
 
   /** The link itself is no good here (expired, or made for another page): nothing more to ask. */
@@ -686,6 +698,7 @@
     W.show(back, Boolean(s.chatUrl));
     if (s.chatUrl) back.setAttribute('href', s.chatUrl);
 
+    drawNotice(s);
     W.show(W.$('loc-off'), loc.state === 'denied');
     W.show(W.$('not-area'), loc.state !== 'denied' && loc.inArea === false);
 
@@ -715,6 +728,37 @@
     }
     layoutSheet();
   }
+
+  /**
+   * A note from the server for Home (state.notice: { id, text }, e.g. a ride for later that could not
+   * start): shown once. It is marked seen as soon as it shows, and stays until dismissed on this visit.
+   */
+  var notice = null;          // { id, text } on Home now
+  var noticesSeen = {};       // ids told to the server
+  function drawNotice(s) {
+    var next = s && s.notice && typeof s.notice.id === 'string' && typeof s.notice.text === 'string' && s.notice.text ? s.notice : null;
+    if (next && !noticesSeen[next.id] && (!notice || notice.id !== next.id)) notice = { id: next.id, text: next.text };
+    W.show(W.$('home-notice'), Boolean(notice));
+    W.$('home-notice-text').textContent = notice ? notice.text : '';
+    if (notice) markNoticeSeen(notice.id);
+  }
+  function markNoticeSeen(id) {
+    if (noticesSeen[id]) return;
+    noticesSeen[id] = true;
+    track('notice_shown', { id: id });
+    api('POST', '/ride-page/notice/seen', { id: id }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      noticesSeen[id] = false;   // told again at the next draw
+    });
+  }
+  W.$('home-notice-close').addEventListener('click', function () {
+    if (!notice) return;
+    markNoticeSeen(notice.id);
+    track('notice_dismissed', { id: notice.id });
+    notice = null;
+    W.show(W.$('home-notice'), false);
+    layoutSheet();
+  });
 
   W.$('home-search').addEventListener('click', function () { openPlan({}); });
   W.$('home-later').addEventListener('click', function () { openSchedule(); });
@@ -2380,10 +2424,12 @@
 
   function drawAuto(s) {
     // Only when the rider said yes to auto-book (D4).
-    var covered = s.autoAccept === true && typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= (Number(s.offerNgn) || 0) && Number(s.offerNgn) > 0;
+    // The price the yes was for (autoAcceptPriceNgn): nothing above it is booked.
+    var price = Number(s.autoAcceptPriceNgn) > 0 ? Number(s.autoAcceptPriceNgn) : Number(s.offerNgn) || 0;
+    var covered = s.autoAccept === true && typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= price && price > 0;
     var line = W.$('auto-line');
     W.show(line, covered);
-    line.textContent = covered ? 'A driver at ' + W.naira(s.offerNgn) + ' is booked for you' : '';
+    line.textContent = covered ? 'A driver at ' + W.naira(price) + ' is booked for you' : '';
   }
 
   /* the Finding map, as the app's matching screen: the trip, and rings in the middle */
