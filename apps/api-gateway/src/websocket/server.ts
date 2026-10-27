@@ -392,6 +392,11 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         }
 
         deps.registry.sendToSocket(socket, response.type, response.payload);
+        // An accept refused because the driver's price moved: the offer as it stands now, in the
+        // message every app version already merges into its list (old apps otherwise retry the old price).
+        if (response.type === 'ride:accept_offer:rejected' && response.payload['reason'] === 'offer_changed' && response.payload['counterOffer']) {
+          deps.registry.sendToSocket(socket, 'ride:counter_offer', response.payload['counterOffer'] as Record<string, unknown>);
+        }
 
         // Going offline on purpose leaves the market immediately: open bids
         // are withdrawn and their riders told — same rule as a dead socket,

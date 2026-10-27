@@ -1,4 +1,4 @@
-import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../../rides/booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, markSearchEnded, noteAcceptSent, releaseBookingLock, takeBookingLock } from '../../rides/booking-lock';
 import { cleanupRideKeys, clearAcceptedSeats, clearActiveRide, clearPendingAccept, getAcceptedBid, getGroupSeat, getGroupSeatMembers, getLastBatch, getPendingAccept, getRideMeta, getRideState, recordAcceptedSeat, setActiveRide, setBookingStage, storePendingRoute, storeRiderOfferChange } from '../../whatsapp-flows/bid-state';
 import { CANCELLATION_REASON_PROMPT, extractEditAddress, isCancelCommand, isEditDestinationCommand, isEditPickupCommand, isMoreCommand, parseAcceptCommand, parseCounterOffer } from '../../whatsapp/parse';
 import { replyAndLog, sendMetaLinkButton, sendMetaReply } from '../../whatsapp/send';
@@ -103,7 +103,8 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
             return true;
           }
 
-          // Route planned — now cancel the old ride
+          // Route planned — now cancel the old ride (over in the gateway's eyes first: auto-accept stays off it)
+          await markSearchEnded(deps.redisClient, activeRideId);
           const editCancelledRide = await rideClient.findById(activeRideId).catch(() => null);
           const cancelEvent = RideCancelledEvent.parse({
             eventType: 'RIDE_CANCELLED',

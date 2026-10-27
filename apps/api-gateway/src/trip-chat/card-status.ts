@@ -86,6 +86,11 @@ export async function setCardStatus(deps: CardStatusDeps, rideId: string, status
   return true;
 }
 
+/** Was the trip's card (the chat message that carries the light) sent for this ride? */
+export async function hasRideCard(redis: RedisClient, rideId: string): Promise<boolean> {
+  return (await read(redis, rideId)) !== null;
+}
+
 export async function cardStatusOf(redis: RedisClient, rideId: string): Promise<CardStatus | null> {
   return (await read(redis, rideId))?.status ?? null;
 }

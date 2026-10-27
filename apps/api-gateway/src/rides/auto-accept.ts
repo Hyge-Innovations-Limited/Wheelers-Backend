@@ -251,6 +251,7 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
     bidId: candidate.bidId,
     paymentMethod: 'WALLET',
     agreedFareNgn: candidate.priceNgn,
+    auto: true,
   }).catch(() => null);
   // Not sent (it lets go of its claim and its hold when it throws): stop.
   if (!reply) return 'stop';
@@ -259,7 +260,7 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
     return 'booked';
   }
   const reason = reply.payload['reason'];
-  if (reason === 'insufficient_funds' || reason === 'already_matched' || reason === 'busy') return 'stop';
+  if (reason === 'insufficient_funds' || reason === 'already_matched' || reason === 'busy' || reason === 'search_ended') return 'stop';
   return 'next';
 }
 

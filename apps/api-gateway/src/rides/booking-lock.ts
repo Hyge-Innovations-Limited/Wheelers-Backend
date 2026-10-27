@@ -26,6 +26,15 @@ const ENDED_SECONDS = 6 * 60 * 60;
 export const bookingLockKey = (rideId: string) => `whatsapp:ride:${rideId}:confirming`;
 const acceptSentKey = (rideId: string) => `ride:${rideId}:accept-sent`;
 const endedKey = (rideId: string) => `ride:${rideId}:search-ended`;
+/** An acceptance is being published right now (its hold is not stale, however slow Kafka is). */
+const publishingKey = (rideId: string) => `ride:${rideId}:accept-publishing`;
+
+export async function notePublishing(redis: RedisClient, rideId: string, driverUserId: string): Promise<void> {
+  await redis.set(publishingKey(rideId), driverUserId, 120).catch(() => undefined);
+}
+export async function clearPublishing(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(publishingKey(rideId)).catch(() => undefined);
+}
 
 /** A lock this caller holds: its token, so only it can let go of it. */
 export type BookingLock = { rideId: string; token: string };
@@ -76,6 +85,8 @@ export async function releaseStaleHoldForOther(redis: RedisClient, rideId: strin
   const hold = await walletClient.rideHoldOf(rideId).catch(() => null);
   if (!hold || hold.status !== 'ACTIVE' || !hold.driverUserId || hold.driverUserId === driverUserId) return 'none';
   if (await acceptSentFor(redis, rideId)) return 'blocked';
+  // Its acceptance is still being published (a slow Kafka): not stale.
+  if (await redis.get(publishingKey(rideId)).catch(() => null)) return 'blocked';
   const since = hold.updatedAt ?? hold.createdAt;
   if (!since || now - since.getTime() < LOCK_SECONDS * 1000) return 'blocked';
   const released = await walletClient.cancelRideHold(rideId, hold.driverUserId).catch(() => null);

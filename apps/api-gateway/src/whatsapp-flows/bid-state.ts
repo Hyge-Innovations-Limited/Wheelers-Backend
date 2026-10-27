@@ -1217,6 +1217,8 @@ export async function clearFlowEstimate(redis: RedisClient, userId: string): Pro
 export interface FlowPendingAccept {
   rideId: string;
   driverId: string;
+  /** The price the rider saw for this driver (absent on choices kept before it was recorded). */
+  fareNgn?: number;
 }
 
 const flowPendingAcceptKey = (userId: string) => `whatsapp:flow:pendingaccept:${userId}`;

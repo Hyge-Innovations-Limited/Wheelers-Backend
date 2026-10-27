@@ -329,7 +329,8 @@ const WIDGET_CSP =
 const GOOGLE_MAPS_HOSTS = "https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com";
 const RIDE_PAGE_CSP =
   `default-src 'self'; script-src 'self' ${GOOGLE_MAPS_HOSTS} blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; ` +
-  `img-src 'self' data: blob: ${MAP_TILE_ORIGIN} ${GOOGLE_MAPS_HOSTS}; connect-src 'self' ${WIDGET_SOCKET_ORIGIN} ${GOOGLE_MAPS_HOSTS} data: blob:; ` +
+  // Google Maps only (no Leaflet tiles) and no socket: the ride page polls over HTTPS.
+  `img-src 'self' data: blob: ${GOOGLE_MAPS_HOSTS}; connect-src 'self' ${GOOGLE_MAPS_HOSTS} data: blob:; ` +
   `frame-src *.google.com; worker-src blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {

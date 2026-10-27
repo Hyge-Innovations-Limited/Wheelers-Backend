@@ -11,7 +11,7 @@ import {
   publishWhatsappRide,
   type ConfirmedRide,
 } from '../rides/whatsapp-ride.service';
-import { clearBids, clearPendingAccept, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
+import { clearBids, clearPendingAccept, markCancelledOnPage, getActiveRide, getBids, getLastBatch, getLastRoute, getRideMeta, getRideState, getSearchTimedOut, markOffersMessageOpened, markOffersMessageSent, setRideState, storeLastBatch } from './bid-state';
 import type { LastRouteData, PendingRouteData, SearchTimedOut, WhatsappBid } from './bid-state';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
@@ -267,6 +267,8 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
   if (action === 'cancel_search') {
     const reason = CANCEL_REASONS[String(data['reason'] ?? '')];
     if (!reason) return cancelScreen('Pick a reason to continue.');
+    // The form says it in the chat (onSearchCancelled): the cancellation event says nothing more.
+    await markCancelledOnPage(deps.redisClient, rideId).catch(() => undefined);
     await cancelWhatsappRide(service, userId, rideId, reason);
     // The offers message this form hung from is dead now, so the chat would be
     // left with no button at all: one line, with Quick Actions on it.

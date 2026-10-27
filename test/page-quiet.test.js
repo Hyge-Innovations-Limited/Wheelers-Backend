@@ -253,7 +253,11 @@ test('leaving the page: ONE message, the most important still true; never the ca
   await bidState.setActiveRide(redis, r.id, started.id);
   await bidState.setRideState(redis, started.id, 'in_progress');
   const said = [];
-  const told = await deliverPageCatchup({ registry: {}, redisClient: redis, publisher: {}, ridePageChat: async (e) => { said.push(e); } }, r.id, { kind: 'ride_confirmed', rideId: started.id, event: { kind: 'ride_confirmed' } });
-  assert.equal(told, false);
-  assert.equal(said.length, 0, 'the trip started: the card is not sent');
+  const catchDeps = { registry: {}, redisClient: redis, publisher: {}, ridePageChat: async (e) => { said.push(e); } };
+  // No card was ever sent: the card goes even though the trip has started (it carries chat, calls, SOS).
+  assert.equal(await deliverPageCatchup(catchDeps, r.id, { kind: 'ride_confirmed', rideId: started.id, event: { kind: 'ride_confirmed' } }), true);
+  // With a card already in the chat: never a second.
+  await redis.set(`tripchat:card:${started.id}`, JSON.stringify({ messageId: 'wamid.c', phone: r.phone, status: 'live' }));
+  assert.equal(await deliverPageCatchup(catchDeps, r.id, { kind: 'ride_confirmed', rideId: started.id, event: { kind: 'ride_confirmed' } }), false);
+  assert.equal(said.length, 1);
 });

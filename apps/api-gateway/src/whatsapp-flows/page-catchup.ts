@@ -23,13 +23,21 @@ export type CatchupItem =
   /** The booked driver pulled out and the search goes on: the one message with "See driver offers". */
   | { kind: 'driver_cancelled'; rideId: string; details: Record<string, unknown> }
   /** The number of offers on "Your bid is in" (a reaction: silent, and not the one message). */
-  | { kind: 'offer_count'; rideId: string };
+  | { kind: 'offer_count'; rideId: string }
+  /** The ride was cancelled (by the system, or the rider elsewhere): said if it is still cancelled. */
+  | { kind: 'cancelled'; rideId: string; details: Record<string, unknown> }
+  /** A booking the chat had shown (its card) fell through: unsaid, while the search goes on. */
+  | { kind: 'booking_failed'; rideId: string; text: string; /** The ride ended (not the search going on): said if it is still cancelled. */ ended?: boolean }
+  /** The old WhatsApp form's "View offers" message. */
+  | { kind: 'legacy_offers'; rideId: string };
 
 /**
  * Which message is said when several waited, highest first: the driver
  * outside, then the booking, then a driver pulling out, then the search.
  */
-export const CATCHUP_PRIORITY: ReadonlyArray<CatchupItem['kind']> = ['arrived', 'ride_confirmed', 'driver_cancelled', 'search_started'];
+// The card first when none was sent yet (it carries the car, the plate, the code, chat, calls
+// and SOS; its delivery refuses when a card exists), then the driver outside.
+export const CATCHUP_PRIORITY: ReadonlyArray<CatchupItem['kind']> = ['ride_confirmed', 'arrived', 'booking_failed', 'driver_cancelled', 'cancelled', 'search_started', 'legacy_offers'];
 
 const DUE_KEY = 'ride_page:catchup_due';
 const KEEP_SECONDS = 3 * 60 * 60;
@@ -133,8 +141,61 @@ export async function pendingCatchup(redis: RedisClient, userId: string): Promis
 
 export interface PageCatchupDeps {
   redis: RedisClient;
-  /** Says one waiting thing in the chat if it is still true; true when it was said. */
+  /** Says one waiting thing in the chat if it is still true; true when it was said. A throw keeps it for the next look. */
   deliver: (userId: string, item: CatchupItem) => Promise<boolean | void>;
+}
+
+/**
+ * Say what waited for this rider now: the silent updates, then ONE message
+ * (the most important still true). An item whose delivery failed (threw) is
+ * put back for the next look, unless a message already went out.
+ */
+export async function deliverCatchup(deps: PageCatchupDeps, userId: string, now = Date.now()): Promise<void> {
+  const { redis } = deps;
+  const items = await takeItems(redis, userId);
+  const failed: CatchupItem[] = [];
+  const tell = async (item: CatchupItem): Promise<boolean> => {
+    try {
+      return (await deps.deliver(userId, item)) !== false;
+    } catch (error) {
+      failed.push(item);
+      console.warn('[page-catchup] could not tell the chat', { userId, kind: item.kind, error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+  let said = false;
+  for (const item of items.filter((i) => i.kind === 'offer_count')) await tell(item);
+  for (const kind of CATCHUP_PRIORITY) {
+    for (const item of items.filter((i) => i.kind === kind).reverse()) {
+      if (await tell(item)) { said = true; break; }
+    }
+    if (said) break;
+  }
+  if (!said && failed.length) {
+    for (const item of failed) await deferUntilPageLeft(redis, userId, item, now - FIRST_LOOK_MS + LOOK_AGAIN_MS).catch(() => undefined);
+  }
+}
+
+/**
+ * Riders with something waiting in the list (written by this version) put
+ * back on the due list: a process of the older version, sweeping during a
+ * deploy, reads only the older string and drops them from it. Run once at start.
+ */
+export async function requeueWaitingRiders(redis: RedisClient, now = Date.now(), maxKeys = 5_000): Promise<number> {
+  let cursor = '0';
+  let found = 0;
+  do {
+    const reply = await Promise.resolve().then(() => redis.send('SCAN', cursor, 'MATCH', 'whatsapp:user:*:page_catchup_list', 'COUNT', '500')).catch(() => null);
+    if (!Array.isArray(reply) || reply.length < 2) break;
+    cursor = String(reply[0]);
+    const keys = Array.isArray(reply[1]) ? reply[1].map(String) : [];
+    for (const key of keys) {
+      const userId = key.replace(/^whatsapp:user:/, '').replace(/:page_catchup_list$/, '');
+      await redis.send('ZADD', DUE_KEY, String(now + LOOK_AGAIN_MS), userId).catch(() => undefined);
+      found += 1;
+    }
+  } while (cursor !== '0' && found < maxKeys);
+  return found;
 }
 
 export function createPageCatchup(deps: PageCatchupDeps) {
@@ -147,24 +208,7 @@ export function createPageCatchup(deps: PageCatchupDeps) {
       await redis.send('ZADD', DUE_KEY, String(now + LOOK_AGAIN_MS), userId);
       return;
     }
-    const items = await takeItems(redis, userId);
-    const tell = async (item: CatchupItem): Promise<boolean> => {
-      try {
-        return (await deps.deliver(userId, item)) !== false;
-      } catch (error) {
-        console.warn('[page-catchup] could not tell the chat', { userId, kind: item.kind, error: error instanceof Error ? error.message : String(error) });
-        return false;
-      }
-    };
-    // Silent updates first (the offer count's reaction), then ONE message: the most
-    // important still true. The newest of a kind first.
-    for (const item of items.filter((i) => i.kind === 'offer_count')) await tell(item);
-    for (const kind of CATCHUP_PRIORITY) {
-      const ofKind = items.filter((i) => i.kind === kind).reverse();
-      for (const item of ofKind) {
-        if (await tell(item)) return;
-      }
-    }
+    await deliverCatchup(deps, userId, now);
   }
 
   async function sweep(now = Date.now()): Promise<number> {
@@ -193,6 +237,7 @@ export function createPageCatchup(deps: PageCatchupDeps) {
   let timer: ReturnType<typeof setInterval> | null = null;
   function start(): void {
     if (timer) return;
+    void requeueWaitingRiders(redis).catch(() => 0);
     timer = setInterval(() => void sweep(), SWEEP_EVERY_MS);
     timer.unref?.();
   }

@@ -108,9 +108,19 @@ test('a driver another rider is booking at this moment cannot be booked twice', 
   await redis.setIfNotExists(`whatsapp:driver:${driver.driver.id}:accepting`, 'another-ride', 60);
   const rider = await person('RIDER');
   const ride = await searching(rider.id);
+  await driverBidClient.record({ rideId: ride.id, driverId: driver.driver.id, driverUserId: driver.user.id, riderId: rider.id, etaSeconds: 300, amountNgn: 7900 });
   const answer = await accept(rider, ride, driver, 7900, redis);
   assert.equal(answer.type, 'ride:accept_offer:rejected');
   assert.equal(answer.payload.reason, 'driver_unavailable');
+});
+
+test('no open bid from that driver on the ride: nothing is booked at a price the app names', async () => {
+  const driver = await onlineDriver();
+  const rider = await person('RIDER');
+  const ride = await searching(rider.id);
+  const answer = await accept(rider, ride, driver, 100, memoryRedis());
+  assert.deepEqual([answer.type, answer.payload.reason], ['ride:accept_offer:rejected', 'offer_changed']);
+  assert.equal(published.filter((e) => e.rideId === ride.id).length, 0);
 });
 
 test('declining one offer tells that driver, and their new price can be booked', async () => {

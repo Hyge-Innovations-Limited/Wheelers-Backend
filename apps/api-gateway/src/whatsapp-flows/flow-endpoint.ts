@@ -10,7 +10,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
-import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -373,6 +373,13 @@ export async function handleFlowAction(
 
 // ── Accept selected driver ──────────────────────────────────────────────
 
+/** "bid-<driverId>@<price shown>" (older forms: "bid-<driverId>", or an index). */
+function parseSelectedBid(selected: string): { key: string; shownNgn?: number } {
+  const [key, shown] = selected.replace('bid-', '').split('@');
+  const shownNgn = shown !== undefined ? Number(shown) : NaN;
+  return { key: key ?? '', ...(Number.isFinite(shownNgn) ? { shownNgn } : {}) };
+}
+
 /** The old form's accept, under the ride's one booking lock (rides/booking-lock.ts) like every other door. */
 async function handleAcceptBid(
   rideId: string,
@@ -402,7 +409,7 @@ async function acceptBidGuarded(
     if (state === 'confirmed' || state === 'in_progress' || (await acceptSentFor(deps.redisClient, rideId))) return 'booked';
     // Money held for another driver: a booking in flight ('busy'), unless it is stale (an accept that failed) and let go.
     const bids = await getBids(deps.redisClient, rideId);
-    const key = selectedBid.replace('bid-', '');
+    const { key } = parseSelectedBid(selectedBid);
     const chosen = bids.find((b) => b.driverId === key) ?? bids[parseInt(key, 10)];
     if (chosen && (await releaseStaleHoldForOther(deps.redisClient, rideId, chosen.driverUserId)) === 'blocked') return 'busy';
     return await acceptBidOnce(rideId, userId, selectedBid, meta, deps);
@@ -419,11 +426,15 @@ async function acceptBidOnce(
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
   const bids = await getBids(deps.redisClient, rideId);
-  const key = selectedBid.replace('bid-', '');
+  const { key, shownNgn } = parseSelectedBid(selectedBid);
   const bid = bids.find((b) => b.driverId === key) ?? bids[parseInt(key, 10)];
 
   if (!bid) {
     return { screen: 'BID_LIST', data: buildBidListData(meta, bids) };
+  }
+  // Never at a price the rider did not see.
+  if (shownNgn !== undefined && Math.abs(bid.counterOfferNgn - shownNgn) >= 0.5) {
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, `${bid.driverName} changed their price to ₦${bid.counterOfferNgn.toLocaleString()}. Nothing was charged.`) };
   }
 
   // ── The moment of commitment — SAME guards as the chat pay path and the
@@ -470,7 +481,7 @@ async function acceptBidOnce(
       fareNgn: bid.counterOfferNgn,
     });
     const { virtualAccount } = await getWalletInfo(userId);
-    await storeFlowPendingAccept(deps.redisClient, userId, { rideId, driverId: bid.driverId });
+    await storeFlowPendingAccept(deps.redisClient, userId, { rideId, driverId: bid.driverId, fareNgn: bid.counterOfferNgn });
     return {
       screen: 'TOP_UP',
       data: buildTopUpData({
@@ -480,19 +491,40 @@ async function acceptBidOnce(
       }),
     };
   }
+  // One driver, one rider: the same claim every other accept takes.
+  const claimKey = `whatsapp:driver:${bid.driverId}:accepting`;
+  const claimed = await deps.redisClient.setIfNotExists(claimKey, rideId, 60).catch(() => true);
+  const claimOwner = claimed ? rideId : await deps.redisClient.get(claimKey).catch(() => null);
+  if (!claimed && claimOwner !== rideId) {
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`) };
+  }
+  const releaseClaim = () => deps.redisClient.del(claimKey).catch(() => undefined);
   try {
-    await walletClient.createRideHold({
+    const hold = await walletClient.createRideHold({
       rideId,
       walletId: wallet.id,
       riderId: userId,
       driverUserId: bid.driverUserId,
       amountNgn: bid.counterOfferNgn,
     });
+    if (!hold.applied) {
+      // Money already held on the ride must be this driver's; then at this fare.
+      const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
+      if (existing?.status === 'ACTIVE' && existing.driverUserId && existing.driverUserId !== bid.driverUserId) {
+        await releaseClaim();
+        return { screen: 'BID_LIST', data: buildBidListData(meta, bids, 'Your ride is being booked — one moment.') };
+      }
+      if (hold.holdAmountNgn !== bid.counterOfferNgn) {
+        const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: bid.counterOfferNgn });
+        if (!adjusted) throw new Error('hold could not be adjusted');
+      }
+    }
   } catch (holdError) {
     console.warn('[whatsapp-flow] accept blocked: hold failed', {
       rideId,
       error: holdError instanceof Error ? holdError.message : String(holdError),
     });
+    await releaseClaim();
     return {
       screen: 'BID_LIST',
       data: buildBidListData(meta, bids, 'Could not lock funds in your wallet. Please try again.'),
@@ -510,8 +542,18 @@ async function acceptBidOnce(
     paymentMethod: 'WALLET',
     timestamp: new Date().toISOString(),
   });
-  await deps.publisher.publishRideEvent(acceptEvent);
+  await notePublishing(deps.redisClient, rideId, bid.driverUserId);
+  try {
+    await deps.publisher.publishRideEvent(acceptEvent);
+  } catch {
+    // Not sent: neither the claim nor the money stays.
+    await clearPublishing(deps.redisClient, rideId);
+    await releaseClaim();
+    await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, 'Could not confirm just now — nothing was charged. Try again.') };
+  }
   await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
+  await clearPublishing(deps.redisClient, rideId);
   await setRideState(deps.redisClient, rideId, 'confirmed');
   await clearFlowPendingAccept(deps.redisClient, userId).catch(() => undefined);
   console.info('[whatsapp-flow] accept confirmed', { rideId, driverId: bid.driverId, fareNgn: bid.counterOfferNgn });
@@ -598,7 +640,7 @@ async function handleTopUpCheck(
 
   // Funded — run the same guarded accept. From TOP_UP the routing model
   // cannot go back to BID_LIST, so a driver-side failure exits via SUCCESS.
-  const result = await acceptBidGuarded(rideId, userId, `bid-${pending.driverId}`, meta, deps);
+  const result = await acceptBidGuarded(rideId, userId, `bid-${pending.driverId}${pending.fareNgn !== undefined ? `@${pending.fareNgn}` : ''}`, meta, deps);
   // A booking going through right now: the choice stays, and the button asks again shortly.
   if (result === 'busy') {
     const { virtualAccount } = await getWalletInfo(userId);
@@ -631,7 +673,7 @@ async function handleDeclineBid(
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
   const bids = await getBids(deps.redisClient, rideId);
-  const declineKey = selectedBid.replace('bid-', '');
+  const declineKey = parseSelectedBid(selectedBid).key;
   const bid = bids.find((b) => b.driverId === declineKey) ?? bids[parseInt(declineKey, 10)];
 
   if (bid) {

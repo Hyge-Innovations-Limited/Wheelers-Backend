@@ -1,4 +1,4 @@
-import { driverClient, rideClient } from '@wheleers/db';
+import { driverClient, rideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
@@ -474,7 +474,10 @@ export function createRideRequestedConsumer(params: {
     // flight) or gone to another driver: no assignment then. Assigning anyway
     // re-armed the rider's released hold on a cancelled ride.
     const ride = await rideClient.findById(event.rideId).catch(() => null);
-    const closed = ride && (
+    // A search that only timed out is not closed: assignDriver revives it (a rider
+    // adding money for a driver they chose, or a late bid accepted).
+    const timedOutOnly = ride?.status === 'CANCELLED' && ride.cancelStage === 'BEFORE_MATCH' && ride.cancelReason === SEARCH_TIMED_OUT_REASON;
+    const closed = ride && !timedOutOnly && (
       ride.status === 'CANCELLED' || ride.status === 'COMPLETED' || ride.status === 'DISPUTED'
       || (ride.driverId !== null && ride.driverId !== event.driverId)
     );
@@ -710,10 +713,15 @@ export function createRideRequestedConsumer(params: {
     if (!ride) return null;
     if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') return null;
     if (options.resetStatus) {
-      // Only after the assigned driver cancelled: back to matching, without them.
-      await rideClient.reopenForMatching(rideId).catch((err) => {
+      // Only after the assigned driver cancelled, and only while the ride is still
+      // theirs: a redelivered cancel finds it reopened (or another driver's) and
+      // changes nothing — no reset, no second broadcast.
+      if (options.excludeDriverId && ride.driverId !== options.excludeDriverId) return null;
+      const reopened = await rideClient.reopenForMatching(rideId, options.excludeDriverId).catch((err) => {
         console.warn('[ride-service] could not reset ride to MATCHING', { rideId, error: (err as any)?.message ?? err });
+        return null;
       });
+      if (options.excludeDriverId && reopened?.count === 0) return null;
     } else if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') {
       return null;
     }

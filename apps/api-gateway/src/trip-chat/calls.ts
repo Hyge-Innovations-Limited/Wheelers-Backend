@@ -122,6 +122,8 @@ export function createCallService(deps: TripChatDeps) {
       if (!deps.whatsapp || !info.rider.phone) return;
       // The 📞 stays on the card until they open the chat: that is the missed call.
       if (await deps.whatsapp.setCardStatus(call.rideId, 'call')) return;
+      // On the ride page with the card held: no missed-call bubble; the card shows 📞 when it is sent.
+      if (await deps.whatsapp.heldForPage?.(call.calleeId, call.rideId, 'call')) return;
       const url = deps.whatsapp.pageUrl(call.calleeId, call.rideId);
       await deps.whatsapp.send(info.rider.phone, `You missed a call from *${call.callerName}*, your ${roleWord(call.callerRole)}.`, url ? { text: 'Call back', url } : undefined)
         .catch(() => undefined);

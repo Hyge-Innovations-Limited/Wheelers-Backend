@@ -148,11 +148,14 @@ test('driver arrived while the rider is on the page: kept for later; trip starte
     assert.equal(meta.sent.length, 0, 'no "trip started" message');
   } finally { meta.restore(); }
 
-  // Off the page, "your driver is outside" is said at once, as before.
+  // Off the page, "your driver is outside" is said at once, as before (another trip: each arrival is said once).
   redis.store.delete(`whatsapp:user:${r.id}:ride_page_seen`);
+  const ride2 = await rideFor(r.id, { status: 'ARRIVED', driverId: driver.id });
   const meta2 = metaCapture();
   try {
-    await handleRideEvent({ eventType: 'RIDE_ARRIVED', rideId: ride.id, riderId: r.id, driverId: driver.id, timestamp: new Date().toISOString() }, deps, new Map());
+    await handleRideEvent({ eventType: 'RIDE_ARRIVED', rideId: ride2.id, riderId: r.id, driverId: driver.id, timestamp: new Date().toISOString() }, deps, new Map());
+    await handleRideEvent({ eventType: 'RIDE_ARRIVED', rideId: ride2.id, riderId: r.id, driverId: driver.id, timestamp: new Date().toISOString() }, deps, new Map());
   } finally { meta2.restore(); }
   assert.match(JSON.stringify(meta2.sent), /LAG23469/);
+  assert.equal(meta2.sent.filter((m) => /LAG23469/.test(JSON.stringify(m))).length, 1, 'delivered again: said once');
 });

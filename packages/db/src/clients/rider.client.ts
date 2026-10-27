@@ -319,9 +319,11 @@ export const rideClient = {
    * Back to matching after the assigned driver cancelled: the driver who left
    * is no longer this ride's driver (a later cancel used to re-notify them).
    */
-  reopenForMatching: (rideId: string) =>
-    prisma.ride.update({
-      where: { id: rideId },
+  reopenForMatching: (rideId: string, fromDriverId?: string) =>
+    // Only while the ride is still that driver's: a cancel delivered again must
+    // never take a ride away from the driver who has it since.
+    prisma.ride.updateMany({
+      where: { id: rideId, ...(fromDriverId ? { driverId: fromDriverId } : {}) },
       data:  { status: 'MATCHING', driverId: null },
     }),
 

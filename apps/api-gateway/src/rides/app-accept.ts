@@ -3,7 +3,7 @@ import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schem
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { HandlerResponse } from '../websocket/handlers/types';
-import { acceptSentFor, BOOKING_LOCK_WAIT_MS, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
 export interface AppAcceptInput {
   rideId: string;
@@ -11,8 +11,10 @@ export interface AppAcceptInput {
   driverUserId: string;
   bidId?: string;
   paymentMethod: 'CASH' | 'WALLET';
-  /** The price the app showed. Only used when no bid row says otherwise; required then. */
+  /** The price the app showed: it must still be the driver's price. */
   agreedFareNgn?: number;
+  /** Auto-accept, not a tap: a search the rider has just ended is never booked. */
+  auto?: boolean;
 }
 
 /**
@@ -57,7 +59,12 @@ async function acceptOnce(
   timestamp: string,
 ): Promise<HandlerResponse> {
   const { publisher, redis } = deps;
-  const { rideId, driverId, driverUserId, bidId, paymentMethod } = input;
+  const { rideId, driverId, bidId, paymentMethod } = input;
+  // The driver's own user id comes from their record once it is read (never trusted from the app).
+  let driverUserId = input.driverUserId;
+  if (input.auto && redis && await isSearchEnded(redis, rideId)) {
+    return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'search_ended', message: 'This search has ended.' } };
+  }
 
   // A second accept on a ride that already has a driver (double-tap on two
   // offers) must not publish a second assignment.
@@ -114,6 +121,8 @@ async function acceptOnce(
     };
   }
 
+  driverUserId = driver.userId;
+
   // ── Price truth: the bid ROW is the price, and it must be the price the
   // rider saw. A driver who changed their price just before the tap (or while
   // the accept waited) is never booked at a price the app did not show: the
@@ -122,9 +131,19 @@ async function acceptOnce(
   let agreedFareNgn = input.agreedFareNgn;
   const shownNgn = input.agreedFareNgn;
   // currentFareNgn: the driver's price now, so the app can show it.
-  const offerChanged = (currentFareNgn: number): HandlerResponse => ({
+  // counterOffer: the offer as it stands, in the shape of ride:counter_offer — the server sends it
+  // on after this refusal, so an app that keeps the old price updates its card instead of retrying it.
+  const offerChanged = (currentFareNgn: number, row: { id: string; etaSeconds: number; distanceKm: number | null }): HandlerResponse => ({
     type: 'ride:accept_offer:rejected',
-    payload: { rideId, driverId, reason: 'offer_changed', currentFareNgn, message: 'That offer has changed — check the latest price and try again.' },
+    payload: {
+      rideId, driverId, reason: 'offer_changed', currentFareNgn, message: 'That offer has changed — check the latest price and try again.',
+      counterOffer: {
+        rideId, bidId: row.id, driverId, driverUserId, counterOfferNgn: currentFareNgn,
+        driverName: driver.user?.name ?? 'Driver', driverRating: driver.rating ?? 5,
+        vehiclePlate: driver.vehiclePlate ?? '', vehicleModel: driver.vehicleModel ?? '',
+        etaSeconds: row.etaSeconds, distanceKm: row.distanceKm ?? undefined,
+      },
+    },
   });
   if (bidId) {
     const bid = await driverBidClient.findById(bidId).catch(() => null);
@@ -140,7 +159,7 @@ async function acceptOnce(
       };
     }
     agreedFareNgn = Number(bid.amountNgn);
-    if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn);
+    if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn, bid);
   } else {
     // The app names the driver, not the bid: their bid on this ride is
     // still the price truth, and one they withdrew or the rider declined
@@ -148,7 +167,9 @@ async function acceptOnce(
     const bids = await driverBidClient.findByRide(rideId).catch(() => []);
     const theirs = bids.filter((b) => b.driverId === driverId);
     const open = theirs.find((b) => b.status === 'PENDING');
-    if (theirs.length > 0 && !open) {
+    // A ride with a row needs that driver's open bid: no bid, no booking at a price the app names.
+    // (A group seat's ride has no row and keeps the app's price.)
+    if ((theirs.length > 0 || acceptingRide) && !open) {
       return {
         type: 'ride:accept_offer:rejected',
         payload: { rideId, driverId, reason: 'offer_changed', message: 'That offer is no longer open.' },
@@ -156,7 +177,7 @@ async function acceptOnce(
     }
     if (open) {
       agreedFareNgn = Number(open.amountNgn);
-      if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn);
+      if (Math.abs(agreedFareNgn - shownNgn) >= 0.5) return offerChanged(agreedFareNgn, open);
     }
   }
 
@@ -283,15 +304,18 @@ async function acceptOnce(
     timestamp,
   });
 
+  if (redis) await notePublishing(redis, rideId, driverUserId);
   try {
     await publisher.publishRideEvent(event);
   } catch (error) {
+    if (redis) await clearPublishing(redis, rideId);
     // Not sent: nothing will book this driver, so neither the claim nor the money stays.
     await releaseClaim();
     if (paymentMethod !== 'CASH') await walletClient.cancelRideHold(rideId, driverUserId).catch(() => undefined);
     throw error;
   }
   if (redis) await noteAcceptSent(redis, rideId, driverUserId);
+  if (redis) await clearPublishing(redis, rideId);
 
   return {
     type: 'ride:accept_offer:accepted',

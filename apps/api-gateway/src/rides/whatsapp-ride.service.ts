@@ -27,7 +27,7 @@ import {
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
 import { startSearchClock } from './search-status';
-import { acceptSentFor, BOOKING_LOCK_WAIT_MS, markSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -341,6 +341,8 @@ async function confirmOnce(
 ): Promise<ConfirmResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  // Auto-accept on a search the rider has just ended (cancelled while it waited for the lock): nothing.
+  if (options.auto && await isSearchEnded(deps.redisClient, rideId)) return { ok: false, code: 'RIDE_GONE' };
   // Booked already (inside the lock, so not by a booking still on its way): never a second driver.
   const state = await getRideState(deps.redisClient, rideId).catch(() => null);
   if (state === 'confirmed' || state === 'in_progress') return { ok: false, code: 'ALREADY_BOOKED' };
@@ -435,6 +437,8 @@ async function confirmOnce(
     return { ok: false, code: 'HOLD_FAILED' };
   }
 
+  // Being published: a slow Kafka must not make this hold look stale to another accept.
+  await notePublishing(deps.redisClient, rideId, bid.driverUserId);
   try {
     // How this ride is paid, on the ride itself: settlement and receipts read it.
     await rideClient.setPayment(rideId, payWithXlm && xlmQuote
@@ -459,10 +463,12 @@ async function confirmOnce(
       error: error instanceof Error ? error.message : String(error),
     });
     await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    await clearPublishing(deps.redisClient, rideId);
     if (options.auto && wallet) await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
     return { ok: false, code: 'CONFIRM_FAILED' };
   }
   await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
+  await clearPublishing(deps.redisClient, rideId);
 
   const ride: ConfirmedRide = {
     rideId,
