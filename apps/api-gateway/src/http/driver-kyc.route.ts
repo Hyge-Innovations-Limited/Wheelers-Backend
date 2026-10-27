@@ -5,7 +5,7 @@ import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
 import { sniffKycFileType, type DriverKycStorage } from '../storage/driver-kyc-storage';
-import { lagosToday, readDriverDetails } from './driver-papers.route';
+import { lagosToday, readDriverDetails, readLegalName } from './driver-papers.route';
 import { KYC_FIELD_LABELS, fieldReasonsFrom, isKycField, KYC_FIELDS, type KycField } from '../drivers/kyc-fields';
 
 interface DriverKycDeps {
@@ -80,7 +80,7 @@ function missingFields(input: KycInput, fields: readonly KycField[]): KycField[]
 async function uploadKycFields(deps: DriverKycDeps, driverId: string, input: KycInput, fields: readonly KycField[]) {
   const has = (f: KycField) => fields.includes(f);
   const [ninImageKey, licenceImageKey, selfieKey, vehicleImageKeys] = await Promise.all([
-    has('nin') ? uploadKycFile(deps, driverId, 'nin', input.ninImage!) : undefined,
+    has('nin') && input.ninImage ? uploadKycFile(deps, driverId, 'nin', input.ninImage) : undefined,
     has('licence') ? uploadKycFile(deps, driverId, 'licence', input.licenceImage!) : undefined,
     has('selfie') ? uploadKycFile(deps, driverId, 'selfie', input.selfieImage!) : undefined,
     has('vehiclePhotos')
@@ -104,7 +104,7 @@ const ALREADY_APPROVED = {
 
 /**
  * POST /drivers/kyc/submit
- * The whole application: NIN, licence (photo or PDF), selfie, vehicle
+ * The whole application: licence (photo or PDF), selfie, the name on the licence, vehicle
  * details and 7–10 vehicle photos, base64. For a new driver, or an app that
  * resends everything after a rejection. Refused for an approved driver: it
  * would put a working driver back under review and off the road.
@@ -139,8 +139,9 @@ export async function handleDriverKycSubmitRoute(
 
     const input = readKycInput(rawBody);
 
-    if (!input.ninImage || !input.licenceImage || !input.selfieImage) {
-      sendJson(res, 400, { error: 'ninImage, licenceImage, and selfieImage are required (base64)' });
+    // NIN: no longer asked for; older apps still send it, and it is kept.
+    if (!input.licenceImage || !input.selfieImage) {
+      sendJson(res, 400, { error: 'licenceImage and selfieImage are required (base64)' });
       return;
     }
 
@@ -154,13 +155,17 @@ export async function handleDriverKycSubmitRoute(
       return;
     }
 
-    // The name as on the licence, its number and expiry: sent with the
-    // application by apps that ask for them (older ones do not), and checked
-    // before anything is uploaded.
-    const sentDetails = rawBody.legalName !== undefined || rawBody.licenceNumber !== undefined || rawBody.licenceExpiresOn !== undefined;
-    const details = sentDetails ? readDriverDetails(rawBody, lagosToday()) : null;
+    // The name as on the licence, checked before anything is uploaded. Apps
+    // from before the licence number and expiry were dropped send those too.
+    const sentLicence = rawBody.licenceNumber !== undefined || rawBody.licenceExpiresOn !== undefined;
+    const details = sentLicence ? readDriverDetails(rawBody, lagosToday()) : null;
     if (details && !details.ok) {
       sendJson(res, 400, { error: details.error, code: details.code });
+      return;
+    }
+    const name = !sentLicence && rawBody.legalName !== undefined ? readLegalName(rawBody) : null;
+    if (name && !name.ok) {
+      sendJson(res, 400, { error: name.error, code: name.code });
       return;
     }
 
@@ -168,7 +173,6 @@ export async function handleDriverKycSubmitRoute(
     const accepted = await driverClient.submitFullKyc(driver.id, {
       ...stored,
       ...input.vehicle,
-      ninImageKey: stored.ninImageKey!,
       licenceImageKey: stored.licenceImageKey!,
       selfieKey: stored.selfieKey!,
       vehicleImageKeys: stored.vehicleImageKeys!,
@@ -184,6 +188,7 @@ export async function handleDriverKycSubmitRoute(
       await userClient.updateProfile(userId, { phone: input.phone });
     }
     if (details?.ok) await driverPaperClient.saveDetails(driver.id, details.details);
+    if (name?.ok) await driverPaperClient.saveName(driver.id, name.legalName);
 
     logActivity({ userId, eventType: 'driver_kyc_submitted', metadata: {} });
 

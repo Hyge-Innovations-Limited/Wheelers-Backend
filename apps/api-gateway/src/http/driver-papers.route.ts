@@ -58,14 +58,22 @@ export function papersRequiredFrom(): Date | null {
 
 export type DriverDetails = { legalName: string; licenceNumber: string; licenceExpiresOn: Date };
 
-/** The name and licence details as typed, cleaned and checked. The error is in the driver's words. */
-export function readDriverDetails(body: Record<string, unknown>, today: Date): { ok: true; details: DriverDetails } | { ok: false; error: string; code: string } {
+/** The full name as on the licence, cleaned and checked. */
+export function readLegalName(body: Record<string, unknown>): { ok: true; legalName: string } | { ok: false; error: string; code: string } {
   const legalName = (getString(body, 'legalName') ?? '').replace(/\s+/g, ' ').trim();
-  const licenceNumber = (getString(body, 'licenceNumber') ?? '').replace(/\s+/g, '').toUpperCase();
-  const licenceExpiresOn = parseDay(body.licenceExpiresOn);
   if (legalName.length < 5 || legalName.length > 80 || !legalName.includes(' ') || !/^[\p{L}][\p{L} .'’-]*$/u.test(legalName)) {
     return { ok: false, error: 'Enter your full name as it is on your licence: first name and surname.', code: 'BAD_NAME' };
   }
+  return { ok: true, legalName };
+}
+
+/** The name and licence details as typed, cleaned and checked. The error is in the driver's words. */
+export function readDriverDetails(body: Record<string, unknown>, today: Date): { ok: true; details: DriverDetails } | { ok: false; error: string; code: string } {
+  const name = readLegalName(body);
+  if (!name.ok) return name;
+  const { legalName } = name;
+  const licenceNumber = (getString(body, 'licenceNumber') ?? '').replace(/\s+/g, '').toUpperCase();
+  const licenceExpiresOn = parseDay(body.licenceExpiresOn);
   if (!/^[A-Z0-9]{6,20}$/.test(licenceNumber)) {
     return { ok: false, error: 'Enter the licence number as it is on your licence: letters and numbers only.', code: 'BAD_LICENCE_NUMBER' };
   }

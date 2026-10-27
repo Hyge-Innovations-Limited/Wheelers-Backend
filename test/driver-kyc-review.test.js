@@ -157,6 +157,18 @@ test("a new driver's application goes under review, and a PDF licence is stored 
   assert.equal(s.vehicleImageKeys.length, 7);
 });
 
+test('no NIN, and only the name typed: the application goes under review with that name', async () => {
+  const d = await newDriver();
+  const { ninImage, ...noNin } = fullApplication();
+  const r = await call('POST', '/drivers/kyc/submit', { token: d.token, body: { ...noNin, legalName: 'Ada  Obi' } });
+  assert.equal(r.status, 200);
+  assert.equal(await kycOf(d.driverId), 'SUBMITTED');
+  assert.equal((await submission(d.driverId)).ninImageKey, null);
+  assert.equal((await prisma.driver.findUnique({ where: { id: d.driverId } })).legalName, 'Ada Obi');
+  const bad = await call('POST', '/drivers/kyc/submit', { token: (await newDriver()).token, body: { ...noNin, legalName: 'Ada' } });
+  assert.equal(bad.body.code, 'BAD_NAME');
+});
+
 test('a rejection names only what to fix, in words a driver reads, and tells the driver', async () => {
   published.length = 0;
   const d = await rejectedFor(['licence'], { licence: 'photo is blurry' });

@@ -56,6 +56,17 @@ export const driverPaperClient = {
       return { legalName: saved.legalName, licenceNumber: saved.licenceNumber, licenceExpiresOn: saved.licenceExpiresOn };
     }),
 
+  /** The name on the licence alone (the application no longer asks for its number or expiry); also their name when they have none. */
+  saveName: (driverId: string, legalName: string) =>
+    prisma.$transaction(async (tx) => {
+      const saved = await tx.driver.update({
+        where: { id: driverId },
+        data: { legalName },
+        select: { userId: true, user: { select: { name: true } } },
+      });
+      if (!saved.user.name?.trim()) await tx.user.update({ where: { id: saved.userId }, data: { name: legalName } });
+    }),
+
   /**
    * The admin's lists. `waiting`: sent and not yet looked at, oldest first.
    * `expiring`: good, but running out on or before `soon`. `expired`: past

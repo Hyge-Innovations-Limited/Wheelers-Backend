@@ -477,7 +477,7 @@ export const driverClient = {
    * refused.
    */
   submitFullKyc: (driverId: string, data: KycDocumentKeys & KycVehicleDetails & {
-    ninImageKey: string; licenceImageKey: string; selfieKey: string; vehicleImageKeys: string[];
+    licenceImageKey: string; selfieKey: string; vehicleImageKeys: string[];
   }) =>
     prisma.$transaction(async (tx) => {
       const vehicle = vehicleOf(data);
