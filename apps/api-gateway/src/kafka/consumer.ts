@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient } from '@wheleers/db';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import {
   ComplianceEvent,
   GroupRideEvent,
@@ -86,7 +86,7 @@ import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { noteOfferSent } from '../rides/search-status';
 import { autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
-import { acceptSentFor, clearAcceptSent, markSearchEnded } from '../rides/booking-lock';
+import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -494,6 +494,167 @@ export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId:
   await deps.ridePageChat(item.event as unknown as RidePageChatEvent);
   await showCount();
   return true;
+}
+
+/**
+ * The search ran out with nobody booked: over in the gateway's eyes. Bidders
+ * hear it, their bids expire, the money and any cashback go back, and the
+ * rider is told the way a timeout tells them (on the ride page the page says
+ * it; with the offers form's button in the chat the form holds it). Used by
+ * RIDE_BID_TIMEOUT, and by a booking that was in flight when the clock ran
+ * out and then fell through (the timeout had stood aside for it).
+ *
+ *   toldBooked  the chat was told "booked" (its card, or auto-accept's message):
+ *               it hears, once, that the booking did not go through instead
+ *   alreadyTold the search had already been ended and said: nothing more is said
+ */
+async function endTimedOutSearch(
+  deps: StartGatewayConsumerDeps,
+  rideId: string,
+  riderId: string,
+  timestamp: string,
+  openBids: Array<{ status: string; driverUserId: string }>,
+  rideParticipants: Map<string, RideParticipantState>,
+  options: { toldBooked?: boolean; cardInChat?: boolean; alreadyTold?: boolean } = {},
+): Promise<void> {
+  const { registry } = deps;
+  // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
+  await markSearchEnded(deps.redisClient, rideId);
+  // A bidder away from the app hears the search ended by push.
+  for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
+    await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId, generation: `timed_out@${timestamp}` });
+  }
+
+  await driverBidClient.resolvePending(rideId, 'EXPIRED').catch(() => {});
+
+  // Same money cleanup as a cancellation: the fare hold and any reserved
+  // referral cashback must go back to the rider now that nobody accepted.
+  await walletClient.cancelRideHold(rideId).catch(() => {});
+  await referralClient.releaseRideCashback(rideId).catch((error) => {
+    console.warn('[gateway] referral cashback release after bid timeout failed', {
+      rideId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  const waRider = await isWhatsappRider(deps.redisClient, riderId);
+  if (waRider && deps.whatsappNotifier) {
+    const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
+    if (phone) {
+      const timedOutMeta = await getRideMeta(deps.redisClient, rideId).catch(() => null);
+      // Remembered for the offers form: it says "no driver took ₦X" and offers Search again there.
+      await markSearchTimedOut(deps.redisClient, riderId, { rideId, offerNgn: timedOutMeta?.offerNgn ?? 0, at: new Date().toISOString() }).catch(() => undefined);
+      // On the ride page, the page says the search ended.
+      const pageShowsIt = await isRidePageOpen(deps.redisClient, riderId);
+      if (options.toldBooked) {
+        // The chat said "booked": it hears, once, that it did not go through (on the page: when they leave, if the card was in the chat).
+        if (await deps.redisClient.setIfNotExists(`ride:${rideId}:closed-told`, '1', 24 * 60 * 60).catch(() => true)) {
+          const text = "That booking didn't go through: the search had ended. Nothing was charged.";
+          if (pageShowsIt) {
+            if (options.cardInChat) await deferUntilPageLeft(deps.redisClient, riderId, { kind: 'booking_failed', rideId, text, ended: true }).catch(() => undefined);
+          } else {
+            await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, text).catch(() => {});
+          }
+        }
+      } else if (!options.alreadyTold) {
+        // With the form's button already in the chat, the end of the search is not a message:
+        // the rider opens the form when they like and finds the two ways forward inside it.
+        const formHoldsIt = offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, rideId);
+        if (!formHoldsIt && !pageShowsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
+      }
+    }
+    await clearActiveRideIfMatches(deps.redisClient, riderId, rideId);
+    await clearPendingAccept(deps.redisClient, riderId).catch(() => {});
+    await endOfferCount(deps, rideId);
+    await cleanupRideKeys(deps.redisClient, rideId);
+    // An app open on the same search (begun on WhatsApp) ends it too.
+    await registry.sendToUser(riderId, 'ride:bid_timeout', { rideId });
+  } else {
+    await registry.sendToUser(riderId, 'ride:bid_timeout', {
+      rideId,
+    });
+    // Said by push as well when the app is closed: a search that ends
+    // unseen (a scheduled ride, most of all) must not just vanish.
+    if (!registry.hasUser(riderId) && !options.alreadyTold) {
+      await tellAppRider(deps, riderId, {
+        title: 'No driver accepted your ride',
+        body: 'You were not charged. Open Wheelers to search again or change your price.',
+        type: 'ride:bid_timeout',
+        rideId,
+        inApp: true,
+      });
+    }
+  }
+  rideParticipants.delete(rideId);
+}
+
+/** Cancelled only by the search clock (not the rider, not the system): an acceptance may still revive it. */
+function isTimedOutOnly(ride: { status: string; cancelStage?: string | null; cancelReason?: string | null } | null | undefined): boolean {
+  return ride?.status === 'CANCELLED' && ride.cancelStage === 'BEFORE_MATCH' && ride.cancelReason === SEARCH_TIMED_OUT_REASON;
+}
+
+/**
+ * The driver the rider chose was busy, and the search had timed out while
+ * that acceptance was on its way (the timeout stood aside for it). Nothing
+ * else will end this search now: that driver's money goes back, the booking
+ * marks go, and the rider hears the search ended (or, when the chat was told
+ * "booked", that it did not go through). Inside the ride's booking lock, so a
+ * new accept never has its state cleaned away; waited for as long as the lock
+ * can live, so the money is never left held.
+ */
+async function busyAfterSearchTimedOut(
+  deps: StartGatewayConsumerDeps,
+  event: { rideId: string; riderId: string; driverId: string; driverUserId: string; timestamp: string },
+  rideParticipants: Map<string, RideParticipantState>,
+): Promise<void> {
+  const { registry } = deps;
+  const lock = await takeBookingLock(deps.redisClient, event.rideId, BOOKING_LOCK_HOLD_MS);
+  try {
+    // Looked at again inside the lock: an accept that went through meanwhile (the ride revived,
+    // another driver's money held or acceptance sent) is left alone.
+    const [ride, hold, sentFor, publishing] = await Promise.all([
+      rideClient.findById(event.rideId).catch(() => null),
+      walletClient.rideHoldOf(event.rideId).catch(() => null),
+      acceptSentFor(deps.redisClient, event.rideId),
+      acceptPublishingFor(deps.redisClient, event.rideId),
+    ]);
+    if (!isTimedOutOnly(ride)) return;
+    if (hold?.status === 'ACTIVE' && hold.driverUserId != null && hold.driverUserId !== event.driverUserId) return;
+    if ((sentFor && sentFor !== event.driverUserId) || (publishing && publishing !== event.driverUserId)) return;
+
+    await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
+    const byAutoAccept = (await autoBookedDriver(deps.redisClient, event.rideId)) === event.driverId;
+    const autoToldChat = byAutoAccept && await autoAcceptToldChat(deps.redisClient, event.rideId);
+    const cardWasSent = await hasRideCard(deps.redisClient, event.rideId);
+    const state = await getRideState(deps.redisClient, event.rideId).catch(() => null);
+    // The booking's card went to the chat: its light goes off.
+    const cardDeps = offerCountDeps(deps);
+    if (cardWasSent && cardDeps) await setCardStatus(cardDeps, event.rideId, 'none').catch(() => false);
+    await clearAcceptSent(deps.redisClient, event.rideId);
+    await clearAutoAcceptBooked(deps.redisClient, event.rideId);
+    if (!byAutoAccept) {
+      void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        reason: 'driver_unavailable',
+        message: 'That driver is no longer available.',
+      });
+    }
+    // Ended and said already (the timeout ran in full before a late accept): only "it did not go through", if "booked" was said.
+    const alreadyTold = await isSearchEnded(deps.redisClient, event.rideId);
+    const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
+    for (const bid of openBids) {
+      if (!isOpenBid(bid.status)) continue;
+      void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', { rideId: event.rideId, reason: 'timed_out' });
+    }
+    await endTimedOutSearch(deps, event.rideId, event.riderId, event.timestamp, openBids, rideParticipants, {
+      toldBooked: cardWasSent || autoToldChat || state === 'confirmed',
+      cardInChat: cardWasSent || autoToldChat,
+      alreadyTold,
+    });
+  } finally {
+    await releaseBookingLock(deps.redisClient, lock);
+  }
 }
 
 /** A car's model or plate worth showing a rider — never a placeholder. */
@@ -930,95 +1091,54 @@ export async function handleRideEvent(
       console.info('[gateway] bid timeout held — rider is paying for a chosen driver', { rideId: event.rideId, driverId: pendingAccept.driverId });
       return;
     }
-    // An acceptance went out (or the ride is confirmed) just as the clock ran out: the booking
-    // stands — no hold released, no "no driver", nothing cleaned up. The assignment revives the ride.
-    const acceptedFor = await acceptSentFor(deps.redisClient, event.rideId);
-    const timedOutState = await getRideState(deps.redisClient, event.rideId).catch(() => null);
-    if (acceptedFor || timedOutState === 'confirmed' || timedOutState === 'in_progress') {
-      console.info('[gateway] bid timeout ignored — an acceptance is going through', { rideId: event.rideId });
+    // One booking step at a time on this ride: an accept between its hold and its "sent" mark holds
+    // this lock, so the clock never releases a hold an acceptance is about to stand on. Still busy
+    // after the wait: an accept is in flight. Nothing is released; if that booking falls through,
+    // its RIDE_ASSIGNMENT_FAILED ends the search (see endTimedOutSearch).
+    const timeoutLock = await takeBookingLock(deps.redisClient, event.rideId, BOOKING_LOCK_WAIT_MS);
+    if (!timeoutLock) {
+      console.info('[gateway] bid timeout ignored — a booking is in progress', { rideId: event.rideId });
       return;
     }
-
-    // The rider is told "no driver found" — but the DRIVERS who bid were
-    // never told anything, so their apps showed "waiting for rider" forever
-    // over an auction that no longer existed. The bids table knows exactly
-    // who has money on this table; tell each of them before resolving.
-    const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
-    for (const bid of openBids) {
-      if (!isOpenBid(bid.status)) continue;
-      void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
-        rideId: event.rideId,
-        reason: 'timed_out',
-      });
-    }
-
-    // A sweep tick landing between an accept and the assignment write used
-    // to release the just-created hold. Only an unmatched ride times out.
-    const timedOutRide = await rideClient.findById(event.rideId).catch(() => null);
-    if (timedOutRide && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(timedOutRide.status)) {
-      console.info('[gateway] bid timeout ignored — ride already matched', {
-        rideId: event.rideId,
-        status: timedOutRide.status,
-      });
-      return;
-    }
-    // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
-    await markSearchEnded(deps.redisClient, event.rideId);
-    // A bidder away from the app hears the search ended by push.
-    for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
-      await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `timed_out@${event.timestamp}` });
-    }
-
-    await driverBidClient.resolvePending(event.rideId, 'EXPIRED').catch(() => {});
-
-    // Same money cleanup as a cancellation: the fare hold and any reserved
-    // referral cashback must go back to the rider now that nobody accepted.
-    await walletClient.cancelRideHold(event.rideId).catch(() => {});
-    await referralClient.releaseRideCashback(event.rideId).catch((error) => {
-      console.warn('[gateway] referral cashback release after bid timeout failed', {
-        rideId: event.rideId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-
-    const waRider = await isWhatsappRider(deps.redisClient, event.riderId);
-    if (waRider && deps.whatsappNotifier) {
-      const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
-      if (phone) {
-        const timedOutMeta = await getRideMeta(deps.redisClient, event.rideId).catch(() => null);
-        // Remembered for the offers form: it says "no driver took ₦X" and offers Search again there.
-        await markSearchTimedOut(deps.redisClient, event.riderId, { rideId: event.rideId, offerNgn: timedOutMeta?.offerNgn ?? 0, at: new Date().toISOString() }).catch(() => undefined);
-        // With the form's button already in the chat, the end of the search is not a message:
-        // the rider opens the form when they like and finds the two ways forward inside it.
-        const formHoldsIt = offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, event.rideId);
-        // On the ride page, the page says the search ended.
-        const pageShowsIt = await isRidePageOpen(deps.redisClient, event.riderId);
-        if (!formHoldsIt && !pageShowsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
+    try {
+      // An acceptance went out, is being published (or the ride is confirmed) just as the clock ran out:
+      // the booking stands — no hold released, no "no driver", nothing cleaned up. The assignment revives the ride.
+      const acceptedFor = await acceptSentFor(deps.redisClient, event.rideId);
+      const publishing = await acceptPublishingFor(deps.redisClient, event.rideId);
+      const timedOutState = await getRideState(deps.redisClient, event.rideId).catch(() => null);
+      if (acceptedFor || publishing || timedOutState === 'confirmed' || timedOutState === 'in_progress') {
+        console.info('[gateway] bid timeout ignored — an acceptance is going through', { rideId: event.rideId });
+        return;
       }
-      await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId);
-      await clearPendingAccept(deps.redisClient, event.riderId).catch(() => {});
-      await endOfferCount(deps, event.rideId);
-      await cleanupRideKeys(deps.redisClient, event.rideId);
-      // An app open on the same search (begun on WhatsApp) ends it too.
-      await registry.sendToUser(event.riderId, 'ride:bid_timeout', { rideId: event.rideId });
-    } else {
-      await registry.sendToUser(event.riderId, 'ride:bid_timeout', {
-        rideId: event.rideId,
-      });
-      // Said by push as well when the app is closed: a search that ends
-      // unseen (a scheduled ride, most of all) must not just vanish.
-      if (!registry.hasUser(event.riderId)) {
-        await tellAppRider(deps, event.riderId, {
-          title: 'No driver accepted your ride',
-          body: 'You were not charged. Open Wheelers to search again or change your price.',
-          type: 'ride:bid_timeout',
+
+      // The rider is told "no driver found" — but the DRIVERS who bid were
+      // never told anything, so their apps showed "waiting for rider" forever
+      // over an auction that no longer existed. The bids table knows exactly
+      // who has money on this table; tell each of them before resolving.
+      const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
+      for (const bid of openBids) {
+        if (!isOpenBid(bid.status)) continue;
+        void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
           rideId: event.rideId,
-          inApp: true,
+          reason: 'timed_out',
         });
       }
+
+      // A sweep tick landing between an accept and the assignment write used
+      // to release the just-created hold. Only an unmatched ride times out.
+      const timedOutRide = await rideClient.findById(event.rideId).catch(() => null);
+      if (timedOutRide && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(timedOutRide.status)) {
+        console.info('[gateway] bid timeout ignored — ride already matched', {
+          rideId: event.rideId,
+          status: timedOutRide.status,
+        });
+        return;
+      }
+      await endTimedOutSearch(deps, event.rideId, event.riderId, event.timestamp, openBids, rideParticipants);
+      return;
+    } finally {
+      await releaseBookingLock(deps.redisClient, timeoutLock);
     }
-    rideParticipants.delete(event.rideId);
-    return;
   }
 
   if (event.eventType === 'RIDE_BIDS_DECLINED') {
@@ -1081,6 +1201,15 @@ export async function handleRideEvent(
         const cardDeps = offerCountDeps(deps);
         if (cardDeps) await setCardStatus(cardDeps, event.rideId, 'none').catch(() => false);
       }
+      // No booking stands on a closed ride: its acceptance mark goes too.
+      await clearAcceptSent(deps.redisClient, event.rideId);
+      // Closed by the search clock while this acceptance was on its way (the gateway's timeout stood
+      // aside for it): the search ends here, as the timeout would have ended it (said once, above, if
+      // the chat was told "booked").
+      if (isTimedOutOnly(ride) && !(await isSearchEnded(deps.redisClient, event.rideId))) {
+        const closedBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
+        await endTimedOutSearch(deps, event.rideId, event.riderId, event.timestamp, closedBids, rideParticipants, { alreadyTold: toldBooked });
+      }
       await walletClient.cancelRideHold(event.rideId).catch(() => {});
       await clearActiveRideIfMatches(deps.redisClient, event.riderId, event.rideId).catch(() => undefined);
       await cleanupRideKeys(deps.redisClient, event.rideId).catch(() => undefined);
@@ -1100,6 +1229,12 @@ export async function handleRideEvent(
     const stillChoosing = busyRide?.status === 'REQUESTED' || busyRide?.status === 'MATCHING';
     const holdIsAnothers = hold?.status === 'ACTIVE' && hold.driverUserId != null && hold.driverUserId !== event.driverUserId;
     const first = await deps.redisClient.setIfNotExists(`ride:${event.rideId}:busy:${event.driverId}`, '1', 120).catch(() => true);
+    // The search clock ran out while this acceptance was on its way (the timeout stood aside for it),
+    // and the driver could not take it: nothing else will end this search, so it ends here.
+    if (isTimedOutOnly(busyRide) && !holdIsAnothers && first) {
+      await busyAfterSearchTimedOut(deps, event, rideParticipants);
+      return;
+    }
     if (!stillChoosing || holdIsAnothers || !first) return;
     await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
     // Booked by auto-accept, not by a tap: nobody is told an accept was refused that they never made.
@@ -1376,8 +1511,9 @@ export async function handleRideEvent(
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      // Once per ride: a redelivered RIDE_ARRIVED says nothing more.
-      if (!(await deps.redisClient.setIfNotExists(`ride:${event.rideId}:arrived`, '1', 6 * 60 * 60).catch(() => true))) return;
+      // Once per driver on the ride: a redelivered RIDE_ARRIVED says nothing more, but a second
+      // driver (the first pulled out) arriving is news.
+      if (!(await deps.redisClient.setIfNotExists(`ride:${event.rideId}:arrived:${event.driverId}`, '1', 6 * 60 * 60).catch(() => true))) return;
       // On the ride page, the page shows the car and the code: the chat gets it when they leave.
       if (await isRidePageOpen(deps.redisClient, event.riderId)) {
         await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'arrived', rideId: event.rideId, driverId: event.driverId }).catch(() => undefined);

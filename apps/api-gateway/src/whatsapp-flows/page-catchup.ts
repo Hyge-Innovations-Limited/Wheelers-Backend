@@ -148,7 +148,9 @@ export interface PageCatchupDeps {
 /**
  * Say what waited for this rider now: the silent updates, then ONE message
  * (the most important still true). An item whose delivery failed (threw) is
- * put back for the next look, unless a message already went out.
+ * put back for the next look, even when a less important message went out
+ * after it (a card that failed is still owed; what ranked below the message
+ * said is never tried, so never put back).
  */
 export async function deliverCatchup(deps: PageCatchupDeps, userId: string, now = Date.now()): Promise<void> {
   const { redis } = deps;
@@ -171,9 +173,7 @@ export async function deliverCatchup(deps: PageCatchupDeps, userId: string, now 
     }
     if (said) break;
   }
-  if (!said && failed.length) {
-    for (const item of failed) await deferUntilPageLeft(redis, userId, item, now - FIRST_LOOK_MS + LOOK_AGAIN_MS).catch(() => undefined);
-  }
+  for (const item of failed) await deferUntilPageLeft(redis, userId, item, now - FIRST_LOOK_MS + LOOK_AGAIN_MS).catch(() => undefined);
 }
 
 /**

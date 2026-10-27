@@ -77,12 +77,14 @@ export async function setCardStatus(deps: CardStatusDeps, rideId: string, status
   if (!card) return false;
   if (card.status === status) return true;
   const ok = await sendMetaReaction(deps.meta, card.phone, card.messageId, EMOJI[status]).catch(() => false);
-  if (!ok) return false;
   if (status === 'none') {
+    // That card's booking is over (trip ended, driver pulled out, booking fell through): its record
+    // goes whatever Meta answered, or the next booking's card would be taken for already sent.
     await deps.redis.del(cardKey(rideId)).catch(() => undefined);
-  } else {
-    await deps.redis.set(cardKey(rideId), JSON.stringify({ ...card, status }), CARD_TTL_SECONDS).catch(() => undefined);
+    return ok;
   }
+  if (!ok) return false;
+  await deps.redis.set(cardKey(rideId), JSON.stringify({ ...card, status }), CARD_TTL_SECONDS).catch(() => undefined);
   return true;
 }
 

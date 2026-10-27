@@ -35,6 +35,10 @@ export async function notePublishing(redis: RedisClient, rideId: string, driverU
 export async function clearPublishing(redis: RedisClient, rideId: string): Promise<void> {
   await redis.del(publishingKey(rideId)).catch(() => undefined);
 }
+/** The driver an acceptance is being published for on this ride right now, if any. */
+export async function acceptPublishingFor(redis: RedisClient, rideId: string): Promise<string | null> {
+  return redis.get(publishingKey(rideId)).catch(() => null);
+}
 
 /** A lock this caller holds: its token, so only it can let go of it. */
 export type BookingLock = { rideId: string; token: string };
@@ -69,6 +73,8 @@ export async function releaseBookingLock(redis: RedisClient, lock: BookingLock |
 
 /** Wait this long for a booking in progress before saying "try again". */
 export const BOOKING_LOCK_WAIT_MS = 2_500;
+/** As long as the lock can live: a wait this long always gets it (for cleanup that must not be skipped). */
+export const BOOKING_LOCK_HOLD_MS = LOCK_SECONDS * 1000 + LOCK_POLL_MS;
 
 /**
  * Money held on the ride for ANOTHER driver, with no acceptance sent for
