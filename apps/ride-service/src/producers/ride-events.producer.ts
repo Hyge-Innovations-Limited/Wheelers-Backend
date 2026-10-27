@@ -230,6 +230,11 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
         plannedDurationSeconds: rideRequested.plannedDurationSeconds,
         ...pickupProximity(driver, rideRequested.pickup),
         expiresAt: expiresAt.toISOString(),
+        // The new price restarted the search: the same clock under its own name, as a first offer carries it.
+        bidsCloseAt: expiresAt.toISOString(),
+        // A re-price: the gateway pushes "New price ₦X" to a driver whose app is not connected
+        // (it knows who is connected; this service does not). It used to push to every driver here.
+        repriced: true,
         route: rideRequested.route,
         timestamp,
         // A re-price replaces the offer card in the driver app. Omitting these
@@ -245,25 +250,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           : {}),
       };
 
-      const push: PushSendEvent = {
-        eventType: 'PUSH_SEND',
-        notificationId: randomUUID(),
-        userId: driver.userId,
-        title: group ? `Updated offer · group ride (${group.riderCount} riders)` : 'Updated rider offer',
-        body: `Rider updated their offer to ₦${updatedOfferNgn} for ${rideRequested.pickup.address} → ${rideRequested.destination.address}`,
-        data: {
-          type: 'ride:offer_updated',
-          rideId: rideRequested.rideId,
-          riderOfferNgn: String(updatedOfferNgn),
-        },
-        priority: 'high',
-        timestamp,
-      };
-
-      await producer.sendBatch([
-        { topic: TOPICS.RIDE_EVENTS, value: offerEvent, options: { key: rideRequested.rideId } },
-        { topic: TOPICS.NOTIFICATION_EVENTS, value: push, options: { key: driver.driverId } },
-      ]);
+      await producer.send(TOPICS.RIDE_EVENTS, offerEvent as any, { key: rideRequested.rideId });
     },
 
     async gpsStaleWarning(event) {

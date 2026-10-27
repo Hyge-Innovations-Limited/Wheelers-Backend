@@ -335,7 +335,7 @@ async function finish(
     durationSeconds: planned.durationSeconds,
     suggestedFareNgn: planned.suggestedFareNgn,
     minOfferNgn: planned.minOfferNgn,
-    ratePerKmNgn: planned.ratePerKmNgn,
+    ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
     route: planned.geometry,
     // A changed trip is looked at again before any price: never `confirmed`, never a carried-over offer.
   };

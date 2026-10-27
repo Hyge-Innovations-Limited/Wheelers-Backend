@@ -273,12 +273,25 @@ const BOOK_REVIEW = {
 };
 
 // Something to read, then close with the X (WhatsApp's own). Not terminal, no Footer: the button in the chat lives on.
+// Your referral code: its QR (base64 PNG of the link) and Share (open_url, Flow JSON 6.0+), shown only then.
+// Every other NOTE sends has_share false with a 1x1 placeholder image: an Image's src may not be empty.
+const PLACEHOLDER_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=';
 const NOTE = {
   id: 'NOTE', title: 'Wheelers', terminal: false,
-  data: { headline: str('Already searching'), note: str('Your search is still on. Tap See driver offers in the chat to watch it.') },
+  data: {
+    headline: str('Already searching'), note: str('Your search is still on. Tap See driver offers in the chat to watch it.'),
+    has_share: bool(false), qr_image: str(PLACEHOLDER_PNG), share_url: str('https://wa.me/?text=Hi'),
+  },
   layout: form('note_form', [
     { type: 'TextHeading', text: '${data.headline}' },
     { type: 'TextBody', text: '${data.note}' },
+    {
+      type: 'If', condition: '${data.has_share}',
+      then: [
+        { type: 'Image', src: '${data.qr_image}', width: 200, height: 200, 'scale-type': 'contain', 'alt-text': 'QR code of your referral link' },
+        { type: 'EmbeddedLink', text: 'Share', 'on-click-action': { name: 'open_url', url: '${data.share_url}' } },
+      ],
+    },
     { type: 'TextCaption', text: 'Swipe down to go back to the chat.' },
   ]),
 };
@@ -294,7 +307,8 @@ const DONE = {
 };
 
 const flow = {
-  version: '5.1',
+  // 6.0: open_url (the referral Share link).
+  version: '6.0',
   data_api_version: '3.0',
   // Forward-only: every target sits later in this order (Meta refuses anything else).
   routing_model: {

@@ -1,4 +1,4 @@
-import { zoneFor } from '@wheleers/config';
+import { zoneFor, type PriceReason } from '@wheleers/config';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
@@ -34,6 +34,8 @@ export interface WhatsappRideMeta {
   durationSeconds?: number;
   offerNgn: number;
   suggestedFareNgn: number;
+  /** Why the suggested price is up (busy area, rain, rush hour), from the quote. Absent on older searches. */
+  priceReason?: PriceReason | null;
   paymentMethod: 'CASH' | 'WALLET';
   createdAt: string;
 }
@@ -604,6 +606,8 @@ export interface PendingRouteData {
   confirmed?: boolean;
   /** Price the rider already named, held across the confirmation step. */
   offerNgn?: number;
+  /** Why the suggested price is up (busy area, rain, rush hour) and by how much; null or absent: nothing notable. */
+  priceReason?: PriceReason | null;
 }
 
 const PENDING_ROUTE_TTL = BOOKING_TTL;
@@ -727,6 +731,7 @@ export interface LastRouteData {
   /** Carried so "search again" asks drivers for the same trip, stops included. */
   stops?: RouteStop[];
   offerNgn: number;
+  priceReason?: PriceReason | null;
 }
 
 const lastRouteKey = (userId: string) => `wa:lastroute:${userId}`;

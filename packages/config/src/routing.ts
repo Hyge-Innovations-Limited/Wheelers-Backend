@@ -1,4 +1,4 @@
-import { calculateSuggestedFare, trafficFactorOn, type SuggestedFare } from './pricing';
+import { calculateSuggestedFare, priceReasonOf, trafficFactorOn, type PriceReason, type SuggestedFare } from './pricing';
 
 export type RouteWaypoint = {
   lat: number;
@@ -23,6 +23,8 @@ export type PlannedRouteMetrics = {
   ratePerKmNgn: number;
   fareEstimateNgn: number;
   ridePrice: SuggestedFare;
+  /** Why the price is up (busy area, rain, rush hour) and by how much; null when nothing notable lifted it. */
+  priceReason?: PriceReason | null;
   geometry: PlannedRouteGeometry;
   /**
    * Travel time now ÷ travel time on an empty road, when the traffic factor
@@ -105,7 +107,8 @@ export class GoogleMapsRoutePlanner {
     const distanceKm = round3(route.distanceMeters / 1000);
     const durationSeconds = Math.max(0, Math.round(route.durationSeconds));
     const trafficRatio = traffic ? trafficRatioOf(payload, route.durationSeconds) : undefined;
-    const ridePrice = calculateSuggestedFare(distanceKm, { trafficRatio, durationSeconds, origin: params.origin, destination: params.destination });
+    const priceFactors = { trafficRatio, durationSeconds, origin: params.origin, destination: params.destination };
+    const ridePrice = calculateSuggestedFare(distanceKm, priceFactors);
 
     return {
       distanceKm,
@@ -115,6 +118,7 @@ export class GoogleMapsRoutePlanner {
       ratePerKmNgn: ridePrice.ratePerKmNgn,
       fareEstimateNgn: ridePrice.suggestedFareNgn,
       ridePrice,
+      priceReason: priceReasonOf(distanceKm, priceFactors, ridePrice),
       geometry: {
         coordinates: route.coordinates,
         bounds: route.bounds,

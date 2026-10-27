@@ -1,6 +1,7 @@
 import {
   calculateSuggestedFare,
   isRushHour,
+  priceReasonOf,
   trafficFactorOn,
   zoneFor,
   GoogleMapsRoutePlanner,
@@ -107,12 +108,13 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
     const rain = rainAt(params.origin.lat, params.origin.lng);
     // The trip and the half hour: a trial price, and the trip's own turn within a premium range, stay the same through quote, edit and confirm.
     const tripKey = quoteTripKey(params.origin, params.destination, Date.now());
-    const ridePrice = calculateSuggestedFare(route.distanceKm, {
+    const priceFactors = {
       trafficRatio: route.trafficRatio, durationSeconds: route.durationSeconds, demandFactor, surgeFactor, rain,
       // Ikorodu, Epe, Ibeju-Lekki, Badagry: the trip's ends decide the area factor.
       origin: params.origin, destination: params.destination,
       trialKey: tripKey,
-    });
+    };
+    const ridePrice = calculateSuggestedFare(route.distanceKm, priceFactors);
     recordQuote(params, route, ridePrice, demandFactor, tripKey, rain);
     return {
       distanceKm: route.distanceKm,
@@ -122,6 +124,8 @@ export class CachedRoutePlanner extends GoogleMapsRoutePlanner {
       ratePerKmNgn: ridePrice.ratePerKmNgn,
       fareEstimateNgn: ridePrice.suggestedFareNgn,
       ridePrice,
+      // The one line under the price: why it is up, and by how much.
+      priceReason: priceReasonOf(route.distanceKm, priceFactors, ridePrice),
       geometry: route.geometry,
       ...(route.trafficRatio !== undefined ? { trafficRatio: route.trafficRatio } : {}),
     };

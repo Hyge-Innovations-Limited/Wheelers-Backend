@@ -62,6 +62,7 @@ export {
   COMMISSION_RATE,
   VAT_RATE,
   calculateSuggestedFare,
+  priceReasonOf,
   areaFactorOf,
   AREA_FACTOR_MAX,
   resolveMaxOfferNgn,
@@ -82,7 +83,7 @@ export { fitHourCurve, MIN_PRICES_FOR_AN_HOUR, MIN_PRICES_FOR_A_WEEKEND_HOUR, MI
 export type { CurveEvidence, CurveEvidenceKind, HourCurveFit } from './hour-curve';
 export { getPricingMlModel, setPricingMlModel, scoreForest, rideChance, chooseFare, candidateFares, steadyDraw } from './pricing-ml';
 export type { PricingMlModel, MlTrip, FareChoice } from './pricing-ml';
-export type { SuggestedFare, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula, AreaFactors, DayPeriod, PremiumRange, TripPremium, HourCurve, DayKind, LincSample, Rain } from './pricing';
+export type { SuggestedFare, PriceReason, RidePriceBreakdown, RideFeeBreakdown, PricingVersion, RateFactors, PricingSettings, PricingModel, MarketFormula, AreaFactors, DayPeriod, PremiumRange, TripPremium, HourCurve, DayKind, LincSample, Rain } from './pricing';
 export {
   GoogleMapsRoutePlanner,
   RoutePlanningError,

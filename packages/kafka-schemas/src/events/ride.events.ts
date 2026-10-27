@@ -111,6 +111,9 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
   // pickup is near their drop-off. Their app labels the card so nobody
   // abandons the rider they have; the distances above are from that drop-off.
   afterCurrentTrip:      z.boolean().optional(),
+  // The rider changed their price: this re-sends the offer to a driver who had it.
+  // The gateway pushes "New price ₦X" to a driver whose app is not connected.
+  repriced:              z.boolean().optional(),
   expiresAt:             z.string().datetime(),
   // One auction clock for every surface — apps render it, chat enforces it.
   bidsCloseAt:           z.string().datetime().optional(),

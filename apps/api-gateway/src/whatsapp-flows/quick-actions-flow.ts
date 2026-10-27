@@ -1,6 +1,7 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { referralClient, rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { referralShareLink } from '../whatsapp/referral';
+import QRCode from 'qrcode';
+import { referralShareLink, referralShareUrl } from '../whatsapp/referral';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
@@ -153,8 +154,40 @@ export async function handleQuickActionsFlow(body: FlowRequestBody, userId: stri
   // from and posts "Response sent" in the chat; the rider wants neither, ever. So every
   // ending is a NOTE the rider swipes down from, and the Quick Actions button stays live.
   // DONE exists in the form's JSON only because Meta requires one terminal screen.
-  if (screen.screen === 'DONE') return { screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } };
-  return screen;
+  if (screen.screen === 'DONE') return withShareFields({ screen: 'NOTE', data: { headline: screen.data['headline'], note: screen.data['note'] } });
+  return screen.screen === 'NOTE' ? withShareFields(screen) : screen;
+}
+
+/**
+ * The QR and Share need the form's version 6.0 JSON (has_share, qr_image,
+ * share_url on NOTE). Until that is pushed to Meta, the published form is the
+ * old one and these fields must not be sent: switched on after the push
+ * (WHATSAPP_QUICK_ACTIONS_SHARE=on).
+ */
+function shareInForm(): boolean {
+  return process.env.WHATSAPP_QUICK_ACTIONS_SHARE?.trim() === 'on';
+}
+
+/** A 1x1 transparent PNG: what an Image is given when it is not shown (its src may not be empty). */
+export const NO_IMAGE_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=';
+
+/**
+ * NOTE carries the referral QR and Share link, shown only on Your referral
+ * code: every other NOTE says so, with values Meta accepts in the hidden part.
+ */
+function withShareFields(screen: FlowScreen): FlowScreen {
+  if (!shareInForm() || screen.data['has_share'] === true) return screen;
+  return { ...screen, data: { ...screen.data, has_share: false, qr_image: NO_IMAGE_PNG, share_url: 'https://wa.me/' } };
+}
+
+/** The referral link as a QR code: a PNG, base64 without the data: prefix (what a Flow's Image takes). Null if it cannot be drawn. */
+export async function referralQrPng(link: string): Promise<string | null> {
+  try {
+    const url = await QRCode.toDataURL(link, { type: 'image/png', width: 400, margin: 2, errorCorrectionLevel: 'M' });
+    return url.replace(/^data:image\/png;base64,/, '');
+  } catch {
+    return null;
+  }
 }
 
 async function answerQuickActions(body: FlowRequestBody, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
@@ -493,7 +526,13 @@ async function shareMyCode(userId: string, code: string, _deps: QuickActionsFlow
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
     rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  return doneScreen(`Your code is ${code}`, `Your link: ${referralShareLink(code)}${stats ? `\n\n${stats}` : ''}`, false);
+  const link = referralShareLink(code);
+  const shown = doneScreen(`Your code is ${code}`, `Your link: ${link}${stats ? `\n\n${stats}` : ''}`, false);
+  // The QR of the link (a friend scans it) and Share (WhatsApp's own, with the forward message typed).
+  if (!shareInForm()) return shown;
+  const qr = await referralQrPng(link);
+  if (!qr) return shown;
+  return { screen: 'NOTE', data: { headline: shown.data['headline'], note: shown.data['note'], has_share: true, qr_image: qr, share_url: referralShareUrl(code) } };
 }
 
 // ── HISTORY → TRIP → REVIEW_TRIP ──────────────────────────────────────────
@@ -570,7 +609,7 @@ async function planPastTrip(trip: PastTrip, backwards: boolean, userId: string, 
     durationSeconds: planned.durationSeconds,
     suggestedFareNgn: planned.suggestedFareNgn,
     minOfferNgn: planned.minOfferNgn,
-    ratePerKmNgn: planned.ratePerKmNgn,
+    ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
     route: planned.geometry,
     // Looked at again before any price: never `confirmed`, never a carried-over offer.
   };

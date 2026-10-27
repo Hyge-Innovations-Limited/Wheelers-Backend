@@ -1,5 +1,5 @@
 {
-  "version": "5.1",
+  "version": "6.0",
   "data_api_version": "3.0",
   "routing_model": {
     "MENU": [
@@ -1841,6 +1841,18 @@
         "note": {
           "type": "string",
           "__example__": "Your search is still on. Tap See driver offers in the chat to watch it."
+        },
+        "has_share": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "qr_image": {
+          "type": "string",
+          "__example__": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
+        },
+        "share_url": {
+          "type": "string",
+          "__example__": "https://wa.me/?text=Hi"
         }
       },
       "layout": {
@@ -1857,6 +1869,28 @@
               {
                 "type": "TextBody",
                 "text": "${data.note}"
+              },
+              {
+                "type": "If",
+                "condition": "${data.has_share}",
+                "then": [
+                  {
+                    "type": "Image",
+                    "src": "${data.qr_image}",
+                    "width": 200,
+                    "height": 200,
+                    "scale-type": "contain",
+                    "alt-text": "QR code of your referral link"
+                  },
+                  {
+                    "type": "EmbeddedLink",
+                    "text": "Share",
+                    "on-click-action": {
+                      "name": "open_url",
+                      "url": "${data.share_url}"
+                    }
+                  }
+                ]
               },
               {
                 "type": "TextCaption",

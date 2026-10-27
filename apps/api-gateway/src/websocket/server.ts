@@ -12,7 +12,7 @@ import { handleDriverMessage } from './handlers/driver.handler';
 import { handleRideMessage } from './handlers/ride.handler';
 import { handleWalletMessage } from './handlers/wallet.handler';
 import type { RedisClient } from '../redis/client';
-import { createDriverOfflineGrace, withdrawDriverFromMarket } from './driver-offline-grace';
+import { createDriverOfflineGrace, withdrawDriverFromMarket, type DropWithdrawnBid } from './driver-offline-grace';
 import { resyncDriverActiveRide } from './driver-ride-sync';
 import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
@@ -28,6 +28,8 @@ interface WebSocketServerDeps {
   publisher: GatewayPublisher;
   routePlanner: GoogleMapsRoutePlanner;
   redis: RedisClient;
+  /** Takes a bid withdrawn here (driver offline) off its WhatsApp search's list: the ride page and the chat. */
+  dropWithdrawnBid?: DropWithdrawnBid;
   /** A larger message closes the socket (code 1009). */
   maxPayloadBytes?: number;
   /** Messages a second each socket may send, and the burst allowed on top. */
@@ -114,7 +116,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: deps.maxPayloadBytes ?? 128 * 1024 });
   const verbose = deps.verboseLog === true;
   const maxPendingUpgrades = deps.maxPendingUpgrades ?? 400;
-  const grace = createDriverOfflineGrace({ redis: deps.redis, registry: deps.registry, publisher: deps.publisher, verbose });
+  const grace = createDriverOfflineGrace({ redis: deps.redis, registry: deps.registry, publisher: deps.publisher, dropBid: deps.dropWithdrawnBid, verbose });
   grace.start();
 
   // What happened in the last minute, in one line, instead of a line per event.
@@ -397,7 +399,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         if (parsed.type === 'driver:offline' && auth.driverId) {
           void grace.cancel(auth.driverId);
           void driverPresence.remove(auth.driverId);
-          void withdrawDriverFromMarket(deps.registry, auth.userId);
+          void withdrawDriverFromMarket(deps.registry, auth.userId, deps.dropWithdrawnBid);
         }
 
       } catch (error) {

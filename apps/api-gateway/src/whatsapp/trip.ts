@@ -281,7 +281,7 @@ export async function replanPendingRoute(
     durationSeconds: plannedRoute.durationSeconds,
     suggestedFareNgn: suggestedFare,
     minOfferNgn: minFare,
-    ratePerKmNgn: plannedRoute.ratePerKmNgn,
+    ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
     route: plannedRoute.geometry,
     stops: pendingRoute.stops,
   });
@@ -555,7 +555,7 @@ export async function replanWithStops(
     durationSeconds: planned.durationSeconds,
     suggestedFareNgn: planned.suggestedFareNgn,
     minOfferNgn: planned.minOfferNgn,
-    ratePerKmNgn: planned.ratePerKmNgn,
+    ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
     route: planned.geometry,
     confirmed: false,
     offerNgn: undefined,

@@ -940,7 +940,7 @@ async function handleIncomingMetaMessage(
           durationSeconds: plannedRoute.durationSeconds,
           suggestedFareNgn: suggestedFare,
           minOfferNgn: minFare,
-          ratePerKmNgn: plannedRoute.ratePerKmNgn,
+          ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
           route: plannedRoute.geometry,
         });
 
@@ -961,7 +961,7 @@ async function handleIncomingMetaMessage(
             durationSeconds: plannedRoute.durationSeconds,
             suggestedFareNgn: suggestedFare,
             minOfferNgn: minFare,
-            ratePerKmNgn: plannedRoute.ratePerKmNgn,
+            ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
             route: plannedRoute.geometry,
             offerNgn: rideIntent.offerNgn,
           });

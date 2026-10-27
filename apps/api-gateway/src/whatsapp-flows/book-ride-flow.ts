@@ -233,7 +233,7 @@ async function bookPlaces(data: Record<string, unknown>, userId: string, deps: B
     destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
     stops: [],
     distanceKm: planned.distanceKm, durationSeconds: planned.durationSeconds,
-    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn,
+    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
     route: planned.geometry,
   };
   await storePendingRoute(deps.redisClient, userId, trip);
@@ -303,7 +303,7 @@ async function planWithStops(userId: string, deps: BookRideDeps, draft: BookDraf
     destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
     stops,
     distanceKm: planned.distanceKm, durationSeconds: planned.durationSeconds,
-    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn,
+    suggestedFareNgn: planned.suggestedFareNgn, minOfferNgn: planned.minOfferNgn, ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
     route: planned.geometry,
   };
   await storePendingRoute(deps.redisClient, userId, trip);

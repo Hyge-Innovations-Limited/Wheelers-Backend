@@ -44,6 +44,8 @@ interface GraceDeps {
   redis: RedisClient;
   registry: SocketRegistry;
   publisher: GatewayPublisher;
+  /** Takes each withdrawn bid off its WhatsApp search's list. */
+  dropBid?: DropWithdrawnBid;
   /** A line per driver. Off, each pass says once how many it kept and how many it took offline. */
   verbose?: boolean;
 }
@@ -56,9 +58,15 @@ interface GraceMeta {
   away?: boolean;
 }
 
-export async function withdrawDriverFromMarket(registry: SocketRegistry, driverUserId: string): Promise<void> {
+/** Takes a withdrawn bid off a WhatsApp search's list too (the offers page and the chat read it). */
+export type DropWithdrawnBid = (rideId: string, riderId: string, driverId: string) => Promise<void>;
+
+export async function withdrawDriverFromMarket(registry: SocketRegistry, driverUserId: string, dropBid?: DropWithdrawnBid): Promise<void> {
   const affected = await driverBidClient.withdrawAllPendingForDriver(driverUserId).catch(() => []);
   for (const bid of affected) {
+    // The ride page and the chat's offer list read the search's own list, not the bids table:
+    // without this the page kept showing an offer from a driver who had gone.
+    if (dropBid) await dropBid(bid.rideId, bid.riderId, bid.driverId).catch(() => undefined);
     void registry.sendToUser(bid.riderId, 'ride:driver_rejected', {
       rideId: bid.rideId,
       driverId: bid.driverId,
@@ -147,7 +155,7 @@ export function createDriverOfflineGrace(deps: GraceDeps) {
       await redis.send('HDEL', META_KEY, driverId);
       tally.bidsWithdrawn += 1;
       if (verbose) console.info('[ws] driver still away — open bids withdrawn', { driverId, awayForMs: now - meta.since });
-      void withdrawDriverFromMarket(registry, meta.userId);
+      void withdrawDriverFromMarket(registry, meta.userId, deps.dropBid);
       return;
     }
 

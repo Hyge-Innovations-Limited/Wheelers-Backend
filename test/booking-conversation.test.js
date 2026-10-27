@@ -1561,10 +1561,11 @@ test('THE FORM on a dead or running booking: it still OPENS on its first screen 
 });
 
 /** What Meta would reject, or print literally, checked before it ever gets there. */
-function checkFormJson(flow, screenIds) {
+function checkFormJson(flow, screenIds, version = '5.1') {
   const screens = Object.fromEntries(flow.screens.map((screen) => [screen.id, screen]));
   assert.deepEqual(Object.keys(screens), screenIds);
-  assert.equal(flow.version, '5.1', 'the version the earlier flows proved on this account');
+  // 5.1: the version the earlier flows proved on this account. Quick Actions is 6.0, the first with open_url (the referral Share link).
+  assert.equal(flow.version, version, 'the version the earlier flows proved on this account');
   for (const screen of flow.screens) {
     const bound = [...JSON.stringify(screen.layout).matchAll(/\$\{data\.([a-z0-9_]+)\}/g)].map((m) => m[1]);
     for (const name of bound) assert.ok(name in screen.data, `${screen.id} binds data.${name}, which it does not declare`);
@@ -2474,7 +2475,7 @@ test('QUICK ACTIONS FORM · Add money puts the account number in a box to copy f
 });
 
 test('QUICK ACTIONS FORM · the form on Meta and the server agree — and it carries the trip and offers screens unchanged', () => {
-  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'NEXT', 'REFERRAL', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE']);
+  const qa = checkFormJson(QUICK_ACTIONS_FLOW, ['MENU', 'STATUS', 'OFFERS', 'CHANGE_PRICE', 'CANCEL_SEARCH', 'NEXT', 'REFERRAL', 'BOOK_WHERE', 'BOOK_PLACES', 'BOOK_TRIP', 'BOOK_STOP_PLACES', 'BOOK_REVIEW', 'HISTORY', 'TRIP', 'REVIEW_TRIP', 'SET_PRICE', 'ADD_MONEY', 'SUPPORT', 'NOTE', 'DONE'], '6.0');
   // Forward-only, as Meta demands: every route goes to a screen later in the list, and none has more than ten.
   const order = QUICK_ACTIONS_FLOW.screens.map((s) => s.id);
   for (const [from, targets] of Object.entries(QUICK_ACTIONS_FLOW.routing_model)) {

@@ -241,7 +241,7 @@ import { handleAdminInsightsRoute } from "./http/admin-insights.route";
 import { handleAdminDataRoute } from "./http/admin-data.route";
 import { handleAdminReferralsRoute } from "./http/admin-referrals.route";
 import { handleAdminSecurityRoute } from "./http/admin-security.route";
-import { startGatewayKafkaConsumer } from "./kafka/consumer";
+import { dropBidFromWhatsappRide, startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
 // same guarded handlers as the chat bot. main keeps these unmounted.
@@ -2593,8 +2593,25 @@ async function bootstrap(): Promise<void> {
     }
   }));
 
+  // A bid withdrawn when its driver goes offline leaves the ride page and the chat's offer list too.
+  const whatsappSenderForBids =
+    gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+      ? {
+          metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+          metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+          offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+          legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+          flowTokenSecret: gatewayEnv.JWT_SECRET,
+          offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+          quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+          riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+        }
+      : undefined;
+
   createGatewayWebSocketServer({
     server,
+    dropWithdrawnBid: (rideId: string, riderId: string, driverId: string) =>
+      dropBidFromWhatsappRide({ redisClient: redisCommandClient, whatsappNotifier: whatsappSenderForBids }, rideId, riderId, driverId),
     jwtSecret: gatewayEnv.JWT_SECRET,
     allowedOrigins,
     idleTimeoutMs: Number(gatewayEnv.WS_IDLE_TIMEOUT_MS),

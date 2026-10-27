@@ -25,6 +25,7 @@ import {
   clearSearchTimedOut,
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
+import { startSearchClock } from './search-status';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -120,10 +121,13 @@ export async function publishWhatsappRide(
     durationSeconds: pendingRoute.durationSeconds,
     offerNgn,
     suggestedFareNgn: pendingRoute.suggestedFareNgn,
+    priceReason: pendingRoute.priceReason ?? null,
     paymentMethod: 'WALLET',
     createdAt: new Date().toISOString(),
   });
   await setActiveRide(deps.redisClient, rider.id, rideId);
+  // The waiting screen's countdown, until the ride service sends its own clock with the first offer.
+  await startSearchClock(deps.redisClient, rideId);
   await storeLastRoute(deps.redisClient, rider.id, { ...pendingRoute, offerNgn });
   await clearSearchTimedOut(deps.redisClient, rider.id);
   // The claim only had to cover the moment of publishing. Left to expire on its
@@ -156,6 +160,8 @@ export async function changeRiderOffer(
   if (!validation.valid) return { ok: false, code: 'BELOW_MINIMUM', minOfferNgn: validation.minOfferNgn };
 
   await storeRiderOfferChange(deps.redisClient, rideId, meta, amountNgn);
+  // A new price restarts the search's clock (the ride service does the same).
+  await startSearchClock(deps.redisClient, rideId);
   await deps.publisher.publishRideEvent({
     eventType: 'RIDE_RIDER_COUNTER_OFFER',
     rideId,

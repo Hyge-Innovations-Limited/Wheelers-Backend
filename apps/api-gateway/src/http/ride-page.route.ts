@@ -11,7 +11,9 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import { markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import { getSearchStatus } from '../rides/search-status';
+import { isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
@@ -38,7 +40,9 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  * in") with the number of offers shown on it.
  *
  *   GET  /ride-page/state        where the booking is, and the offers on the table
- *   POST /ride-page/find         { amountNgn }  name a price → drivers are asked
+ *   POST /ride-page/find         { amountNgn, autoAccept? }  name a price → drivers are asked (autoAccept: false switches it off)
+ *   POST /ride-page/auto-accept  { on }         auto-accept is on for every search; this (unused now) switches it
+ *   POST /ride-page/search-again { amountNgn }  after "No driver accepted": the same trip again at a new price
  *   POST /ride-page/offer        { amountNgn }  change the bid
  *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
  *   POST /ride-page/decline      { key }        decline one driver's offer; they can send a new price
@@ -117,7 +121,11 @@ function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
 }
 
 async function readAmount(req: IncomingMessage): Promise<number> {
-  const body = await readJsonBody(req).catch(() => null);
+  return amountIn(await readJsonBody(req).catch(() => null));
+}
+
+/** The price in a body already read: whole naira, or refused in words. */
+function amountIn(body: unknown): number {
   const raw = isRecord(body) ? body.amountNgn : undefined;
   const amount = typeof raw === 'number' ? raw : Number(String(raw ?? '').replace(/[,\s₦]/g, ''));
   if (!Number.isFinite(amount) || amount <= 0 || amount > 10_000_000) {
@@ -261,6 +269,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         distanceKm: meta.distanceKm,
         durationMin: Math.ceil((meta.durationSeconds ?? 0) / 60),
         suggestedFareNgn: meta.suggestedFareNgn,
+        // The line under the price: why it is up, and by how much (null: nothing notable).
+        priceReason: meta.priceReason ?? null,
       };
 
       if (state === 'confirmed' || state === 'in_progress') {
@@ -281,8 +291,31 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         };
       }
 
+      const [status, autoAccept, planned] = await Promise.all([
+        getSearchStatus(deps.redisClient, rideId).catch(() => ({ driversNotified: null, bidsCloseAt: null })),
+        isAutoAcceptOn(deps.redisClient, rideId).catch(() => true),
+        getLastRoute(deps.redisClient, userId).catch(() => null),
+      ]);
+      // The Finding map: the trip's places, and its road when the last route saved is this search's trip.
+      const places = meta.pickupLat != null && meta.pickupLng != null && meta.destinationLat != null && meta.destinationLng != null
+        ? {
+            pickup: { lat: meta.pickupLat, lng: meta.pickupLng, address: meta.pickupAddress },
+            destination: { lat: meta.destinationLat, lng: meta.destinationLng, address: meta.destinationAddress },
+            stops: meta.stops ?? [],
+          }
+        : null;
+      const sameTrip = planned && planned.pickupAddress === meta.pickupAddress && planned.destAddress === meta.destinationAddress;
+      const road = sameTrip ? (planned.route as { coordinates?: Array<{ lat: number; lng: number }> } | undefined)?.coordinates : undefined;
+      const line = Array.isArray(road) ? road.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number') : [];
       return {
         phase: 'offers' as const, rideId, balanceNgn, route, offerNgn: meta.offerNgn,
+        // The waiting screen: drivers the price went out to, and when the search closes.
+        driversNotified: status.driversNotified,
+        bidsCloseAt: status.bidsCloseAt,
+        // On for every search: the first driver at or under the price, ≤ 10 min away, is booked when the wallet covers them.
+        autoAccept,
+        places,
+        line,
         // Paying with XLM, when the rider has a Stellar account and there is a price.
         xlm: await xlmFor(deps, userId),
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
@@ -319,6 +352,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         distanceKm: quote.distanceKm,
         durationMin: Math.ceil(quote.durationSeconds / 60),
         suggestedFareNgn: quote.suggestedFareNgn,
+        priceReason: quote.priceReason ?? null,
       },
       minOfferNgn: quote.minOfferNgn,
       // Back from a search to change the trip: the price they had named, to start from.
@@ -335,7 +369,27 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
   }
 
   // No quote and no live search: it expired, was cancelled, or the trip ended.
-  return { phase: 'idle' as const, balanceNgn, chatUrl: CHAT_URL };
+  return { phase: 'idle' as const, balanceNgn, chatUrl: CHAT_URL, lastSearch: await lastSearchFor(deps, userId) };
+}
+
+/**
+ * The last search ended with no driver: its price, and its trip (for "Search
+ * again at ₦Y"). Null when the last search did not time out.
+ */
+async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
+  const timedOut = await getSearchTimedOut(deps.redisClient, userId).catch(() => null);
+  if (!timedOut) return null;
+  const last = await getLastRoute(deps.redisClient, userId).catch(() => null);
+  return {
+    offerNgn: timedOut.offerNgn || last?.offerNgn || 0,
+    route: last ? {
+      pickupAddress: last.pickupAddress,
+      destAddress: last.destAddress,
+      distanceKm: last.distanceKm,
+      durationMin: Math.ceil((last.durationSeconds ?? 0) / 60),
+      suggestedFareNgn: last.suggestedFareNgn,
+    } : null,
+  };
 }
 
 async function handleState(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -349,7 +403,10 @@ async function handleState(req: IncomingMessage, res: ServerResponse, deps: Ride
 async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
-  const amountNgn = await readAmount(req);
+  const body = await readJsonBody(req).catch(() => null);
+  const amountNgn = amountIn(body);
+  // Auto-accept is on for every search; a page that sends autoAccept: false switches it off for this one.
+  const autoAccept = !(isRecord(body) && body.autoAccept === false);
 
   const quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
@@ -357,7 +414,12 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
     if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildState(deps, userId));
     throw new PageError('This quote has expired. Send your trip to the Wheelers bot again for a fresh one.', 409, 'QUOTE_EXPIRED');
   }
+  await startSearch(deps, userId, quote, amountNgn, autoAccept);
+  sendJson(res, 200, await buildState(deps, userId));
+}
 
+/** Drivers are asked: the search goes out at the rider's price (auto-accept on, unless the page said off). */
+async function startSearch(deps: RidePageRouteDeps, userId: string, quote: PendingRouteData, amountNgn: number, autoAccept = true): Promise<void> {
   const user = await userClient.findById(userId);
   const phone = user?.phone ?? '';
   const result = await publishWhatsappRide(deps, { id: userId, phone }, quote, amountNgn);
@@ -365,7 +427,7 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
     if (result.code === 'BELOW_MINIMUM') {
       throw new PageError(`The lowest price for this trip is ₦${result.minOfferNgn.toLocaleString()}.`, 400, 'BELOW_MINIMUM', { minOfferNgn: result.minOfferNgn });
     }
-    if (result.code === 'ALREADY_PUBLISHING') return sendJson(res, 200, await buildState(deps, userId));
+    if (result.code === 'ALREADY_PUBLISHING') return;
     throw new PageError('Could not start the search just now. Please try again.', 503, 'PUBLISH_FAILED');
   }
 
@@ -375,6 +437,70 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
     pickupAddress: quote.pickupAddress, destAddress: quote.destAddress,
     stopAddresses: (quote.stops ?? []).map((stop) => stop.address),
   }).catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
+  if (!autoAccept) await switchAutoAccept(deps, userId, result.rideId, false).catch(() => undefined);
+}
+
+/* ── POST /ride-page/auto-accept ──────────────────────────────────────── */
+
+async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  if (!isRecord(body) || typeof body.on !== 'boolean') throw new PageError('Say on or off.', 400, 'BAD_REQUEST');
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  if (!rideId) {
+    if (!body.on) return sendJson(res, 200, await buildState(deps, userId));
+    throw new PageError('This search has ended.', 409, 'NOT_SEARCHING');
+  }
+  const result = await switchAutoAccept(deps, userId, rideId, body.on);
+  if (!result.ok) throw new PageError(result.message, 409, 'NOT_SEARCHING');
+  logActivity({ userId, eventType: result.on ? 'ride_auto_accept_switched_on' : 'ride_auto_accept_switched_off', source: 'ride_page', rideId, metadata: result.booked ? { booked: true } : {} });
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/* ── POST /ride-page/search-again ─────────────────────────────────────── */
+
+/**
+ * "No driver accepted ₦X" → the same trip again at the price the rider picks.
+ * The trip is the one still being priced, or else the last one searched,
+ * planned again so its price is today's (kept as it was when planning fails).
+ */
+async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const amountNgn = await readAmount(req);
+  // Already searching (a double tap): show that.
+  if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildState(deps, userId));
+
+  let quote = await getPendingRoute(deps.redisClient, userId);
+  if (!quote) {
+    const last = await getLastRoute(deps.redisClient, userId);
+    if (!last) throw new PageError('This trip has expired. Plan it again.', 409, 'QUOTE_EXPIRED');
+    const stops = last.stops ?? [];
+    const planned = deps.routePlanner
+      ? await deps.routePlanner.planRoute({
+          origin: { lat: last.pickupLat, lng: last.pickupLng },
+          destination: { lat: last.destLat, lng: last.destLng },
+          ...(stops.length ? { stops } : {}),
+        }).catch(() => null)
+      : null;
+    quote = {
+      pickupLat: last.pickupLat, pickupLng: last.pickupLng, pickupAddress: last.pickupAddress,
+      destLat: last.destLat, destLng: last.destLng, destAddress: last.destAddress,
+      stops,
+      distanceKm: planned?.distanceKm ?? last.distanceKm,
+      durationSeconds: planned?.durationSeconds ?? last.durationSeconds,
+      suggestedFareNgn: planned?.suggestedFareNgn ?? last.suggestedFareNgn,
+      minOfferNgn: planned?.minOfferNgn ?? last.minOfferNgn,
+      ratePerKmNgn: planned?.ratePerKmNgn ?? last.ratePerKmNgn,
+      priceReason: planned ? planned.priceReason ?? null : last.priceReason ?? null,
+      route: planned?.geometry ?? last.route,
+      confirmed: true,
+    };
+    await storePendingRoute(deps.redisClient, userId, quote);
+  }
+  await startSearch(deps, userId, quote, amountNgn);
+  logActivity({ userId, eventType: 'ride_search_again', source: 'ride_page', metadata: { offerNgn: amountNgn } });
   sendJson(res, 200, await buildState(deps, userId));
 }
 
@@ -665,7 +791,7 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
       durationSeconds: planned.durationSeconds,
       suggestedFareNgn: planned.suggestedFareNgn,
       minOfferNgn: planned.minOfferNgn,
-      ratePerKmNgn: planned.ratePerKmNgn,
+      ratePerKmNgn: planned.ratePerKmNgn, priceReason: planned.priceReason ?? null,
       route: planned.geometry,
       // Looked at and changed on the page itself: the price is the next step.
       confirmed: true,
@@ -726,6 +852,7 @@ export const RIDE_PAGE_EVENTS = [
   'cancel_opened', 'cancel_reason_picked', 'cancel_confirmed', 'cancel_failed', 'cancel_kept',
   'edit_trip_back_tapped', 'edit_trip_back_confirmed', 'edit_trip_back_kept',
   'chat_link_tapped', 'call_driver_tapped', 'chat_driver_tapped', 'map_recentred',
+  'auto_accept_switched', 'track_driver_tapped',
 ] as const;
 const EVENT_NAMES = new Set<string>(RIDE_PAGE_EVENTS);
 const PHASES = new Set(['loading', 'fatal', 'idle', 'price', 'offers', 'confirmed']);
@@ -813,6 +940,8 @@ type Handler = (req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDe
 const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/state': { method: 'GET', run: handleState },
   '/ride-page/find': { method: 'POST', run: handleFind },
+  '/ride-page/auto-accept': { method: 'POST', run: handleAutoAccept },
+  '/ride-page/search-again': { method: 'POST', run: handleSearchAgain },
   '/ride-page/offer': { method: 'POST', run: handleOffer },
   '/ride-page/accept': { method: 'POST', run: handleAccept },
   '/ride-page/decline': { method: 'POST', run: handleDecline },

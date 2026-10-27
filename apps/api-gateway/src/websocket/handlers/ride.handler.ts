@@ -8,7 +8,7 @@ import {
   validateDriverOffer, fareFromRatePerKmNgn,
   validateRiderOffer,
 } from '@wheleers/config';
-import { driverClient, groupRideClient, referralClient, rideClient, driverBidClient, walletClient } from '@wheleers/db';
+import { driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
 import {
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
@@ -16,14 +16,12 @@ import {
   RideCompletionRequestedEvent,
   RideCounterOfferEvent,
   RideDriverRejectedEvent,
-  RideOfferAcceptedEvent,
   RideRiderCounterOfferEvent,
   RideArrivedEvent,
   RideRouteUpdateRequestedEvent,
   RideRequestedEvent,
   RideStopConfirmedEvent,
   RideStartedEvent,
-  WalletLockedEvent,
 } from '@wheleers/kafka-schemas';
 import type { GatewayAuthContext } from '../../types';
 import { getBoolean, getNumber, getRecord, getString } from '../../utils/object';
@@ -34,6 +32,8 @@ import type { HandlerResponse } from './types';
 import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
+import { acceptOfferInApp } from '../../rides/app-accept';
+import { switchAutoAccept } from '../../rides/auto-accept';
 import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
@@ -393,6 +393,13 @@ export async function handleRideMessage(
       throw error;
     }
 
+    // Auto-accept is on for every search; an app that sends autoAccept: false switches it off for this one.
+    let autoAccept = true;
+    if (getBoolean(payload, 'autoAccept') === false && redis) {
+      await switchAutoAccept({ redisClient: redis, publisher }, auth.userId, rideId, false).catch(() => undefined);
+      autoAccept = false;
+    }
+
     // Every normal booking is a potential group ride — if open group requests
     // share this corridor, surface it. Never blocks or fails the booking.
     const groupSuggestion = await findGroupRideSuggestion(auth.userId, pickup, destination).catch(
@@ -424,8 +431,26 @@ export async function handleRideMessage(
         fareBeforeCashbackNgn: event.fareBeforeCashbackNgn,
         referralCashbackAppliedNgn,
         pricingCurrency: 'NGN',
+        // Why the price is up, for the line under it (null: nothing notable).
+        priceReason: plannedRoute.priceReason ?? null,
+        // Auto-accept: on unless the request said autoAccept: false.
+        autoAccept,
       },
     };
+  }
+
+  if (type === 'ride:auto_accept') {
+    // Auto-accept is on for every search; this switch (no app sends it now) is honoured when it comes.
+    const rideId = requireString(payload, 'rideId');
+    const on = getBoolean(payload, 'on') === true;
+    if (!redis) {
+      return { type: 'ride:auto_accept:rejected', payload: { rideId, reason: 'not_searching', message: 'Auto-accept is not available right now.' } };
+    }
+    const result = await switchAutoAccept({ redisClient: redis, publisher }, auth.userId, rideId, on);
+    if (result.ok) {
+      return { type: 'ride:auto_accept:done', payload: { rideId, on: result.on, ...(result.booked ? { reason: 'booked' } : {}) } };
+    }
+    return { type: 'ride:auto_accept:rejected', payload: { rideId, reason: result.reason, message: result.message } };
   }
 
   if (type === 'ride:counter_offer') {
@@ -467,213 +492,15 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:accept_offer') {
-    const rideId = requireString(payload, 'rideId');
-    const driverId = requireString(payload, 'driverId');
-    const driverUserId = requireString(payload, 'driverUserId');
-    const bidId = getString(payload, 'bidId');
-    const paymentMethod = parsePaymentMethod(payload['paymentMethod']);
-
-    // A second accept on a ride that already has a driver (double-tap on two
-    // offers) must not publish a second assignment.
-    const acceptingRide = await rideClient.findById(rideId).catch(() => null);
-    if (acceptingRide && acceptingRide.riderId !== auth.userId) {
-      throw new Error('This ride is not yours.');
-    }
-    if (acceptingRide && acceptingRide.status !== 'REQUESTED' && acceptingRide.status !== 'MATCHING') {
-      return {
-        type: 'ride:accept_offer:rejected',
-        payload: {
-          rideId,
-          driverId,
-          reason: 'already_matched',
-          message: 'This ride already has a driver.',
-        },
-      };
-    }
-
-    // ── The moment of commitment. The driver must still exist in the
-    // market: online, recently seen, not already on a trip. Without this a
-    // rider could pay for a driver who won another ride minutes ago or
-    // whose phone died — one driver sold twice.
-    const driver = await driverClient.findById(driverId).catch(() => null);
-    const seenRecently =
-      driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
-    const busyRide = driver
-      ? await rideClient.findActiveByDriver(driverId).catch(() => null)
-      : null;
-    if (!driver || driver.status !== 'ONLINE' || !seenRecently || busyRide) {
-      // Gone or on another trip: their bid is over. Only stepped away (app in
-      // the background): it stays held — their open bids wait for them.
-      const away = Boolean(driver) && !busyRide;
-      if (!away) await driverBidClient.markWithdrawn(rideId, driverId).catch(() => {});
-      if (away) {
-        return {
-          type: 'ride:accept_offer:rejected',
-          payload: {
-            rideId,
-            driverId,
-            reason: 'driver_away',
-            message: "That driver's app is closed for a moment. Try again in a minute, or pick another offer.",
-          },
-        };
-      }
-      return {
-        type: 'ride:accept_offer:rejected',
-        payload: {
-          rideId,
-          driverId,
-          reason: 'driver_unavailable',
-          message: 'That driver just became unavailable. Please pick another offer.',
-        },
-      };
-    }
-
-    // ── Price truth: when the bid's identity is given, the bid ROW is the
-    // price — a stale card on the rider's screen can never set the amount.
-    let agreedFareNgn = requireNumber(payload, 'agreedFareNgn');
-    if (bidId) {
-      const bid = await driverBidClient.findById(bidId).catch(() => null);
-      if (!bid || bid.rideId !== rideId || bid.driverId !== driverId || bid.status !== 'PENDING') {
-        return {
-          type: 'ride:accept_offer:rejected',
-          payload: {
-            rideId,
-            driverId,
-            reason: 'offer_changed',
-            message: 'That offer has changed — check the latest price and try again.',
-          },
-        };
-      }
-      agreedFareNgn = Number(bid.amountNgn);
-    } else {
-      // The app names the driver, not the bid: their bid on this ride is
-      // still the price truth, and one they withdrew or the rider declined
-      // can no longer be booked.
-      const bids = await driverBidClient.findByRide(rideId).catch(() => []);
-      const theirs = bids.filter((b) => b.driverId === driverId);
-      const open = theirs.find((b) => b.status === 'PENDING');
-      if (theirs.length > 0 && !open) {
-        return {
-          type: 'ride:accept_offer:rejected',
-          payload: { rideId, driverId, reason: 'offer_changed', message: 'That offer is no longer open.' },
-        };
-      }
-      if (open) agreedFareNgn = Number(open.amountNgn);
-    }
-
-    // ── One booking at a time on a ride: while the rider's money is held for
-    // one driver (that accept still going through), a second accept would
-    // book two drivers. The app fetches where the booking stands instead.
-    const heldFor = await walletClient.rideHoldOf(rideId).catch(() => null);
-    if (heldFor?.status === 'ACTIVE' && heldFor.driverUserId && heldFor.driverUserId !== driverUserId) {
-      return {
-        type: 'ride:accept_offer:rejected',
-        payload: { rideId, driverId, reason: 'already_matched', message: 'Your ride is already being booked.' },
-      };
-    }
-
-    // ── One driver, one rider: the same claim the WhatsApp accept takes, so
-    // two riders (app or chat) cannot book the same driver at the same moment.
-    // Let go of it whenever this accept does not go through.
-    const claimKey = `whatsapp:driver:${driverId}:accepting`;
-    let claimedNow = false;
-    const releaseClaim = async () => { if (claimedNow && redis) await redis.del(claimKey).catch(() => undefined); };
-    if (redis) {
-      claimedNow = await redis.setIfNotExists(claimKey, rideId, 60).catch(() => false);
-      const owner = claimedNow ? rideId : await redis.get(claimKey).catch(() => null);
-      if (!claimedNow && owner !== null && owner !== rideId) {
-        return {
-          type: 'ride:accept_offer:rejected',
-          payload: { rideId, driverId, reason: 'driver_unavailable', message: 'That driver is no longer available.' },
-        };
-      }
-    }
-
-    // ── No hold, no match. WhatsApp riders were already checked at "pay";
-    // app riders could book with an empty wallet and the ride ran unsecured.
-    if (paymentMethod !== 'CASH') {
-      const wallet = await walletClient.findByUserId(auth.userId).catch(() => null);
-      const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
-      const insufficient = () => ({
-        type: 'ride:accept_offer:rejected',
-        payload: {
-          rideId,
-          driverId,
-          reason: 'insufficient_funds',
-          requiredNgn: agreedFareNgn,
-          balanceNgn,
-          message: `You need ₦${Math.max(0, agreedFareNgn - balanceNgn).toLocaleString()} more in your wallet to book this ride.`,
-        },
-      });
-      if (!wallet || balanceNgn < agreedFareNgn) {
-        await releaseClaim();
-        return insufficient();
-      }
-      try {
-        const hold = await walletClient.createRideHold({
-          rideId,
-          walletId: wallet.id,
-          riderId: auth.userId,
-          driverUserId,
-          amountNgn: agreedFareNgn,
-        });
-        // A hold left by an earlier attempt on this ride may carry a different fare.
-        if (!hold.applied && hold.holdAmountNgn !== agreedFareNgn) {
-          const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: agreedFareNgn });
-          if (!adjusted) throw new Error('hold could not be adjusted');
-        }
-        if (hold.applied) {
-          // The lock used to be wallet-service's to announce; now that the
-          // hold happens here, the announcement moves here with it — the
-          // rider's app shows locked funds immediately, not on next refresh.
-          await publisher.publishWalletEvent(
-            WalletLockedEvent.parse({
-              eventType: 'WALLET_LOCKED',
-              userId: auth.userId,
-              walletId: wallet.id,
-              rideId,
-              lockedAmountNgn: agreedFareNgn,
-              reason: 'ride_fare_hold',
-              timestamp: new Date().toISOString(),
-            }),
-          ).catch(() => undefined);
-        }
-      } catch {
-        // Race between the balance check and the hold — same honest answer.
-        await releaseClaim();
-        return insufficient();
-      }
-    }
-
-    const event = RideOfferAcceptedEvent.parse({
-      eventType: 'RIDE_OFFER_ACCEPTED',
-      rideId,
-      riderId: auth.userId,
-      driverId,
-      driverUserId,
-      bidId,
-      agreedFareNgn,
-      paymentMethod,
-      timestamp,
-    });
-
-    try {
-      await publisher.publishRideEvent(event);
-    } catch (error) {
-      // Not sent: nothing will book this driver, so neither the claim nor the money stays.
-      await releaseClaim();
-      if (paymentMethod !== 'CASH') await walletClient.cancelRideHold(rideId, driverUserId).catch(() => undefined);
-      throw error;
-    }
-
-    return {
-      type: 'ride:accept_offer:accepted',
-      payload: {
-        rideId: event.rideId,
-        driverId: event.driverId,
-        agreedFareNgn: event.agreedFareNgn,
-      },
-    };
+    // The tap in the app and auto-accept book through the same function (rides/app-accept.ts).
+    return acceptOfferInApp({ publisher, redis }, auth.userId, {
+      rideId: requireString(payload, 'rideId'),
+      driverId: requireString(payload, 'driverId'),
+      driverUserId: requireString(payload, 'driverUserId'),
+      bidId: getString(payload, 'bidId'),
+      paymentMethod: parsePaymentMethod(payload['paymentMethod']),
+      agreedFareNgn: getNumber(payload, 'agreedFareNgn'),
+    }, timestamp);
   }
 
   if (type === 'ride:decline_offer') {
@@ -1016,10 +843,14 @@ export async function handleRideMessage(
   }
 
   if (type === 'driver:reject') {
+    // The rider is the ride's: the app fills riderId from whatever offer is on
+    // its screen, which can be another ride's (or empty, which used to refuse it).
+    const rejectRideId = requireString(payload, 'rideId');
+    const rejectedRide = await rideClient.findById(rejectRideId).catch(() => null);
     const event = RideDriverRejectedEvent.parse({
       eventType: 'RIDE_DRIVER_REJECTED',
-      rideId: requireString(payload, 'rideId'),
-      riderId: requireString(payload, 'riderId'),
+      rideId: rejectRideId,
+      riderId: rejectedRide?.riderId ?? requireString(payload, 'riderId'),
       driverId: getString(payload, 'driverId') ?? auth.driverId ?? auth.userId,
       reason: getString(payload, 'reason') === 'manual_reject' ? 'manual_reject' : 'timeout',
       timestamp,

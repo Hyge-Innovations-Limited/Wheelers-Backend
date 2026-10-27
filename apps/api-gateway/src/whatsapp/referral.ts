@@ -43,6 +43,19 @@ export function referralWhatsappLink(code: string, botNumber = process.env['WHAT
 
 export const referralShareLink = (code: string, botNumber?: string): string => referralWhatsappLink(code, botNumber);
 
+/**
+ * What a rider forwards to a friend: the code, and the link that opens a chat
+ * with the Wheelers bot with it already typed (the bot reads it and adds it).
+ */
+export function referralShareMessage(code: string, link: string | null = referralShareLink(code)): string {
+  return link
+    ? `Book rides on WhatsApp with Wheelers and name your own price. Use my code *${code}* — tap to start: ${link}`
+    : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
+}
+
+/** WhatsApp's own share: pick a chat, and the forward message is typed there. */
+export const referralShareUrl = (code: string): string => `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code))}`;
+
 /** Where an app.wheelersng.com/r/CODE link (shared for a day) sends the friend: the same chat with the bot, on every phone. */
 export const referralLinkTarget = (code: string): string => referralWhatsappLink(code);
 

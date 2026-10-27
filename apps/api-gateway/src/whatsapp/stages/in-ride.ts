@@ -127,7 +127,7 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
             destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
             distanceKm, durationSeconds: plannedRoute.durationSeconds,
             suggestedFareNgn: suggestedFare, minOfferNgn: minFare,
-            ratePerKmNgn: plannedRoute.ratePerKmNgn, route: plannedRoute.geometry,
+            ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null, route: plannedRoute.geometry,
           });
           await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
 

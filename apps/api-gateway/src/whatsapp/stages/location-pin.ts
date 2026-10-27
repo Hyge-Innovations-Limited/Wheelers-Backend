@@ -126,7 +126,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
           durationSeconds: plannedRoute.durationSeconds,
           suggestedFareNgn: suggestedFare,
           minOfferNgn: minFare,
-          ratePerKmNgn: plannedRoute.ratePerKmNgn,
+          ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
           route: plannedRoute.geometry,
         });
         await setBookingStage(deps.redisClient, user.id, 'awaiting_price');
@@ -247,7 +247,7 @@ export async function locationPin(ctx: StageContext): Promise<boolean> {
       durationSeconds: plannedRoute.durationSeconds,
       suggestedFareNgn: suggestedFare,
       minOfferNgn: minFare,
-      ratePerKmNgn: plannedRoute.ratePerKmNgn,
+      ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
       route: plannedRoute.geometry,
     });
     await setBookingStage(deps.redisClient, user.id, 'awaiting_price');

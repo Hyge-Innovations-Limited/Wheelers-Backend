@@ -84,6 +84,8 @@ import type { CatchupItem } from '../whatsapp-flows/page-catchup';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
+import { noteOfferSent } from '../rides/search-status';
+import { autoAcceptPriceChanged, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -308,7 +310,7 @@ function scheduleBidFlush(
  *   WhatsApp refuses the tappable message → the numbered text list
  */
 export async function announceOffers(
-  deps: StartGatewayConsumerDeps,
+  deps: Pick<StartGatewayConsumerDeps, 'redisClient' | 'whatsappNotifier'>,
   phone: string,
   rideId: string,
   riderId: string,
@@ -428,6 +430,53 @@ function isOpenBid(status: string): boolean {
   return status === 'PENDING' || status === 'DECLINED';
 }
 
+/**
+ * A push to a driver whose app is not connected; a connected app has the
+ * socket message and needs no banner on top. Never throws.
+ */
+async function pushDriverIfAway(
+  deps: StartGatewayConsumerDeps,
+  driverUserId: string,
+  message: { title: string; body: string; type: string; rideId: string },
+): Promise<void> {
+  const connected = await Promise.resolve().then(() => deps.registry.isUserConnected(driverUserId)).catch(() => true);
+  if (connected) return;
+  await deps.publisher.publishNotificationEvent({
+    eventType: 'PUSH_SEND',
+    notificationId: randomUUID(),
+    userId: driverUserId,
+    title: message.title,
+    body: message.body,
+    data: { type: message.type, rideId: message.rideId },
+    priority: 'high',
+    timestamp: new Date().toISOString(),
+  }).catch(() => {});
+}
+
+/** What auto-accept needs from the consumer: Redis, the publisher, and the rider's app to tell. */
+function autoAcceptDeps(deps: StartGatewayConsumerDeps): AutoAcceptDeps {
+  return { redisClient: deps.redisClient, publisher: deps.publisher, registry: deps.registry, ...(deps.ridePageChat ? { tellChat: deps.ridePageChat } : {}) };
+}
+
+/**
+ * ride:search_status to the rider's app: how many drivers saw the request and
+ * when the search closes. A broadcast reaches many drivers in one burst; the
+ * rider gets one message for it, a moment after the last (all of a ride's
+ * events reach the same process: they share a Kafka key).
+ */
+export const SEARCH_STATUS_DELAY_MS = 250;
+const searchStatusTimers = new Map<string, NodeJS.Timeout>();
+function sendSearchStatusSoon(deps: StartGatewayConsumerDeps, riderId: string, rideId: string, status: { driversNotified: number | null; bidsCloseAt: string | null }): void {
+  const before = searchStatusTimers.get(rideId);
+  if (before) clearTimeout(before);
+  const timer = setTimeout(() => {
+    searchStatusTimers.delete(rideId);
+    void Promise.resolve().then(() => deps.registry.sendToUser(riderId, 'ride:search_status', { rideId, ...status })).catch(() => undefined);
+  }, SEARCH_STATUS_DELAY_MS);
+  timer.unref?.();
+  searchStatusTimers.set(rideId, timer);
+}
+
 /** One ride event, as the Kafka loop feeds it. Exported for the tests that replay events. */
 /** A search the scheduler started: its offers belong to the app, never to WhatsApp. Remembered a little longer than a search can run. */
 const APP_ONLY_RIDE_TTL_SECONDS = 2 * 60 * 60;
@@ -545,6 +594,18 @@ export async function handleRideEvent(
       stopKinds: event.stopKinds ?? [],
       groupMembers: event.groupMembers ?? [],
     });
+    // The rider's waiting screen: drivers who saw the price, and the search's clock.
+    const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
+    if (status?.changed) sendSearchStatusSoon(deps, event.riderId, event.rideId, { driversNotified: status.driversNotified, bidsCloseAt: status.bidsCloseAt });
+    // The rider changed their price: a driver away from the app hears it by push.
+    if (event.repriced) {
+      await pushDriverIfAway(deps, event.driverUserId, {
+        title: `New price ₦${Math.round(event.riderOfferNgn ?? 0).toLocaleString('en-NG')}`,
+        body: `${event.pickup.address} → ${event.destination.address}`,
+        type: 'ride:offer_updated',
+        rideId: event.rideId,
+      });
+    }
     return;
   }
 
@@ -640,7 +701,9 @@ export async function handleRideEvent(
         hasMeta: !!meta,
         source: meta?.source ?? null,
       });
-      if (phone && meta) {
+      // Auto-accept first: an offer it books is not announced as one to choose.
+      const autoBooked = meta ? (await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => ({ booked: false }))).booked : false;
+      if (phone && meta && !autoBooked) {
         const previousBatch = await getLastBatch(deps.redisClient, event.rideId).catch(() => []);
         const urgent = isUrgentOffer(previousBatch, bid);
         if (urgent) await noteNotified(deps.redisClient, event.rideId).catch(() => undefined);
@@ -698,6 +761,8 @@ export async function handleRideEvent(
         });
       }
     }
+    // Auto-accept on: this offer (or a better one on the table) may be booked now.
+    await tryAutoAccept(autoAcceptDeps(deps), event.rideId).catch(() => undefined);
     return;
   }
 
@@ -710,6 +775,9 @@ export async function handleRideEvent(
     });
     // Driver notification is handled when ride-service re-broadcasts RIDE_OFFER_SENT
     // with the updated riderOfferNgn — the RIDE_OFFER_SENT handler above bridges to WhatsApp.
+    // The rider's own price moved (not a haggle with one driver): auto-accept follows it,
+    // or switches off when the wallet no longer covers it.
+    if (!event.driverId) await autoAcceptPriceChanged(autoAcceptDeps(deps), event.rideId, event.counterOfferNgn).catch(() => undefined);
     return;
   }
 
@@ -745,6 +813,7 @@ export async function handleRideEvent(
       if (!isOpenBid(bid.status)) continue;
       void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
         rideId: event.rideId,
+        reason: 'timed_out',
       });
     }
 
@@ -757,6 +826,10 @@ export async function handleRideEvent(
         status: timedOutRide.status,
       });
       return;
+    }
+    // A bidder away from the app hears the search ended by push.
+    for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
+      await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId: event.rideId });
     }
 
     await driverBidClient.resolvePending(event.rideId, 'EXPIRED').catch(() => {});
@@ -840,7 +913,8 @@ export async function handleRideEvent(
       if (ride?.status !== 'CANCELLED') {
         // Another driver has this ride (or it is over): that trip is left
         // exactly as it is; this driver only hears they did not get it.
-        void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId });
+        void registry.sendToUser(event.driverUserId, 'ride:bid_lost', { rideId: event.rideId, reason: 'booked_other' });
+        await pushDriverIfAway(deps, event.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId });
         return;
       }
       // The rider ended it first and was told then; the driver, told they
@@ -868,6 +942,8 @@ export async function handleRideEvent(
     const first = await deps.redisClient.setIfNotExists(`ride:${event.rideId}:busy:${event.driverId}`, '1', 120).catch(() => true);
     if (!stillChoosing || holdIsAnothers || !first) return;
     await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
+    // The search goes on: auto-accept may book another driver.
+    await clearAutoAcceptBooked(deps.redisClient, event.rideId);
     void registry.sendToUser(event.riderId, 'ride:accept_offer:rejected', {
       rideId: event.rideId,
       driverId: event.driverId,
@@ -920,14 +996,17 @@ export async function handleRideEvent(
       if (losing.driverId === event.driverId || !isOpenBid(losing.status)) continue;
       void registry.sendToUser(losing.driverUserId, 'ride:bid_lost', {
         rideId: event.rideId,
+        reason: 'booked_other',
       });
+      // Away from the app: a push, so the driver is not left waiting on this rider.
+      await pushDriverIfAway(deps, losing.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId });
     }
     // Drivers who were offered it but never bid: their request card closes as
     // "Taken by another driver" instead of lingering until it expires.
     const bidders = new Set(losingBids.map((bid) => bid.driverUserId));
     for (const userId of event.offeredDriverUserIds ?? []) {
       if (userId === event.driverUserId || bidders.has(userId)) continue;
-      void registry.sendToUser(userId, 'ride:bid_lost', { rideId: event.rideId });
+      void registry.sendToUser(userId, 'ride:bid_lost', { rideId: event.rideId, reason: 'booked_other' });
     }
 
     // The winner is off the market: withdraw their bids on every OTHER ride
@@ -1079,6 +1158,13 @@ export async function handleRideEvent(
       riderName,
       // The Start button asks for the rider's code. Never the code itself.
       tripCodeRequired: tripCodeNeeded,
+    });
+    // Away from the app: the booking by push too.
+    await pushDriverIfAway(deps, event.driverUserId, {
+      title: "You're booked",
+      body: rideSnapshot?.pickup?.address ? `Pick up at ${rideSnapshot.pickup.address}` : 'Open Wheelers to see the pickup.',
+      type: 'ride:matched',
+      rideId: event.rideId,
     });
 
     return;
@@ -1255,12 +1341,18 @@ export async function handleRideEvent(
     // only fires when there IS an assigned driver. Same message as a
     // timeout: to a bidder, "request gone" is all that matters.
     const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
+    // Why the search ended, for the driver's card: the rider stopped it (or replaced it with a new one).
+    const searchEndReason = event.cancelledBy === 'driver' ? 'timed_out' : 'rider_cancelled';
     for (const bid of openBids) {
       if (!isOpenBid(bid.status)) continue;
       if (event.driverUserId && bid.driverUserId === event.driverUserId) continue;
       void registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', {
         rideId: event.rideId,
+        reason: searchEndReason,
       });
+      if (searchEndReason === 'rider_cancelled') {
+        await pushDriverIfAway(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId });
+      }
     }
 
     await driverBidClient.resolvePending(event.rideId, 'CANCELLED').catch(() => {});
@@ -1278,6 +1370,8 @@ export async function handleRideEvent(
     // time, and could leave it locked for good.
     const driverBailed = event.cancelledBy === 'driver';
     if (driverBailed) {
+      // The search goes on: auto-accept may book again.
+      await clearAutoAcceptBooked(deps.redisClient, event.rideId);
       // The search starts again. The offers on the table were the old search's:
       // the driver who just left, and the ones who lost to them. "1 driver found"
       // for the driver who bailed is not an offer.
@@ -1391,6 +1485,10 @@ export async function handleRideEvent(
           reason: event.reason,
           cancelledBy: event.cancelledBy ?? 'rider',
         });
+        // The rider called off a booked trip: a driver away from the app (driving to them) hears it by push.
+        if ((event.cancelledBy ?? 'rider') === 'rider' && driverUserId !== event.driverUserId) {
+          await pushDriverIfAway(deps, driverUserId, { title: 'Rider cancelled', body: 'This trip is off.', type: 'ride:cancelled', rideId: event.rideId });
+        }
       } else {
         console.warn('[gateway] ride cancelled but the driver could not be notified', {
           rideId: event.rideId,
@@ -1420,6 +1518,8 @@ export async function handleRideEvent(
     }
     await registry.sendToUser(event.riderId, 'ride:driver_rejected', {
       rideId: event.rideId,
+      // Which driver: the app takes their offer off the list when they withdrew it.
+      driverId: event.driverId,
       reason: event.reason,
     });
     return;
@@ -1844,7 +1944,7 @@ async function participantsFor(
  * or the rider can still "pay" for a driver who withdrew.
  */
 /** What the offer count on "Your bid is in" needs: Redis and the WhatsApp sender. */
-function offerCountDeps(deps: StartGatewayConsumerDeps) {
+function offerCountDeps(deps: Pick<StartGatewayConsumerDeps, 'redisClient' | 'whatsappNotifier'>) {
   if (!deps.whatsappNotifier) return null;
   return { redis: deps.redisClient, meta: { metaAccessToken: deps.whatsappNotifier.metaAccessToken, metaPhoneNumberId: deps.whatsappNotifier.metaPhoneNumberId } };
 }
@@ -1855,8 +1955,8 @@ async function endOfferCount(deps: StartGatewayConsumerDeps, rideId: string): Pr
   if (countDeps) await clearOfferCount(countDeps, rideId).catch(() => undefined);
 }
 
-async function dropBidFromWhatsappRide(
-  deps: StartGatewayConsumerDeps,
+export async function dropBidFromWhatsappRide(
+  deps: Pick<StartGatewayConsumerDeps, 'redisClient' | 'whatsappNotifier'>,
   rideId: string,
   riderId: string,
   driverId: string,
@@ -1873,6 +1973,8 @@ async function dropBidFromWhatsappRide(
   }
   const isWa = await isWhatsappRider(deps.redisClient, riderId);
   if (!isWa) return;
+  // On the ride page the offer simply leaves the list there: nothing in the chat.
+  if (await isRidePageOpen(deps.redisClient, riderId)) return;
   const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
   if (!phone) return;
   // With the offers form nothing needs saying: it opens on the live list, and

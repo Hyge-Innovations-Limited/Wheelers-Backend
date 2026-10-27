@@ -239,7 +239,7 @@ export async function handleRideEstimateRoute(
       plannedDurationSeconds: plannedRoute.durationSeconds,
       suggestedFareNgn: plannedRoute.suggestedFareNgn,
       minOfferNgn: plannedRoute.minOfferNgn,
-      ratePerKmNgn: plannedRoute.ratePerKmNgn,
+      ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
       fareEstimateNgn: plannedRoute.suggestedFareNgn,
       pricingCurrency: "NGN",
       pricingBreakdown: plannedRoute.ridePrice,
