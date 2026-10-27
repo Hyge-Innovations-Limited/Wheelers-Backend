@@ -53,8 +53,19 @@ export function referralShareMessage(code: string, link: string | null = referra
     : `Book rides on WhatsApp with Wheelers. Message Wheelers and say: My referral code is ${code}`;
 }
 
-/** WhatsApp's own share: pick a chat, and the forward message is typed there. */
-export const referralShareUrl = (code: string): string => `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code))}`;
+/**
+ * The short link to show and to put in a QR: app.wheelersng.com/r/CODE, which
+ * opens the chat with the bot and the code typed (GET /r/:code), for anyone.
+ */
+export function referralShortLink(code: string, base = process.env['APP_BASE_URL'] || 'https://app.wheelersng.com'): string {
+  return `${base.trim().replace(/\/+$/, '')}/r/${encodeURIComponent(code)}`;
+}
+
+/** The short link as a person reads it: no https://. */
+export const referralShortLinkText = (code: string): string => referralShortLink(code).replace(/^https?:\/\//, '');
+
+/** WhatsApp's own share: pick a chat, and the forward message (with the short link) is typed there. */
+export const referralShareUrl = (code: string): string => `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code, referralShortLink(code)))}`;
 
 /** Where an app.wheelersng.com/r/CODE link (shared for a day) sends the friend: the same chat with the bot, on every phone. */
 export const referralLinkTarget = (code: string): string => referralWhatsappLink(code);

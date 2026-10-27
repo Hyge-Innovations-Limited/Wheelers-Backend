@@ -14,7 +14,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { prisma, referralClient } = require('@wheleers/db');
 const { handleQuickActionsFlow, NO_IMAGE_PNG } = require('../apps/api-gateway/dist/whatsapp-flows/quick-actions-flow.js');
-const { referralShareLink, referralShareMessage } = require('../apps/api-gateway/dist/whatsapp/referral.js');
+const { referralShareLink, referralShareMessage, referralShortLink } = require('../apps/api-gateway/dist/whatsapp/referral.js');
 
 const FLOW_PATH = path.join(__dirname, '../apps/api-gateway/src/whatsapp-flows/quick-actions-flow-definition.json');
 const made = [];
@@ -89,13 +89,15 @@ test('Your referral code: the code, the QR of the link, the link, and Share with
   const screen = await choose(userId, 'my_code');
   assert.equal(screen.screen, 'NOTE');
   assert.equal(screen.data.headline, `Your code is ${code}`);
-  const link = referralShareLink(code);
-  assert.ok(screen.data.note.includes(link), 'the link is shown');
+  // The short link, never the long wa.me one: app.wheelersng.com/r/CODE opens the bot with the code typed.
+  const link = referralShortLink(code);
+  assert.ok(screen.data.note.includes(link.replace(/^https?:\/\//, '')), 'the short link is shown');
+  assert.ok(!screen.data.note.includes('wa.me'), 'no long wa.me link on the screen');
   assert.equal(screen.data.has_share, true);
   const png = Buffer.from(screen.data.qr_image, 'base64');
   assert.equal(png.subarray(1, 4).toString(), 'PNG', 'a PNG, base64 without a data: prefix');
   assert.ok(png.length < 100_000, `small enough for the form (${png.length} bytes)`);
-  assert.equal(screen.data.share_url, `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code))}`);
+  assert.equal(screen.data.share_url, `https://wa.me/?text=${encodeURIComponent(referralShareMessage(code, link))}`);
   assert.ok(decodeURIComponent(screen.data.share_url).includes(link), 'Share carries the link');
   assert.equal(sentToChat.length, before, 'no chat message');
   assert.equal('rearm' in screen.data, false);

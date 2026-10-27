@@ -2252,11 +2252,32 @@ const { handleQuickActionsFlow } = require('../apps/api-gateway/dist/whatsapp-fl
 const { createQuickActionsChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const QUICK_ACTIONS_FLOW = require('../apps/api-gateway/src/whatsapp-flows/quick-actions-flow-definition.json');
 
-/** Drive the Quick Actions form as Meta would: `screen` is where the tap happened. */
-function menuForm(at) {
-  const formDeps = { redisClient: at.redis, publisher: at.deps.publisher, googleMapsApiKey: at.deps.googleMapsApiKey, routePlanner: at.deps.routePlanner, ...createQuickActionsChatHooks(at.deps) };
+/**
+ * Drive the Quick Actions form as Meta would: `screen` is where the tap happened.
+ * Book a ride opens the ride page when there is one (`onPage`); without it, the
+ * form's own booking screens — what most of these tests walk through.
+ */
+function menuForm(at, { onPage = false } = {}) {
+  const hooks = createQuickActionsChatHooks(at.deps);
+  if (!onPage) delete hooks.onBookOnPage;
+  const formDeps = { redisClient: at.redis, publisher: at.deps.publisher, googleMapsApiKey: at.deps.googleMapsApiKey, routePlanner: at.deps.routePlanner, ...hooks };
   return (action, data, screen) => handleQuickActionsFlow({ version: '3.0', action, flow_token: 'x', screen, data }, at.user.id, formDeps);
 }
+
+test('QUICK ACTIONS FORM · Book a ride opens the ride page: the form says swipe down, the chat gets ONE Book a ride button', async () => {
+  const at = await riderWithHistory();
+  const form = menuForm(at, { onPage: true });
+  await form('INIT');
+  const before = at.sent.length;
+  const done = await form('data_exchange', { action: 'menu_choice', choice: 'book' }, 'MENU');
+  assert.equal(done.screen, 'NOTE');
+  assert.equal(done.data.headline, 'Swipe down to book');
+  const added = at.sent.slice(before);
+  assert.equal(added.length, 1, 'one chat message');
+  const text = JSON.stringify(added[0]);
+  assert.match(text, /widget\/ride\/ride\.html#t=/, 'its button opens the ride page');
+  assert.match(text, /Book a ride/);
+});
 
 test('QUICK ACTIONS FORM · the menu is ONE message whose button opens the form — and the list picker if WhatsApp refuses it', async () => {
   process.env.SUPPORT_CONTACT = '+2348000000000';

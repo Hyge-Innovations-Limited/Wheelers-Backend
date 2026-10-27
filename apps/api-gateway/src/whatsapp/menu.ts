@@ -7,8 +7,8 @@ import type { PendingRouteData } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { MetaWhatsappRouteDeps } from './deps';
 import { createOffersFormChatHooks, sendCurrentOffers } from './ride-card';
-import { replyAndLog, sendInteractive, sendMetaReply, sendMetaText } from './send';
-import { BOOKING_START_PROMPT, BUSY_REPLY, planRouteSafe, sendSearchStarted, sendTripConfirmation } from './trip';
+import { replyAndLog, sendInteractive, sendMetaLinkButton, sendMetaReply, sendMetaText } from './send';
+import { BOOKING_START_PROMPT, BUSY_REPLY, planRouteSafe, ridePageUrl, sendSearchStarted, sendTripConfirmation } from './trip';
 import { referralShareMessage } from './referral';
 import { sendWalletPageButton } from './wallet';
 
@@ -178,6 +178,15 @@ export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
       await appendWhatsappConversation(deps.redisClient, who.phone, [{ role: 'user', content: `[bid ₦${offerNgn.toLocaleString()} in the form]` }, { role: 'assistant', content: said }]);
     },
     /** Book a ride from Quick Actions: booking is the chat's job — one clear prompt, no menu under it. */
+    onBookOnPage: async (userId: string): Promise<boolean> => {
+      const url = ridePageUrl(deps, userId);
+      if (!url) return false;
+      const phone = (await userClient.findById(userId).catch(() => null))?.phone;
+      if (!phone) return false;
+      await sendMetaLinkButton(deps, phone, 'Where are you going?', 'Book a ride', url);
+      await appendWhatsappConversation(deps.redisClient, phone, [{ role: 'user', content: '[chose Book a ride in Quick Actions]' }, { role: 'assistant', content: '[sent the Book a ride button: the ride page]' }]);
+      return true;
+    },
     onBookInChat: async (userId: string): Promise<void> => {
       const phone = (await userClient.findById(userId).catch(() => null))?.phone;
       if (!phone) return;

@@ -1,7 +1,7 @@
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { referralClient, rideClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import QRCode from 'qrcode';
-import { referralShareLink, referralShareUrl } from '../whatsapp/referral';
+import { referralShareUrl, referralShortLink, referralShortLinkText } from '../whatsapp/referral';
 import { recentTrips, reversed, shortPlace, type PastTrip } from '../http/quick-actions';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
@@ -83,6 +83,8 @@ export interface QuickActionsFlowDeps {
   ensureDepositAccount?: (userId: string) => Promise<VirtualAccountLines | null>;
   /** Book a ride: the form closes and the chat asks where they are going. */
   onBookInChat?: (userId: string) => Promise<void>;
+  /** Book a ride on the ride page (the app's screens): the chat gets its one button. False when the page is not available. */
+  onBookOnPage?: (userId: string) => Promise<boolean>;
   /** Their own referral code saved here: the chat gets it as a message to forward. */
   onReferralCodeSaved?: (userId: string, code: string) => Promise<void>;
   /** A bid placed here: the chat gets the See driver offers button. */
@@ -419,6 +421,10 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
     // pin, a picker waiting for a number) would make "from Ilemere" an EDIT of that trip's pickup,
     // keeping its destination — the rider asked to book, not to change something.
     await clearBooking(deps.redisClient, userId);
+    // Booking is on the ride page, as in the app: one button in the chat opens it.
+    if (deps.onBookOnPage && await deps.onBookOnPage(userId).catch(() => false)) {
+      return doneScreen('Swipe down to book', 'Tap Book a ride in the chat.', false);
+    }
     return startBooking(deps, userId);
   }
   if (choice === MENU_IDS.repeat || choice === MENU_IDS.reverse) {
@@ -526,11 +532,11 @@ async function shareMyCode(userId: string, code: string, _deps: QuickActionsFlow
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
     rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  const link = referralShareLink(code);
-  const shown = doneScreen(`Your code is ${code}`, `Your link: ${link}${stats ? `\n\n${stats}` : ''}`, false);
+  // The short link (app.wheelersng.com/r/CODE opens the bot with the code typed), never the long wa.me one.
+  const shown = doneScreen(`Your code is ${code}`, `Your link: ${referralShortLinkText(code)}${stats ? `\n\n${stats}` : ''}`, false);
   // The QR of the link (a friend scans it) and Share (WhatsApp's own, with the forward message typed).
   if (!shareInForm()) return shown;
-  const qr = await referralQrPng(link);
+  const qr = await referralQrPng(referralShortLink(code));
   if (!qr) return shown;
   return { screen: 'NOTE', data: { headline: shown.data['headline'], note: shown.data['note'], has_share: true, qr_image: qr, share_url: referralShareUrl(code) } };
 }

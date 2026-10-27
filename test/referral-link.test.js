@@ -207,7 +207,7 @@ test('QUICK ACTIONS · a rider with no code is offered to create one; creating i
   assert.equal(done.screen, 'NOTE');
   assert.equal(done.data.headline, `Your code is ${code}`);
   assert.deepEqual(saved, [], 'no chat messages: the code and the link are on the screen');
-  assert.match(done.data.note, /Your link: https:\/\/wa\.me\//);
+  assert.match(done.data.note, /Your link: app\.wheelersng\.com\/r\//, 'the short link, not the long wa.me one');
   assert.equal(await referralClient.findOwnCode(rider.id), code);
 
   const after = await tap('menu_choice', { choice: 'nothing' });
