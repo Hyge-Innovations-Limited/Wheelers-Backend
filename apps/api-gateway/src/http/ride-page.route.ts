@@ -11,7 +11,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import { clearPendingAccept, getPendingAccept, markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
 import { isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
@@ -46,6 +46,7 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *   POST /ride-page/offer        { amountNgn }  change the bid
  *   POST /ride-page/accept       { key }        take one driver's offer (holds the fare)
  *   POST /ride-page/decline      { key }        decline one driver's offer; they can send a new price
+ *   POST /ride-page/keep-looking                backed out of adding money for a driver: no longer theirs to pay for
  *   POST /ride-page/decline-all                 decline every offer; the search goes on
  *   POST /ride-page/cancel        { reason, detail? }   stop the search, saying why (the app's reasons)
  *   GET  /ride-page/places?q=&field=            places matching what the rider types (the chat's lookup)
@@ -604,6 +605,22 @@ async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: Ri
   sendJson(res, 200, await buildState(deps, userId));
 }
 
+/* ── POST /ride-page/keep-looking ─────────────────────────────────────── */
+
+/**
+ * Backed out of adding money for a driver: that driver is no longer theirs
+ * to pay for. A deposit later does not book them, and auto-accept is free
+ * again. The offer itself stays on the list.
+ */
+async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  const paying = await getPendingAccept(deps.redisClient, userId).catch(() => null);
+  if (paying && (!rideId || paying.rideId === rideId)) await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
 /* ── POST /ride-page/decline-all ──────────────────────────────────────── */
 
 async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -945,6 +962,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/offer': { method: 'POST', run: handleOffer },
   '/ride-page/accept': { method: 'POST', run: handleAccept },
   '/ride-page/decline': { method: 'POST', run: handleDecline },
+  '/ride-page/keep-looking': { method: 'POST', run: handleKeepLooking },
   '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
   '/ride-page/places': { method: 'GET', run: handlePlaces },

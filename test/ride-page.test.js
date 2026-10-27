@@ -605,6 +605,18 @@ test('Use my current location: the phone\'s position comes back as a place, and 
   }
 });
 
+test('backing out of adding money for a driver: that driver is no longer theirs to pay for', async () => {
+  const { deps, redis } = world();
+  const rider = await makeRider(0);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const searching = (await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 })).body;
+  await bidState.storePendingAccept(redis, rider, { rideId: searching.rideId, driverId: randomUUID(), driverUserId: randomUUID(), driverName: 'Tunde', driverPhone: '', driverRating: 5, totalRides: 0, vehicleModel: '', vehiclePlate: '', counterOfferNgn: 6400, etaSeconds: 300 });
+  const back = await call(deps, rider, 'POST', '/ride-page/keep-looking');
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.equal(await bidState.getPendingAccept(redis, rider), null);
+  assert.equal(back.body.phase, 'offers', 'the search goes on');
+});
+
 test('going back from the search to change the trip stops the search and brings the trip back, price and all; the chat is not told it was cancelled', async () => {
   const { deps, redis, events, chat } = world();
   const rider = await makeRider(10_000);

@@ -365,7 +365,9 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
       // sent anyway), and only ever load their own scripts.
       "X-Frame-Options": "DENY",
       "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
+      // The ride page's map is Google's, and its key is locked to our address:
+      // that page sends its origin (the link token is in the #fragment, never sent).
+      "Referrer-Policy": relative.startsWith("ride/") ? "origin" : "no-referrer",
       "Content-Security-Policy": relative.startsWith("ride/") ? RIDE_PAGE_CSP : WIDGET_CSP,
     });
     res.end(data);
