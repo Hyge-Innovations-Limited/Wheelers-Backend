@@ -466,7 +466,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
@@ -498,6 +498,7 @@
     if (asking) { var answer = asking; asking = null; answer(false); }
     // Put away without an answer: no search starts.
     if (askingAuto) { var auto = askingAuto; askingAuto = null; auto(null); }
+    if (askingRoute) { var routeAnswer = askingRoute; askingRoute = null; routeAnswer(null); }
   }
 
   /**
@@ -1232,8 +1233,25 @@
     });
   }
 
+  /** A field with words typed in it but no place picked from the list: the first, or null. */
+  function unpickedField() {
+    var fields = planFields();
+    for (var i = 0; i < fields.length; i++) {
+      var input = inputFor(fields[i]);
+      if (!fieldPlace(fields[i]) && input && !input.disabled && input.value.trim()) return fields[i];
+    }
+    return null;
+  }
+
   function submitPlan() {
     if (busy) return;
+    // Typed but not picked (a stop too): never sent as if it were empty. The cursor goes there, the words stay.
+    var unpicked = unpickedField();
+    if (unpicked) {
+      if (plan.active !== unpicked) { plan.active = unpicked; plan.query = inputFor(unpicked).value; plan.results = []; drawPlan(); }
+      inputFor(unpicked).focus();
+      return;
+    }
     if (!plan.pickup) return focusField('pickup');
     if (!plan.destination) return focusField('destination');
     var button = W.$('plan-go');
@@ -1266,20 +1284,81 @@
 
   W.$('plan-go').addEventListener('click', submitPlan);
 
-  function changeRoute(destination, stops, button) {
-    api('POST', '/ride-page/trip-route', { destination: destination, stops: stops }).then(function (next) {
-      track('route_changed', { stops: stops.length });
+  /**
+   * The trip under way gets a new route. As the app, the price is asked about before any money moves:
+   * the new fare is quoted first; when it differs, "₦X more will be held" (or less) waits for "Update route".
+   * The fare agreed is sent with the change (the server refuses it as PRICE_CHANGED if it moved: quoted again).
+   */
+  function changeRoute(destination, stops, button, attempt) {
+    attempt = attempt || 0;
+    function done() { busy = false; button.className = 'btn primary'; }
+    api('POST', '/ride-page/trip-route/quote', { destination: destination, stops: stops }).catch(function (error) {
+      if (error.status === 404 && error.code !== 'NO_TRIP') return null;   // a server without the quote step
+      throw error;
+    }).then(function (quote) {
+      var fare = quote && Number(quote.fareNgn) > 0 ? Math.round(Number(quote.fareNgn)) : null;
+      var extra = quote ? Math.round(Number(quote.extraNgn) || 0) : 0;
+      if (!quote || extra === 0) return sendRoute(destination, stops, fare, button, attempt);
+      done();
+      return askRoutePrice(fare, extra).then(function (yes) {
+        if (yes === null) return;   // put away: Change your route stays as it is
+        track('route_price_answered', { yes: yes, extraNgn: extra });
+        if (!yes) return;   // "Keep my trip": already back on the trip
+        if (busy) return;
+        busy = true;
+        button.className = 'btn primary busy';
+        return sendRoute(destination, stops, fare, button, attempt);
+      });
+    }).catch(function (error) {
+      routeFailed(error);
+      done();
+    });
+  }
+  function sendRoute(destination, stops, fare, button, attempt) {
+    var body = { destination: destination, stops: stops };
+    if (fare !== null) body.acceptedFareNgn = fare;
+    return api('POST', '/ride-page/trip-route', body).then(function (next) {
+      track('route_changed', { stops: stops.length, fareNgn: fare });
+      busy = false;
+      button.className = 'btn primary';
       navHome();
       apply(next);
-    }).catch(function (error) {
-      if (linkDead(error)) return dead(error);
-      track('route_change_failed', { code: error.code || String(error.status) });
-      W.$('plan-err').textContent = error.message;
-      W.show(W.$('plan-err'), true);
-      // The trip moved on (it ended, or was cancelled): the next look shows where it is.
-      if (error.status === 409 || error.status === 404) refresh();
-    }).then(function () { busy = false; button.className = 'btn primary'; });
+    }, function (error) {
+      // The fare moved between the quote and the change: quoted again, asked again (once).
+      if (error.code === 'PRICE_CHANGED' && attempt < 1) return changeRoute(destination, stops, button, attempt + 1);
+      throw error;
+    });
   }
+  function routeFailed(error) {
+    if (linkDead(error)) return dead(error);
+    track('route_change_failed', { code: error.code || String(error.status) });
+    W.$('plan-err').textContent = error.message;
+    W.show(W.$('plan-err'), true);
+    // The trip moved on (it ended, or was cancelled): the next look shows where it is.
+    if (error.status === 409 || error.status === 404) refresh();
+  }
+
+  /** "₦X more will be held" / "₦X less will be held", the new fare under it: true, false, or null when put away. */
+  var askingRoute = null;
+  function askRoutePrice(fare, extra) {
+    return new Promise(function (resolve) {
+      openSheet('sheet-route-price');
+      W.$('rp-title').textContent = W.naira(Math.abs(extra)) + (extra > 0 ? ' more' : ' less') + ' will be held';
+      W.$('rp-text').textContent = fare ? 'New fare ' + W.naira(fare) + '.' : '';
+      W.show(W.$('rp-text'), Boolean(fare));
+      askingRoute = resolve;
+    });
+  }
+  function answerRoute(yes) {
+    var answer = askingRoute;
+    askingRoute = null;
+    // "Keep my trip": back to the trip, the sheet's and the screen's history entries together.
+    if (yes) closeSheets();
+    else { navHome(); render(); }
+    if (answer) answer(yes);
+  }
+  W.$('rp-yes').addEventListener('click', function () { answerRoute(true); });
+  W.$('rp-no').addEventListener('click', function () { answerRoute(false); });
 
   /** The trip was planned on this page: Set your price's Back goes to Plan your trip, not WhatsApp. */
   var PLANNED_KEY = 'wheelers.ride.planned';
@@ -1423,7 +1502,7 @@
     var anyDay = c.days.some(function (d) { return dayHasTime(d.start, now); });
     var otherDay = c.days.some(function (d) { return d.index !== c.day.index && dayHasTime(d.start, now); });
     W.show(W.$('sch-none'), c.choices.length === 0);
-    W.$('sch-none').textContent = !anyDay ? 'No pickup times left.'
+    W.$('sch-none').textContent = !anyDay ? (windowClosed(now, scheduleLimit()) ? WINDOW_CLOSED : 'No pickup times left.')
       : 'No half-hour times are left' + (dayOffset(c.day.start, now) === 0 ? ' today' : '') + '. Choose another time' + (otherDay ? ' or another day' : '') + '.';
     W.show(W.$('sch-another'), anyDay);
     W.$('sch-when').textContent = c.pickup ? dayWords(c.pickup, now) + ', ' + minutesWords(c.minutes) : 'Choose a time';
@@ -1471,9 +1550,13 @@
   });
   function tpValue() { return ((tp.hour12 % 12) + (tp.pm ? 12 : 0)) * 60 + tp.minute; }
   /** "Choose a time by 3:30 pm." (or "by tomorrow, 9:00 am."): the latest the server takes. */
+  var WINDOW_CLOSED = 'Send any message in WhatsApp, then pick a time.';
+  /** The latest time is now or less than 15 minutes away: a message in WhatsApp opens the window again. */
+  function windowClosed(now, limit) { return limit !== null && isFinite(limit) && limit < now.getTime() + MIN_LEAD_MINUTES * 60000; }
   function lateWords(now, limit) {
     if (limit === undefined) limit = scheduleLimit();
     if (limit === null || !isFinite(limit)) return 'Choose an earlier time.';
+    if (windowClosed(now, limit)) return WINDOW_CLOSED;
     var by = new Date(limit);
     return 'Choose a time by ' + (dayOffset(by, now) === 0 ? timeWords(by) : homeWhen(by, now)) + '.';
   }
@@ -1531,12 +1614,13 @@
   /** The server's refusals of a ride for later, in one short line. */
   function scheduleRefusal(error) {
     var body = (error && error.body) || {};
+    // The server's own short words ("Send any message in WhatsApp, then pick a time.", …); these if it sends none.
     if (error.code === 'SCHEDULE_OUTSIDE_WINDOW') {
       refresh();   // the latest time the page offers may have moved
-      return lateWords(new Date(), typeof body.scheduleUntil === 'string' ? Date.parse(body.scheduleUntil) : scheduleLimit());
+      return error.message || lateWords(new Date(), typeof body.scheduleUntil === 'string' ? Date.parse(body.scheduleUntil) : scheduleLimit());
     }
-    if (error.code === 'SCHEDULE_LIMIT') return 'You already have ' + (Number(body.limit) > 0 ? Number(body.limit) : 5) + ' rides booked for later.';
-    if (error.code === 'SCHEDULE_TOO_CLOSE') return 'You have a ride for later within ' + (Number(body.minutes) > 0 ? Number(body.minutes) : 30) + ' minutes of this time.';
+    if (error.code === 'SCHEDULE_LIMIT') return error.message || 'You can book up to 5 rides ahead.';
+    if (error.code === 'SCHEDULE_TOO_CLOSE') return error.message || 'You have a ride within 30 minutes of that time.';
     return error.message;
   }
 
@@ -1971,7 +2055,9 @@
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       track('find_failed', { code: error.code || String(error.status), again: true });
-      var box = W.$(fromSheet ? 'offer-err' : 'nd-err');
+      // Where the rider is: the price sheet, No driver accepted, or (moved on meanwhile) a short note.
+      var box = fromSheet && !W.$('sheet-offer').hidden ? W.$('offer-err') : shownView === 'nodriver' ? W.$('nd-err') : null;
+      if (!box) return say(error.message, 'bad');
       box.textContent = error.message;
       W.show(box, true);
     }).then(function () { busy = false; });
@@ -2860,6 +2946,7 @@
 
   /* ── 3 · confirmed → live trip ────────────────────────────────────────── */
 
+  var tripLineSig = null;
   var tripMap = null, carMarker = null, tripLine = null, tripPins = [], tripFor = null, followCar = true, mapFitted = false;
 
   /** A new ride on the same page: the last one's pins, road and car go, and the map frames afresh. */
@@ -2867,6 +2954,7 @@
     tripPins.forEach(function (pin) { pin.setMap(null); });
     tripPins = [];
     if (tripLine) { tripLine.setMap(null); tripLine = null; }
+    tripLineSig = null;
     if (carMarker) { if (carMarker.gliding) cancelAnimationFrame(carMarker.gliding); carMarker.setMap(null); carMarker = null; }
     mapFitted = false;
     followCar = true;
@@ -2917,7 +3005,9 @@
       }
       // The planned road, once: pickup to destination through the stops.
       var line = Array.isArray(t.line) ? t.line.filter(validPoint) : [];
-      if (!tripLine && line.length > 1) tripLine = routeLine(g, tripMap, line);
+      var lineSig = line.length ? line.length + '|' + line[0].lat + ',' + line[0].lng + '|' + line[line.length - 1].lat + ',' + line[line.length - 1].lng + '|' + line[Math.floor(line.length / 2)].lat : '';
+      if (tripLine && lineSig !== tripLineSig) { tripLine.setMap(null); tripLine = null; }
+      if (!tripLine && line.length > 1) { tripLine = routeLine(g, tripMap, line); tripLineSig = lineSig; }
 
       if (!position) {
         if (!mapFitted) { frame(g, tripMap, line.length > 1 ? line : [t.pickup, t.destination], 50); mapFitted = 'route'; }
@@ -2993,7 +3083,10 @@
   function routeTrip(s) {
     var p = s && s.phase === 'confirmed' ? s.places || (s.route && s.route.places) : null;
     if (!p || !validPoint(p.pickup) || !validPoint(p.destination) || !p.pickup.address || !p.destination.address) return null;
-    return { pickup: p.pickup, destination: p.destination, stops: Array.isArray(p.stops) ? p.stops : [] };
+    var stops = Array.isArray(p.stops) ? p.stops : [];
+    // More stops than may be sent back (state.maxStops): the route cannot be changed here.
+    if (stops.length > maxStops()) return null;
+    return { pickup: p.pickup, destination: p.destination, stops: stops };
   }
 
   function drawTripFoot(s) {
@@ -3058,23 +3151,57 @@
     if (support && !support.href) { event.preventDefault(); say(support.text); }
   });
 
-  /* Emergency, as the app's (components/emergency-button.tsx): the sheet asks, then the alert goes */
+  /* Emergency, as the app's (components/emergency-button.tsx): the sheet asks what is happening, then the alert goes */
 
+  // The app's kinds and words (lib/safety.ts describeAlertKind); the server's list (state.sosKinds) wins.
+  var SOS_LABELS = { SOS: 'I need help now', UNSAFE_DRIVING: 'Unsafe driving', ROUTE_DEVIATION: 'We are off the route', ACCIDENT: 'There has been an accident', MEDICAL: 'Medical emergency' };
   var SOS_KEY = 'wheelers.ride.sos';
-  var sosLive = readStore('sessionStorage', SOS_KEY) || {};   // { rideId: true } — raised from this page
+  var sosLive = readStore('sessionStorage', SOS_KEY) || {};   // { rideId: { kind, at } } — raised from this page
   var sosStep = 'ask';   // 'ask' | 'sent' | 'live'
   var sosSending = false;
   /** Offered while there is a trip and the server takes the alert (a newer one sends these fields). */
   function sosOffered(s) { return Boolean(s && s.phase === 'confirmed' && ('supportContact' in s || 'rideCancelReasons' in s || 'sosActive' in s)); }
+  /** [{ kind, label }]: the server's, in its order (strings or { kind, label }); none sent: "I need help now" only. */
+  function sosKinds(s) {
+    var list = s && Array.isArray(s.sosKinds) ? s.sosKinds : [];
+    var kinds = list.map(function (item) {
+      var kind = typeof item === 'string' ? item : item && typeof item.kind === 'string' ? item.kind : '';
+      var label = item && typeof item.label === 'string' && item.label ? item.label : SOS_LABELS[kind] || '';
+      return kind && label ? { kind: kind, label: label } : null;
+    }).filter(Boolean);
+    return kinds.length ? kinds : [{ kind: 'SOS', label: SOS_LABELS.SOS }];
+  }
+  function sosLabel(kind) {
+    var found = sosKinds(state).filter(function (k) { return k.kind === kind; })[0];
+    return found ? found.label : SOS_LABELS[kind] || SOS_LABELS.SOS;
+  }
   function sosIsLive(s) {
     if (s && typeof s.sosActive === 'boolean') return s.sosActive;
     return Boolean(s && s.rideId && sosLive[s.rideId]);
   }
-  function setSosLive(on) {
-    if (!state || !state.rideId) return;
+  /** The open alert: { kind, at } from the server (sosKind, sosSentAt), else what this page sent. */
+  function sosOpen(s) {
+    var mine = s && s.rideId && typeof sosLive[s.rideId] === 'object' ? sosLive[s.rideId] : {};
+    return { kind: (s && typeof s.sosKind === 'string' && s.sosKind) || mine.kind || 'SOS', at: (s && typeof s.sosSentAt === 'string' && s.sosSentAt) || mine.at || null };
+  }
+  function setSosLive(on, kind) {
+    if (!state) return;
+    // The button shows the truth at once, not at the next look.
+    state.sosActive = on;
+    if (on) { state.sosKind = kind; state.sosSentAt = new Date().toISOString(); }
+    if (!state.rideId) return;
     sosLive = {};
-    if (on) sosLive[state.rideId] = true;
+    if (on) sosLive[state.rideId] = { kind: kind, at: state.sosSentAt };
     writeStore('sessionStorage', SOS_KEY, sosLive);
+  }
+  /** As the app: "just now", "4 min ago", "1 hr ago". */
+  function timeAgo(iso) {
+    var then = Date.parse(iso || '');
+    if (!isFinite(then)) return 'just now';
+    var seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (seconds < 60) return 'just now';
+    var mins = Math.round(seconds / 60);
+    return mins < 60 ? mins + ' min ago' : Math.round(mins / 60) + ' hr ago';
   }
   function drawSos(s) {
     var button = W.$('d-sos');
@@ -3084,17 +3211,32 @@
     W.$('d-sos-text').textContent = live ? 'Alert active' : 'Emergency';
     button.setAttribute('aria-label', live ? 'Emergency alert is active' : 'Emergency');
   }
+  var ICON_ARROW = ['M5 12h14', 'M13 6l6 6-6 6'];
   function drawSosSheet(alreadyOpen) {
     var step = sosStep;
     W.$('sos-title').textContent = step === 'sent' ? 'Help is on the way' : step === 'live' ? 'Your alert is active' : 'Get help now';
     var sub = step === 'sent'
       ? (alreadyOpen ? 'Our safety team is already on your alert. Stay on the line if you can.' : 'Our safety team will contact you. If you are in immediate danger, call 112 now.')
-      : step === 'live' ? 'Our safety team has your details and is working on it.' : '';
+      : step === 'live' ? 'Our safety team has your details and is working on it.'
+      : 'Tell us what is happening. Your location and trip details go with the alert.';
     W.$('sos-sub').textContent = sub;
-    W.show(W.$('sos-sub'), Boolean(sub));
-    W.show(W.$('sos-send'), step === 'ask');
-    W.$('sos-send').disabled = sosSending;
-    W.$('sos-send').className = 'btn sos-send' + (sosSending ? ' busy' : '');
+    W.show(W.$('sos-sub'), true);
+    // What is happening: "I need help now" first and red, then the others.
+    var holder = W.$('sos-kinds');
+    holder.innerHTML = '';
+    W.show(holder, step === 'ask');
+    if (step === 'ask') sosKinds(state).forEach(function (k, index) {
+      var row = el('button', 'sos-kind' + (index === 0 ? ' first' : ''));
+      row.type = 'button';
+      row.disabled = sosSending;
+      row.appendChild(el('span', 'sos-kind-text', k.label));
+      row.appendChild(icon(ICON_ARROW));
+      row.addEventListener('click', function () { sendSos(k.kind); });
+      holder.appendChild(row);
+    });
+    var open = step === 'live' ? sosOpen(state) : null;
+    W.show(W.$('sos-sent'), Boolean(open));
+    if (open) W.$('sos-sent-text').textContent = sosLabel(open.kind) + ' — sent ' + timeAgo(open.at);
     W.show(W.$('sos-cancel'), step === 'live');
     W.$('sos-close').textContent = step === 'sent' ? 'OK' : 'Close';
   }
@@ -3107,28 +3249,29 @@
     openSheet('sheet-sos');
   });
   W.$('sos-call').addEventListener('click', function () { track('sos_call_112_tapped'); });
-  W.$('sos-send').addEventListener('click', function () {
+  function sendSos(kind) {
     if (sosSending) return;
     sosSending = true;
     W.show(W.$('sos-err'), false);
     drawSosSheet(false);
-    api('POST', '/ride-page/sos').then(function (answer) {
-      track('sos_sent', { alreadyOpen: Boolean(answer && answer.alreadyOpen) });
-      setSosLive(true);
+    api('POST', '/ride-page/sos', { kind: kind }).then(function (answer) {
+      track('sos_sent', { kind: kind, alreadyOpen: Boolean(answer && answer.alreadyOpen) });
+      setSosLive(true, kind);
       sosStep = 'sent';
-      drawSosSheet(Boolean(answer && answer.alreadyOpen));
+      if (!W.$('sheet-sos').hidden) drawSosSheet(Boolean(answer && answer.alreadyOpen));
       if (state && state.phase === 'confirmed') drawSos(state);
+      refresh();
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
-      track('sos_failed', { code: error.code || String(error.status) });
+      track('sos_failed', { kind: kind, code: error.code || String(error.status) });
       // As the app: the alert did not go; 112 is one tap above.
       W.$('sos-err').textContent = 'We could not send your alert. Call 112 now if you are in danger.';
       W.show(W.$('sos-err'), true);
     }).then(function () {
       sosSending = false;
-      if (sosStep === 'ask') drawSosSheet(false);
+      if (sosStep === 'ask' && !W.$('sheet-sos').hidden) drawSosSheet(false);
     });
-  });
+  }
   W.$('sos-cancel').addEventListener('click', function () {
     if (sosSending) return;
     sosSending = true;
@@ -3137,7 +3280,9 @@
       track('sos_cancelled');
       setSosLive(false);
       if (state && state.phase === 'confirmed') drawSos(state);
-      closeSheets();
+      // Only the Emergency sheet: an answer arriving late never closes another one.
+      if (!W.$('sheet-sos').hidden) closeSheets();
+      refresh();
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       track('sos_cancel_failed', { code: error.code || String(error.status) });

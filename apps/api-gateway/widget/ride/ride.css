@@ -289,7 +289,10 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .stops-words { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .stops-words strong { font-size: 16px; line-height: 22px; font-weight: 700; }
 .stops-words span { font-size: 14px; line-height: 20px; color: var(--muted); }
-.trip-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.trip-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.trip-foot .rlink { flex: 0 0 auto; padding: 0 4px; white-space: nowrap; }
+/* a small phone: the links on one line, Emergency the full width under them */
+@media (max-width: 360px) { .trip-foot .sos-btn { flex: 1 1 100%; } }
 .rlink.danger { color: var(--bad); }
 a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
 .sos-btn {
@@ -298,6 +301,11 @@ a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
   font-size: 16px; line-height: 22px; font-weight: 500; box-shadow: var(--card-shadow);
 }
 .sos-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+/* the app's "sos" icon; the shield once an alert is open */
+.sos-btn .sos-icon { width: 22px; height: 22px; stroke-width: 1.8; }
+.sos-btn .sos-icon text { fill: currentColor; stroke: none; font-family: var(--text); font-size: 7.4px; font-weight: 800; letter-spacing: 0.2px; }
+.sos-btn .live-icon, .sos-btn.live .sos-icon { display: none; }
+.sos-btn.live .live-icon { display: block; }
 .sos-btn:active { opacity: 0.72; }
 .sos-btn.live { background: var(--sos-live); }
 .sos-btn.live::before { content: ""; position: absolute; inset: 0; background: #FF3333; opacity: 0.3; animation: sos-pulse 1.24s ease-in-out infinite alternate; }
@@ -338,6 +346,7 @@ a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
   font-family: var(--text); font-size: 18px; line-height: 24px; font-weight: 600; color: var(--ink); outline: 0; resize: none;
 }
 .other-words::placeholder { color: var(--placeholder); }
+.free-note { padding: 12px 14px; border-radius: 14px; background: var(--orange-soft); font-size: 14px; line-height: 20px; }
 
 /* Emergency */
 .sos-call {
@@ -350,7 +359,19 @@ a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
 .sos-call-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sos-call-words strong { font-size: 16px; line-height: 22px; font-weight: 600; }
 .sos-call-words span { font-size: 14px; line-height: 20px; color: var(--muted); }
-.btn.sos-send { background: var(--sos); border-color: var(--sos); color: #FFFFFF; }
+.sos-kinds { display: flex; flex-direction: column; gap: 8px; }
+.sos-kind {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 52px; padding: 0 18px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); color: var(--ink); text-align: left;
+  font-size: 16px; line-height: 22px; font-weight: 500;
+}
+.sos-kind svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sos-kind.first { border: 1.5px solid var(--line); background: var(--sos); color: #FFFFFF; }
+.sos-kind.first svg { stroke: #FFFFFF; }
+.sos-kind:active:not(:disabled) { opacity: 0.72; }
+.sos-kind:disabled { opacity: 0.5; cursor: not-allowed; }
+.sos-sent { display: flex; align-items: center; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--good-soft); font-size: 14px; line-height: 20px; }
+.sos-sent svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: var(--good); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .rlink.muted-link { align-self: center; color: var(--muted); font-size: 14px; }
 
 /* naira or XLM */

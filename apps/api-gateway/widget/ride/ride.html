@@ -383,7 +383,7 @@
     <div class="trip-foot" id="d-trip-foot">
       <button class="rlink danger" type="button" id="d-cancel" hidden>Cancel ride</button>
       <a class="rlink" id="d-support" href="#" hidden>Support</a>
-      <button class="sos-btn" type="button" id="d-sos" aria-label="Emergency" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z"/><path d="M12 8v5M12 16.2v.3"/></svg><span id="d-sos-text">Emergency</span></button>
+      <button class="sos-btn" type="button" id="d-sos" aria-label="Emergency" hidden><svg class="sos-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><text x="12" y="15.2" text-anchor="middle">SOS</text></svg><svg class="live-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z"/></svg><span id="d-sos-text">Emergency</span></button>
     </div>
   </section>
 </div>
@@ -462,6 +462,7 @@
     <span class="field-label">Tell us what happened (optional)</span>
     <textarea class="other-words" id="cancel-other" rows="2" maxlength="140" autocomplete="off" placeholder="A few words help us fix it"></textarea>
   </label>
+  <p class="free-note">Cancelling is free. You will not be charged.</p>
   <div class="notice bad" id="cancel-err" hidden></div>
   <button class="btn primary" type="button" data-close>Keep ride</button>
   <button class="btn danger" type="button" id="cancel-yes" disabled>Choose a reason</button>
@@ -520,10 +521,11 @@
   <p class="sub" id="sos-sub" hidden></p>
   <a class="sos-call" id="sos-call" href="tel:112">
     <span class="sos-call-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg></span>
-    <span class="sos-call-words"><strong>Call 112</strong><span>Police, fire, ambulance</span></span>
+    <span class="sos-call-words"><strong>Call 112</strong><span>Nigeria's emergency line — police, fire, ambulance</span></span>
     <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
   </a>
-  <button class="btn sos-send" type="button" id="sos-send">I need help now</button>
+  <div class="sos-kinds" id="sos-kinds"></div>
+  <div class="sos-sent" id="sos-sent" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16.5 9.5"/></svg><span id="sos-sent-text"></span></div>
   <button class="rlink muted-link" type="button" id="sos-cancel" hidden>It was a false alarm. Cancel my alert</button>
   <div class="notice bad" id="sos-err" hidden></div>
   <button class="btn ghost" type="button" id="sos-close" data-close>Close</button>
@@ -535,6 +537,14 @@
   <p class="sub" id="au-text"></p>
   <button class="btn primary" type="button" id="au-yes">Yes, auto-book</button>
   <button class="btn quiet" type="button" id="au-no">No, I'll choose</button>
+</div>
+
+<!-- Change your route, when the fare changes: asked before any money moves -->
+<div class="sheet" id="sheet-route-price" hidden role="dialog" aria-modal="true" aria-labelledby="rp-title" aria-describedby="rp-text">
+  <h2 id="rp-title"></h2>
+  <p class="sub" id="rp-text"></p>
+  <button class="btn primary" type="button" id="rp-yes">Update route</button>
+  <button class="btn quiet" type="button" id="rp-no">Keep my trip</button>
 </div>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
