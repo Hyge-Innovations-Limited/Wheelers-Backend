@@ -7,7 +7,6 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#FEFAEF">
 <meta name="format-detection" content="telephone=no">
-<link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="preload" href="../shared/fonts/BricolageGrotesque_800ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="ride.css">
 <title>Your ride · Wheelers</title>
@@ -23,12 +22,88 @@
     <p class="foot">Go back to WhatsApp and send any message for a fresh link.</p>
   </section>
 
+  <!-- 0 · home, as the app's app/rider/index.tsx: the map, and a sheet that slides up and down -->
   <section data-view="idle" hidden>
-    <div class="note">
-      <h1 id="idle-title">Nothing to price</h1>
-      <p id="idle-text">This booking has ended.</p>
+    <div class="home-map" id="home-map-wrap" hidden><div id="home-map" class="map" aria-label="Map"></div></div>
+    <div class="home-sheet" id="home-sheet">
+      <div class="home-peek" id="home-peek">
+        <button class="handle-btn" type="button" id="home-handle" aria-label="Swipe down to see the map" aria-expanded="true"><span class="handle"></span></button>
+        <div class="ink-note" id="home-ended" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"/></svg>
+          <div class="ink-note-words"><strong id="home-ended-title">Trip ended</strong></div>
+          <a class="ink-note-act" id="idle-back" href="#" hidden>Open chat</a>
+        </div>
+        <button class="ink-note" type="button" id="loc-off" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>
+          <span class="ink-note-words"><strong>Location is off</strong><span>Turn it on to set your pickup for you. Or type it.</span></span>
+          <span class="ink-note-act">Turn on</span>
+        </button>
+        <div class="ink-note" id="not-area" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5L9 4zM9 4v13.5M15 6.5V20"/></svg>
+          <div class="ink-note-words"><strong>Not in your area yet</strong><span>Wheelers is only in Lagos for now.</span></div>
+        </div>
+        <h1 class="title">Where are you going?</h1>
+        <button class="home-search" type="button" id="home-search" aria-label="Search destination">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
+          <span>Search destination</span>
+        </button>
+      </div>
+      <div class="home-body" id="home-body">
+        <div class="result-list" id="home-recents"></div>
+      </div>
     </div>
-    <a class="btn primary" id="idle-back" href="#" hidden>Back to WhatsApp</a>
+  </section>
+
+  <!-- 0b · plan your trip, as the app's app/destination-search.tsx -->
+  <section data-view="plan" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="plan-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title plan-title">Plan your trip</h1>
+    </div>
+    <div class="plan-card">
+      <div class="plan-field" data-plan="pickup">
+        <span class="plan-mark dot" aria-hidden="true"></span>
+        <span class="plan-label" aria-hidden="true">FROM</span>
+        <input id="plan-from" data-plan-input="pickup" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Search pickup" aria-label="From">
+        <button class="plan-clear" type="button" data-plan-clear="pickup" aria-label="Clear pickup" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="plan-line" data-plan-line="pickup"></div>
+      <div class="plan-field" data-plan="destination">
+        <span class="plan-mark square" aria-hidden="true"></span>
+        <span class="plan-label" aria-hidden="true">TO</span>
+        <input id="plan-to" data-plan-input="destination" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Where are you going?" aria-label="To">
+        <button class="plan-clear" type="button" data-plan-clear="destination" aria-label="Clear destination" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="plan-line last" data-plan-line="destination"></div>
+    </div>
+    <div class="list-head"><span class="label-caps" id="plan-heading"></span><span class="spinner orange" id="plan-spin" hidden></span></div>
+    <div class="result-list plan-list" id="plan-list" role="listbox" aria-label="Places"></div>
+    <div class="notice bad" id="plan-err" hidden></div>
+    <div class="plan-foot">
+      <button class="btn primary" type="button" id="plan-go">Continue</button>
+    </div>
+  </section>
+
+  <!-- after a search nobody took, as the app's "No driver accepted" (app/matching.tsx) -->
+  <section data-view="nodriver" hidden>
+    <button class="rback" type="button" id="nd-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <div class="steps" role="progressbar" aria-label="Step 2 of 4: Drivers reply"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text current">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+    <svg class="nd-art" viewBox="0 0 350 110" aria-hidden="true"><path class="nd-road" d="M0 96h350"/><circle class="nd-ink" cx="60" cy="74" r="16"/><path class="nd-pole" d="M60 58v-22"/><circle class="nd-orange" cx="60" cy="30" r="7"/><path class="nd-car" d="M212 88h92c4 0 7-3 7-7v-5c0-4-3-6-7-7l-14-3-10-11c-2-2-5-3-7-3h-29c-3 0-6 2-8 4l-7 10-12 3c-4 1-6 4-6 7v5c0 4 3 7 7 7z"/></svg>
+    <div class="heading">
+      <h1 class="nd-title" id="nd-title">No driver accepted your offer</h1>
+      <p class="muted">You have not been charged.</p>
+    </div>
+    <div class="card trip-card" id="nd-trip" hidden><strong id="nd-route"></strong><span class="small muted" id="nd-line"></span></div>
+    <div class="retry-card" id="nd-retry" hidden>
+      <span class="retry-label">Try a higher price</span>
+      <div class="retry-row" id="nd-options"></div>
+      <button class="rlink orange-on-ink" type="button" id="nd-other">Enter another amount</button>
+    </div>
+    <div class="notice bad" id="nd-err" hidden></div>
+    <div class="actions tight">
+      <button class="btn primary" type="button" id="nd-again-up" hidden></button>
+      <button class="btn ghost" type="button" id="nd-again"></button>
+    </div>
   </section>
 
   <!-- 1 · set your price — as the app's price screen (app/ride-selection.tsx) -->
@@ -57,6 +132,7 @@
         <button class="round plus" type="button" id="price-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <input type="hidden" id="price-input">
+      <p class="price-reason" id="price-reason" hidden></p>
       <p class="price-note" id="price-hint"></p>
     </div>
     <div class="notice bad" id="price-err" hidden></div>
@@ -68,6 +144,10 @@
 
   <!-- 2 · finding drivers, then their offers — as the app's app/matching.tsx -->
   <section data-view="offers" hidden>
+    <div class="find-map" id="find-map-wrap" hidden>
+      <div id="find-map" class="map" aria-label="Map of your trip"></div>
+      <div class="pulse" aria-hidden="true"><span class="ring outer"></span><span class="ring inner"></span><span class="pulse-dot"><svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg></span></div>
+    </div>
     <button class="rback" type="button" id="offers-back" aria-label="Back to your trip, to change it"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <div id="offers-steps-2"><div class="steps" role="progressbar" aria-label="Step 2 of 4: Drivers reply, in progress"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on working"><span class="bar"></span><span class="step-text current">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
     <div id="offers-steps-3" hidden><div class="steps" role="progressbar" aria-label="Step 3 of 4: You choose"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
@@ -86,9 +166,15 @@
           <strong class="offer-ink-figure" id="finding-offer"></strong>
         </div>
         <span class="offer-ink-caption" id="finding-suggested" hidden></span>
+        <span class="offer-ink-caption reason-line" id="finding-reason" hidden></span>
       </div>
-      <div class="raise">
-        <span class="label-caps">Raise your offer</span>
+      <div class="search-stats" id="search-stats" hidden>
+        <span class="saw" id="drivers-saw" hidden></span>
+        <span class="countdown" id="countdown" hidden></span>
+      </div>
+      <p class="auto-line" id="auto-line" hidden></p>
+      <div class="raise" id="raise">
+        <span class="label-caps" id="raise-label">Raise your offer</span>
         <div class="raise-row">
           <button class="btn ghost" type="button" data-raise="200" aria-label="Raise your offer by 200 naira">+ ₦200</button>
           <button class="btn ghost" type="button" data-raise="500" aria-label="Raise your offer by 500 naira">+ ₦500</button>
@@ -108,6 +194,33 @@
       <a class="btn quiet" id="back-to-chat" href="#" hidden>Back to WhatsApp</a>
       <button class="btn quiet danger-link" type="button" id="cancel-search">Cancel search</button>
     </div>
+  </section>
+
+  <!-- between Pay and the trip: as the app's "Confirming your driver" (app/matching.tsx) -->
+  <section data-view="confirming" hidden>
+    <div class="steps" role="progressbar" aria-label="Step 3 of 4: You choose"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+    <div class="confirming" role="status">
+      <span class="spinner big"></span>
+      <h1 class="title center">Confirming your driver</h1>
+      <p class="muted center" id="cf-who"></p>
+    </div>
+  </section>
+
+  <!-- the driver is confirmed: as the app's app/driver-found.tsx -->
+  <section data-view="found" hidden>
+    <div class="steps" role="progressbar" aria-label="Step 4 of 4: Ride"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step on"><span class="bar"></span><span class="step-text current">Ride</span></div></div>
+    <div class="found-hero">
+      <span class="pill green"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"/></svg>Driver confirmed</span>
+      <div class="avatar found-avatar" id="fd-initial"></div>
+      <h1 class="found-title" id="fd-title"></h1>
+      <p class="muted" id="fd-rating" hidden></p>
+    </div>
+    <div class="found-price" id="fd-price" hidden>
+      <div class="found-price-text"><span class="on-ink-muted">Agreed price</span><span class="on-ink-soft" id="fd-paid">Paid from your wallet</span></div>
+      <strong class="found-figure" id="fd-fare"></strong>
+    </div>
+    <div class="card detail-card" id="fd-details" hidden></div>
+    <button class="btn primary" type="button" id="fd-track">Track your driver</button>
   </section>
 
   <!-- 3 · the trip — as the app's trip screen (app/rider/active-trip.tsx) -->
@@ -179,41 +292,42 @@
   <button class="btn quiet" type="button" id="offer-keep" data-close>Keep my price</button>
 </div>
 
-<div class="sheet" id="sheet-paywith" hidden role="dialog" aria-modal="true" aria-labelledby="pw-title">
-  <h2 id="pw-title">How do you want to pay?</h2>
-  <p class="sub" id="pw-sub"></p>
-  <div class="pay-options" role="radiogroup" aria-labelledby="pw-title">
-    <button class="pay-option on" type="button" id="pw-ngn" role="radio" aria-checked="true">
-      <span class="pay-icon naira" aria-hidden="true">₦</span>
-      <span class="pay-text"><strong>Naira wallet</strong><span id="pw-ngn-balance"></span></span>
-      <span class="pay-figure" id="pw-ngn-amount"></span>
-    </button>
-    <button class="pay-option" type="button" id="pw-xlm" role="radio" aria-checked="false">
-      <span class="pay-icon xlm" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 15.5l16-7M4 9.5c2-4 6-6 10-5M20 14.5c-2 4-6 6-10 5"/></svg></span>
-      <span class="pay-text"><strong>Stellar wallet <span class="tag">Testnet</span></strong><span id="pw-xlm-balance"></span></span>
-      <span class="pay-figure" id="pw-xlm-amount"></span>
-    </button>
-  </div>
-  <p class="hint" id="pw-rate"></p>
-  <button class="btn primary" type="button" id="pw-pay">Pay</button>
-  <button class="btn quiet" type="button" data-close>Choose another driver</button>
-</div>
-
+<!-- Accept → pay: as the app's pay sheet. Naira or XLM when there is a Stellar wallet; short, the account to send to -->
 <div class="sheet" id="sheet-pay" hidden role="dialog" aria-modal="true" aria-labelledby="pay-title">
-  <h2 id="pay-title">Add money to ride</h2>
-  <p class="sub" id="pay-sub"></p>
-  <div class="pay-card">
-    <div class="pay-amount"><span class="label">Send exactly</span><strong class="big" id="pay-amount"></strong></div>
-    <div class="pay-row"><span class="label">Bank</span><strong id="pay-bank"></strong></div>
-    <div class="pay-row"><div><span class="label">Account number</span><strong class="number" id="pay-number"></strong></div><button class="btn small dark" type="button" id="pay-copy">Copy</button></div>
-    <div class="pay-row"><span class="label">Account name</span><strong id="pay-name"></strong></div>
-    <p class="hint" id="pay-wait-account" hidden>Your account number is being set up — one moment.</p>
+  <div class="sheet-part" id="pay-ask">
+    <h2 id="pay-title"></h2>
+    <p class="sub">Held now, paid at the end. Refunded if cancelled.</p>
+    <div class="pay-options" id="pay-options" role="radiogroup" aria-label="Pay with" hidden>
+      <button class="pay-option on" type="button" id="pw-ngn" role="radio" aria-checked="true">
+        <span class="pay-icon naira" aria-hidden="true">₦</span>
+        <span class="pay-text"><strong>Naira wallet</strong><span id="pw-ngn-balance"></span></span>
+        <span class="pay-figure" id="pw-ngn-amount"></span>
+      </button>
+      <button class="pay-option" type="button" id="pw-xlm" role="radio" aria-checked="false">
+        <span class="pay-icon xlm" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 15.5l16-7M4 9.5c2-4 6-6 10-5M20 14.5c-2 4-6 6-10 5"/></svg></span>
+        <span class="pay-text"><strong>Stellar wallet <span class="tag">Testnet</span></strong><span id="pw-xlm-balance"></span></span>
+        <span class="pay-figure" id="pw-xlm-amount"></span>
+      </button>
+    </div>
+    <p class="hint" id="pw-rate" hidden></p>
+    <button class="btn primary" type="button" id="pay-go"></button>
+    <button class="btn quiet" type="button" data-close>Back</button>
   </div>
-  <div class="waiting">
-    <span class="spinner"></span>
-    <div><strong>Waiting for your transfer…</strong></div>
+  <div class="sheet-part" id="pay-add" hidden>
+    <h2 id="add-title"></h2>
+    <p class="sub" id="add-sub"></p>
+    <div class="pay-card">
+      <div class="pay-row"><span class="label">Bank</span><strong id="pay-bank"></strong></div>
+      <div class="pay-row"><div><span class="label">Account number</span><strong class="number" id="pay-number"></strong></div><button class="btn small dark" type="button" id="pay-copy">Copy</button></div>
+      <div class="pay-row"><span class="label">Account name</span><strong id="pay-name"></strong></div>
+      <p class="hint" id="pay-wait-account" hidden>Your account number is being set up.</p>
+    </div>
+    <div class="waiting">
+      <span class="spinner"></span>
+      <div><strong>Waiting for your transfer…</strong></div>
+    </div>
+    <button class="btn quiet" type="button" data-close>Back</button>
   </div>
-  <button class="btn quiet" type="button" data-close>Choose another driver</button>
 </div>
 
 <div class="sheet" id="sheet-trip" hidden role="dialog" aria-modal="true" aria-labelledby="st-title">
@@ -252,7 +366,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <div id="toast" hidden></div>
-<script src="vendor/leaflet.js"></script>
 <script src="../wallet/common.js"></script>
 <script src="ride.js"></script>
 </body>

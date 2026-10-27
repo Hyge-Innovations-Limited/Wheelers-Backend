@@ -399,22 +399,173 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 }
 .map-recentre svg { width: 20px; height: 20px; }
 .hint.stale { color: var(--bad); margin-top: -8px; }
-.leaflet-container { background: #EEF1EE; }
-.leaflet-control-attribution { font-family: var(--text); font-size: 10px; }
 
-/* pins: the same shapes the trip card uses, so they need no legend */
-.pin { display: block; box-shadow: 0 2px 8px rgba(13, 13, 13, 0.3); }
-.pin-pickup { width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 4px solid var(--ink); }
-.pin-dest { width: 16px; height: 16px; border-radius: 4px; background: var(--orange); border: 3px solid #FFFFFF; }
-.pin-car {
-  display: flex; align-items: center; justify-content: center; width: 36px; height: 36px;
-  border-radius: 50%; background: var(--ink); border: 3px solid #FFFFFF;
-  font-size: 9px; font-weight: 800; letter-spacing: 0.04em; color: #FFFFFF;
+/* markers, exactly as the app's (components/live-map.tsx) */
+.gm-pin {
+  position: absolute; transform: translate(-50%, -50%); display: block;
+  border: 1.5px solid #E6DFD2; box-shadow: 0 4px 14px rgba(13, 13, 13, 0.07);
 }
-.pin-car.stale { opacity: 0.5; }
-/* the car glides between fixes instead of jumping */
-.leaflet-marker-icon.car-marker { transition: transform 1.2s linear; }
-.leaflet-zoom-anim .leaflet-marker-icon.car-marker { transition: none; }
+.gm-pin.pin-pickup { width: 16px; height: 16px; border-radius: 999px; background: #FF7700; }
+.gm-pin.pin-stop { width: 14px; height: 14px; border-radius: 999px; background: #FFFFFF; }
+.gm-pin.pin-dest { width: 18px; height: 18px; border-radius: 5px; background: #00C48C; }
+.gm-pin.pin-driver { width: 24px; height: 24px; border-radius: 999px; background: #0D0D0D; display: flex; align-items: center; justify-content: center; z-index: 2; }
+.gm-pin.pin-driver.stale { opacity: 0.5; }
+.gm-pin-dot { width: 10px; height: 10px; border-radius: 999px; background: #FFFFFF; }
+/* where the phone is: the blue dot */
+.gm-pin.pin-me { width: 18px; height: 18px; border-radius: 999px; background: #4285F4; border: 3px solid #FFFFFF; box-shadow: 0 0 0 7px rgba(66, 133, 244, 0.18); cursor: pointer; }
+
+/* ── 0 · home: the map behind a sheet ────────────────────────────────── */
+body.on-home { overflow: hidden; }
+body.on-home .shell { padding: 0; }
+.home-map { position: fixed; inset: 0; z-index: 0; background: #D4E6D4; will-change: transform; }
+.home-map.gliding { transition: transform 0.28s ease; }
+.home-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; max-width: 480px; margin: 0 auto;
+  padding: 0 20px; background: var(--page); border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  box-shadow: 0 -6px 24px rgba(13, 13, 13, 0.08); will-change: transform;
+}
+.home-sheet.gliding { transition: transform 0.28s ease; }
+.home-peek { display: flex; flex-direction: column; gap: 14px; padding-bottom: 14px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.handle-btn { height: 44px; margin-bottom: -22px; padding: 0; border: 0; background: transparent; display: flex; justify-content: center; align-items: flex-start; }
+.handle { width: 48px; height: 5px; margin-top: 10px; border-radius: 3px; background: var(--handle); }
+.home-body { overflow-y: auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)); touch-action: none; }
+.home-body.scrolls { touch-action: pan-y; }
+.home-body:empty, .home-body .result-list:empty { display: none; }
+.home-search {
+  display: flex; align-items: center; gap: 12px; width: 100%; height: 60px; padding: 0 16px;
+  border: 2px solid var(--ink); border-radius: var(--r-lg); background: var(--bg); text-align: left;
+}
+.home-search svg { width: 22px; height: 22px; flex: 0 0 auto; fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; }
+.home-search span { flex: 1; min-width: 0; font-size: 17px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-search:active { opacity: 0.72; }
+
+/* the dark one-line cards: Location is off, Not in your area yet, Trip ended */
+.ink-note {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 0; border-radius: 18px;
+  background: var(--ink); color: var(--on-ink); text-align: left; text-decoration: none;
+}
+.ink-note > svg { width: 22px; height: 22px; flex: 0 0 auto; fill: none; stroke: var(--orange); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ink-note-words { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ink-note-words strong { font-size: 16px; line-height: 22px; font-weight: 700; color: var(--on-ink); }
+.ink-note-words span { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); }
+.ink-note-act { flex: 0 0 auto; font-size: 14px; line-height: 20px; font-weight: 700; color: var(--orange); text-decoration: none; }
+button.ink-note:active, .ink-note-act:active { opacity: 0.72; }
+
+/* place rows (the app's resultRow) */
+.result-list { display: flex; flex-direction: column; }
+.result-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 6px 0;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left;
+}
+.result-row:active { opacity: 0.72; }
+.result-icon { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 20px; background: var(--orange-soft); display: flex; align-items: center; justify-content: center; }
+.result-icon svg { width: 19px; height: 19px; fill: none; stroke: var(--orange-ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.result-icon.ink { background: var(--ink); }
+.result-icon.ink svg { stroke: var(--orange); }
+.result-words { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.result-words strong { font-size: 16px; line-height: 22px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-words span { font-size: 14px; line-height: 20px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-chevron { flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.nothing { padding: 16px 0; font-size: 15px; line-height: 22px; color: var(--muted); }
+
+/* ── 0b · Plan your trip ─────────────────────────────────────────────── */
+section[data-view="plan"] { gap: 12px; min-height: calc(100vh - 36px); }
+.plan-title { font-size: 24px; line-height: 28px; }
+.plan-card { padding: 6px 14px; border-radius: 20px; background: var(--bg); border: 2px solid var(--ink); }
+.plan-field { display: flex; align-items: center; gap: 12px; }
+.plan-mark { flex: 0 0 auto; width: 12px; height: 12px; }
+.plan-mark.dot { border-radius: 6px; background: var(--ink); }
+.plan-mark.square { border-radius: 3px; background: var(--orange); }
+.plan-label { flex: 0 0 48px; font-size: 12px; line-height: 16px; font-weight: 700; color: var(--muted); }
+.plan-field input { flex: 1; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 16px; font-weight: 600; color: var(--ink); }
+.plan-field input::placeholder { color: var(--placeholder); }
+.plan-clear { flex: 0 0 auto; width: 44px; height: 44px; margin-right: -10px; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
+.plan-clear svg { width: 21px; height: 21px; fill: var(--muted); stroke: var(--bg); stroke-width: 2; stroke-linecap: round; }
+.plan-line { height: 1px; margin: 1px 0; background: var(--line); }
+.plan-line.last { background: transparent; }
+.plan-line.active { height: 3px; margin: 0; border-radius: 2px; background: var(--orange); }
+.list-head { display: flex; align-items: center; gap: 10px; min-height: 20px; }
+.list-head .label-caps { flex: 1; color: var(--muted); }
+.plan-list { flex: 1; margin-top: -6px; }
+.plan-list .notice { margin-top: 8px; }
+.plan-foot { position: sticky; bottom: 0; padding: 8px 0 calc(4px + env(safe-area-inset-bottom)); background: var(--page); }
+.spinner.orange { border-color: var(--orange-soft); border-top-color: var(--orange); }
+
+/* ── No driver accepted ──────────────────────────────────────────────── */
+.nd-art { width: 100%; height: 72px; }
+.nd-road { fill: none; stroke: var(--line); stroke-width: 3; stroke-dasharray: 16 12; }
+.nd-ink { fill: var(--ink); }
+.nd-orange { fill: var(--orange); }
+.nd-pole { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linecap: round; }
+.nd-car { fill: none; stroke: var(--handle); stroke-width: 3; stroke-dasharray: 7 6; }
+.nd-title { font-size: 30px; line-height: 33px; letter-spacing: -0.8px; }
+.trip-card { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: var(--r-lg); }
+.trip-card strong { font-size: 16px; line-height: 22px; font-weight: 700; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.trip-card span:empty { display: none; }
+.retry-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: var(--r-xl); background: var(--ink); }
+.retry-label { font-size: 15px; line-height: 20px; color: var(--on-ink-muted); }
+.retry-row { display: flex; gap: 10px; }
+.retry-option {
+  flex: 1; min-width: 0; height: 52px; padding: 0 6px; border: 2px solid var(--ink-line); border-radius: 16px; background: transparent;
+  font-family: var(--display); font-weight: 800; font-size: 18px; color: var(--on-ink); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.retry-option.on { border-color: var(--orange); background: var(--orange); color: var(--ink); }
+.retry-option:active { opacity: 0.72; }
+.rlink.orange-on-ink { align-self: flex-start; min-height: 32px; padding: 0; color: var(--orange); }
+.actions.tight { gap: 8px; }
+
+/* ── Confirming your driver ──────────────────────────────────────────── */
+section[data-view="confirming"] { min-height: calc(100vh - 36px); }
+.confirming { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding-bottom: 60px; }
+.center { text-align: center; }
+.spinner.big { width: 40px; height: 40px; border-width: 4px; border-color: var(--orange-soft); border-top-color: var(--orange); }
+
+/* ── Driver found ────────────────────────────────────────────────────── */
+.found-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 4px; text-align: center; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 14px; line-height: 18px; font-weight: 700; }
+.pill svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.pill.green { background: var(--good-soft); color: var(--good); }
+.avatar.found-avatar { width: 96px; height: 96px; border: 3px solid var(--ink); font-size: 34px; }
+.found-title { font-size: 30px; line-height: 33px; letter-spacing: -0.8px; }
+.found-price { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: var(--r-xl); background: var(--ink); }
+.found-price-text { display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 20px; }
+.on-ink-muted { color: var(--on-ink-muted); }
+.on-ink-soft { color: var(--on-ink-soft); }
+.found-figure { flex: 1; min-width: 0; text-align: right; font-family: var(--display); font-weight: 800; font-size: 34px; line-height: 40px; color: var(--orange); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.detail-card { padding: 2px 16px; border-radius: 20px; }
+.detail-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 10px 0; }
+.detail-row + .detail-row { border-top: 1px solid var(--line); }
+.detail-label { font-size: 15px; line-height: 20px; color: var(--muted); }
+.detail-value { font-size: 15px; line-height: 20px; font-weight: 700; text-align: right; }
+.plate.detail-plate { padding: 3px 10px; border-width: 2px; border-radius: 8px; font-size: 15px; line-height: 20px; letter-spacing: 0.6px; }
+
+/* ── Finding: the map on top, the price reason, the clock, auto-accept ── */
+section[data-view="offers"] { position: relative; }
+.find-map {
+  position: relative; height: 34vh; min-height: 220px; max-height: 300px;
+  margin: calc(-12px - env(safe-area-inset-top)) -20px -6px; background: #D4E6D4; overflow: hidden;
+}
+/* the cream sheet's rounded edge over the map, as the app's */
+.find-map::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 26px; border-radius: var(--r-sheet) var(--r-sheet) 0 0; background: var(--page); z-index: 2; }
+.with-map > .rback { position: absolute; top: 0; left: 0; z-index: 3; }
+.pulse { position: absolute; top: 50%; left: 50%; width: 140px; height: 140px; margin: -83px 0 0 -70px; pointer-events: none; display: flex; align-items: center; justify-content: center; }
+.ring { position: absolute; border-radius: 50%; background: var(--orange); opacity: 0; animation: ring 2.2s ease-out infinite; }
+.ring.outer { inset: 0; }
+.ring.inner { inset: 24px; animation-delay: 0.26s; }
+@keyframes ring { 0% { transform: scale(0.4); opacity: 0.32; } 100% { transform: scale(1); opacity: 0; } }
+.pulse-dot { position: relative; width: 52px; height: 52px; border-radius: 26px; background: var(--ink); display: flex; align-items: center; justify-content: center; }
+.pulse-dot svg { width: 24px; height: 24px; fill: var(--orange); stroke: var(--ink); stroke-width: 1.2; }
+.price-reason { font-size: 14px; line-height: 19px; font-weight: 600; color: var(--orange); text-align: center; margin-top: -6px; font-variant-numeric: tabular-nums; }
+.offer-ink-caption.reason-line { color: var(--orange); }
+.search-stats { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: -4px; font-size: 14px; line-height: 20px; }
+.search-stats .saw { font-weight: 700; }
+.search-stats .countdown { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: var(--soft); font-weight: 700; font-variant-numeric: tabular-nums; }
+.raise.nudge .label-caps { text-transform: none; letter-spacing: 0; font-size: 15px; line-height: 20px; color: var(--orange-ink); }
+.raise.nudge [data-raise="500"] { background: var(--orange); border-color: var(--orange); }
+.auto-line { margin-top: -8px; font-size: 13px; line-height: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* the pay sheet: one sheet, two parts */
+.sheet-part { display: flex; flex-direction: column; gap: 14px; }
 
 /* ── small phones ────────────────────────────────────────────────────── */
 @media (max-width: 360px) {
@@ -426,3 +577,4 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 #idle-text:empty { display: none; }
+.pay-card .pay-row:first-child { border-top: 0; }
