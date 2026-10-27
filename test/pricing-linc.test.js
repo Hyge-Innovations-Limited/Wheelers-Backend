@@ -77,3 +77,22 @@ test('Linc\'s figures are fitted from its prices, none below zero; it is a price
   assert.equal(s.lincAboveNgn, 350);
   assert.equal(s.lincSamples.length, 1);
 });
+
+test('Linc by the time of day, weekdays apart from weekends: two Tuesday-morning prices lift weekday mornings; one is not enough', () => {
+  const morning = (minute) => ({ km: 15.5, minutes: 30, priceNgn: 11100, at: `2026-10-27T07:${minute}:00Z` }); // 08:xx Lagos
+  const base = { ...live, lincOn: true };
+  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10')] });
+  assert.equal(config.lincPeriodLifts().lifts['weekday-morning'], 1, 'one price is not enough');
+  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10'), morning('20')] });
+  const { lifts, counts } = config.lincPeriodLifts();
+  assert.equal(counts['weekday-morning'], 2);
+  assert.equal(counts['weekend-morning'], 2, 'Saturday 11:40 and Sunday 09:50');
+  assert.ok(lifts['weekday-morning'] > 1.35, JSON.stringify(lifts));
+  assert.ok(Math.abs(lifts['weekend-morning'] - 1) < 0.06, 'weekend mornings stay at its figures');
+  assert.equal(lifts['weekday-afternoon'], 1, 'the afternoon is untouched');
+  const at = new Date(Date.UTC(2026, 9, 28, 7, 15)); // Wednesday 08:15 Lagos
+  const p = config.calculateSuggestedFare(15.5, { durationSeconds: 30 * 60, at, trafficRatio: 1 });
+  assert.equal(p.setBy, 'linc');
+  assert.ok(Math.abs(p.suggestedFareNgn - 11100) <= 300, `a weekday morning: about Linc's ₦11,100 (${p.suggestedFareNgn})`);
+});
+

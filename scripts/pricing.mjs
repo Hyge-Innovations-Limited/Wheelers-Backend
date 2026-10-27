@@ -675,8 +675,8 @@ async function linc() {
   const [word, ...args] = rest;
   const { settings } = await pricingClient.loadSettings();
   const f = settings.linc;
-  const atNight = (s) => { const h = new Date(new Date(s.at).getTime() + 3_600_000).getUTCHours(); return h >= 22 || h < 5; };
-  const guess = (s, figures = f) => config.lincFareNgn(s.km, s.minutes, figures) * (atNight(s) ? settings.lincNightLift : 1);
+  const periodLift = (s) => config.lincPeriodLifts(settings).lifts[config.lincSlotOf(new Date(s.at))];
+  const guess = (s, figures = f) => config.lincFareNgn(s.km, s.minutes, figures) * periodLift(s);
   if (word === 'on' || word === 'off') {
     return save(() => ({ lincOn: word === 'on' }), (s) => (s.lincOn
       ? `Prices now follow Linc: its price for the trip${s.lincAboveNgn ? ` ${s.lincAboveNgn > 0 ? '+' : '−'} ${naira(Math.abs(s.lincAboveNgn))}` : ''}, never under inDrive's high end. The flat extra and the margin are not added while this is on.`
@@ -710,7 +710,10 @@ async function linc() {
   }
   console.log(`Linc as the guide: ${settings.lincOn ? 'ON' : 'off'}  (npm run pricing linc on|off)`);
   console.log(`Linc's figures: ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} a km + ${naira(f.perMinuteNgn)} a minute; we sit ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`} (linc above N).`);
-  console.log(`At night (22:00–05:00) ×${settings.lincNightLift} (linc night N). Never under inDrive's high end (×${settings.marketHigh} our inDrive guess); our own live surge and rain move it too.`);
+  const { lifts, counts } = config.lincPeriodLifts(settings);
+  console.log(`By the time of day, learned from its prices (${config.LINC_PERIOD_MIN_PRICES} needed in a part of the day; until then ×1, ×${settings.lincNightLift} at night):`);
+  console.table(['weekday', 'weekend'].map((day) => Object.fromEntries([['day', day], ...config.DAY_PERIODS.map((p) => [p, `×${lifts[`${day}-${p}`]} (${counts[`${day}-${p}`]})`])])));
+  console.log(`Never under inDrive's high end (×${settings.marketHigh} our inDrive guess); our own live surge and rain move it too.`);
   console.table(settings.lincSamples.slice(-10).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'its figures say': naira(guess(s)) })));
 }
 

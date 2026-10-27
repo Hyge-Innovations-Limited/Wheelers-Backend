@@ -206,6 +206,52 @@ function lagosHourOf(iso: string): number {
   return Number.isFinite(t) ? new Date(t + 3_600_000).getUTCHours() : 12;
 }
 
+/** Prices in a part of the day before its own Linc lift is learned (fewer: the night lift, or 1). */
+export const LINC_PERIOD_MIN_PRICES = 2;
+
+/** A part of the day on a weekday, or on a weekend or holiday: Linc's mornings differ (a Tuesday's +43%, a Saturday's none). */
+export type LincSlot = `${'weekday' | 'weekend'}-${DayPeriod}`;
+export const LINC_SLOTS: readonly LincSlot[] = (['weekday', 'weekend'] as const).flatMap((day) => DAY_PERIODS.map((p) => `${day}-${p}` as LincSlot));
+
+export function lincSlotOf(at: Date): LincSlot {
+  return `${lagosClock(at).weekend ? 'weekend' : 'weekday'}-${dayPeriodOf(at)}`;
+}
+
+const lincLiftCache = new WeakMap<object, { lifts: Record<LincSlot, number>; counts: Record<LincSlot, number> }>();
+
+/**
+ * Linc's price moves with the time of day and the day (Opebi to Ijeshatedo:
+ * ₦7,950 on a Monday night, ₦9,350 on Saturday midday, ₦11,100 on a Tuesday
+ * morning). For each part of the day (morning 05–12, afternoon 12–16,
+ * evening 16–21, night), on weekdays and on weekends apart, the middle of how
+ * far Linc's prices then sat from its figures, from LINC_PERIOD_MIN_PRICES of
+ * them; until then 1, and lincNightLift at night. Between ×0.8 and ×1.6.
+ * Every Linc price saved teaches its own part of the day.
+ */
+export function lincPeriodLifts(settings: PricingSettings = pricingSettings): { lifts: Record<LincSlot, number>; counts: Record<LincSlot, number> } {
+  const cached = lincLiftCache.get(settings);
+  if (cached) return cached;
+  const ratios = Object.fromEntries(LINC_SLOTS.map((slot) => [slot, [] as number[]])) as Record<LincSlot, number[]>;
+  for (const s of settings.lincSamples) {
+    const at = new Date(s.at);
+    const guess = lincFareNgn(s.km, s.minutes, settings.linc);
+    if (Number.isNaN(at.getTime()) || guess <= 0) continue;
+    ratios[lincSlotOf(at)].push(s.priceNgn / guess);
+  }
+  const lifts = {} as Record<LincSlot, number>;
+  const counts = {} as Record<LincSlot, number>;
+  for (const slot of LINC_SLOTS) {
+    const list = ratios[slot].sort((a, b) => a - b);
+    counts[slot] = list.length;
+    const fallback = slot.endsWith('night') ? settings.lincNightLift : 1;
+    const middle = list.length % 2 ? list[(list.length - 1) / 2]! : ((list[list.length / 2 - 1] ?? fallback) + (list[list.length / 2] ?? fallback)) / 2;
+    lifts[slot] = list.length >= LINC_PERIOD_MIN_PRICES ? Math.round(Math.min(1.6, Math.max(0.8, middle)) * 100) / 100 : fallback;
+  }
+  const out = { lifts, counts };
+  lincLiftCache.set(settings, out);
+  return out;
+}
+
 /** What Linc would charge for a trip, on its fitted (daytime) figures. */
 export const lincFareNgn = (km: number, minutes: number, f: MarketFormula) => f.baseNgn + f.perKmNgn * km + f.perMinuteNgn * minutes;
 
@@ -1114,9 +1160,8 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const tripMinutes = factors.durationSeconds !== undefined && Number.isFinite(factors.durationSeconds) && factors.durationSeconds > 0
     ? factors.durationSeconds / 60
     : null;
-  const lincNight = isNightHour(lagosClock(factors.at ?? new Date()).hour) ? settings.lincNightLift : 1;
   const lincNgn = settings.lincOn && distanceKm > 0 && tripMinutes !== null
-    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincNight * surgeFactor * rainFactor)
+    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * surgeFactor * rainFactor)
     : null;
   if (lincNgn !== null) {
     suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
