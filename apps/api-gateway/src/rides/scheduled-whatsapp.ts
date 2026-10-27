@@ -13,7 +13,7 @@ import {
   getActiveRide,
   getRideMeta,
   getRideState,
-  isRidePageOpen,
+  isRidePageSeen,
   lookupPhoneByUserId,
   setActiveRide,
   storeLastRoute,
@@ -223,7 +223,9 @@ export async function startScheduledWhatsappSearch(
       stopAddresses: stops.map((stop) => stop.address),
       scheduled: true,
     };
-    if (await isRidePageOpen(redis, event.riderId).catch(() => false)) {
+    // Only when they are really on the page: a template still waiting for their
+    // answer is no reason to hold this ride's start; it gets its own template.
+    if (await isRidePageSeen(redis, event.riderId).catch(() => false)) {
       await deferUntilPageLeft(redis, event.riderId, { kind: 'search_started', rideId: event.rideId, event: said as unknown as Record<string, unknown> }).catch(() => undefined);
       return;
     }

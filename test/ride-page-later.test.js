@@ -373,6 +373,17 @@ test('a ride booked on the page starts as a WhatsApp search: the page shows it, 
   assert.equal(said.length, 1);
 });
 
+test('an earlier start template still unanswered does not hold the next ride for Later: it is told in the chat (its own template)', async () => {
+  const redis = memoryRedis();
+  const { deps, said } = consumerDeps(redis);
+  const rider = await makeRider('+2348031113333');
+  await bidState.holdChatUntilAnswered(redis, rider);   // ride 1's template went out; no answer yet
+  const event = await dispatchedFor(started(rider));
+  await handleRideEvent(event, deps, new Map());
+  assert.equal(said.length, 1, 'told now, not held as if on the page');
+  assert.equal(said[0].rideId, event.rideId);
+});
+
 test('on the ride page when it starts: the chat waits for them to leave', async () => {
   const redis = memoryRedis();
   const { deps, said } = consumerDeps(redis);
