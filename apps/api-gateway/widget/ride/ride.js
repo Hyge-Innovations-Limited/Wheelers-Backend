@@ -1189,27 +1189,37 @@
    * wrong now), or the money is in but nothing was booked (the server let the
    * choice go): the step closes, and the offers are there to tap again.
    */
+  var MONEY_IN_GAP_MS = 8000;   // looks counted for "money in" are at least this far apart
+  var MONEY_IN_LOOKS = 3;       // three of them (16 s and more): a deposit still being booked is never mistaken for one that was not
   function watchAddStep(s) {
     if (!addFor || !paying || paying.key !== addFor.key || !addStepOpen()) { if (!addStepOpen()) addFor = null; return; }
     var offer = (s.offers || []).filter(function (o) { return o.key === addFor.key; })[0];
     if (!offer) return;   // gone: handled above, with "offer ended"
-    var leave = null;
     if (Math.round(offer.priceNgn) !== Math.round(addFor.fareNgn)) {
-      leave = (firstName(addFor.name) || 'The driver') + ' changed the price';
-    } else if (typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= addFor.fareNgn) {
-      // Twice in a row (a poll apart): a deposit being booked right now is not mistaken for one that was not.
-      addFor.coveredSeen += 1;
-      if (addFor.coveredSeen >= 2) leave = 'Money in. Tap Accept again.';
-    } else {
-      addFor.coveredSeen = 0;
+      // The figure to send is wrong now: let that choice go, and show the new price.
+      var key = addFor.key;
+      var who = firstName(addFor.name) || 'The driver';
+      addFor = null;
+      paying = null;
+      closeSheets();
+      keepLooking(key);
+      say(who + ' changed the price');
+      return;
     }
-    if (!leave) return;
-    var key = addFor.key;
+    // Money in, but the search still shows offers and nothing booked. Never while the
+    // server says a booking is going through, and the driver is never let go here:
+    // the deposit may still book them.
+    var covered = typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= addFor.fareNgn;
+    if (!covered || s.bookingInProgress) { addFor.coveredLooks = 0; addFor.lastLookAt = 0; return; }
+    var now = Date.now();
+    if (addFor.lastLookAt && now - addFor.lastLookAt < MONEY_IN_GAP_MS) return;
+    addFor.lastLookAt = now;
+    addFor.coveredLooks = (addFor.coveredLooks || 0) + 1;
+    if (addFor.coveredLooks < MONEY_IN_LOOKS) return;
     addFor = null;
     paying = null;
     closeSheets();
-    keepLooking(key);
-    say(leave);
+    say('Money in. Tap Accept again.');
   }
 
   /**
@@ -1496,9 +1506,9 @@
   }
 
   /** Short: the account to send to. The deposit landing confirms the driver, with no further tap. */
-  var addFor = null;   // the offer the add-money step is for: { key, fareNgn, name, coveredSeen }
+  var addFor = null;   // the offer the add-money step is for: { key, fareNgn, name, coveredLooks, lastLookAt }
   function openAdd(offer, info) {
-    addFor = { key: offer.key, fareNgn: Number(info.fareNgn) || offer.priceNgn, name: offer.driverName || '', coveredSeen: 0 };
+    addFor = { key: offer.key, fareNgn: Number(info.fareNgn) || offer.priceNgn, name: offer.driverName || '', coveredLooks: 0, lastLookAt: 0 };
     W.$('add-title').textContent = 'Add ' + W.naira(info.sendNgn);
     W.$('add-sub').textContent = 'Fare ' + W.naira(info.fareNgn) + ' · wallet ' + W.naira(info.balanceNgn);
     var account = info.account;

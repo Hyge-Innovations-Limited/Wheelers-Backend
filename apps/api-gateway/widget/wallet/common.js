@@ -26,6 +26,11 @@
     if (!window.__wheelersToken) {
       try { window.__wheelersToken = sessionStorage.getItem(key); } catch (e) { /* ignore */ }
     }
+    // A page with its own key, opened before it had one (across a deploy): the
+    // shared key's token, read only (if it is another page's, the server says so).
+    if (!window.__wheelersToken && storeKey && storeKey !== TOKEN_KEY) {
+      try { window.__wheelersToken = sessionStorage.getItem(TOKEN_KEY); } catch (e) { /* ignore */ }
+    }
     return window.__wheelersToken || null;
   }
 
