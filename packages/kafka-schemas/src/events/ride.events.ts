@@ -335,6 +335,17 @@ export const RideBidTimeoutEvent = BaseRideEvent.extend({
   riderId:   z.string().uuid(),
 });
 
+// Fired by ride-service's scheduler when a ride for later booked on WhatsApp is due
+// while the rider is busy (searching, being confirmed, on a trip): it waits and
+// starts when they are free. rideId is the ScheduledRide's id (no ride exists yet).
+// Consumed by: api-gateway (one short WhatsApp message, held while on the ride page).
+export const ScheduledRideHeldEvent = BaseRideEvent.extend({
+  eventType:     z.literal('SCHEDULED_RIDE_HELD'),
+  riderId:       z.string().uuid(),
+  scheduledFor:  z.string().datetime(),
+  pickupAddress: z.string(),
+});
+
 // Fired by api-gateway when a rider or driver sends a chat message during a ride.
 // Consumed by: api-gateway (relay to both rider and driver via WebSocket as chat:message).
 export const ChatMessageSentEvent = BaseRideEvent.extend({
@@ -369,6 +380,7 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideDriverRejectedEvent,
   RideBidTimeoutEvent,
   ChatMessageSentEvent,
+  ScheduledRideHeldEvent,
 ]);
 
 export type RideRequestedEvent       = z.infer<typeof RideRequestedEvent>;
@@ -391,5 +403,6 @@ export type RideBidsDeclinedEvent = z.infer<typeof RideBidsDeclinedEvent>;
 export type RideRiderPayingEvent = z.infer<typeof RideRiderPayingEvent>;
 export type RideAssignmentFailedEvent = z.infer<typeof RideAssignmentFailedEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
+export type ScheduledRideHeldEvent   = z.infer<typeof ScheduledRideHeldEvent>;
 export type ChatMessageSentEvent     = z.infer<typeof ChatMessageSentEvent>;
 export type RideEvent                = z.infer<typeof RideEvent>;

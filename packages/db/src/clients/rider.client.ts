@@ -139,6 +139,31 @@ export const rideClient = {
       orderBy: { createdAt: 'desc' },
     }),
 
+  /**
+   * Is the rider busy with another ride: on a trip (a driver assigned, on the
+   * way, outside or driving), or searching (an unmatched ride inside the search
+   * window, a booking being confirmed included)? The scheduler holds a ride for
+   * later while this answers one; `excludeRideId` is the ride asking.
+   */
+  findOtherLiveRide: async (riderId: string, excludeRideId?: string, unmatchedMaxAgeMs = 35 * 60 * 1000) =>
+    (await prisma.ride.findFirst({
+      where: {
+        riderId,
+        status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] },
+        ...(excludeRideId ? { NOT: { id: excludeRideId } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    })) ??
+    prisma.ride.findFirst({
+      where: {
+        riderId,
+        status: { in: ['REQUESTED', 'MATCHING'] },
+        createdAt: { gte: new Date(Date.now() - unmatchedMaxAgeMs) },
+        ...(excludeRideId ? { NOT: { id: excludeRideId } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+
   /** Unmatched rides older than `cutoff`, oldest first — the sweeper's input. */
   // A ride re-dispatched after a driver dropped keeps its createdAt, so the
   // sweep killed it within a minute. Age by last activity instead, and leave

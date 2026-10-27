@@ -15,7 +15,7 @@ import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '.
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
-import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
+import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { CHANGE_PRICE_REPLY_ID, parseOfferReplyId } from '../whatsapp-flows/whatsapp-notifier';
@@ -160,6 +160,8 @@ async function handleIncomingMetaMessage(
 
     // Store phone lookup for Kafka consumer notifications
     await setPhoneLookup(deps.redisClient, user.id, phone).catch(() => {});
+    // Their 24 h WhatsApp window starts again now (rides for later start inside it).
+    await markWhatsappInbound(deps.redisClient, user.id).catch(() => {});
 
     const activeRideId = await getActiveRide(deps.redisClient, user.id);
     const bookingStage = await getBookingStage(deps.redisClient, user.id);

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import {
   ComplianceEvent,
   GroupRideEvent,
@@ -52,6 +52,7 @@ import {
   wasCancelledOnPage,
   isRidePageOpen,
   clearBids,
+  whatsappWindowEnd,
 } from '../whatsapp-flows/bid-state';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import {
@@ -78,7 +79,7 @@ import { clearOfferCount, hasOffersPageMessage, sendOffersPageMessage, showOffer
 import { loadTripChat } from '../trip-chat/access';
 import { hasRideCard, setCardStatus } from '../trip-chat/card-status';
 import { tripCodeStillNeeded } from '../rides/trip-code';
-import { startScheduledWhatsappSearch } from '../rides/scheduled-whatsapp';
+import { SCHEDULED_START_HELD_REASON, startScheduledWhatsappSearch } from '../rides/scheduled-whatsapp';
 import type { StellarService } from '../stellar/service';
 import { createPageCatchup, deferUntilPageLeft, deliverCatchup, pendingCatchup } from '../whatsapp-flows/page-catchup';
 import type { CatchupItem } from '../whatsapp-flows/page-catchup';
@@ -86,7 +87,7 @@ import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { noteOfferSent } from '../rides/search-status';
-import { autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
+import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 
 export interface StartGatewayConsumerDeps {
@@ -407,12 +408,49 @@ async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, 
   }).catch(() => {});
 }
 
+/** "Your 3:30 PM ride will start when this one ends." Lagos time. */
+export function scheduledHeldText(scheduledFor: string): string {
+  const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Africa/Lagos' }).format(new Date(scheduledFor));
+  return `Your ${time} ride will start when this one ends.`;
+}
+
+/**
+ * A WhatsApp ride for later is due while the rider is busy: it waits, and they
+ * are told once — in the chat, or when they leave the ride page. Not outside
+ * their 24 h window (a plain message cannot reach them there).
+ */
+async function tellScheduledRideHeld(deps: StartGatewayConsumerDeps, event: Extract<RideEvent, { eventType: 'SCHEDULED_RIDE_HELD' }>): Promise<void> {
+  if (!deps.whatsappNotifier) return;
+  if (!(await deps.redisClient.setIfNotExists(`scheduled-ride:${event.rideId}:held-said`, '1', 3 * 24 * 60 * 60).catch(() => true))) return;
+  const text = scheduledHeldText(event.scheduledFor);
+  if (await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false)) {
+    await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'scheduled_held', rideId: event.rideId, text }).catch(() => undefined);
+    return;
+  }
+  await sayScheduledHeld(deps, event.riderId, text);
+}
+
+async function sayScheduledHeld(deps: StartGatewayConsumerDeps, riderId: string, text: string): Promise<boolean> {
+  if (!deps.whatsappNotifier) return false;
+  if (!(await whatsappWindowEnd(deps.redisClient, riderId).catch(() => null))) return false;
+  const phone = (await lookupPhoneByUserId(deps.redisClient, riderId).catch(() => null)) ?? (await userClient.findById(riderId).catch(() => null))?.phone ?? null;
+  if (!phone) return false;
+  await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, text).catch(() => {});
+  return true;
+}
+
 /**
  * What waited while the rider was on the ride page, said now they have left —
  * only if it is still true: the search still on, the booking still standing,
  * the driver still outside.
  */
 export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId: string, item: CatchupItem): Promise<boolean> {
+  if (item.kind === 'scheduled_held') {
+    // Still waiting for them (not started, not cancelled meanwhile).
+    const waiting = await scheduledRideClient.findById(item.rideId).catch(() => null);
+    if (!waiting || waiting.riderId !== userId || waiting.status !== 'SCHEDULED') return false;
+    return sayScheduledHeld(deps, userId, item.text);
+  }
   const ride = await rideClient.findById(item.rideId).catch(() => null);
   if (!ride || ride.riderId !== userId) return false;
   const countDeps = offerCountDeps(deps);
@@ -819,8 +857,11 @@ export async function handleRideEvent(
     // until they pick one: without this they never knew, and the search died.
     if (event.scheduled) {
       // Booked on the WhatsApp ride page: a WhatsApp search (the page shows it, the chat says
-      // "Your bid is in"). When it cannot be one (on a trip, no phone), it is the app's, as below.
-      if (event.channel === 'WHATSAPP' && await startScheduledWhatsappSearch(deps, event)) return;
+      // "Your bid is in"), or it waits while the rider is busy. Never the app's: only when the
+      // account has no phone at all is the app the one way left to reach them.
+      if (event.channel === 'WHATSAPP' && (await startScheduledWhatsappSearch(deps, event)) !== 'app') return;
+      // The rider picks the driver: auto-accept is off for every ride for later.
+      await autoAcceptOffAtStart(deps.redisClient, event.rideId, event.riderId).catch(() => undefined);
       await deps.redisClient.set(appOnlyRideKey(event.rideId), '1', APP_ONLY_RIDE_TTL_SECONDS).catch(() => undefined);
       await tellAppRider(deps, event.riderId, {
         title: 'Your scheduled ride',
@@ -830,6 +871,11 @@ export async function handleRideEvent(
         inApp: true,
       });
     }
+    return;
+  }
+
+  if (event.eventType === 'SCHEDULED_RIDE_HELD') {
+    await tellScheduledRideHeld(deps, event);
     return;
   }
 
@@ -1727,7 +1773,8 @@ export async function handleRideEvent(
 
     // Notify rider
     // A search replaced by the rider's own newer request: clean up, say nothing — they asked for it.
-    const superseded = event.cancelledBy === 'system' && /newer request/i.test(event.reason ?? '');
+    // A ride for later put back to wait (its rider was busy) is the same: nothing to say.
+    const superseded = event.cancelledBy === 'system' && (/newer request/i.test(event.reason ?? '') || event.reason === SCHEDULED_START_HELD_REASON);
     // Cancelled by the rider on the ride page: they did it there, the chat says nothing.
     const cancelledOnPage = await wasCancelledOnPage(deps.redisClient, event.rideId).catch(() => false);
     // Cancelled in the chat with a reason: that chat gets one message, reason and refund together.

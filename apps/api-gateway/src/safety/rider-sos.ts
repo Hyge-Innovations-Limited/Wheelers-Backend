@@ -12,7 +12,7 @@ import { rideClient, safetyAlertClient } from '@wheleers/db';
  * A chat tap carries no position, so the car's last known one is recorded:
  * during a trip that IS where the rider is.
  */
-export async function raiseRiderSos(userId: string): Promise<{ alertId: string; alreadyOpen: boolean }> {
+export async function raiseRiderSos(userId: string, from: 'ride_card' | 'ride_page' = 'ride_card'): Promise<{ alertId: string; alreadyOpen: boolean }> {
   const rideId = (await rideClient.findActiveByRider(userId).catch(() => null))?.id ?? null;
   const open = await safetyAlertClient.findOpenForUser(userId, rideId);
   if (open) return { alertId: open.id, alreadyOpen: true };
@@ -28,20 +28,20 @@ export async function raiseRiderSos(userId: string): Promise<{ alertId: string; 
     lat: car?.lat ?? null,
     lng: car?.lng ?? null,
     note: [
-      'Raised from the SOS button on the WhatsApp ride card.',
-      car ? "Position: the DRIVER's last known position (a chat tap carries none)." : 'No position available.',
+      from === 'ride_page' ? 'Raised from the Emergency button on the WhatsApp ride page.' : 'Raised from the SOS button on the WhatsApp ride card.',
+      car ? `Position: the DRIVER's last known position (${from === 'ride_page' ? 'the page sends none' : 'a chat tap carries none'}).` : 'No position available.',
       ride ? `Trip: ${ride.pickupAddress} → ${ride.destAddress} (${ride.status}).` : 'No live trip at the time.',
     ].join(' '),
   });
-  console.warn('[safety] EMERGENCY ALERT RAISED', { alertId: alert.id, userId, role: 'RIDER', rideId, source: 'whatsapp_ride_card', hasLocation: car !== null });
+  console.warn('[safety] EMERGENCY ALERT RAISED', { alertId: alert.id, userId, role: 'RIDER', rideId, source: from === 'ride_page' ? 'whatsapp_ride_page' : 'whatsapp_ride_card', hasLocation: car !== null });
   return { alertId: alert.id, alreadyOpen: false };
 }
 
 /** "I'm safe": withdraw the rider's own open alert. True when there was one. */
-export async function cancelRiderSos(userId: string): Promise<boolean> {
+export async function cancelRiderSos(userId: string, from: 'ride_card' | 'ride_page' = 'ride_card'): Promise<boolean> {
   const open = await safetyAlertClient.findOpenForUser(userId);
   if (!open) return false;
-  await safetyAlertClient.cancelOwn({ id: open.id, userId, reason: 'Rider tapped "I\'m safe" in WhatsApp' });
+  await safetyAlertClient.cancelOwn({ id: open.id, userId, reason: from === 'ride_page' ? 'Rider tapped "I\'m safe" on the ride page' : 'Rider tapped "I\'m safe" in WhatsApp' });
   console.warn('[safety] alert withdrawn by the rider', { alertId: open.id, userId });
   return true;
 }

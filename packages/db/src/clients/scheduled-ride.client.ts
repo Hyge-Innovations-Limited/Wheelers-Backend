@@ -232,5 +232,23 @@ export const scheduledRideClient = {
       data: { status: ScheduledRideStatus.SCHEDULED },
     }),
 
+  findById: (id: string) => prisma.scheduledRide.findUnique({ where: { id } }),
+
+  /** The ride for later whose search is this live ride (null: the ride was not started by the scheduler). */
+  findByRequestedRideId: (rideId: string) => prisma.scheduledRide.findUnique({ where: { requestedRideId: rideId } }),
+
+  /**
+   * Its search did not go ahead (the rider was busy when it reached them): back
+   * to waiting, so the scheduler starts it again once they are free. Only one
+   * still DISPATCHED for this ride; true when it was put back.
+   */
+  requeueDispatched: async (rideId: string) => {
+    const result = await prisma.scheduledRide.updateMany({
+      where: { requestedRideId: rideId, status: ScheduledRideStatus.DISPATCHED },
+      data: { status: ScheduledRideStatus.SCHEDULED, requestedRideId: null, dispatchedAt: null },
+    });
+    return result.count > 0;
+  },
+
   parseStops,
 };

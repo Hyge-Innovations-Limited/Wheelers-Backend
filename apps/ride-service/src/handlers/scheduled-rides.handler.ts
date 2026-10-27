@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { ScheduledRideStatus, scheduledRideClient } from '@wheleers/db';
+import IORedis from 'ioredis';
+import { ScheduledRideStatus, referralClient, rideClient, scheduledRideClient } from '@wheleers/db';
 import { TOPICS } from '@wheleers/kafka-schemas';
 import { calculateSuggestedFare, type RideEnv } from '@wheleers/config';
 import type { RideRequestedEvent } from '@wheleers/kafka-schemas';
@@ -14,6 +15,65 @@ import {
 export type ScheduledRideDispatcher = {
   shutdown(): Promise<void>;
 };
+
+/** What a dispatch needs besides the ride: Kafka, and Redis (the gateway's keys, read only, and the hold's once-mark). */
+type DispatchContext = {
+  rideEventsProducer: RideEventsProducer;
+  redis: Pick<IORedis, 'get' | 'set' | 'ttl' | 'del'>;
+};
+
+/** Meta's customer-service window: plain messages reach a rider this long after their last message to us. */
+const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Can a WhatsApp ride for later start now? Its start message must reach the
+ * rider: inside their 24 h window (the gateway keeps their last message's time),
+ * or as the approved template when one is set (WHATSAPP_SCHEDULED_TEMPLATE).
+ * Before the gateway kept that time, the phone lookup it renews on every message
+ * (24 h) says the same.
+ */
+async function whatsappStartCanReachRider(redis: DispatchContext['redis'], riderId: string): Promise<boolean> {
+  if (process.env['WHATSAPP_SCHEDULED_TEMPLATE']?.trim()) return true;
+  const lastIn = await redis.get(`whatsapp:user:${riderId}:last_in`).catch(() => null);
+  const at = lastIn ? Date.parse(lastIn) : NaN;
+  if (Number.isFinite(at)) return Date.now() < at + WHATSAPP_WINDOW_MS;
+  const ttl = await redis.ttl(`whatsapp:phone_by_user:${riderId}`).catch(() => -2);
+  return ttl > 0;
+}
+
+/**
+ * A WhatsApp ride for later due while its rider is busy (searching, a driver
+ * being confirmed, on a trip) waits: back to SCHEDULED, tried again by the next
+ * scan, and the rider is told once. Their current search is never replaced.
+ * True when it was held.
+ */
+async function holdWhileBusy(
+  claimed: NonNullable<Awaited<ReturnType<typeof scheduledRideClient.claimForDispatch>>>,
+  ctx: DispatchContext,
+): Promise<boolean> {
+  const busy = await rideClient.findOtherLiveRide(claimed.riderId).catch(() => null);
+  if (!busy) return false;
+  await scheduledRideClient.releaseClaim(claimed.id);
+  // Once per ride for later, however many scans find it still waiting.
+  const onceKey = `scheduled-ride:${claimed.id}:held-told`;
+  const first = await ctx.redis.set(onceKey, '1', 'EX', 3 * 24 * 60 * 60, 'NX').then((ok) => ok === 'OK').catch(() => false);
+  if (first) {
+    await ctx.rideEventsProducer.scheduledRideHeld({
+      eventType: 'SCHEDULED_RIDE_HELD',
+      rideId: claimed.id,
+      riderId: claimed.riderId,
+      scheduledFor: claimed.scheduledFor.toISOString(),
+      pickupAddress: claimed.pickupAddress,
+      timestamp: new Date().toISOString(),
+    }).catch(async (error) => {
+      // Not said: the next scan says it.
+      await ctx.redis.del(onceKey).catch(() => undefined);
+      console.warn('[ride-service:dispatcher] held notice not published', { scheduledRideId: claimed.id, error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+  console.info('[ride-service:dispatcher] rider busy, ride for later waits', { scheduledRideId: claimed.id, busyWith: busy.id });
+  return true;
+}
 
 /**
  * Starts the BullMQ-backed scheduled ride dispatcher.
@@ -42,16 +102,17 @@ export function startScheduledRideDispatcher(params: {
     Number(params.rideEnv.SCHEDULED_RIDE_DISPATCH_INTERVAL_S) * 1_000 * 2;
 
   const { queue, connection: queueConn } = createDispatcherQueue(params.redisUrl);
+  const ctx: DispatchContext = { rideEventsProducer: params.rideEventsProducer, redis: queueConn };
   const { worker, connection: workerConn } = createDispatcherWorker(
     params.redisUrl,
     async (job) => {
-      await dispatchSingleRide(job.data.scheduledRideId, params.rideEventsProducer);
+      await dispatchSingleRide(job.data.scheduledRideId, ctx);
     },
   );
 
   // Recovery + stuck-ride scanner.
   const fallbackTimer = setInterval(() => {
-    void runRecoveryScanner(params.rideEventsProducer, leadTimeMs).catch((err) =>
+    void runRecoveryScanner(ctx, leadTimeMs).catch((err) =>
       console.warn('[ride-service:dispatcher] recovery scanner error:', err),
     );
   }, fallbackIntervalMs);
@@ -81,7 +142,7 @@ export function startScheduledRideDispatcher(params: {
  * 3. Dispatch any rides that are due but still SCHEDULED (BullMQ job was lost).
  */
 async function runRecoveryScanner(
-  rideEventsProducer: RideEventsProducer,
+  ctx: DispatchContext,
   leadTimeMs: number,
 ): Promise<void> {
   // Step 1 — release stuck DISPATCHING rides.
@@ -92,12 +153,13 @@ async function runRecoveryScanner(
     new Date(Date.now() - 24 * 60 * 60 * 1_000),
   );
 
-  // Step 3 — dispatch due-but-missed rides (BullMQ job was lost).
+  // Step 3 — dispatch due-but-missed rides (BullMQ job was lost), and the ones
+  // waiting for their rider to be free (they stay SCHEDULED, so they are here too).
   const dispatchBefore = new Date(Date.now() + leadTimeMs);
-  const dueRides = await scheduledRideClient.findDueForDispatch(dispatchBefore, 10);
+  const dueRides = await scheduledRideClient.findDueForDispatch(dispatchBefore, 50);
 
   for (const ride of dueRides) {
-    await dispatchSingleRide(ride.id, rideEventsProducer);
+    await dispatchSingleRide(ride.id, ctx);
   }
 }
 
@@ -109,9 +171,9 @@ async function runRecoveryScanner(
  * Idempotent: if the ride is already DISPATCHED (e.g. scanner + BullMQ race),
  * claimForDispatch returns null and we exit immediately.
  */
-async function dispatchSingleRide(
+export async function dispatchSingleRide(
   scheduledRideId: string,
-  rideEventsProducer: RideEventsProducer,
+  ctx: DispatchContext,
 ): Promise<void> {
   // Atomic claim: SCHEDULED → DISPATCHING (only one worker wins).
   const claimed = await scheduledRideClient.claimForDispatch(scheduledRideId);
@@ -120,7 +182,20 @@ async function dispatchSingleRide(
     return;
   }
 
-  await doDispatch(claimed, rideEventsProducer);
+  if (claimed.channel === 'WHATSAPP') {
+    // Busy now: it waits for them (never replacing what they are doing).
+    if (await holdWhileBusy(claimed, ctx)) return;
+    // Its start must reach them in the chat: outside their 24 h window, with no
+    // approved template to say it, it does not start (drivers are not called to nobody).
+    if (!(await whatsappStartCanReachRider(ctx.redis, claimed.riderId))) {
+      await scheduledRideClient.cancel(claimed.id, claimed.riderId, 'whatsapp_window_closed');
+      await referralClient.releaseRideCashback(claimed.id).catch(() => undefined);
+      console.info('[ride-service:dispatcher] ride for later not started: outside the WhatsApp window', { scheduledRideId: claimed.id });
+      return;
+    }
+  }
+
+  await doDispatch(claimed, ctx.rideEventsProducer);
 }
 
 async function doDispatch(

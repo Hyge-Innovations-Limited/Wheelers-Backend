@@ -33,7 +33,7 @@ import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
-import { autoAcceptOffAtStart, switchAutoAccept } from '../../rides/auto-accept';
+import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
 import { markSearchEnded } from '../../rides/booking-lock';
 import { assertInServiceArea } from '../../utils/service-area';
 
@@ -394,11 +394,12 @@ export async function handleRideMessage(
       throw error;
     }
 
-    // Auto-accept is on for every search; an app that sends autoAccept: false switches it off for this one.
-    let autoAccept = true;
-    if (getBoolean(payload, 'autoAccept') === false && redis) {
-      await autoAcceptOffAtStart(redis, rideId, auth.userId);
-      autoAccept = false;
+    // Auto-accept only with the rider's yes (asked once, at Find): autoAccept: true. An app
+    // that sends false, or nothing (an older app), never has a driver booked for it.
+    let autoAccept = false;
+    if (getBoolean(payload, 'autoAccept') === true && redis) {
+      await autoAcceptOnAtStart(redis, rideId, auth.userId);
+      autoAccept = true;
     }
 
     // Every normal booking is a potential group ride — if open group requests
@@ -434,14 +435,14 @@ export async function handleRideMessage(
         pricingCurrency: 'NGN',
         // Why the price is up, for the line under it (null: nothing notable).
         priceReason: plannedRoute.priceReason ?? null,
-        // Auto-accept: on unless the request said autoAccept: false.
+        // Auto-accept: on only when the request said autoAccept: true.
         autoAccept,
       },
     };
   }
 
   if (type === 'ride:auto_accept') {
-    // Auto-accept is on for every search; this switch (no app sends it now) is honoured when it comes.
+    // The rider's switch for this search: on is their yes, off keeps it off.
     const rideId = requireString(payload, 'rideId');
     const on = getBoolean(payload, 'on') === true;
     if (!redis) {

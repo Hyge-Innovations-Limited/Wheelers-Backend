@@ -6,7 +6,8 @@ import { confirmRideWithOffer, offerKey } from '../rides/whatsapp-ride.service';
 import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
 import { appendWhatsappConversation } from '../LLM/conversation-store';
 import { logActivity } from '../analytics/log-activity';
-import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept, isRidePageOpen } from '../whatsapp-flows/bid-state';
+import { getActiveRide, clearActiveRide, getBids, storeLastBatch, getRideState, getRideMeta, getGroupSeat, storePendingAccept, markOffersMessageSent, getPendingAccept, clearPendingAccept, isRidePageOpen, whatsappWindowEnd } from '../whatsapp-flows/bid-state';
+import { scheduledStartTemplate, sendScheduledStartTemplate } from './scheduled-template';
 import type { WhatsappBid } from '../whatsapp-flows/bid-state';
 import { deferUntilPageLeft } from '../whatsapp-flows/page-catchup';
 import { tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
@@ -276,6 +277,16 @@ export async function sayRidePageEventInChat(deps: MetaWhatsappRouteDeps, event:
     if (!event.phone) return;
 
     if (event.kind === 'search_started') {
+      // A ride for later starting outside the rider's 24 h window: only the approved template reaches them.
+      if (event.scheduled && scheduledStartTemplate() && !(await whatsappWindowEnd(deps.redisClient, event.userId).catch(() => null))) {
+        if (await sendScheduledStartTemplate(deps, event.userId, event.phone, event)) {
+          await appendWhatsappConversation(deps.redisClient, event.phone, [
+            { role: 'user', content: `[a ride scheduled on the offers page started its search: ₦${event.offerNgn.toLocaleString()}]` },
+            { role: 'assistant', content: '[your ride for later is looking for a driver — sent the template with See driver offers]' },
+          ]).catch(() => undefined);
+          return;
+        }
+      }
       const text = await sendSearchStarted(deps, { id: event.userId }, event.phone, event);
       await appendWhatsappConversation(deps.redisClient, event.phone, [
         { role: 'user', content: event.scheduled ? `[a ride scheduled on the offers page started its search: ₦${event.offerNgn.toLocaleString()}]` : `[named a price on the offers page: ₦${event.offerNgn.toLocaleString()}]` },

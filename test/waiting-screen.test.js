@@ -153,7 +153,7 @@ test('the price and the offers screens carry the reason line; offers say how man
   const offers = await call(rider, 'GET', '/ride-page/state');
   assert.equal(offers.body.driversNotified, 3);
   assert.equal(offers.body.bidsCloseAt, closes);
-  assert.equal(offers.body.autoAccept, true);
+  assert.equal(offers.body.autoAccept, false, 'Find without the rider\'s yes: they choose');
 });
 
 test('no driver took it: the idle page shows the last search, and Search again at a new price starts it from that trip', async () => {

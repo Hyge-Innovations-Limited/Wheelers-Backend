@@ -1,4 +1,4 @@
-import { driverClient, rideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { driverClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
@@ -33,6 +33,8 @@ function searchClock(pending: PendingRideMatch | undefined): Date {
 
 /** A rider has one search at a time: a new request ends the older one, wherever it came from. */
 const SUPERSEDED_REASON = 'Replaced by a newer request';
+/** A ride for later replaced this soon after it started was caught in a race with the rider's own search. */
+const SCHEDULED_RACE_MS = 2 * 60_000;
 
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
@@ -175,12 +177,47 @@ export function createRideRequestedConsumer(params: {
         cancelledBy: 'system',
         timestamp: new Date().toISOString(),
       }).catch((err) => console.warn('[ride-service] could not cancel a superseded search', { rideId: ride.id, error: (err as any)?.message ?? err }));
+      // A WhatsApp ride for later that started in the very second the rider started this
+      // search: it was not theirs to lose. It waits for them, and starts after.
+      if (ride.channel === 'WHATSAPP' && Date.now() - ride.createdAt.getTime() < SCHEDULED_RACE_MS) {
+        const requeued = await scheduledRideClient.requeueDispatched(ride.id).catch(() => false);
+        if (requeued) console.info('[ride-service] superseded ride for later put back to wait', { rideId: ride.id, by: event.rideId });
+      }
       console.info('[ride-service] older search superseded', { rideId: ride.id, by: event.rideId, riderId: event.riderId });
     }
   }
 
+  /**
+   * A WhatsApp ride for later reaching its search. The scheduler held it while
+   * the rider was busy; busy again by the time it got here (they started a
+   * search in the same second), it goes back to waiting instead of replacing
+   * what they are doing. Delivered again after that (Kafka), or after it was
+   * put back by the gateway: nothing. True when it searches now.
+   */
+  async function scheduledWhatsappMayStart(event: RideRequestedEvent): Promise<boolean> {
+    const scheduled = await scheduledRideClient.findByRequestedRideId(event.rideId).catch(() => undefined);
+    // Unknown (the database did not answer): search, as before.
+    if (scheduled === undefined) return true;
+    if (!scheduled || scheduled.status !== 'DISPATCHED') {
+      console.info('[ride-service] scheduled start no longer current, ignored', { rideId: event.rideId });
+      return false;
+    }
+    const busy = await rideClient.findOtherLiveRide(event.riderId, event.rideId).catch(() => null);
+    if (!busy) return true;
+    await scheduledRideClient.requeueDispatched(event.rideId).catch((err) =>
+      console.warn('[ride-service] could not put a held ride for later back', { rideId: event.rideId, error: (err as any)?.message ?? err }));
+    console.info('[ride-service] rider busy, ride for later waits', { rideId: event.rideId, busyWith: busy.id });
+    return false;
+  }
+
   async function handleRideRequested(event: RideRequestedEvent): Promise<void> {
-    await supersedeOlderSearches(event);
+    const scheduledWhatsapp = event.scheduled === true && event.channel === 'WHATSAPP';
+    if (scheduledWhatsapp) {
+      if (!(await scheduledWhatsappMayStart(event))) return;
+    } else {
+      // A ride for later booked on WhatsApp never ends the rider's live search (it waits for them instead).
+      await supersedeOlderSearches(event);
+    }
     state.routeByRideId.set(event.rideId, [
       ...event.stops.map((stop, index) => ({
         stopOrder: index,

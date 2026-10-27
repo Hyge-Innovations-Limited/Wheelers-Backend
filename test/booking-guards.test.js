@@ -16,7 +16,7 @@ const { driverBidClient } = require('../packages/db/dist/index.js');
 const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handlers/ride.handler.js');
 const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
 const { confirmRideWithOffer, cancelWhatsappRide } = require('../apps/api-gateway/dist/rides/whatsapp-ride.service.js');
-const { tryAutoAccept } = require('../apps/api-gateway/dist/rides/auto-accept.js');
+const { tryAutoAccept, autoAcceptOnAtStart } = require('../apps/api-gateway/dist/rides/auto-accept.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
 
 const prisma = new PrismaClient();
@@ -63,16 +63,21 @@ async function driver({ seenSecondsAgo = 5 } = {}) {
   made.drivers.push(d.id);
   return { id: d.id, userId };
 }
+// Every search here was started with the rider's yes to auto-booking (autoAccept: true at Find):
+// auto-accept only ever runs on those, and these tests are about its guards.
+let currentRedis = null;
 async function searching(riderId, extra = {}) {
   const r = await prisma.ride.create({
     data: { riderId, status: 'MATCHING', pickupLat: 6.6, pickupLng: 3.35, pickupAddress: 'Opebi', destLat: 6.5, destLng: 3.36, destAddress: 'Surulere', fareEstimateNgn: 7900, riderOfferNgn: 7900, ...extra },
   });
   made.rides.push(r.id);
+  if (currentRedis) await autoAcceptOnAtStart(currentRedis, r.id, riderId);
   return r;
 }
 const bid = (r, d, amountNgn, extra = {}) => driverBidClient.record({ rideId: r.id, driverId: d.id, driverUserId: d.userId, riderId: r.riderId, amountNgn, etaSeconds: 300, distanceKm: 2, ...extra });
 function world() {
   const redis = memoryRedis();
+  currentRedis = redis;
   const published = [];
   const pushes = [];
   const toApp = [];
@@ -189,7 +194,7 @@ test('nobody switches auto-accept off on someone else\'s ride', async () => {
   const r = await searching(owner);
   const answer = await handleRideMessage('ride:auto_accept', { rideId: r.id, on: false }, { userId: stranger, role: 'RIDER' }, w.publisher, {}, w.redis);
   assert.equal(answer.type, 'ride:auto_accept:rejected');
-  assert.equal(w.redis.store.has(`ride:${r.id}:auto-accept`), false);
+  assert.match(w.redis.store.get(`ride:${r.id}:auto-accept`), /"off":false/, 'the owner\'s yes is untouched');
   const d = await driver();
   await bid(r, d, 7000);
   assert.equal((await tryAutoAccept(w.deps, r.id)).booked, true, 'still on for its owner');

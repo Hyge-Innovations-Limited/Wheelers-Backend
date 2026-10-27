@@ -29,7 +29,9 @@ export type CatchupItem =
   /** A booking the chat had shown (its card) fell through: unsaid, while the search goes on. */
   | { kind: 'booking_failed'; rideId: string; text: string; /** The ride ended (not the search going on): said if it is still cancelled. */ ended?: boolean }
   /** The old WhatsApp form's "View offers" message. */
-  | { kind: 'legacy_offers'; rideId: string };
+  | { kind: 'legacy_offers'; rideId: string }
+  /** A ride for later waits while the rider is busy (rideId: the ScheduledRide's): said if it still waits. */
+  | { kind: 'scheduled_held'; rideId: string; text: string };
 
 /**
  * Which message is said when several waited, highest first: the driver
@@ -37,7 +39,7 @@ export type CatchupItem =
  */
 // The card first when none was sent yet (it carries the car, the plate, the code, chat, calls
 // and SOS; its delivery refuses when a card exists), then the driver outside.
-export const CATCHUP_PRIORITY: ReadonlyArray<CatchupItem['kind']> = ['ride_confirmed', 'arrived', 'booking_failed', 'driver_cancelled', 'cancelled', 'search_started', 'legacy_offers'];
+export const CATCHUP_PRIORITY: ReadonlyArray<CatchupItem['kind']> = ['ride_confirmed', 'arrived', 'booking_failed', 'driver_cancelled', 'cancelled', 'search_started', 'legacy_offers', 'scheduled_held'];
 
 const DUE_KEY = 'ride_page:catchup_due';
 const KEEP_SECONDS = 3 * 60 * 60;

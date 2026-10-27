@@ -10,7 +10,11 @@ import { acceptOfferInApp } from './app-accept';
 import { confirmRideWithOffer, offerKey } from './whatsapp-ride.service';
 
 /**
- * Auto-accept, on for every search (app, ride page and WhatsApp): the first
+ * Auto-accept, only for a search the rider said yes to when they started it
+ * (autoAccept: true on ride:request or POST /ride-page/find; asked once, at
+ * Find), or switched on for it since (ride:auto_accept, POST /ride-page/auto-accept).
+ * Every other search — the WhatsApp chat's price, the offers form, an app that
+ * never sends the field, a ride for later — never books by itself. Then: the first
  * driver whose offer is at or below the rider's current price and who is at
  * most 10 minutes away is booked and paid from the wallet — if the wallet
  * covers that offer at that moment. When it does not, nothing is booked and
@@ -77,9 +81,9 @@ async function writeRecord(redis: RedisClient, rideId: string, record: AutoAccep
   await redis.set(recordKey(rideId), JSON.stringify(record), RECORD_TTL_SECONDS).catch(() => undefined);
 }
 
-/** Is auto-accept on for this search? On unless the rider switched it off. */
+/** Is auto-accept on for this search? Only when the rider said yes to it (off: false on the record). */
 export async function isAutoAcceptOn(redis: RedisClient, rideId: string): Promise<boolean> {
-  return (await readRecord(redis, rideId))?.off !== true;
+  return (await readRecord(redis, rideId))?.off === false;
 }
 
 async function balanceOf(riderId: string): Promise<number> {
@@ -131,9 +135,8 @@ async function ownsSearch(redis: RedisClient, riderId: string, rideId: string): 
 }
 
 /**
- * The rider's explicit switch (ride:auto_accept, POST /ride-page/auto-accept).
- * Nothing sends it now that auto-accept is always on; it is honoured when it
- * comes: off is kept for this search, on clears it and books any offer on the
+ * The rider's explicit switch (ride:auto_accept, POST /ride-page/auto-accept):
+ * off is kept for this search; on is their yes, and books any offer on the
  * table that qualifies.
  */
 export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, rideId: string, on: boolean): Promise<AutoAcceptSwitch> {
@@ -152,9 +155,15 @@ export async function switchAutoAccept(deps: AutoAcceptDeps, riderId: string, ri
   return booked ? { ok: true, on: false, booked: true } : { ok: true, on: true };
 }
 
-/** Off for a search the rider is starting right now (ride:request with autoAccept: false): theirs by construction. */
+/** Off for a search the rider is starting right now (a ride for later; off is also what no record means). */
 export async function autoAcceptOffAtStart(redis: RedisClient, rideId: string, riderId: string): Promise<void> {
   await writeRecord(redis, rideId, { riderId, off: true });
+}
+
+/** On for a search the rider is starting right now and said yes to (autoAccept: true): theirs by construction. */
+export async function autoAcceptOnAtStart(redis: RedisClient, rideId: string, riderId: string): Promise<void> {
+  const record = (await readRecord(redis, rideId)) ?? {};
+  await writeRecord(redis, rideId, { ...record, riderId, off: false });
 }
 
 /** The driver auto-accept booked on this ride, if it did (its booking was nobody's tap). */
@@ -271,7 +280,8 @@ async function bookOne(deps: AutoAcceptDeps, search: Search, rideId: string, can
  */
 export async function tryAutoAccept(deps: AutoAcceptDeps, rideId: string): Promise<{ booked: boolean }> {
   const record = await readRecord(deps.redisClient, rideId);
-  if (record?.off) return { booked: false };
+  // Only with the rider's yes: a search they did not say yes to never books by itself.
+  if (record?.off !== false) return { booked: false };
   if (await deps.redisClient.get(bookedKey(rideId)).catch(() => null)) return { booked: false };
   // One attempt at a time, whichever gateway process the offer reached.
   const mine = await deps.redisClient.setIfNotExists(lockKey(rideId), '1', LOCK_SECONDS).catch(() => false);

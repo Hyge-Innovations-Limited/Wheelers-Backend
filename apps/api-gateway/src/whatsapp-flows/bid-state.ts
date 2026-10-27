@@ -312,6 +312,31 @@ export async function setPhoneLookup(
   await redis.set(userLookupKey(phone), userId, PHONE_LOOKUP_TTL);
 }
 
+/**
+ * Meta's customer-service window: a plain message reaches a WhatsApp user only
+ * this long after their last message to us. Outside it, only an approved template.
+ */
+export const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
+const lastInboundKey = (userId: string) => `whatsapp:user:${userId}:last_in`;
+
+/** The rider just wrote to us (any message): their window runs 24 h from now. */
+export async function markWhatsappInbound(redis: RedisClient, userId: string, at = Date.now()): Promise<void> {
+  await redis.set(lastInboundKey(userId), new Date(at).toISOString(), Math.ceil(WHATSAPP_WINDOW_MS / 1000));
+}
+
+/**
+ * When the rider's window closes (ms since epoch), or null when it is closed or
+ * unknown. Before their last message's time was kept, the phone lookup — renewed
+ * for 24 h on every message — says it.
+ */
+export async function whatsappWindowEnd(redis: RedisClient, userId: string, now = Date.now()): Promise<number | null> {
+  const raw = await redis.get(lastInboundKey(userId)).catch(() => null);
+  const at = raw ? Date.parse(raw) : NaN;
+  if (Number.isFinite(at)) return at + WHATSAPP_WINDOW_MS > now ? at + WHATSAPP_WINDOW_MS : null;
+  const ttl = await Promise.resolve().then(() => redis.send('TTL', phoneLookupKey(userId))).catch(() => null);
+  return typeof ttl === 'number' && ttl > 0 ? now + ttl * 1000 : null;
+}
+
 export async function lookupUserIdByPhone(redis: RedisClient, phone: string): Promise<string | null> {
   return redis.get(userLookupKey(phone));
 }

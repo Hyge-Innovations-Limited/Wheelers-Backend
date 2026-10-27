@@ -22,7 +22,7 @@ const prisma = new PrismaClient();
 const JWT_SECRET = 'test-secret-that-is-at-least-32-characters-long';
 const realFetch = global.fetch;
 const realConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
-const made = { users: [], scheduled: [] };
+const made = { users: [], scheduled: [], rides: [] };
 
 const YABA = { lat: 6.5095, lng: 3.3711, address: '12 Herbert Macaulay Way, Yaba, Lagos' };
 const VI = { lat: 6.4281, lng: 3.4219, address: 'Adeola Odeku Street, Victoria Island, Lagos' };
@@ -93,6 +93,7 @@ test.beforeEach(() => { console.log = console.info = console.warn = console.erro
 test.afterEach(() => { Object.assign(console, realConsole); global.fetch = realFetch; });
 test.after(async () => {
   await prisma.scheduledRide.deleteMany({ where: { riderId: { in: made.users } } }).catch(() => {});
+  await prisma.ride.deleteMany({ where: { id: { in: made.rides } } }).catch(() => {});
   await prisma.wallet.deleteMany({ where: { userId: { in: made.users } } }).catch(() => {});
   await prisma.user.deleteMany({ where: { id: { in: made.users } } }).catch(() => {});
   await prisma.$disconnect();
@@ -221,8 +222,9 @@ test('Plan your trip with stops: planned through them, shown on the price, at mo
 /* ── rides for later ──────────────────────────────────────────────────── */
 
 test('a ride for later: priced first, then booked once, marked WhatsApp, with the scheduler\'s job', async () => {
-  const { deps, queue } = world();
+  const { deps, queue, redis } = world();
   const rider = await makeRider();
+  await bidState.markWhatsappInbound(redis, rider);
   const trip = { pickup: YABA, destination: VI, stops: [SURULERE] };
 
   // The app's time rules.
@@ -234,7 +236,7 @@ test('a ride for later: priced first, then booked once, marked WhatsApp, with th
   assert.equal((await call(deps, rider, 'POST', '/ride-page/schedule', { ...trip, scheduledFor: inMinutes(8 * 24 * 60) })).body.code, 'TIME_INVALID');
   assert.equal((await call(deps, rider, 'POST', '/ride-page/schedule', { pickup: YABA, destination: { lat: 7.16, lng: 3.35, address: 'Ibara, Abeokuta' }, scheduledFor: inMinutes(120) })).body.code, 'OUTSIDE_SERVICE_AREA');
 
-  const when = inMinutes(26 * 60);
+  const when = inMinutes(20 * 60);
   const quote = await call(deps, rider, 'POST', '/ride-page/schedule/quote', { ...trip, scheduledFor: when });
   assert.equal(quote.status, 200, JSON.stringify(quote.body));
   assert.deepEqual(quote.body.route, { pickupAddress: YABA.address, destAddress: VI.address, stopAddresses: [SURULERE.address], distanceKm: 11.4, durationMin: 28, suggestedFareNgn: 5200 });
@@ -268,9 +270,10 @@ test('a ride for later: priced first, then booked once, marked WhatsApp, with th
 });
 
 test('a ride for later is cancelled only by its own rider, only while it waits', async () => {
-  const { deps, queue } = world();
+  const { deps, queue, redis } = world();
   const owner = await makeRider();
   const stranger = await makeRider();
+  await bidState.markWhatsappInbound(redis, owner);
   const { body } = await call(deps, owner, 'POST', '/ride-page/schedule', { pickup: YABA, destination: VI, scheduledFor: inMinutes(180) });
   const id = body.item.id;
 
@@ -372,19 +375,20 @@ test('on the ride page when it starts: the chat waits for them to leave', async 
   assert.deepEqual(waiting.map((item) => [item.kind, item.rideId]), [['search_started', event.rideId]]);
 });
 
-test('a rider on a trip when it starts keeps their trip in the chat; the search is the app\'s, as before', async () => {
+test('a rider on a trip when it starts keeps their trip in the chat; it waits for them, never the app\'s', async () => {
   const redis = memoryRedis();
   const { deps, pushes, said } = consumerDeps(redis);
   const rider = await makeRider();
-  const trip = randomUUID();
-  await bidState.setActiveRide(redis, rider, trip);
-  await bidState.setRideState(redis, trip, 'in_progress');
+  const trip = await prisma.ride.create({ data: { riderId: rider, status: 'IN_PROGRESS', pickupLat: YABA.lat, pickupLng: YABA.lng, pickupAddress: YABA.address, destLat: VI.lat, destLng: VI.lng, destAddress: VI.address } });
+  made.rides.push(trip.id);
+  await bidState.setActiveRide(redis, rider, trip.id);
+  await bidState.setRideState(redis, trip.id, 'in_progress');
   const event = started(rider);
   await handleRideEvent(event, deps, new Map());
-  assert.equal(await bidState.getActiveRide(redis, rider), trip);
+  assert.equal(await bidState.getActiveRide(redis, rider), trip.id);
   assert.equal(said.length, 0);
-  assert.equal(await redis.get(`ride:${event.rideId}:app-only`), '1');
-  assert.equal(pushes[0].title, 'Your scheduled ride');
+  assert.equal(await redis.get(`ride:${event.rideId}:app-only`), null, 'not the app\'s');
+  assert.equal(pushes.length, 0);
 });
 
 test('a ride booked in the app is unchanged: the app\'s push, its offers stay in the app', async () => {

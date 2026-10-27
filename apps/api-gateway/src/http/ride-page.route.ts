@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { referralClient, rideClient, ridePageEventClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { PageLinkExpiredError, verifyWalletPageToken } from '../auth/local';
@@ -15,10 +15,10 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { clearPendingAccept, getPendingAccept, markCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
+import { clearActiveRideIfMatches, clearPendingAccept, getPendingAccept, markCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
 import { releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
-import { autoAcceptOffAtStart, isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
+import { autoAcceptOnAtStart, isAutoAcceptOn, switchAutoAccept } from '../rides/auto-accept';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
@@ -36,6 +36,12 @@ import {
 } from '../rides/whatsapp-ride.service';
 import { rememberChosenOffer } from '../whatsapp/ride-card';
 import type { XlmPayer } from '../rides/whatsapp-ride.service';
+import { handleRideMessage } from '../websocket/handlers/ride.handler';
+import type { GatewayAuthContext } from '../types';
+import { cancelRiderSos, raiseRiderSos } from '../safety/rider-sos';
+import { supportContact } from '../whatsapp/menu';
+import { scheduledStartTemplate } from '../whatsapp/scheduled-template';
+import { refusalCode } from '../utils/service-area';
 
 /**
  * The page a WhatsApp rider opens from the chat ("See driver offers"): name a
@@ -45,9 +51,9 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  * in") with the number of offers shown on it.
  *
  *   GET  /ride-page/state        where the booking is, and the offers on the table
- *   POST /ride-page/find         { amountNgn, autoAccept? }  name a price → drivers are asked (autoAccept: false switches it off)
- *   POST /ride-page/auto-accept  { on }         auto-accept is on for every search; this (unused now) switches it
- *   POST /ride-page/search-again { amountNgn }  after "No driver accepted": the same trip again at a new price
+ *   POST /ride-page/find         { amountNgn, autoAccept? }  name a price → drivers are asked (autoAccept: true: the rider's yes to auto-booking)
+ *   POST /ride-page/auto-accept  { on }         switch auto-accept for this search (on: the rider's yes)
+ *   POST /ride-page/search-again { amountNgn, autoAccept? }  after "No driver accepted": the same trip again at a new price
  *   POST /ride-page/offer        { amountNgn }  change the bid
  *   POST /ride-page/accept       { key, priceNgn? }  take one driver's offer (holds the fare); priceNgn: the price shown
  *   POST /ride-page/decline      { key }        decline one driver's offer; they can send a new price
@@ -62,6 +68,11 @@ import type { XlmPayer } from '../rides/whatsapp-ride.service';
  *                                               before the pickup time and is a WhatsApp search)
  *   GET  /ride-page/scheduled                   rides for later still waiting
  *   POST /ride-page/scheduled/:id/cancel        cancel one of them
+ *   POST /ride-page/cancel-ride   { reason, detail? }   cancel the trip once a driver is booked (the app's ride:cancel)
+ *   POST /ride-page/trip-route    { destination?, stops }   change where a booked trip goes (the app's ride:route:update)
+ *   POST /ride-page/sos                         the Emergency button: the safety team is alerted (as the ride card's SOS)
+ *   POST /ride-page/sos/cancel                  "I'm safe": the rider's open alert is withdrawn
+ *   GET  /ride-page/open/:token                 the start template's button: on to the page with this link
  *   GET  /ride-page/where?lat=&lng=             the rider's position as a place (Use my current location)
  *   POST /ride-page/route         { pickup, destination, stops? }   plan the trip (from Home) or change it before pricing it
  *   POST /ride-page/edit-trip                   go back from the search to the trip: the search stops,
@@ -132,7 +143,8 @@ function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
   } catch (error) {
     // A real link whose time is up: the page says so, with the way back to the chat for a new one.
     if (error instanceof PageLinkExpiredError) {
-      throw new PageError('This link has expired.', 401, 'LINK_EXPIRED', { chatUrl: EXPIRED_CHAT_URL });
+      // The full sentence: a page opened before this release shows the message alone.
+      throw new PageError('This link has expired. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_EXPIRED', { chatUrl: EXPIRED_CHAT_URL });
     }
     throw new PageError('This link is not valid. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_INVALID');
   }
@@ -196,6 +208,14 @@ async function liveTripFor(userId: string) {
   const inTrip = ride.status === 'IN_PROGRESS';
   const target = inTrip ? { lat: ride.destLat, lng: ride.destLng } : { lat: ride.pickupLat, lng: ride.pickupLng };
   const kmToGo = hasPosition ? haversineKm(driver.lat!, driver.lng!, target.lat, target.lng) : null;
+  // Where the trip goes now (a changed route lives in its stops): for Plan your trip, pre-filled.
+  const finalStop = ride.routeStops.find((stop) => stop.type === 'FINAL');
+  const endsAt = finalStop
+    ? { lat: finalStop.lat, lng: finalStop.lng, address: finalStop.address }
+    : { lat: ride.destLat, lng: ride.destLng, address: ride.destAddress };
+  const stopsLeft = ride.routeStops
+    .filter((stop) => stop.type === 'INTERMEDIATE' && stop.status === 'PENDING')
+    .map((stop) => ({ lat: stop.lat, lng: stop.lng, address: stop.address }));
 
   return {
     rideId: ride.id,
@@ -204,10 +224,17 @@ async function liveTripFor(userId: string) {
     fareNgn: Number(ride.agreedFareNgn ?? ride.riderOfferNgn ?? ride.fareEstimateNgn ?? 0),
     route: {
       pickupAddress: ride.pickupAddress,
-      destAddress: ride.destAddress,
+      destAddress: endsAt.address,
+      stopAddresses: stopsLeft.map((stop) => stop.address),
       distanceKm: ride.distanceKm ?? 0,
       durationMin: Math.ceil((ride.durationSeconds ?? 0) / 60),
     },
+    places: {
+      pickup: { lat: ride.pickupLat, lng: ride.pickupLng, address: ride.pickupAddress },
+      destination: endsAt,
+      stops: stopsLeft,
+    },
+    driverId: ride.driverId,
     pickup: { lat: ride.pickupLat, lng: ride.pickupLng },
     destination: { lat: ride.destLat, lng: ride.destLng },
     driver: {
@@ -235,7 +262,10 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
 }
 
 async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
-  const [rideId, balanceNgn, trip] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId), liveTripFor(userId)]);
+  const [pointer, balanceNgn, live] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId), liveTripFor(userId)]);
+  // Cancelled on the page a moment ago: over, though the database has not caught up yet.
+  const trip = live && await wasCancelledOnPage(deps.redisClient, live.rideId) ? null : live;
+  const rideId = pointer && await wasCancelledOnPage(deps.redisClient, pointer) ? null : pointer;
 
   // A driver is assigned: this is the tracking page now.
   if (trip) {
@@ -254,6 +284,9 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       : null;
     return {
       phase: 'confirmed' as const, rideId: trip.rideId, balanceNgn, route: trip.route, offerNgn: trip.fareNgn,
+      // Plan your trip, pre-filled, to change where it goes.
+      places: trip.places,
+      ...(await tripExtras(userId)),
       driver: {
         name: trip.driver.name, phone: trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
@@ -300,6 +333,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         return {
           phase: 'confirmed' as const, rideId, balanceNgn, route, offerNgn: meta.offerNgn,
           trip: null,
+          places: placesOf(meta),
+          ...(await tripExtras(userId)),
           driver: accepted ? {
             name: accepted.driverName,
             phone: accepted.driverPhone,
@@ -315,17 +350,11 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
 
       const [status, autoAccept, planned] = await Promise.all([
         getSearchStatus(deps.redisClient, rideId).catch(() => ({ driversNotified: null, bidsCloseAt: null })),
-        isAutoAcceptOn(deps.redisClient, rideId).catch(() => true),
+        isAutoAcceptOn(deps.redisClient, rideId).catch(() => false),
         getLastRoute(deps.redisClient, userId).catch(() => null),
       ]);
       // The Finding map: the trip's places, and its road when the last route saved is this search's trip.
-      const places = meta.pickupLat != null && meta.pickupLng != null && meta.destinationLat != null && meta.destinationLng != null
-        ? {
-            pickup: { lat: meta.pickupLat, lng: meta.pickupLng, address: meta.pickupAddress },
-            destination: { lat: meta.destinationLat, lng: meta.destinationLng, address: meta.destinationAddress },
-            stops: meta.stops ?? [],
-          }
-        : null;
+      const places = placesOf(meta);
       const sameTrip = planned && planned.pickupAddress === meta.pickupAddress && planned.destAddress === meta.destinationAddress;
       const road = sameTrip ? (planned.route as { coordinates?: Array<{ lat: number; lng: number }> } | undefined)?.coordinates : undefined;
       const line = Array.isArray(road) ? road.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number') : [];
@@ -334,7 +363,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         // The waiting screen: drivers the price went out to, and when the search closes.
         driversNotified: status.driversNotified,
         bidsCloseAt: status.bidsCloseAt,
-        // On for every search: the first driver at or under the price, ≤ 10 min away, is booked when the wallet covers them.
+        // Only when the rider said yes at Find: the first driver at or under the price, ≤ 10 min away, is booked when the wallet covers them.
         autoAccept,
         places,
         line,
@@ -396,7 +425,50 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
     // Home's "Later" (a ride for later), and how many stops Plan your trip takes.
     canSchedule: Boolean(deps.scheduling && deps.routePlanner),
     maxStops: MAX_CHAT_STOPS,
+    // The latest pickup time Later may offer: the end of the rider's 24 h WhatsApp window
+    // (its start message must reach them); null: the usual 7 days (the start template is set).
+    scheduleUntil: await scheduleUntilFor(deps, userId),
   };
+}
+
+/** A search's places from its saved trip; null when it was saved without them. */
+function placesOf(meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>) {
+  return meta.pickupLat != null && meta.pickupLng != null && meta.destinationLat != null && meta.destinationLng != null
+    ? {
+        pickup: { lat: meta.pickupLat, lng: meta.pickupLng, address: meta.pickupAddress },
+        destination: { lat: meta.destinationLat, lng: meta.destinationLng, address: meta.destinationAddress },
+        stops: meta.stops ?? [],
+      }
+    : null;
+}
+
+/** Why a booked trip may be cancelled: the app's list once a driver is coming (app/rider-cancel.tsx). */
+export const RIDE_CANCEL_REASONS = [
+  'Long waiting time',
+  'Wrong pickup or destination',
+  'Driver is not moving',
+  'Driver asked me to cancel',
+  'My plans changed',
+  'Other reason',
+] as const;
+/** Their own words for "Other reason", at most this long (as in the app). */
+const OWN_WORDS_MAX = 140;
+
+/** On a booked trip: the cancel reasons, who to reach for help (Quick Actions' support), and an open SOS. */
+async function tripExtras(userId: string) {
+  const alert = await safetyAlertClient.findOpenForUser(userId).catch(() => null);
+  return {
+    rideCancelReasons: [...RIDE_CANCEL_REASONS],
+    supportContact: supportContact(),
+    sosActive: Boolean(alert),
+  };
+}
+
+/** The latest time a ride for later may be booked for (ISO), or null for no limit beyond the usual 7 days. */
+async function scheduleUntilFor(deps: RidePageRouteDeps, userId: string, now = Date.now()): Promise<string | null> {
+  if (scheduledStartTemplate()) return null;
+  const end = await whatsappWindowEnd(deps.redisClient, userId, now).catch(() => null);
+  return new Date(end ?? now).toISOString();
 }
 
 /**
@@ -432,8 +504,8 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const amountNgn = amountIn(body);
-  // Auto-accept is on for every search; a page that sends autoAccept: false switches it off for this one.
-  const autoAccept = !(isRecord(body) && body.autoAccept === false);
+  // Auto-accept only with the rider's yes (asked once, at Find): autoAccept: true. Anything else: off.
+  const autoAccept = isRecord(body) && body.autoAccept === true;
 
   const quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
@@ -445,8 +517,8 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   sendJson(res, 200, await buildState(deps, userId));
 }
 
-/** Drivers are asked: the search goes out at the rider's price (auto-accept on, unless the page said off). */
-async function startSearch(deps: RidePageRouteDeps, userId: string, quote: PendingRouteData, amountNgn: number, autoAccept = true): Promise<void> {
+/** Drivers are asked: the search goes out at the rider's price (auto-accept only when they said yes). */
+async function startSearch(deps: RidePageRouteDeps, userId: string, quote: PendingRouteData, amountNgn: number, autoAccept = false): Promise<void> {
   const user = await userClient.findById(userId);
   const phone = user?.phone ?? '';
   const result = await publishWhatsappRide(deps, { id: userId, phone }, quote, amountNgn);
@@ -464,7 +536,7 @@ async function startSearch(deps: RidePageRouteDeps, userId: string, quote: Pendi
     pickupAddress: quote.pickupAddress, destAddress: quote.destAddress,
     stopAddresses: (quote.stops ?? []).map((stop) => stop.address),
   }).catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
-  if (!autoAccept) await autoAcceptOffAtStart(deps.redisClient, result.rideId, userId).catch(() => undefined);
+  if (autoAccept) await autoAcceptOnAtStart(deps.redisClient, result.rideId, userId).catch(() => undefined);
 }
 
 /* ── POST /ride-page/auto-accept ──────────────────────────────────────── */
@@ -495,7 +567,10 @@ async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps:
 async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
-  const amountNgn = await readAmount(req);
+  const body = await readJsonBody(req).catch(() => null);
+  const amountNgn = amountIn(body);
+  // The rider's yes to auto-booking, asked again at this Find (absent: off).
+  const autoAccept = isRecord(body) && body.autoAccept === true;
   // Already searching (a double tap): show that.
   if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildState(deps, userId));
 
@@ -526,7 +601,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
     };
     await storePendingRoute(deps.redisClient, userId, quote);
   }
-  await startSearch(deps, userId, quote, amountNgn);
+  await startSearch(deps, userId, quote, amountNgn, autoAccept);
   logActivity({ userId, eventType: 'ride_search_again', source: 'ride_page', metadata: { offerNgn: amountNgn } });
   sendJson(res, 200, await buildState(deps, userId));
 }
@@ -1007,38 +1082,77 @@ async function handleSchedule(req: IncomingMessage, res: ServerResponse, deps: R
   if (onceKey && await deps.redisClient.get(onceKey).catch(() => null)) {
     return sendJson(res, 200, { item: null, scheduled: await scheduledList(userId) });
   }
+  // Its start is said in WhatsApp: inside the rider's 24 h window, unless the start template is set.
+  const until = await scheduleUntilFor(deps, userId);
+  if (until !== null && scheduledFor.getTime() > Date.parse(until)) {
+    throw new PageError(Date.parse(until) - Date.now() > SCHEDULE_MIN_AHEAD_MS
+      ? `Pick a time before ${lagosTime(new Date(until))}.`
+      : 'Send any message in WhatsApp, then pick a time.', 400, 'SCHEDULE_OUTSIDE_WINDOW', { scheduleUntil: until });
+  }
   await scheduleLimit(deps, userId);
-  const planned = await routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
-  if (!planned) throw new PageError('We could not find a driving route through those places. Check them and try again.', 422, 'NO_ROUTE');
-  // Taken just before the ride is written: a second tap in the same moment books nothing.
-  if (onceKey && !(await deps.redisClient.setIfNotExists(onceKey, '1', 10 * 60).catch(() => true))) {
-    return sendJson(res, 200, { item: null, scheduled: await scheduledList(userId) });
+  // One booking at a time per rider: the limits below are checked and the ride written together.
+  const lockKey = `ride-page:schedule-lock:${userId}`;
+  if (!(await deps.redisClient.setIfNotExists(lockKey, '1', 30).catch(() => true))) {
+    throw new PageError('Too many changes at once. Wait a moment and try again.', 429, 'TOO_MANY');
+  }
+  try {
+    await bookScheduled();
+  } finally {
+    await deps.redisClient.del(lockKey).catch(() => undefined);
   }
 
-  const ride = await scheduledRideClient.create({
-    riderId: userId,
-    scheduledFor,
-    paymentMethod: 'WALLET_BALANCE',
-    pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
-    destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
-    stops,
-    plannedDistanceKm: planned.distanceKm,
-    plannedDurationSeconds: planned.durationSeconds,
-    fareEstimateNgn: planned.suggestedFareNgn,
-    channel: 'WHATSAPP',
-  }).catch(async (error) => {
-    if (onceKey) await deps.redisClient.del(onceKey).catch(() => undefined);
-    throw error;
-  });
+  async function bookScheduled(): Promise<void> {
+    const waiting = await scheduledRideClient.findByRider(userId, 20);
+    if (waiting.length >= MAX_WAITING_SCHEDULED) {
+      throw new PageError(`You can book up to ${MAX_WAITING_SCHEDULED} rides ahead.`, 409, 'SCHEDULE_LIMIT', { scheduled: waiting.map(scheduledItem) });
+    }
+    if (waiting.some((ride) => Math.abs(ride.scheduledFor.getTime() - scheduledFor.getTime()) < SCHEDULE_GAP_MS)) {
+      throw new PageError('You have a ride within 30 minutes of that time.', 409, 'SCHEDULE_TOO_CLOSE', { scheduled: waiting.map(scheduledItem) });
+    }
+    const planned = await routePlanner.planRoute({ origin: pickup, destination, ...(stops.length ? { stops } : {}) }).catch(() => null);
+    if (!planned) throw new PageError('We could not find a driving route through those places. Check them and try again.', 422, 'NO_ROUTE');
+    // Taken just before the ride is written: a second tap in the same moment books nothing.
+    if (onceKey && !(await deps.redisClient.setIfNotExists(onceKey, '1', 10 * 60).catch(() => true))) {
+      return sendJson(res, 200, { item: null, scheduled: await scheduledList(userId) });
+    }
 
-  // The scheduler's job, as the app's; a lost one is caught by its recovery scan.
-  const delay = Math.max(0, ride.scheduledFor.getTime() - scheduling.leadTimeMs - Date.now());
-  await Promise.resolve()
-    .then(() => scheduling.dispatcherQueue.add('dispatch', { scheduledRideId: ride.id, scheduledFor: ride.scheduledFor.toISOString() }, { delay, jobId: buildScheduledRideJobId(ride.id) }))
-    .catch((error) => console.warn(`${TAG} scheduler job not queued (the recovery scan will catch it)`, { scheduledRideId: ride.id, error: error instanceof Error ? error.message : String(error) }));
+    const ride = await scheduledRideClient.create({
+      riderId: userId,
+      scheduledFor,
+      paymentMethod: 'WALLET_BALANCE',
+      pickupLat: pickup.lat, pickupLng: pickup.lng, pickupAddress: pickup.address,
+      destLat: destination.lat, destLng: destination.lng, destAddress: destination.address,
+      stops,
+      plannedDistanceKm: planned.distanceKm,
+      plannedDurationSeconds: planned.durationSeconds,
+      fareEstimateNgn: planned.suggestedFareNgn,
+      channel: 'WHATSAPP',
+    }).catch(async (error) => {
+      if (onceKey) await deps.redisClient.del(onceKey).catch(() => undefined);
+      throw error;
+    });
 
-  logActivity({ userId, eventType: 'scheduled_ride_created', source: 'ride_page', metadata: { scheduledRideId: ride.id, stops: stops.length } });
-  sendJson(res, 201, { item: scheduledItem(ride), scheduled: await scheduledList(userId) });
+    // The scheduler's job, as the app's; a lost one is caught by its recovery scan.
+    const delay = Math.max(0, ride.scheduledFor.getTime() - scheduling.leadTimeMs - Date.now());
+    await Promise.resolve()
+      .then(() => scheduling.dispatcherQueue.add('dispatch', { scheduledRideId: ride.id, scheduledFor: ride.scheduledFor.toISOString() }, { delay, jobId: buildScheduledRideJobId(ride.id) }))
+      .catch((error) => console.warn(`${TAG} scheduler job not queued (the recovery scan will catch it)`, { scheduledRideId: ride.id, error: error instanceof Error ? error.message : String(error) }));
+
+    logActivity({ userId, eventType: 'scheduled_ride_created', source: 'ride_page', metadata: { scheduledRideId: ride.id, stops: stops.length } });
+    sendJson(res, 201, { item: scheduledItem(ride), scheduled: await scheduledList(userId) });
+  }
+}
+
+/** At most this many rides for later waiting per rider (app and page together). */
+const MAX_WAITING_SCHEDULED = 5;
+/** Two rides for later this close together cannot both be kept. */
+const SCHEDULE_GAP_MS = 30 * 60_000;
+/** The app's rule: a pickup at least 10 minutes away (parseScheduledFor). */
+const SCHEDULE_MIN_AHEAD_MS = 10 * 60_000;
+
+/** "3:30 PM", Lagos time. */
+function lagosTime(at: Date): string {
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Africa/Lagos' }).format(at);
 }
 
 /** GET /ride-page/scheduled: the rider's rides for later still waiting. */
@@ -1061,6 +1175,111 @@ async function handleScheduledCancel(req: IncomingMessage, res: ServerResponse, 
     .catch((error) => console.warn(`${TAG} scheduler job not removed`, { scheduledRideId: id, error: error instanceof Error ? error.message : String(error) }));
   logActivity({ userId, eventType: 'scheduled_ride_cancelled', source: 'ride_page', metadata: { scheduledRideId: id } });
   sendJson(res, 200, { cancelled: true, scheduled: await scheduledList(userId) });
+}
+
+/* ── a booked trip: cancel it, change where it goes, the Emergency button ── */
+
+/** The page acts for the rider as the app does: the same handler, with the rider as the sender. */
+function riderAuth(userId: string): GatewayAuthContext {
+  return { userId, privyDid: '', role: 'RIDER' };
+}
+
+/** The rider's booked trip (a driver assigned, on the way, outside or driving), from the database. */
+async function bookedTrip(deps: RidePageRouteDeps, userId: string) {
+  const active = await rideClient.findActiveByRider(userId).catch(() => null);
+  if (active && active.driverId && TRIP_STATUSES.includes(active.status) && !(await wasCancelledOnPage(deps.redisClient, active.id))) return active;
+  // A driver being confirmed this second: not booked yet, not over either.
+  const pointer = await getActiveRide(deps.redisClient, userId).catch(() => null);
+  const state = pointer ? await getRideState(deps.redisClient, pointer).catch(() => null) : null;
+  if (state === 'confirmed' || state === 'in_progress') {
+    throw new PageError('Your driver is being confirmed. Give it a moment.', 409, 'CONFIRMING');
+  }
+  throw new PageError('This trip has ended.', 409, 'NO_TRIP');
+}
+
+/**
+ * POST /ride-page/cancel-ride: the app's "Cancel this ride?" once a driver is
+ * booked — its reasons, and its ride:cancel exactly (the refund, any fee and the
+ * driver being told all follow from it). The chat says nothing: they did it here.
+ */
+async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  const picked = isRecord(body) && typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!(RIDE_CANCEL_REASONS as readonly string[]).includes(picked)) throw new PageError('Pick why you are cancelling.', 400, 'REASON_INVALID');
+  // As the app sends it: their own words for "Other reason" when they wrote some.
+  const words = picked === OTHER_REASON && isRecord(body) && typeof body.detail === 'string' ? body.detail.replace(/\s+/g, ' ').trim().slice(0, OWN_WORDS_MAX) : '';
+  const reason = words || picked;
+
+  const ride = await bookedTrip(deps, userId);
+  await markCancelledOnPage(deps.redisClient, ride.id).catch(() => undefined);
+  await handleRideMessage('ride:cancel', { rideId: ride.id, driverId: ride.driverId, reason }, riderAuth(userId), deps.publisher, deps.routePlanner as never, deps.redisClient);
+  await clearActiveRideIfMatches(deps.redisClient, userId, ride.id).catch(() => false);
+  await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
+  logActivity({ userId, eventType: 'ride_cancelled', source: 'ride_page', rideId: ride.id, metadata: { reason, status: ride.status } });
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/**
+ * POST /ride-page/trip-route: add, change or remove stops (and the destination)
+ * on a booked trip — the app's ride:route:update exactly: the route is planned
+ * again, the price follows its rules, and the driver is told.
+ */
+async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  if (!isRecord(body)) throw new PageError('Pick where you are going.', 400, 'BAD_REQUEST');
+  const ride = await bookedTrip(deps, userId);
+  // Each change is a paid Google route (planned by the ride service): plenty for a rider, not for a script.
+  if (await overLimit(deps.redisClient, `ride-page:trip-route:${userId}`, 10, 60)) {
+    throw new PageError('Too many changes at once. Wait a moment and try again.', 429, 'TOO_MANY');
+  }
+  const trip = await rideClient.findWithDriver(ride.id).catch(() => null);
+  const finalStop = trip?.routeStops.find((stop) => stop.type === 'FINAL');
+  const destination = body.destination !== undefined && body.destination !== null
+    ? readPlace(body.destination, 'destination')
+    : finalStop ? { lat: finalStop.lat, lng: finalStop.lng, address: finalStop.address } : { lat: ride.destLat, lng: ride.destLng, address: ride.destAddress };
+  const stops = (Array.isArray(body.stops) ? body.stops : []).slice(0, MAX_CHAT_STOPS).map((stop, index) => readPlace(stop, `stop ${index + 1}`));
+  try {
+    await handleRideMessage('ride:route:update', { rideId: ride.id, driverId: ride.driverId, destination, stops }, riderAuth(userId), deps.publisher, deps.routePlanner as never, deps.redisClient);
+  } catch (error) {
+    if (refusalCode(error) === 'OUTSIDE_SERVICE_AREA') throw new PageError(OUTSIDE_SERVICE_AREA_LINE, 400, 'OUTSIDE_SERVICE_AREA');
+    throw error;
+  }
+  logActivity({ userId, eventType: 'ride_route_changed', source: 'ride_page', rideId: ride.id, metadata: { stops: stops.length } });
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
+/** POST /ride-page/sos: the Emergency button — the same alert as the ride card's SOS. */
+async function handleSos(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const { alreadyOpen } = await raiseRiderSos(userId, 'ride_page');
+  logActivity({ userId, eventType: 'safety_alert_raised', source: 'ride_page', metadata: { alreadyOpen } });
+  sendJson(res, 200, { ok: true, alreadyOpen });
+}
+
+/** POST /ride-page/sos/cancel: "I'm safe" — the rider's own open alert is withdrawn. */
+async function handleSosCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const withdrawn = await cancelRiderSos(userId, 'ride_page');
+  sendJson(res, 200, { ok: true, withdrawn });
+}
+
+/* ── GET /ride-page/open/:token ───────────────────────────────────────── */
+
+/** The start template's button (Meta appends the link's token to a fixed address): on to the page. */
+const OPEN_PAGE = /^\/ride-page\/open\/([A-Za-z0-9_-]{8,2000}\.[A-Za-z0-9_-]{8,2000}\.[A-Za-z0-9_-]{8,2000})$/;
+
+function handleOpen(res: ServerResponse, url: URL): void {
+  const token = OPEN_PAGE.exec(url.pathname)?.[1];
+  res.statusCode = token ? 302 : 404;
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // The token goes in the fragment, as every chat link carries it: never sent to a server again.
+  res.setHeader('location', token ? `/widget/ride/ride.html#t=${token}` : '/widget/ride/ride.html');
+  res.end();
 }
 
 /* ── POST /ride-page/edit-trip ────────────────────────────────────────── */
@@ -1221,6 +1440,10 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/edit-trip': { method: 'POST', run: handleEditTrip },
   '/ride-page/events': { method: 'POST', run: handleEvents },
   '/ride-page/topup': { method: 'GET', run: handleTopup },
+  '/ride-page/cancel-ride': { method: 'POST', run: handleCancelRide },
+  '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
+  '/ride-page/sos': { method: 'POST', run: handleSos },
+  '/ride-page/sos/cancel': { method: 'POST', run: handleSosCancel },
 };
 
 /** Every /ride-page/* request. Returns false when the path is not ours. */
@@ -1230,6 +1453,14 @@ export async function handleRidePageRoute(
   deps: RidePageRouteDeps,
   url: URL,
 ): Promise<boolean> {
+  if (url.pathname.startsWith('/ride-page/open/')) {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return true;
+    }
+    handleOpen(res, url);
+    return true;
+  }
   const route = ROUTES[url.pathname] ?? (SCHEDULED_CANCEL.test(url.pathname) ? { method: 'POST' as const, run: handleScheduledCancel } : undefined);
   if (!route) return false;
   if (req.method !== route.method) {
