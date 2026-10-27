@@ -1,5 +1,5 @@
 import { withdrawalClient } from '@wheleers/db';
-import { MIN_WITHDRAWAL_REQUEST_NGN, withdrawalBreakdown, type WithdrawalBreakdown } from '@wheleers/config';
+import { MIN_WITHDRAWAL_REQUEST_NGN, sendAlert, withdrawalBreakdown, type WithdrawalBreakdown } from '@wheleers/config';
 import {
   OTP_REQUIRED_MESSAGE,
   classifyPayoutStatus,
@@ -16,6 +16,7 @@ export type WithdrawalErrorCode =
   | 'BELOW_MINIMUM'
   | 'PAYOUTS_NOT_ENABLED'
   | 'PAYOUT_REJECTED'
+  | 'FLOAT_SHORT'
   | 'PENDING_CONFIRMATION'
   | 'WITHDRAWAL_FAILED';
 
@@ -31,6 +32,11 @@ export class WithdrawalError extends Error {
     this.name = 'WithdrawalError';
   }
 }
+
+/** Paystack refusing a transfer because Wheelers' own balance there cannot cover it. */
+const FLOAT_TOO_LOW = /balance is not enough|insufficient (?:account )?balance|not enough balance/i;
+
+export const FLOAT_SHORT_MESSAGE = 'Withdrawals are paused for a short while. Your money is back in your wallet. Try again later.';
 
 export const WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE =
   'Your withdrawal was submitted but the bank has not confirmed it yet. Your money stays reserved until it does, and your wallet balance is safe.';
@@ -137,6 +143,12 @@ export async function submitWithdrawal(
     const reason = error instanceof Error ? error.message : 'Transfer could not be created';
     await release(reason);
     console.warn(`${TAG} transfer refused by provider`, { requestId, reason, code: (error as { code?: string })?.code ?? null });
+    // Wheelers' Paystack balance is too low to send it: nothing is wrong with
+    // their account, so do not tell them to check it; tell us to top up.
+    if (FLOAT_TOO_LOW.test(reason)) {
+      void sendAlert('Paystack balance too low for withdrawals', `A ₦${breakdown.payoutNgn.toLocaleString()} withdrawal was refused and returned to the wallet. Top up the Paystack balance.`).catch(() => false);
+      throw new WithdrawalError(FLOAT_SHORT_MESSAGE, 'FLOAT_SHORT');
+    }
     throw new WithdrawalError(
       `${reason}. Your balance has not been deducted — please check the account details and try again.`,
       'PAYOUT_REJECTED',

@@ -255,11 +255,17 @@ test('a timeout keeps the money reserved; the reconciler releases it once the pr
   await assertBooksMatchCash('after reconciliation');
 });
 
-test('a float that cannot cover the payout refuses before touching the ledger', async () => {
-  const payments = makePayments({ getBalanceNgn: async () => 100 });
+test('Paystack refusing for its own low balance: the money goes back to the wallet at once, and the rider is not told to check their account', async () => {
+  // Nothing is pre-checked any more (withdrawals go straight out): Paystack answers 400 when Wheelers' balance there is short.
+  const { PaymentsApiError } = require('@wheleers/payments');
+  const payments = makePayments({ createPayout: async () => { throw new PaymentsApiError('Your balance is not enough to fulfil this request', 400); } });
+  const before = await userWallet();
   await assert.rejects(
     submitWithdrawal({ paymentsClient: payments, publisher: makePublisher() }, { userId, walletId, amountNgn: 5_000, bankCode: '057', accountNumber: '0000000000', accountName: 'Ola User', pinPolicy: 'if_set' }),
-    (error) => error instanceof WithdrawalError && error.code === 'FLOAT_SHORT',
+    (error) => error instanceof WithdrawalError && error.code === 'FLOAT_SHORT' && !/check the account/i.test(error.message),
   );
-  assert.equal(await prisma.withdrawalRequest.count({ where: { userId, requestedAmountNgn: 5_000 } }), 0);
+  const after = await userWallet();
+  assert.equal(Number(after.balanceNgn), Number(before.balanceNgn), 'nothing taken');
+  assert.equal(Number(after.lockedNgn), Number(before.lockedNgn), 'nothing left reserved');
+  await assertBooksMatchCash('after a low-balance refusal');
 });
