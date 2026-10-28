@@ -567,6 +567,43 @@
     if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state);
   }
   W.$('overlay').addEventListener('click', sheetPutAway);
+
+  // Swipe a sheet down to put it away, as in the app: the same as a tap above it.
+  // Only from the top of its content (a sheet scrolled down scrolls first), and
+  // only once the finger has clearly moved down (a tap on a button stays a tap).
+  SHEETS.forEach(function (id) {
+    var sheet = W.$(id);
+    var startY = null, startT = 0, dy = 0, dragging = false;
+    sheet.addEventListener('touchstart', function (event) {
+      if (event.touches.length !== 1 || sheet.scrollTop > 0) { startY = null; return; }
+      startY = event.touches[0].clientY; startT = Date.now(); dy = 0; dragging = false;
+    }, { passive: true });
+    sheet.addEventListener('touchmove', function (event) {
+      if (startY === null) return;
+      dy = event.touches[0].clientY - startY;
+      if (!dragging && dy > 10) { dragging = true; sheet.style.transition = 'none'; }
+      if (!dragging) return;
+      if (event.cancelable) event.preventDefault();
+      sheet.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
+    }, { passive: false });
+    function end() {
+      if (startY === null) return;
+      var fast = dy > 40 && dy / Math.max(1, Date.now() - startT) > 0.5;
+      startY = null;
+      if (!dragging) return;
+      dragging = false;
+      sheet.style.transition = 'transform 0.2s ease';
+      if (dy > 90 || fast) {
+        sheet.style.transform = 'translateY(100%)';
+        setTimeout(function () { sheet.style.transform = ''; sheet.style.transition = ''; sheetPutAway(); }, 180);
+      } else {
+        sheet.style.transform = '';
+        setTimeout(function () { sheet.style.transition = ''; }, 220);
+      }
+    }
+    sheet.addEventListener('touchend', end);
+    sheet.addEventListener('touchcancel', end);
+  });
   window.addEventListener('popstate', function (event) {
     // The link's time is up (or it was refused): Back shows nothing under it (common.js's own
     // listener may have shown a screen's view from the history entry: put the note back).
@@ -692,6 +729,7 @@
   }
 
   var homeRecentsSig = null;
+  var endedNoteTimer = null;
   function drawHome(s, changed) {
     // A trip that just ended: said once here, with the way back to the chat.
     W.show(W.$('home-ended'), Boolean(local.endedNote));
@@ -3439,7 +3477,15 @@
     if (before !== next.phase) {
       track('phase_shown', { from: before || 'none' });
       if (next.phase !== 'offers') closeSheets();
-      if (before === 'confirmed' && next.phase === 'idle') local.endedNote = local.rideCancelledHere ? 'Ride cancelled' : 'Trip ended';
+      if (before === 'confirmed' && next.phase === 'idle') {
+        local.endedNote = local.rideCancelledHere ? 'Ride cancelled' : 'Trip ended';
+        // Said, then gone by itself after a few seconds.
+        clearTimeout(endedNoteTimer);
+        endedNoteTimer = setTimeout(function () {
+          local.endedNote = null;
+          if (shownView === 'idle' && state) { drawHome(state, false); layoutSheet(); }
+        }, 5000);
+      }
       if (before === 'offers' && next.phase === 'idle' && !lastSearchOf(next) && !local.cancelledHere) say('Search ended');
       if (next.phase !== 'idle') local.endedNote = null;
       local.cancelledHere = false;
