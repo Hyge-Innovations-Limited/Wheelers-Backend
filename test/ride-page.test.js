@@ -629,6 +629,23 @@ test('backing out of adding money for a driver: that driver is no longer theirs 
   assert.equal(back.body.phase, 'offers', 'the search goes on');
 });
 
+test('Back from Plan your trip to Home: the unbooked trip is dropped; a search already on is left alone', async () => {
+  const { deps, redis } = world();
+  const rider = await makeRider(10_000);
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.phase, 'price');
+  const home = await call(deps, rider, 'POST', '/ride-page/discard-trip');
+  assert.equal(home.status, 200, JSON.stringify(home.body));
+  assert.equal(home.body.phase, 'idle');
+  assert.equal(await bidState.getPendingRoute(redis, rider), null);
+
+  await bidState.storePendingRoute(redis, rider, QUOTE);
+  const searching = (await call(deps, rider, 'POST', '/ride-page/find', { amountNgn: 6400 })).body;
+  const still = await call(deps, rider, 'POST', '/ride-page/discard-trip');
+  assert.equal(still.body.phase, 'offers', 'a live search is not dropped by this');
+  assert.equal(still.body.rideId, searching.rideId);
+});
+
 test('going back from the search to change the trip stops the search and brings the trip back, price and all; the chat is not told it was cancelled', async () => {
   const { deps, redis, events, chat } = world();
   const rider = await makeRider(10_000);

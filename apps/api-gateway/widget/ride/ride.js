@@ -77,6 +77,8 @@
   /** The history moved (Back, or a forward swipe): the screens follow it. */
   function onScreenEntry(entry) {
     var depth = entry && typeof entry.depth === 'number' ? entry.depth : 0;
+    // The phone's Back off Plan your trip that was reached by Back from Set your price: Home, as the arrow.
+    if (depth < nav.length && nav[nav.length - 1] === 'plan' && typeof leavingPlanGoesHome === 'function' && leavingPlanGoesHome()) discardTripToHome();
     if (depth < nav.length) {
       nav = nav.slice(0, depth);
       syncNav();
@@ -917,6 +919,8 @@
     if (!trip && plan.mode === 'route') { plan.pickup = null; plan.autoPickup = false; }
     plan.mode = options.mode === 'route' ? 'route' : 'book';
     plan.over = options.over || 'idle';
+    // Reached by Back from Set your price (not Edit): Back from here goes Home, as in the app.
+    plan.backHome = Boolean(options.backHome);
     if (trip) {
       plan.pickup = placeOf(trip.pickup);
       plan.autoPickup = false;
@@ -957,6 +961,7 @@
   function leavePlan() {
     if (!local.plan) return;
     clearTimeout(planTimer);
+    if (leavingPlanGoesHome()) discardTripToHome();
     backScreen();
   }
   W.$('plan-back').addEventListener('click', leavePlan);
@@ -2197,16 +2202,28 @@
     if (backToPlan(state)) {
       event.preventDefault();
       track('price_back_tapped', { to: 'plan' });
-      return editTrip(null);
+      return editTrip(null, true);
     }
     track('chat_link_tapped', { from: 'price' });
   });
 
   /** Edit, or a place on the route card: Plan your trip with this trip, on that field (none: as it was left). */
-  function editTrip(field) {
+  function editTrip(field, backHome) {
     var trip = priceTrip(state);
     if (!trip || busy || topScreen()) return;
-    openPlan({ trip: trip, over: 'price', field: field });
+    openPlan({ trip: trip, over: 'price', field: field, backHome: backHome });
+  }
+
+  /** Back from Plan your trip (reached by Back from Set your price) to Home: the unbooked trip is dropped on the server. */
+  function leavingPlanGoesHome() {
+    return plan.backHome && plan.mode === 'book' && state && state.phase === 'price';
+  }
+  function discardTripToHome() {
+    plan.backHome = false;
+    track('plan_back_home');
+    api('POST', '/ride-page/discard-trip').then(function (next) {
+      if (next && typeof next.phase === 'string') apply(next);
+    }).catch(function () { /* an older server: Set your price stays, as before */ });
   }
   W.$('route-edit').addEventListener('click', function () { editTrip('destination'); });
   W.$('price-route').addEventListener('click', function (event) {

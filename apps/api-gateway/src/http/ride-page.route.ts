@@ -15,7 +15,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
-import { clearActiveRideIfMatches, clearPendingAccept, getPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS, getPageNotice, clearPageNotice, getTripLine, storeTripLine } from '../whatsapp-flows/bid-state';
+import { clearActiveRideIfMatches, clearBookingStage, clearPendingRoute, clearPendingAccept, getPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS, getPageNotice, clearPageNotice, getTripLine, storeTripLine } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
 import { releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { autoAcceptOnAtStart, autoAcceptStatus, switchAutoAccept } from '../rides/auto-accept';
@@ -743,6 +743,22 @@ async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: Ri
  * to pay for. A deposit later does not book them, and auto-accept is free
  * again. The offer itself stays on the list.
  */
+/**
+ * Back from Plan your trip to Home, as the app: the trip priced on this page
+ * and not sent to drivers is dropped (nothing was booked or held). A search
+ * already on is left alone.
+ */
+async function handleDiscardTrip(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  if (!(await getActiveRide(deps.redisClient, userId))) {
+    await clearPendingRoute(deps.redisClient, userId).catch(() => undefined);
+    await clearBookingStage(deps.redisClient, userId).catch(() => undefined);
+    logActivity({ userId, eventType: 'ride_trip_discarded', source: 'ride_page' });
+  }
+  sendJson(res, 200, await buildState(deps, userId));
+}
+
 async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
@@ -1537,6 +1553,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/accept': { method: 'POST', run: handleAccept },
   '/ride-page/decline': { method: 'POST', run: handleDecline },
   '/ride-page/keep-looking': { method: 'POST', run: handleKeepLooking },
+  '/ride-page/discard-trip': { method: 'POST', run: handleDiscardTrip },
   '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },
   '/ride-page/places': { method: 'GET', run: handlePlaces },
