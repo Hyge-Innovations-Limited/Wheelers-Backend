@@ -26,6 +26,7 @@ import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { overLimit } from '../trip-chat/limits';
+import { LIVE_TRIP_STATUSES } from '../rides/live-trip';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
@@ -188,7 +189,7 @@ const CHAT_URL = BOT_NUMBER ? `https://wa.me/${BOT_NUMBER}` : null;
 /** An expired link's one button: the bot's chat, Wheelers' own number when none is set. */
 const EXPIRED_CHAT_URL = CHAT_URL ?? `https://wa.me/${WHEELERS_NUMBER}`;
 
-const TRIP_STATUSES = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
+const TRIP_STATUSES = LIVE_TRIP_STATUSES;
 /** A position older than this is shown, but labelled as old. */
 const POSITION_FRESH_MS = 90_000;
 

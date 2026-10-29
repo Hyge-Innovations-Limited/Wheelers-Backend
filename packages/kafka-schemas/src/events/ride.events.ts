@@ -73,6 +73,8 @@ export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
   route:            RouteGeometry.optional(),
+  // True only when the rider accepted this route's quoted price; otherwise the change moves no money.
+  priced:           z.boolean().optional(),
   updatedBy:        z.enum(['rider', 'driver', 'system']),
 });
 
@@ -206,6 +208,7 @@ export const RideRouteUpdatedEvent = BaseRideEvent.extend({
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
   route:            RouteGeometry.optional(),
+  priced:           z.boolean().optional(),
   updatedBy:        z.enum(['rider', 'driver', 'system']),
 });
 

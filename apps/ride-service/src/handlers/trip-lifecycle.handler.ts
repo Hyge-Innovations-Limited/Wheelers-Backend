@@ -10,6 +10,14 @@ export type TripLifecycleHandler = {
   handleRideEvent(value: unknown, ctx: MessageContext): Promise<void>;
 };
 
+const LIVE_STATUSES = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
+
+/** A trip still running and, for a driver's action, still that driver's (a bail or completion may have come between). */
+function isLiveFor(ride: { status: unknown; driverId: string | null } | null | undefined, driverId: string | undefined): boolean {
+  if (!ride || !LIVE_STATUSES.includes(String(ride.status))) return false;
+  return driverId === undefined || ride.driverId === driverId;
+}
+
 export function createTripLifecycleHandler(params?: {
   state?: RideServiceState;
   rideEventsProducer?: RideEventsProducer;
@@ -106,7 +114,13 @@ export function createTripLifecycleHandler(params?: {
 
       if (event.eventType === 'RIDE_ROUTE_UPDATE_REQUESTED') {
         try {
-          const plannedRoute =
+          // An unpriced change (no accepted quote) moves the route but never the fare: the trip
+          // keeps the agreed price, so the hold cannot be lowered by re-planning the rest of it.
+          const current = await rideClient.findById(event.rideId);
+          if (!isLiveFor(current, event.updatedBy === 'driver' ? event.driverId : undefined)) return;
+          const agreedFareNgn = current?.agreedFareNgn != null ? Number(current.agreedFareNgn) : undefined;
+          const unpricedFare = agreedFareNgn !== undefined && agreedFareNgn > 0 ? agreedFareNgn : undefined;
+          const planned =
             event.plannedDistanceKm !== undefined &&
             event.plannedDurationSeconds !== undefined &&
             event.fareEstimateNgn !== undefined
@@ -117,11 +131,13 @@ export function createTripLifecycleHandler(params?: {
                   geometry: event.route,
                 }
               : await planUpdatedRoute(event.rideId, event.destination, event.stops);
+          const plannedRoute = planned && unpricedFare !== undefined ? { ...planned, fareEstimateNgn: Math.max(planned.fareEstimateNgn, unpricedFare) } : planned;
+          const keepFare = unpricedFare !== undefined ? Math.max(unpricedFare, event.fareEstimateNgn ?? 0) : event.fareEstimateNgn;
 
           const routeStops = await rideClient.syncRouteStops(event.rideId, {
             destination: event.destination,
             stops: event.stops,
-            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? event.fareEstimateNgn,
+            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? keepFare,
           });
           syncRouteState(event.rideId, routeStops);
           await publishRouteUpdatedSnapshot({
@@ -130,7 +146,8 @@ export function createTripLifecycleHandler(params?: {
             driverId: event.driverId,
             plannedDistanceKm: plannedRoute?.distanceKm ?? event.plannedDistanceKm,
             plannedDurationSeconds: plannedRoute?.durationSeconds ?? event.plannedDurationSeconds,
-            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? event.fareEstimateNgn,
+            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? keepFare,
+            priced: event.priced === true,
             route: plannedRoute?.geometry ?? event.route,
             updatedBy: event.updatedBy,
             routeStops,
@@ -142,6 +159,8 @@ export function createTripLifecycleHandler(params?: {
 
       if (event.eventType === 'RIDE_STOP_CONFIRMED') {
         try {
+          const current = await rideClient.findById(event.rideId);
+          if (!isLiveFor(current, event.confirmedBy === 'driver' ? event.driverId : undefined)) return;
           const result = await rideClient.completeNextStop(event.rideId);
           if (!result) {
             return;
@@ -289,6 +308,7 @@ export function createTripLifecycleHandler(params?: {
         southWest: { lat: number; lng: number };
       };
     };
+    priced?: boolean;
     updatedBy: 'rider' | 'driver' | 'system';
     routeStops: Array<{
       id: string;
@@ -344,6 +364,7 @@ export function createTripLifecycleHandler(params?: {
       plannedDurationSeconds: params.plannedDurationSeconds,
       fareEstimateNgn: params.fareEstimateNgn,
       route: params.route,
+      priced: params.priced,
       updatedBy: params.updatedBy,
       timestamp: new Date().toISOString(),
     });

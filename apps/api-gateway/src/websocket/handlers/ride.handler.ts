@@ -38,6 +38,8 @@ import { forgetTripRouteQuote, quoteTripRoute } from '../../rides/trip-route-quo
 import { clearSearchEnded, markSearchEnded } from '../../rides/booking-lock';
 import { closePayingUnlessBooking, openPaying, payingStatusEnabled, readPaying, withinPayingRate } from '../../rides/paying-status';
 import { assertInServiceArea } from '../../utils/service-area';
+import { LIVE_TRIP_STATUSES } from '../../rides/live-trip';
+import { overLimit } from '../../trip-chat/limits';
 
 interface LatLngAddress {
   lat: number;
@@ -71,6 +73,26 @@ async function assertDriverOwnsRide(rideId: string, auth: { driverId?: string | 
     throw new Error('This ride is not assigned to you.');
   }
   return ride;
+}
+
+/**
+ * Who may change a live trip: the ride's own rider, or the driver assigned to it. Decided by the
+ * RIDE's ids, never the payload and never by whether the sender also has a driver record (a user
+ * who is both is the rider on their own ride). Returns the ride and the sender's role.
+ */
+async function assertPartyToLiveRide(
+  rideId: string,
+  auth: { userId: string; driverId?: string | null },
+) {
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (!ride) throw new Error('This ride is not yours.');
+  const isRider = ride.riderId === auth.userId;
+  const isDriver = !isRider && Boolean(auth.driverId) && ride.driverId === auth.driverId;
+  if (!isRider && !isDriver) throw new Error('This ride is not yours.');
+  if (!LIVE_TRIP_STATUSES.includes(String(ride.status))) {
+    throw new Error('This trip is not running, so its route cannot be changed.');
+  }
+  return { ride, role: isRider ? ('rider' as const) : ('driver' as const) };
 }
 
 async function assertRideOpenForBids(rideId: string) {
@@ -591,28 +613,34 @@ export async function handleRideMessage(
     const stops = parseStopList(payload, 'stops');
     assertInServiceArea([destination, ...stops]);
     if (!redis) throw new Error('Route prices are not available right now.');
-    const ride = await rideClient.findById(rideId).catch(() => null);
-    if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+    // Each quote is a Maps call: only the rider, only while the trip runs, and a few a minute.
+    const { role } = await assertPartyToLiveRide(rideId, auth);
+    if (role !== 'rider') throw new Error('This ride is not yours.');
+    if (await overLimit(redis, `ride-route-quote:${auth.userId}`, 10, 60)) throw new Error('Too many price checks. Try again in a minute.');
     const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
     return { type: 'ride:route:quote:result', payload: { rideId, fareNgn: quote.fareNgn, extraNgn: quote.extraNgn } };
   }
 
   if (type === 'ride:route:update') {
-    const riderId = getString(payload, 'riderId') ?? auth.userId;
+    const rideId = requireString(payload, 'rideId');
+    // Whose ride this is comes from the ride itself. The payload's riderId / driverId never
+    // decide it, and nothing in the payload can move money.
+    const { ride, role } = await assertPartyToLiveRide(rideId, auth);
+    const riderId = ride.riderId;
+    const driverId = ride.driverId ?? undefined;
+    // Only used to draw the road for navigation; the fare of an unpriced change is ignored downstream.
     const origin = getRecord(payload, 'origin') ? parseLatLng(payload, 'origin') : undefined;
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
     // A new destination or stop mid-trip stays in Lagos too; where the car is now does not matter.
     assertInServiceArea([destination, ...stops]);
     // The price the rider was shown for this route (ride:route:quote): the change goes ahead only
-    // at that price, and the wallet's hold moves to exactly it. Absent (an older app): as before.
+    // at that price, and the wallet's hold moves to exactly it. Absent (an older app, or the
+    // driver): the route moves but the money held does not (ride-service and wallet-service keep it).
     const acceptedFareNgn = getNumber(payload, 'acceptedFareNgn');
     let quotedRoute: Awaited<ReturnType<typeof quoteTripRoute>>['planned'] | null = null;
-    if (acceptedFareNgn !== undefined && !auth.driverId) {
-      const rideId = requireString(payload, 'rideId');
+    if (acceptedFareNgn !== undefined && role === 'rider') {
       if (!redis) throw new Error('Route changes are not available right now.');
-      const ride = await rideClient.findById(rideId).catch(() => null);
-      if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
       const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
       if (Math.round(acceptedFareNgn) !== quote.fareNgn) {
         return {
@@ -631,16 +659,17 @@ export async function handleRideMessage(
       : null);
     const event = RideRouteUpdateRequestedEvent.parse({
       eventType: 'RIDE_ROUTE_UPDATE_REQUESTED',
-      rideId: requireString(payload, 'rideId'),
+      rideId,
       riderId,
-      driverId: getString(payload, 'driverId'),
+      driverId,
       destination,
       stops,
       plannedDistanceKm: plannedRoute?.distanceKm,
       plannedDurationSeconds: plannedRoute?.durationSeconds,
       fareEstimateNgn: plannedRoute?.suggestedFareNgn,
       route: plannedRoute?.geometry,
-      updatedBy: auth.driverId ? 'driver' : 'rider',
+      priced: quotedRoute !== null,
+      updatedBy: role,
       timestamp,
     });
 
@@ -662,14 +691,15 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:stop:confirm') {
-    if (auth.driverId) await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
-    const driverId = getString(payload, 'driverId') ?? auth.driverId ?? auth.userId;
+    const rideId = requireString(payload, 'rideId');
+    const { ride, role } = await assertPartyToLiveRide(rideId, auth);
+    if (!ride.driverId) throw new Error('This ride has no driver yet.');
     const event = RideStopConfirmedEvent.parse({
       eventType: 'RIDE_STOP_CONFIRMED',
-      rideId: requireString(payload, 'rideId'),
-      riderId: requireString(payload, 'riderId'),
-      driverId,
-      confirmedBy: auth.driverId ? 'driver' : 'rider',
+      rideId,
+      riderId: ride.riderId,
+      driverId: ride.driverId,
+      confirmedBy: role,
       timestamp,
     });
 

@@ -105,7 +105,17 @@ export function createRideEventsConsumer(params: {
         }
 
         try {
-          const routeFees = calculateRideFees(event.fareEstimateNgn);
+          // A route change never cuts the driver's agreed fare: no event, priced or not, sets the
+          // hold below it (a priced quote can still raise it). If the ride cannot be read, the
+          // hold stands as it is.
+          const ride = await rideClient.findById(event.rideId).catch(() => null);
+          if (!ride) {
+            console.error(`[${serviceId}][escrow] route hold not adjusted — ride lookup failed`, { rideId: event.rideId });
+            return;
+          }
+          const agreed = ride.agreedFareNgn != null ? Number(ride.agreedFareNgn) : 0;
+          const heldFareNgn = Math.max(event.fareEstimateNgn, agreed);
+          const routeFees = calculateRideFees(heldFareNgn);
           const holdResult = await walletRepository.adjustRideHold({
             rideId: event.rideId,
             targetAmountNgn: routeFees.totalNgn,
