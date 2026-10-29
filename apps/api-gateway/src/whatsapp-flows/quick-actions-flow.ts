@@ -249,6 +249,29 @@ const offersDeps = (deps: QuickActionsFlowDeps): OffersFormDeps => ({
 
 // ── MENU ─────────────────────────────────────────────────────────────────
 
+/** Log a failure by its kind only: a message can hold ids or other personal data. */
+function errorKind(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === 'string' ? code : error instanceof Error ? error.name : 'unknown';
+}
+
+/** The rider's own code, null when they have none, or 'error' when the read failed (an error is never "no code"). */
+async function readOwnCode(userId: string): Promise<string | null | 'error'> {
+  try {
+    return await referralClient.findOwnCode(userId);
+  } catch (error) {
+    console.error('[quick-actions] referral code read failed', { kind: errorKind(error) });
+    return 'error';
+  }
+}
+
+/** The idle menu's row for their own code: View code once made (never Create again), Create only when truly none, Try again on a read error. */
+async function myCodeRow(userId: string): Promise<{ id: string; title: string; description: string }> {
+  const code = await readOwnCode(userId);
+  const description = code === 'error' ? 'Try again' : code ? clip(`View code · ${code}`, 300) : 'Create yours';
+  return { id: MENU_IDS.myCode, title: 'My referral code', description };
+}
+
 export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, error = ''): Promise<FlowScreen> {
   const [activeRideId, trip, who] = await Promise.all([
     getActiveRide(deps.redisClient, userId),
@@ -318,13 +341,7 @@ export async function menuScreen(userId: string, deps: QuickActionsFlowDeps, err
     if (!(await referralClient.hasAppliedCode(userId).catch(() => true))) {
       choices.push({ id: MENU_IDS.referral, title: 'Enter referral code', description: 'Got a code from a driver or a friend? Add it here' });
     }
-    // Their own code to share, as in the app: nobody is handed one, they create it.
-    const ownCode = await referralClient.findOwnCode(userId).catch(() => null);
-    choices.push(
-      ownCode
-        ? { id: MENU_IDS.myCode, title: 'Your referral code', description: clip(`${ownCode} — share your link with friends`, 300) }
-        : { id: MENU_IDS.myCode, title: 'Create your referral code', description: 'Pick your own code and invite friends' },
-    );
+    choices.push(await myCodeRow(userId));
     choices.push({ id: MENU_IDS.withdraw, title: 'Withdraw', description: 'Send money to your bank' });
   }
   // Add money sits after the ride rows in both lists; Withdraw is not offered mid-ride (the fare is held).
@@ -365,8 +382,9 @@ async function menuChoice(choice: string, userId: string, deps: QuickActionsFlow
 
   if (choice === MENU_IDS.referral) return referralScreen();
   if (choice === MENU_IDS.myCode) {
-    // Theirs for good once created: nothing to type, it goes straight to the chat to forward.
-    const code = await referralClient.findOwnCode(userId).catch(() => null);
+    // Theirs for good once created: shown here (the QR and link). A failed read is never "no code".
+    const code = await readOwnCode(userId);
+    if (code === 'error') return menuScreen(userId, deps, 'Could not load your code. Try again.');
     return code ? shareMyCode(userId, code, deps) : myCodeScreen();
   }
 
@@ -511,13 +529,22 @@ function myCodeScreen(typed = '', error = ''): FlowScreen {
 async function saveMyCode(typed: string, userId: string, deps: QuickActionsFlowDeps): Promise<FlowScreen> {
   const wanted = referralClient.normalizeCode(typed);
   if (!wanted) return myCodeScreen('', 'Type the code you want.');
-  const already = await referralClient.findOwnCode(userId).catch(() => null);
+  // One code per person: a stale form cannot make a second. The existing one is shown instead.
+  const already = await readOwnCode(userId);
+  if (already === 'error') return myCodeScreen(wanted, 'Could not save your code just now. Please try again.');
   if (already) return shareMyCode(userId, already, deps);
   let code: string;
   try {
     code = (await referralClient.setCustomCode(userId, wanted)).code;
   } catch (error) {
-    return myCodeScreen(wanted, error instanceof Error ? error.message : 'That code could not be saved just now. Please try again.');
+    // Made at the same moment by another tap: theirs is the one.
+    const mine = await readOwnCode(userId);
+    if (mine && mine !== 'error') return shareMyCode(userId, mine, deps);
+    // Only the known refusals are worded for the rider; anything else is the generic line.
+    const reason = error instanceof Error ? error.message : '';
+    const known = /taken|letters or numbers|can't be changed/i.test(reason);
+    if (!known) console.error('[quick-actions] referral code save failed', { kind: errorKind(error) });
+    return myCodeScreen(wanted, known ? reason : 'That code could not be saved just now. Please try again.');
   }
   logActivity({ userId, eventType: 'referral_code_changed', source: 'whatsapp', metadata: { code, via: 'quick_actions' } });
   return shareMyCode(userId, code, deps);

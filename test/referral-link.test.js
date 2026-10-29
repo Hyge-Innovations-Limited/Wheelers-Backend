@@ -186,7 +186,8 @@ test('QUICK ACTIONS · a rider with no code is offered to create one; creating i
   const tap = quickActions(rider.id, saved);
 
   const menu = await tap('menu_choice', { choice: 'nothing' });
-  assert.equal(row(menu, 'my_code')?.title, 'Create your referral code');
+  assert.equal(row(menu, 'my_code')?.title, 'My referral code');
+  assert.equal(row(menu, 'my_code')?.description, 'Create yours');
 
   const screen = await tap('menu_choice', { choice: 'my_code' });
   assert.equal(screen.screen, 'REFERRAL');
@@ -211,7 +212,7 @@ test('QUICK ACTIONS · a rider with no code is offered to create one; creating i
   assert.equal(await referralClient.findOwnCode(rider.id), code);
 
   const after = await tap('menu_choice', { choice: 'nothing' });
-  assert.equal(row(after, 'my_code')?.title, 'Your referral code');
+  assert.equal(row(after, 'my_code')?.title, 'My referral code');
   assert.match(row(after, 'my_code').description, new RegExp(code));
 });
 
