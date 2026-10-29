@@ -5,6 +5,8 @@
  *   node scripts/run-with-env.cjs node scripts/backup-db.mjs              back up now
  *   node scripts/run-with-env.cjs node scripts/backup-db.mjs --local-only a copy on this server only (no upload)
  *   node scripts/run-with-env.cjs node scripts/backup-db.mjs --list       what is in the bucket; nothing is backed up
+ *   node scripts/run-with-env.cjs node scripts/backup-db.mjs --keep <key|all>   copy under keep/, never cleaned up
+ *   node scripts/run-with-env.cjs node scripts/backup-db.mjs --fetch <key|all>  download to BACKUP_DIR/fetched/
  *
  * Each run: pg_dump from the Postgres container (its own user and database,
  * read inside the container, so no password is typed or logged), checked by
@@ -39,11 +41,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import {
+  CopyObjectCommand,
   DeleteObjectsCommand,
+  GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { pipeline } from 'node:stream/promises';
 
 /** Nightly copies kept in the bucket: two weeks. */
 const KEEP_DAILY = 14;
@@ -112,10 +117,44 @@ async function letGo(client, prefix, keep) {
   return old.length;
 }
 
+/** The copies named on the command line after `flag`: one key, or "all" for every nightly copy. */
+async function named(client, flag) {
+  const argv = process.argv.slice(2);
+  const wanted = argv[argv.indexOf(flag) + 1];
+  if (!wanted || wanted.startsWith('--')) throw new Error(`${flag} needs a key from --list (e.g. daily/wheelers-….dump) or "all"`);
+  if (wanted === 'all') return (await listKeys(client, 'daily/')).map(({ key }) => key);
+  return [wanted];
+}
+
 async function main() {
+  // Set aside: copied under keep/, which the nightly clean-up never touches. Nothing is deleted.
+  if (args.has('--keep')) {
+    const client = r2();
+    for (const key of await named(client, '--keep')) {
+      const kept = `keep/${key.split('/').pop()}`;
+      await client.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${encodeURIComponent(key).replace(/%2F/g, '/')}`, Key: kept }));
+      log('kept', `${bucket}/${kept}`);
+    }
+    return;
+  }
+
+  // Brought down to BACKUP_DIR/fetched/, for a restore check. Never named like a nightly copy, so never cleaned up.
+  if (args.has('--fetch')) {
+    const client = r2();
+    const into = join(dir, 'fetched');
+    mkdirSync(into, { recursive: true });
+    for (const key of await named(client, '--fetch')) {
+      const file = join(into, key.split('/').pop());
+      const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      await pipeline(object.Body, createWriteStream(file));
+      log('fetched', key, '->', file, `${(statSync(file).size / 1024 / 1024).toFixed(1)} MB`);
+    }
+    return;
+  }
+
   if (args.has('--list')) {
     const client = r2();
-    for (const prefix of ['daily/']) {
+    for (const prefix of ['daily/', 'keep/']) {
       const keys = await listKeys(client, prefix);
       console.log(`${prefix} ${keys.length} copies`);
       for (const { key, bytes } of keys) console.log(`  ${key}  ${(bytes / 1024 / 1024).toFixed(1)} MB`);
