@@ -144,6 +144,7 @@ export const userClient = {
     platform?: string;
     deviceName?: string;
     appOwnership?: string;
+    androidChannelId?: string;
     enabled?: boolean;
   }) =>
     prisma.notificationDevice.upsert({
@@ -156,6 +157,7 @@ export const userClient = {
         platform: data.platform,
         deviceName: data.deviceName,
         appOwnership: data.appOwnership,
+        androidChannelId: data.androidChannelId,
         enabled: data.enabled ?? true,
         lastRegisteredAt: new Date(),
       },
@@ -164,6 +166,8 @@ export const userClient = {
         platform: data.platform,
         deviceName: data.deviceName,
         appOwnership: data.appOwnership,
+        // Only when the app said: an older app re-registering does not wipe a channel.
+        ...(data.androidChannelId !== undefined ? { androidChannelId: data.androidChannelId } : {}),
         enabled: data.enabled ?? true,
         lastRegisteredAt: new Date(),
       },

@@ -17,6 +17,7 @@ import { resyncDriverActiveRide } from './driver-ride-sync';
 import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
+import { handleAppStateMessage } from './app-state';
 import { publicMessage } from '../http/public-error';
 
 interface WebSocketServerDeps {
@@ -28,6 +29,8 @@ interface WebSocketServerDeps {
   publisher: GatewayPublisher;
   routePlanner: GoogleMapsRoutePlanner;
   redis: RedisClient;
+  /** DRIVER_STATUS_PUSHES_ENABLED: accept app:state. Off, it is an unknown message as before. */
+  driverStatusPushes?: boolean;
   /** Takes a bid withdrawn here (driver offline) off its WhatsApp search's list: the ride page and the chat. */
   dropWithdrawnBid?: DropWithdrawnBid;
   /** A larger message closes the socket (code 1009). */
@@ -370,6 +373,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         const tripChatResponse = deps.tripChat ? await deps.tripChat.handleWsMessage(parsed.type, payload, auth) : null;
         const response =
           tripChatResponse ??
+          (deps.driverStatusPushes && !auth.page && auth.client !== 'mcp' ? await handleAppStateMessage(parsed.type, payload, auth, deps.redis) : null) ??
           // A Trip chat page's socket does nothing else.
           (auth.page
             ? null

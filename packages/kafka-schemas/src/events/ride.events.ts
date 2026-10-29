@@ -313,6 +313,17 @@ export const RideRiderPayingEvent = BaseRideEvent.extend({
   eventType:    z.literal('RIDE_RIDER_PAYING'),
   riderId:      z.string().uuid(),
   driverUserId: z.string().uuid(),
+  // DRIVER_PAYING_STATUS_ENABLED: when the payment began and when the driver's card stops waiting on it.
+  payingSince:  z.string().datetime().optional(),
+  payingUntil:  z.string().datetime().optional(),
+});
+
+// The rider is no longer paying for this driver (closed the sheet, declined, chose another,
+// cancelled, the search ended). Consumed by: api-gateway (tell that driver: ride:rider_paying_ended).
+export const RideRiderPayingEndedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_RIDER_PAYING_ENDED'),
+  driverUserId: z.string().uuid(),
+  reason:       z.enum(['closed', 'declined', 'other_chosen', 'switched', 'cancelled', 'search_ended', 'failed']),
 });
 
 // Fired by ride-service when a driver the rider chose cannot be given the
@@ -381,6 +392,7 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideDispatchDirectedEvent,
   RideBidsDeclinedEvent,
   RideRiderPayingEvent,
+  RideRiderPayingEndedEvent,
   RideAssignmentFailedEvent,
   RideOfferAcceptedEvent,
   RideDriverAssignedEvent,
@@ -415,6 +427,7 @@ export type RideRiderCounterOfferEvent = z.infer<typeof RideRiderCounterOfferEve
 export type RideDispatchDirectedEvent = z.infer<typeof RideDispatchDirectedEvent>;
 export type RideBidsDeclinedEvent = z.infer<typeof RideBidsDeclinedEvent>;
 export type RideRiderPayingEvent = z.infer<typeof RideRiderPayingEvent>;
+export type RideRiderPayingEndedEvent = z.infer<typeof RideRiderPayingEndedEvent>;
 export type RideAssignmentFailedEvent = z.infer<typeof RideAssignmentFailedEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
 export type ScheduledRideHeldEvent   = z.infer<typeof ScheduledRideHeldEvent>;

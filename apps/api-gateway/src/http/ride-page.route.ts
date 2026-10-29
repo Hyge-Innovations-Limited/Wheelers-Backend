@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { driverBidClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { createWalletPageToken, PageLinkExpiredError, RIDE_PAGE_TOKEN_TTL_SECONDS, verifyWalletPageToken } from '../auth/local';
@@ -17,7 +17,7 @@ import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { clearActiveRideIfMatches, clearBookingStage, clearPendingRoute, clearPendingAccept, getPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS, getPageNotice, clearPageNotice, getTripLine, storeTripLine } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
-import { releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
+import { isSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { autoAcceptOnAtStart, autoAcceptStatus, switchAutoAccept } from '../rides/auto-accept';
 import { quoteTripRoute } from '../rides/trip-route-quote';
 import { takeRidePageOpenCode } from '../whatsapp/scheduled-template';
@@ -38,6 +38,7 @@ import {
 } from '../rides/whatsapp-ride.service';
 import { rememberChosenOffer } from '../whatsapp/ride-card';
 import type { XlmPayer } from '../rides/whatsapp-ride.service';
+import { closePayingUnlessBooking, openPaying, payingStatusEnabled, readPaying, withinPayingRate } from '../rides/paying-status';
 import { handleRideMessage } from '../websocket/handlers/ride.handler';
 import type { GatewayAuthContext } from '../types';
 import { cancelRiderSos, raiseRiderSos, SOS_KINDS, sosLabel } from '../safety/rider-sos';
@@ -759,6 +760,49 @@ async function handleDiscardTrip(req: IncomingMessage, res: ServerResponse, deps
   sendJson(res, 200, await buildState(deps, userId));
 }
 
+/**
+ * POST /ride-page/paying {key, open}: the page's pay sheet opened or closed for one offer
+ * (DRIVER_PAYING_STATUS_ENABLED). Fire and forget: the page changes nothing on the answer.
+ * The body names the offer as `offerKey` (or `key`, as the other routes do).
+ */
+async function handlePaying(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  if (!payingStatusEnabled()) {
+    sendJson(res, 404, { error: 'Not found' });
+    return;
+  }
+  const userId = authenticate(req, deps);
+  const body = await readJsonBody(req).catch(() => null);
+  const key = isRecord(body) && typeof body.offerKey === 'string' ? body.offerKey : isRecord(body) && typeof body.key === 'string' ? body.key : '';
+  if (!key || !isRecord(body) || typeof body.open !== 'boolean') throw new PageError('Pick an offer first.', 400, 'BAD_REQUEST');
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+  const meta = await getRideMeta(deps.redisClient, rideId);
+  if (!meta || meta.riderId !== userId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+  const offer = (await getBids(deps.redisClient, rideId)).find((bid) => offerKey(bid) === key);
+  if (body.open) {
+    const state = await getRideState(deps.redisClient, rideId).catch(() => null);
+    if (state === 'confirmed' || state === 'in_progress') throw new PageError('This ride is booked.', 409, 'ALREADY_BOOKED');
+    if (!offer) throw new PageError('That offer is no longer open.', 409, 'OFFER_GONE');
+    // The same checks as the ws path, and the search must not have ended.
+    if (await isSearchEnded(deps.redisClient, rideId)) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (!ride || ride.riderId !== userId || (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING')) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
+    const bid = (await driverBidClient.findByRide(rideId).catch(() => [])).find((row) => row.driverId === offer.driverId);
+    if (!bid || bid.status !== 'PENDING') throw new PageError('That offer is no longer open.', 409, 'OFFER_GONE');
+    if (!(await withinPayingRate(deps.redisClient, userId))) throw new PageError('Too many tries. Wait a minute.', 429, 'RATE_LIMITED');
+    const opened = await openPaying(deps, rideId, userId, offer.driverUserId);
+    if (opened.result === 'refused') throw new PageError('Too many tries for this driver.', 429, 'PAYING_SPELLS');
+    sendJson(res, 200, { ok: true, payingUntil: opened.payingUntil });
+    return;
+  } else if (offer) {
+    // A close counts toward the limit only when there is something to close.
+    const held = (await readPaying(deps.redisClient, rideId))?.driverUserId === offer.driverUserId;
+    if (held && !(await withinPayingRate(deps.redisClient, userId))) throw new PageError('Too many tries. Wait a minute.', 429, 'RATE_LIMITED');
+    await closePayingUnlessBooking(deps, rideId, offer.driverUserId);
+  }
+  sendJson(res, 200, { ok: true });
+}
+
 async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
@@ -768,6 +812,9 @@ async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps
   const rideId = await getActiveRide(deps.redisClient, userId);
   const paying = await getPendingAccept(deps.redisClient, userId).catch(() => null);
   const sameOffer = !key || (paying !== null && (paying.bidId === key || `driver:${paying.driverId}` === key));
+  // Backed out of the sheet: the driver's card stops saying the rider is paying. This takes and frees the booking lock
+  // on its own, BEFORE whileNotConfirming below takes it: never nested, so they cannot wait on each other.
+  if (payingStatusEnabled() && paying && sameOffer) await closePayingUnlessBooking(deps, paying.rideId, paying.driverUserId).catch(() => 'nothing');
   if (paying && sameOffer && (!rideId || paying.rideId === rideId)) {
     // Under the booking lock: a deposit landing and booking them right now is not raced.
     await whileNotConfirming(deps, paying.rideId, async () => {
@@ -1553,6 +1600,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/accept': { method: 'POST', run: handleAccept },
   '/ride-page/decline': { method: 'POST', run: handleDecline },
   '/ride-page/keep-looking': { method: 'POST', run: handleKeepLooking },
+  '/ride-page/paying': { method: 'POST', run: handlePaying },
   '/ride-page/discard-trip': { method: 'POST', run: handleDiscardTrip },
   '/ride-page/decline-all': { method: 'POST', run: handleDeclineAll },
   '/ride-page/cancel': { method: 'POST', run: handleCancel },

@@ -25,7 +25,7 @@ const RECEIPT_HINTS: Record<string, string> = {
   MessageRateExceeded: 'too many pushes to this phone too fast',
 };
 
-export interface PushDevice { expoPushToken: string }
+export interface PushDevice { expoPushToken: string; /** Android channel the app declared; absent for apps that did not. */ androidChannelId?: string | null }
 export interface PushMessage { title: string; body: string; data?: Record<string, unknown>; priority?: string }
 export interface PushDeps {
   fetch: typeof fetch;
@@ -70,6 +70,8 @@ export async function sendPush(deps: PushDeps, userId: string, devices: PushDevi
       data: message.data,
       priority: message.priority === 'high' ? 'high' : 'default',
       sound: 'default',
+      // Only for a phone that created that channel; a channel it lacks would drop the push.
+      ...(device.androidChannelId ? { channelId: device.androidChannelId } : {}),
     }))),
   });
   const payload = (await response.json().catch(() => null)) as { data?: Ticket[]; errors?: Array<{ message?: string }> } | null;

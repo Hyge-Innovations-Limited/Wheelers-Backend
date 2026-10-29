@@ -253,6 +253,7 @@ import { RedisClient } from "./redis/client";
 import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
 import { GatewayPublisher } from "./websocket/publisher";
 import { SocketRegistry } from "./websocket/registry";
+import { setPayingStatusEnabled } from "./rides/paying-status";
 import { createGatewayWebSocketServer } from "./websocket/server";
 import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
@@ -551,6 +552,7 @@ async function bootstrap(): Promise<void> {
   // Trip chat and Live call: between a trip's rider and driver, on the app and
   // on the WhatsApp rider's Trip chat page. Calls stay off until the TURN
   // server is configured and LIVE_CALL_ENABLED says so.
+  setPayingStatusEnabled(gatewayEnv.DRIVER_PAYING_STATUS_ENABLED);
   if (gatewayEnv.LIVE_CALL_ENABLED && !(gatewayEnv.TURN_HOST && gatewayEnv.TURN_SHARED_SECRET)) {
     console.warn("[live-call] LIVE_CALL_ENABLED is on but TURN_HOST or TURN_SHARED_SECRET is missing: calls on mobile data will often fail to connect.");
   }
@@ -1326,6 +1328,7 @@ async function bootstrap(): Promise<void> {
 
       await handleGetDriverBidsRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
       }, url);
       return;
     }
@@ -2612,6 +2615,7 @@ async function bootstrap(): Promise<void> {
     publisher,
     routePlanner,
     redis: redisCommandClient,
+    driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
     maxPayloadBytes: gatewayEnv.WS_MAX_PAYLOAD_BYTES,
     rateLimitPerSecond: gatewayEnv.WS_RATE_LIMIT_PER_SECOND,
     rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,
@@ -2656,6 +2660,7 @@ async function bootstrap(): Promise<void> {
 
   await startGatewayKafkaConsumer({
     consumer,
+    driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
     registry,
     publisher,
     redisClient: redisCommandClient,

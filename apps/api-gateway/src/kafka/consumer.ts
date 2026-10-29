@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { appBackgroundKey } from '../websocket/app-state';
+import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import {
@@ -100,6 +102,8 @@ export interface StartGatewayConsumerDeps {
   redisClient: RedisClient;
   publisher: GatewayPublisher;
   whatsappNotifier?: WhatsappNotifierDeps;
+  /** DRIVER_STATUS_PUSHES_ENABLED: an app that reported background counts as away, and the "paying now" push. */
+  driverStatusPushes?: boolean;
   /** Resolves a driver's KYC photos — the car's, shown when they arrive. */
   kycStorage?: DriverKycStorage;
   /**
@@ -592,6 +596,7 @@ async function endTimedOutSearch(
   const { registry } = deps;
   // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
   await markSearchEnded(deps.redisClient, rideId);
+  if (payingStatusEnabled()) await closePaying(deps, rideId, 'search_ended').catch(() => false);
   // A bidder away from the app hears the search ended by push.
   for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
     await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId, generation: `timed_out@${timestamp}` });
@@ -744,11 +749,33 @@ function isOpenBid(status: string): boolean {
   return status === 'PENDING' || status === 'DECLINED';
 }
 
+const PUSH_DEDUPE_SECONDS = 10 * 60;
+/** The claim before the send: short, so a process dying mid-send loses the push for seconds, not minutes. */
+const PUSH_CLAIM_SECONDS = 30;
+/**
+ * Away = no socket. With DRIVER_STATUS_PUSHES_ENABLED also: the app said it is
+ * in the background (app:state, a short-lived flag the app refreshes). A
+ * presence check that fails counts as away: a banner too many beats a driver
+ * who never hears.
+ */
+async function driverIsAway(deps: Pick<StartGatewayConsumerDeps, 'registry' | 'redisClient' | 'driverStatusPushes'>, driverUserId: string): Promise<boolean> {
+  try {
+    if (!(await deps.registry.isUserConnected(driverUserId))) return true;
+  } catch {
+    return true;
+  }
+  if (!deps.driverStatusPushes) return false;
+  try {
+    return (await deps.redisClient.get(appBackgroundKey(driverUserId))) !== null;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * A push to a driver whose app is not connected; a connected app has the
  * socket message and needs no banner on top. Never throws.
  */
-const PUSH_DEDUPE_SECONDS = 10 * 60;
 async function pushDriverIfAway(
   deps: StartGatewayConsumerDeps,
   driverUserId: string,
@@ -759,10 +786,11 @@ async function pushDriverIfAway(
    */
   message: { title: string; body: string; type: string; rideId: string; generation: string },
 ): Promise<void> {
-  const connected = await Promise.resolve().then(() => deps.registry.isUserConnected(driverUserId)).catch(() => true);
-  if (connected) return;
+  if (!(await driverIsAway(deps, driverUserId))) return;
   const key = `push:driver:${message.rideId}:${driverUserId}:${message.type}:${message.generation}`;
-  if (await deps.redisClient.get(key).catch(() => null)) return;
+  // Claimed before sending (atomic), so two events at once give one banner; given back if the send fails.
+  const claimed = await deps.redisClient.setIfNotExists(key, '1', PUSH_CLAIM_SECONDS).catch(() => true);
+  if (!claimed) return;
   const sent = await deps.publisher.publishNotificationEvent({
     eventType: 'PUSH_SEND',
     notificationId: randomUUID(),
@@ -773,8 +801,9 @@ async function pushDriverIfAway(
     priority: 'high',
     timestamp: new Date().toISOString(),
   }).then(() => true, () => false);
-  // Remembered only once it went: a push that failed is tried again on redelivery.
+  // A push that failed is tried again on redelivery.
   if (sent) await deps.redisClient.set(key, '1', PUSH_DEDUPE_SECONDS).catch(() => undefined);
+  else await deps.redisClient.del(key).catch(() => undefined);
 }
 
 /** What auto-accept needs from the consumer: Redis, the publisher, and the rider's app to tell. */
@@ -1241,7 +1270,13 @@ export async function handleRideEvent(
     // "Declined" and they can send a new price. Away from the app: a push.
     for (const userId of new Set(event.driverUserIds)) {
       void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
-      if (await registry.isUserConnected(userId).catch(() => true)) continue;
+      if (payingStatusEnabled()) await closePaying(deps, event.rideId, 'declined', userId).catch(() => false);
+      if (deps.driverStatusPushes) {
+        // Deduped like the other driver pushes, and a backgrounded app counts as away.
+        await pushDriverIfAway(deps, userId, { title: 'Offer declined', body: 'Send a new price.', type: 'bid_declined', rideId: event.rideId, generation: `declined@${event.timestamp}` });
+        continue;
+      }
+      if (!(await driverIsAway(deps, userId))) continue;
       await deps.publisher.publishNotificationEvent({
         eventType: 'PUSH_SEND',
         notificationId: randomUUID(),
@@ -1258,6 +1293,8 @@ export async function handleRideEvent(
 
   // The driver the rider chose could not be given the ride (ride-service).
   if (event.eventType === 'RIDE_ASSIGNMENT_FAILED') {
+    // The driver the rider was paying for cannot be booked: their card stops saying so.
+    if (payingStatusEnabled()) await closePaying(deps, event.rideId, 'failed', event.driverUserId).catch(() => false);
     if (event.reason === 'ride_closed') {
       const ride = await rideClient.findById(event.rideId).catch(() => null);
       if (ride?.status !== 'CANCELLED') {
@@ -1369,14 +1406,38 @@ export async function handleRideEvent(
     return;
   }
 
+  if (event.eventType === 'RIDE_RIDER_PAYING_ENDED') {
+    // The card goes back to waiting. Not a banner: nothing needs the driver to act.
+    void registry.sendToUser(event.driverUserId, 'ride:rider_paying_ended', { rideId: event.rideId, reason: event.reason });
+    return;
+  }
+
   if (event.eventType === 'RIDE_RIDER_PAYING') {
+    // A newer open (another driver) or a close may have overtaken this event: only the holder is told.
+    // (A Redis read that fails shows the event: only a read that succeeded and names someone else, or no one, drops it.)
+    if (payingStatusEnabled() && event.payingUntil) {
+      const held = await readPaying(deps.redisClient, event.rideId);
+      if (held !== undefined && held?.driverUserId !== event.driverUserId) return;
+    }
     // The rider chose this driver and is adding money: the card says so.
-    void registry.sendToUser(event.driverUserId, 'ride:rider_paying', { rideId: event.rideId });
+    void registry.sendToUser(event.driverUserId, 'ride:rider_paying', {
+      rideId: event.rideId,
+      // DRIVER_PAYING_STATUS_ENABLED: when the card stops waiting on the payment (older apps ignore the extras).
+      ...(event.payingSince ? { payingSince: event.payingSince } : {}),
+      ...(event.payingUntil ? { payingUntil: event.payingUntil } : {}),
+      // The driver's own clock cannot be trusted: how long is left, by ours, right now.
+      ...(event.payingUntil && payingStatusEnabled() ? { payingRemainingMs: Math.max(0, Date.parse(event.payingUntil) - Date.now()) } : {}),
+    });
+    // Away from the app: the same news by push (once per event).
+    if (deps.driverStatusPushes) {
+      await pushDriverIfAway(deps, event.driverUserId, { title: 'Rider accepted', body: 'Paying now', type: 'ride:rider_paying', rideId: event.rideId, generation: event.payingSince ? `paying@${event.payingSince}` : 'paying' });
+    }
     return;
   }
 
   if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
     await endOfferCount(deps, event.rideId);
+    if (payingStatusEnabled()) await clearForBooking(deps, event.rideId, event.driverUserId).catch(() => undefined);
     rideParticipants.set(event.rideId, {
       riderId: event.riderId,
       driverUserId: event.driverUserId,
@@ -1758,6 +1819,7 @@ export async function handleRideEvent(
     // only fires when there IS an assigned driver. Same message as a
     // timeout: to a bidder, "request gone" is all that matters.
     const openBids = await driverBidClient.findByRide(event.rideId).catch(() => []);
+    if (payingStatusEnabled()) await closePaying(deps, event.rideId, 'cancelled').catch(() => false);
     // Why the search ended, for the driver's card: the rider stopped it (or replaced it with a new one).
     const searchEndReason = event.cancelledBy === 'driver' ? 'timed_out' : 'rider_cancelled';
     for (const bid of openBids) {

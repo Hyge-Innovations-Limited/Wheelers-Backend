@@ -1,0 +1,108 @@
+{
+  "rider_paying | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:rider_paying\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "rider_paying | driver away": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:rider_paying\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "bids_declined | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:bid_declined\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "bids_declined | driver away": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"Offer declined\",\"body\":\"Send a new price.\",\"data\":{\"type\":\"bid_declined\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:bid_declined\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "assignment_failed_busy | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:bid_lost\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "assignment_failed_busy | driver away": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:bid_lost\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "assignment_failed_closed | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:bid_lost\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"reason\":\"booked_other\"}}"
+    ]
+  },
+  "assignment_failed_closed | driver away": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"Not chosen\",\"body\":\"Another driver got this ride.\",\"data\":{\"type\":\"ride:bid_lost\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:bid_lost\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"reason\":\"booked_other\"}}"
+    ]
+  },
+  "cancelled_by_rider | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"rider\",\"referralCashbackReleasedNgn\":0,\"refundedNgn\":0}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"rider\"}}"
+    ]
+  },
+  "cancelled_by_rider | driver away": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"rider\",\"referralCashbackReleasedNgn\":0,\"refundedNgn\":0}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"rider\"}}"
+    ]
+  },
+  "cancelled_by_driver | driver connected": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"Your driver cancelled\",\"body\":\"You were not charged. We are looking for another driver; open Wheelers to see the offers.\",\"data\":{\"type\":\"ride:driver_cancelled\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"driver\",\"referralCashbackReleasedNgn\":0,\"refundedNgn\":0,\"searchingAgain\":true}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"driver\"}}"
+    ]
+  },
+  "cancelled_by_driver | driver away": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"Your driver cancelled\",\"body\":\"You were not charged. We are looking for another driver; open Wheelers to see the offers.\",\"data\":{\"type\":\"ride:driver_cancelled\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"driver\",\"referralCashbackReleasedNgn\":0,\"refundedNgn\":0,\"searchingAgain\":true}}",
+      "{\"socket\":\"ride:cancelled\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"cancelledBy\":\"driver\"}}"
+    ]
+  },
+  "bid_timeout | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:bid_timeout\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "bid_timeout | driver away": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"No driver accepted your ride\",\"body\":\"You were not charged. Open Wheelers to search again or change your price.\",\"data\":{\"type\":\"ride:bid_timeout\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:bid_timeout\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
+    ]
+  },
+  "offer_sent_repriced | driver connected": {
+    "error": null,
+    "log": [
+      "{\"socket\":\"ride:offer\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"riderId\":\"00000000-0000-4000-8000-000000000002\",\"bidsCloseAt\":\"<time>\",\"pickup\":{\"lat\":6.5,\"lng\":3.3,\"address\":\"Akoka\"},\"destination\":{\"lat\":6.51,\"lng\":3.37,\"address\":\"Yaba\"},\"stops\":[],\"fareEstimateNgn\":3000,\"paymentMethod\":\"WALLET\",\"riderOfferNgn\":3500,\"suggestedFareNgn\":3000,\"bookingFeeNgn\":350,\"pricingVersion\":3,\"afterCurrentTrip\":false,\"expiresAt\":\"<time>\",\"isGroupRide\":false,\"riderCount\":1,\"stopKinds\":[],\"groupMembers\":[]}}"
+    ]
+  },
+  "offer_sent_repriced | driver away": {
+    "error": null,
+    "log": [
+      "{\"push\":{\"title\":\"New price ₦3,500\",\"body\":\"Akoka → Yaba\",\"data\":{\"type\":\"ride:offer_updated\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
+      "{\"socket\":\"ride:offer\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"riderId\":\"00000000-0000-4000-8000-000000000002\",\"bidsCloseAt\":\"<time>\",\"pickup\":{\"lat\":6.5,\"lng\":3.3,\"address\":\"Akoka\"},\"destination\":{\"lat\":6.51,\"lng\":3.37,\"address\":\"Yaba\"},\"stops\":[],\"fareEstimateNgn\":3000,\"paymentMethod\":\"WALLET\",\"riderOfferNgn\":3500,\"suggestedFareNgn\":3000,\"bookingFeeNgn\":350,\"pricingVersion\":3,\"afterCurrentTrip\":false,\"expiresAt\":\"<time>\",\"isGroupRide\":false,\"riderCount\":1,\"stopKinds\":[],\"groupMembers\":[]}}"
+    ]
+  }
+}

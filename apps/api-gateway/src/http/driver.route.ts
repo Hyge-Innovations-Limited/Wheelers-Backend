@@ -3,10 +3,14 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
 import { authenticateHttpUser, HttpAuthError, authenticateHttpToken } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
+import type { RedisClient } from '../redis/client';
+import { payingStatusEnabled, payingWindow, readPaying } from '../rides/paying-status';
 import { loadDriverActiveRideSnapshot } from '../websocket/driver-ride-sync';
 
 interface DriverRouteDeps {
   jwtSecret: string;
+  /** For the bids list's "rider is paying" state (DRIVER_PAYING_STATUS_ENABLED). Absent: not added. */
+  redisClient?: RedisClient;
 }
 
 /**
@@ -158,6 +162,19 @@ export async function handleGetDriverBidsRoute(
     const hasMore = bids.length > limit;
     const page = hasMore ? bids.slice(0, limit) : bids;
 
+    // The rider is paying for this driver right now: the card is restored on reconnect (one read per waiting bid).
+    const paying = new Map<string, { payingSince: string; payingUntil: string; payingRemainingMs: number }>();
+    if (payingStatusEnabled() && deps.redisClient) {
+      const redis = deps.redisClient;
+      await Promise.all(page.filter((bid) => bid.status === 'PENDING').map(async (bid) => {
+        const state = await readPaying(redis, bid.rideId);
+        if (state && state.driverUserId === user.id) {
+          const window = payingWindow(state);
+          paying.set(bid.id, { ...window, payingRemainingMs: Math.max(0, Date.parse(window.payingUntil) - Date.now()) });
+        }
+      }));
+    }
+
     sendJson(res, 200, {
       items: page.map((bid) => ({
         id: bid.id,
@@ -171,6 +188,8 @@ export async function handleGetDriverBidsRoute(
         status: bid.status,
         createdAt: bid.createdAt.toISOString(),
         resolvedAt: bid.resolvedAt?.toISOString() ?? null,
+        // Only with DRIVER_PAYING_STATUS_ENABLED, and only while the rider is paying for this driver.
+        ...(paying.get(bid.id) ?? {}),
         ride: {
           status: bid.ride.status,
           pickupAddress: bid.ride.pickupAddress,

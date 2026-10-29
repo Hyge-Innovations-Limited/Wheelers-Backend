@@ -137,6 +137,9 @@ export async function handleRegisterPushTokenRoute(
     const platform = getString(rawBody, 'platform');
     const deviceName = getString(rawBody, 'deviceName');
     const appOwnership = getString(rawBody, 'appOwnership');
+    // A bad channel name is dropped, never a reason to lose the token.
+    const channelRaw = getString(rawBody, 'androidChannel')?.trim();
+    const androidChannel = channelRaw && /^[A-Za-z0-9_.-]{1,64}$/.test(channelRaw) ? channelRaw : undefined;
 
     const device = await userClient.upsertNotificationDevice(user.id, {
       expoPushToken,
@@ -144,6 +147,7 @@ export async function handleRegisterPushTokenRoute(
       platform,
       deviceName,
       appOwnership,
+      ...(androidChannel ? { androidChannelId: androidChannel } : {}),
     });
 
     sendJson(res, 200, {

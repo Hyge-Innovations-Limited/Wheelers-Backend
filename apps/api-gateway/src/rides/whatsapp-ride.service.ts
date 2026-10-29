@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { openPaying, payingStatusEnabled, withinPayingRate } from './paying-status';
 import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
@@ -372,9 +373,15 @@ async function confirmOnce(
     // The rider chose this driver and is adding money: their card says "Rider is paying…".
     // (Not for auto-accept: nobody chose them, nobody is paying.)
     if (!options.auto) {
-      await deps.publisher.publishRideEvent({
-        eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
-      }).catch(() => undefined);
+      if (payingStatusEnabled()) {
+        // Kept as state (one driver per ride), so a reconnect restores the card and a close ends it.
+        // Over the rate limit: only the signal to the driver is skipped; the answer to the rider is the same.
+        if (await withinPayingRate(deps.redisClient, riderId).catch(() => true)) await openPaying(deps, rideId, riderId, bid.driverUserId).catch(() => undefined);
+      } else {
+        await deps.publisher.publishRideEvent({
+          eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
+        }).catch(() => undefined);
+      }
     }
     return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
   }

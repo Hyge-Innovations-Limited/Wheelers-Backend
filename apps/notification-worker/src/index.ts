@@ -94,7 +94,7 @@ async function handlePushSend(
       later: (fn, ms) => { setTimeout(() => void fn(), ms).unref(); },
     },
     event.userId,
-    devices.map((device: NotificationDevice) => ({ expoPushToken: device.expoPushToken })),
+    devices.map((device: NotificationDevice) => ({ expoPushToken: device.expoPushToken, androidChannelId: device.androidChannelId })),
     { title: event.title, body: event.body, data: event.data, priority: event.priority },
   );
 }

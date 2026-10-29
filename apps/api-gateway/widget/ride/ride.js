@@ -555,13 +555,58 @@
       if (next && typeof next.phase === 'string' && !busy) apply(next);
     }).catch(function () { /* an older server has no such step: nothing to forget there */ });
   }
+  /**
+   * The driver's card says "Rider accepted · paying now" while the rider is on the pay sheet or
+   * the add-money step for him. Fire and forget (POST /ride-page/paying): nothing on this page
+   * waits for it or shows it, every answer (404 flag off, 409, 429, a dropped connection) is ignored,
+   * and each sheet sends one open and one close. payingKey is the offer it is open for.
+   */
+  var payingKey = null;
+  var PAYING_MS = 8000;
+  var payingChain = Promise.resolve();
+  function postPaying(key, open) {
+    try {
+      return fetch('/ride-page/paying', {
+        method: 'POST',
+        keepalive: true,
+        headers: { Authorization: 'Bearer ' + window.__wheelersToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offerKey: key, open: open })
+      });
+    } catch (e) { return Promise.resolve(); }
+  }
+  function sendPaying(key, open, now) {
+    if (!window.__wheelersToken) return;
+    // Page leaving: straight out, not behind an earlier request. Otherwise in order, so a close lands before the next open.
+    if (now) { postPaying(key, open).then(function () {}, function () {}); return; }
+    // Each send gives up after PAYING_MS, so one hung request never holds back the ones behind it.
+    payingChain = payingChain.then(function () {
+      return new Promise(function (resolve) {
+        var timer = setTimeout(resolve, PAYING_MS);
+        postPaying(key, open).then(function () { clearTimeout(timer); resolve(); }, function () { clearTimeout(timer); resolve(); });
+      });
+    });
+  }
+  function payingOpenFor(key) {
+    if (!key || key === payingKey) return;
+    payingClose();
+    payingKey = key;
+    sendPaying(key, true);
+  }
+  function payingClose(now) {
+    if (!payingKey) return;
+    var key = payingKey;
+    payingKey = null;
+    sendPaying(key, false, now);
+  }
   function addStepOpen() { return !W.$('sheet-pay').hidden && !W.$('pay-add').hidden; }
 
   function sheetPutAway() {
     var leftAdd = addStepOpen();
+    var leftPay = !W.$('sheet-pay').hidden;
     noteSheetLeft();
     closeSheets();
     if (leftAdd) keepLooking(paying && paying.key);
+    if (leftPay) payingClose();
     paying = null;
     payWith = null;
     if (state && state.phase === 'offers' && shownView === 'offers') drawSent(state);
@@ -2323,9 +2368,10 @@
       var wasAdding = addStepOpen();
       var leftKey = paying.key;
       paying = null;
+      payingClose();
       if (wasAdding) { closeSheets(); keepLooking(leftKey); }
     }
-    if (payWith && !W.$('sheet-pay').hidden && keys.indexOf(payWith.offer.key) < 0) { payWith = null; closeSheets(); }
+    if (payWith && !W.$('sheet-pay').hidden && keys.indexOf(payWith.offer.key) < 0) { payWith = null; payingClose(); closeSheets(); }
     watchAddStep(s);
     noteEndedOffers(s);
 
@@ -2393,6 +2439,7 @@
       var who = firstName(addFor.name) || 'The driver';
       addFor = null;
       paying = null;
+      payingClose();
       closeSheets();
       keepLooking(key);
       say(who + ' changed the price');
@@ -2410,6 +2457,7 @@
     if (addFor.coveredLooks < MONEY_IN_LOOKS) return;
     addFor = null;
     paying = null;
+    payingClose();
     closeSheets();
     say('Money in. Tap Accept again.');
   }
@@ -2637,6 +2685,7 @@
     pickMethod('ngn');
     showPayPart('ask');
     openSheet('sheet-pay');
+    payingOpenFor(offer.key);
   }
 
   function pickMethod(method) {
@@ -2671,9 +2720,12 @@
       busy = false;
       paying = null;
       local.confirming = null;
+      payingKey = null;   // booking ends it on the server: nothing to send
       apply(next);
     }).catch(function (error) {
       busy = false;   // before the redraw: the offers come back live, not greyed out
+      // Still paying (short of money, or no answer yet): the driver's card stays as it is until the sheet or the wait ends.
+      if (error.code !== 'WALLET_SHORT' && error.code !== 'TIMEOUT') payingClose();
       if (linkDead(error)) { local.confirming = null; return dead(error); }
       // No answer in time: it may have gone through. Stay on Confirming and ask; the
       // next look decides (confirmed: Driver found; still offers: back to them, quietly).
@@ -2718,6 +2770,7 @@
     };
     showPayPart('add');
     openSheet('sheet-pay');
+    payingOpenFor(offer.key);
   }
 
   function drawConfirming() {
@@ -3465,9 +3518,12 @@
     state = next;
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;
+    // Booked, cancelled or ended under an open pay sheet: the driver's card is let go.
+    if (next.phase === 'confirmed') payingKey = null;   // booked: the server ended it
+    else if (next.phase !== 'offers') payingClose();
     if (next.phase !== 'offers') { seenOffers = null; paying = null; declined = null; offerSnapshot = null; local.confirming = null; addFor = null; }
     // An accept that timed out, and the server still shows the offers: back to them, quietly.
-    if (next.phase === 'offers' && local.confirming && local.confirming.timedOut) { local.confirming = null; paying = null; }
+    if (next.phase === 'offers' && local.confirming && local.confirming.timedOut) { local.confirming = null; paying = null; payingClose(); }
     // The trip moved on while a screen was open over Home (a price, a search, a ride), or the trip
     // whose route was being changed ended: their history entries go too, so Back works.
     if (!screensFit(next.phase)) navHome();
@@ -3528,9 +3584,16 @@
     track('page_visible', { secondsOnPage: secondsHere() });
     if (!stopped) refresh();
   });
+  // Back to a page kept in memory with its pay sheet still showing: the driver's card is told again.
+  window.addEventListener('pageshow', function (event) {
+    if (!event || !event.persisted || W.$('sheet-pay').hidden) return;
+    var key = (payWith && payWith.offer && payWith.offer.key) || (addFor && addFor.key) || (paying && paying.key);
+    if (key) payingOpenFor(key);
+  });
   // Closing the tab, or WhatsApp closing its browser: the last steps go with keepalive.
   window.addEventListener('pagehide', function () {
     track('page_left', { secondsOnPage: secondsHere() });
+    payingClose(true);
     sendSteps(true);
   });
 })();

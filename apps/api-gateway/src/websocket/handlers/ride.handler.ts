@@ -36,6 +36,7 @@ import { acceptOfferInApp } from '../../rides/app-accept';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
 import { forgetTripRouteQuote, quoteTripRoute } from '../../rides/trip-route-quote';
 import { clearSearchEnded, markSearchEnded } from '../../rides/booking-lock';
+import { closePayingUnlessBooking, openPaying, payingStatusEnabled, readPaying, withinPayingRate } from '../../rides/paying-status';
 import { assertInServiceArea } from '../../utils/service-area';
 
 interface LatLngAddress {
@@ -520,6 +521,35 @@ export async function handleRideMessage(
       ? await declineOneOffer({ redisClient: redis, publisher }, auth.userId, rideId, driverId)
       : { declined: false };
     return { type: 'ride:decline_offer:done', payload: { rideId, driverId, declined } };
+  }
+
+  if (type === 'ride:pay_sheet') {
+    // The rider opened or closed the pay sheet for one driver. Off, an unknown message as before.
+    if (!payingStatusEnabled()) return null;
+    const open = payload['open'];
+    if (typeof open !== 'boolean') throw new Error('Missing required field: open');
+    const rideId = requireString(payload, 'rideId');
+    const driverId = requireString(payload, 'driverId');
+    if (!redis) throw new Error('Not available right now.');
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+    const bid = (await driverBidClient.findByRide(rideId).catch(() => [])).find((row) => row.driverId === driverId);
+    if (open) {
+      if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') throw new Error('This search has ended.');
+      if (!bid || bid.status !== 'PENDING') throw new Error('That offer is no longer open.');
+      if (!(await withinPayingRate(redis, auth.userId))) throw new Error('Too many tries. Wait a minute.');
+      const opened = await openPaying({ redisClient: redis, publisher }, rideId, auth.userId, bid.driverUserId);
+      if (opened.result === 'refused') throw new Error('Too many tries for this driver.');
+      return { type: 'ride:pay_sheet:ok', payload: { rideId, driverId, open, payingUntil: opened.payingUntil } };
+    } else if (bid) {
+      // Only a live offer, or one that is being paid for, can be closed.
+      const holding = (await readPaying(redis, rideId))?.driverUserId === bid.driverUserId;
+      if (bid.status === 'PENDING' || holding) {
+        if (!(await withinPayingRate(redis, auth.userId))) throw new Error('Too many tries. Wait a minute.');
+        await closePayingUnlessBooking({ redisClient: redis, publisher }, rideId, bid.driverUserId);
+      }
+    }
+    return { type: 'ride:pay_sheet:ok', payload: { rideId, driverId, open } };
   }
 
   if (type === 'ride:rider_counter_offer') {

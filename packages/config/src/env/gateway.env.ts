@@ -125,6 +125,10 @@ const GatewayEnvSchema = z.object({
   // Live call: the rider and driver of a trip call each other through Wheelers.
   // Off until the TURN server below is set; chat works either way.
   LIVE_CALL_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // "Rider accepted · paying now": the pay sheet tells the driver (ws ride:pay_sheet, POST /ride-page/paying). Off = today's behaviour.
+  DRIVER_PAYING_STATUS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Driver status pushes: app:state background presence, and a push when the rider is paying. Off = today's behaviour.
+  DRIVER_STATUS_PUSHES_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Our own STUN/TURN server (coturn, infra/turn). The secret is the
   // static-auth-secret in /etc/turnserver.conf on that machine.
   TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),

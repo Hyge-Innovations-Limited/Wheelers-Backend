@@ -750,6 +750,8 @@ model NotificationDevice {
   platform         String?
   deviceName       String?
   appOwnership     String?
+  /// Android notification channel the app created ("rides"); null for apps that did not say.
+  androidChannelId String?
   enabled          Boolean   @default(true)
   lastRegisteredAt DateTime  @default(now())
   lastDeliveredAt  DateTime?
