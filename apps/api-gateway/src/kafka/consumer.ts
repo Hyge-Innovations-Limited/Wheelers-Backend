@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { appBackgroundKey } from '../websocket/app-state';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
+import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
+import { buildPricedRouteEvent, claimPublish, fundRouteHold, releasePublish, pendingRideOf, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../rides/trip-route-pending';
 import {
   ComplianceEvent,
   GroupRideEvent,
@@ -10,13 +12,16 @@ import {
   NotificationEvent,
   RideEvent,
   WalletEvent,
+  WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
 import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId } from '@wheleers/config';
+import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
 import { loadDriverRideSnapshot } from '../websocket/driver-ride-sync';
 import type { RedisClient } from '../redis/client';
+import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
 import {
   isWhatsappRider,
   lookupPhoneByUserId,
@@ -114,6 +119,10 @@ export interface StartGatewayConsumerDeps {
   onWhatsappDeposit?: (deposit: { userId: string; amountNgn: number; newBalanceNgn: number }) => Promise<boolean>;
   /** Stellar Testnet mirror (grant deliverable 3). Absent when STELLAR_ENABLED is off. */
   stellar?: StellarService | null;
+  /** DRIVER_PHOTO_ENABLED: the driver's face for the rider's offers and matched payloads. Absent: payloads exactly as before. */
+  driverPhoto?: DriverPhotoResolver;
+  /** Prices a route change again when its waiting price has gone old (STOP_FIXED_PRICE_ENABLED). Absent: such a change waits for the rider to retry. */
+  routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'>;
   /** The rider's own link to the offers page — for the message that reopens a search after a driver bailed. */
   ridePageUrlFor?: (userId: string) => string | null;
   /** Says a ride-page event in the chat (the catch-up once the rider leaves the page). Absent: no catch-up runs. */
@@ -1159,6 +1168,7 @@ export async function handleRideEvent(
         vehicleModel: event.vehicleModel,
         etaSeconds: event.etaSeconds,
         distanceKm: event.distanceKm,
+        ...(await driverPhotoFields(deps.driverPhoto, event.driverId, { riderId: event.riderId })),
       });
       // The socket only reaches an open app. With the app closed, the first
       // offer of a search is a push, so the rider knows to come and choose.
@@ -1520,6 +1530,7 @@ export async function handleRideEvent(
         lockedFareNgn: event.lockedFareNgn,
         paymentMethod: event.paymentMethod,
         driverPhone,
+        ...(await driverPhotoFields(deps.driverPhoto, event.driverId)),
         // Only ever to the rider: they give it to the driver at pickup.
         tripCode,
       });
@@ -1647,11 +1658,17 @@ export async function handleRideEvent(
       plannedDurationSeconds: event.plannedDurationSeconds,
       ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds, { destination: event.destination }),
       updatedBy: event.updatedBy,
+      // After a priced change (STOP_FIXED_PRICE_ENABLED): the trip's new fare, and what changed. Older apps ignore both.
+      ...(event.agreedFareNgn !== undefined ? { fareNgn: event.agreedFareNgn } : {}),
+      ...(event.change ? { change: event.change } : {}),
     };
 
     await registry.sendToUser(event.riderId, 'ride:route:updated', routePayload);
+    // A priced change that was not made: the rider is told so, and the screens above show the real route.
+    if (event.reverted) await registry.sendToUser(event.riderId, 'ride:route:update:dropped', { rideId: event.rideId, reason: 'TRIP_CHANGED' });
 
-    const participants = rideParticipants.get(event.rideId);
+    // DB fallback (as RIDE_STARTED): after a gateway restart the in-memory map is empty.
+    const participants = await participantsFor(event.rideId, rideParticipants);
     if (participants?.driverUserId) {
       await registry.sendToUser(participants.driverUserId, 'ride:route:updated', routePayload);
     }
@@ -2026,7 +2043,7 @@ export async function handleRideEvent(
   }
 }
 
-async function handleWalletEvent(
+export async function handleWalletEvent(
   event: WalletEvent,
   deps: StartGatewayConsumerDeps,
   rideParticipants: Map<string, RideParticipantState>,
@@ -2041,6 +2058,11 @@ async function handleWalletEvent(
       changeType: event.creditType,
       direction: 'credit',
       referenceId: event.referenceId,
+    });
+
+    // A route change that was waiting on money goes ahead once the deposit covers it.
+    if (event.creditType === 'deposit') await applyPendingRouteOnDeposit(deps, event.userId).catch((error) => {
+      console.error('[consumer] applying a waiting route change failed', { userId: event.userId, error: error instanceof Error ? error.message : String(error) });
     });
 
     // Check if this rider has an active ride — notify driver that rider funded wallet
@@ -2487,4 +2509,90 @@ export async function dropBidFromWhatsappRide(
   const stillThere = sortOffers(remaining);
   await storeLastBatch(deps.redisClient, rideId, stillThere).catch(() => {});
   await announceOffers(deps, phone, rideId, riderId, stillThere, meta.offerNgn).catch(() => {});
+}
+
+
+/**
+ * STOP_FIXED_PRICE_ENABLED: the rider's deposit landed. If a route change was waiting for it, it is taken
+ * off (one atomic take: a retry or a cancel at the same moment cannot also have it), the hold is raised
+ * to its fare right here (still short: it goes back to waiting, untouched), and only then is it published,
+ * exactly as the rider accepted it. A trip that is over, or that moved on since the price was set (a stop
+ * reached, another change), drops it and the rider is told with `ride:route:update:dropped`.
+ */
+export async function applyPendingRouteOnDeposit(
+  deps: Pick<StartGatewayConsumerDeps, 'redisClient' | 'registry' | 'publisher'> & { routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'> },
+  userId: string,
+): Promise<boolean> {
+  if (!stopFixedPriceEnabled()) return false;
+  const rideId = await pendingRideOf(deps.redisClient, userId);
+  if (!rideId) return false;
+  let pending = await takePendingRoute(deps.redisClient, rideId, userId);
+  if (!pending) return false;
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (!ride || ride.riderId !== userId || !PRICE_CHANGEABLE_STATUSES.includes(ride.status) || !sameBase(pending, routeBaseOf(ride))) {
+    await deps.registry.sendToUser(userId, 'ride:route:update:dropped', { rideId, reason: 'TRIP_CHANGED' }).catch(() => undefined);
+    return false;
+  }
+  // A price older than 2 minutes, or set for a car that has since moved on, is set again before it is used.
+  // If it comes out different the change is NOT made: the rider is shown the new price and must accept it.
+  if (await stampIsStale(rideId, pending)) {
+    const quote = deps.routePlanner
+      ? await quoteTripRoute({ redis: deps.redisClient, routePlanner: deps.routePlanner }, rideId, pending.destination, pending.stops, { fresh: true, acceptedFareNgn: pending.fareNgn, shownStaleFareNgn: pending.fareNgn }).catch(() => null)
+      : null;
+    if (!quote || !quote.base) {
+      // Cannot be priced right now: it keeps waiting (same expiry) for the rider to retry from the app.
+      await savePendingRoute(deps.redisClient, pending, pending.expiresAt);
+      return false;
+    }
+    if (quote.fareNgn !== pending.fareNgn) {
+      await deps.registry.sendToUser(userId, 'ride:route:update:rejected', {
+        rideId, reason: 'PRICE_CHANGED', fareNgn: quote.fareNgn, extraNgn: quote.extraNgn, message: `The price is now ₦${quote.fareNgn.toLocaleString('en-NG')}.`,
+      }).catch(() => undefined);
+      return false;
+    }
+    pending = { ...pending, planned: quote.planned, plannedTotalKm: quote.plannedTotalKm, ...quote.base };
+  }
+  const publishKey = await claimPublish(deps.redisClient, pending);
+  if (!publishKey) return false; // the same change is already going out (a retry got there)
+  let funded: Awaited<ReturnType<typeof fundRouteHold>>;
+  try {
+    funded = await fundRouteHold(rideId, userId, pending.fareNgn);
+  } catch (error) {
+    // The change was taken and cannot be funded (no hold left, or the wallet failed): the rider is told, not left waiting.
+    await releasePublish(deps.redisClient, publishKey);
+    await deps.registry.sendToUser(userId, 'ride:route:update:dropped', { rideId, reason: 'TRIP_CHANGED' }).catch(() => undefined);
+    throw error;
+  }
+  if (!funded.ok) {
+    await releasePublish(deps.redisClient, publishKey);
+    await savePendingRoute(deps.redisClient, pending, pending.expiresAt); // still short: keeps waiting, same expiry
+    return false;
+  }
+  const timestamp = new Date().toISOString();
+  try {
+    await deps.publisher.publishRideEvent(buildPricedRouteEvent(pending, timestamp));
+  } catch (error) {
+    await restoreRouteHold(rideId, funded);
+    await releasePublish(deps.redisClient, publishKey);
+    await savePendingRoute(deps.redisClient, pending, pending.expiresAt);
+    throw error;
+  }
+  if (funded.applied && funded.walletId && funded.previousHoldNgn !== null) {
+    await Promise.resolve().then(() => deps.publisher.publishWalletEvent(WalletHoldAdjustedEvent.parse({
+      eventType: 'WALLET_HOLD_ADJUSTED', walletId: funded.walletId, userId, rideId,
+      previousLockedAmountNgn: funded.previousHoldNgn, lockedAmountNgn: funded.newHoldNgn, reason: 'ride_route_updated', timestamp,
+    }))).catch(() => undefined); // a notice only: the money has moved either way
+  }
+  await forgetTripRouteQuote(deps.redisClient, rideId);
+  await deps.registry.sendToUser(userId, 'ride:route:update:accepted', {
+    rideId,
+    destination: pending.destination,
+    stops: pending.stops,
+    route: pending.planned.geometry,
+    plannedDistanceKm: pending.planned.distanceKm,
+    plannedDurationSeconds: pending.planned.durationSeconds,
+    fareNgn: pending.fareNgn,
+    appliedAfterDeposit: true,
+  });
+  return true;
 }

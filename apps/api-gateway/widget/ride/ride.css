@@ -211,7 +211,12 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
   width: 40px; height: 40px; border-radius: 50%; background: var(--ink); color: var(--orange);
   display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
   font-family: var(--display); font-weight: 700; font-size: 15px;
+  position: relative; overflow: hidden;
 }
+/* the driver's photo fills the circle, over the initials */
+.avatar .avatar-photo { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+/* the app's offer card avatar is 52 */
+.offer-top .avatar { width: 52px; height: 52px; font-size: 19px; }
 .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .who strong { display: block; font-size: 15px; line-height: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who span { font-size: 12px; line-height: 16px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
@@ -580,7 +585,7 @@ section[data-view="confirming"] { min-height: calc(100vh - 36px); }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 14px; line-height: 18px; font-weight: 700; }
 .pill svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
 .pill.green { background: var(--good-soft); color: var(--good); }
-.avatar.found-avatar { width: 96px; height: 96px; border: 3px solid var(--ink); font-size: 34px; }
+.avatar.found-avatar { width: 112px; height: 112px; border: 3px solid var(--ink); font-size: 40px; }
 .found-title { font-size: 30px; line-height: 33px; letter-spacing: -0.8px; }
 .found-price { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: var(--r-xl); background: var(--ink); }
 .found-price-text { display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 20px; }
@@ -761,3 +766,19 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 }
 #idle-text:empty { display: none; }
 .pay-card .pay-row:first-child { border-top: 0; }
+
+/* the add-money account, as the app's: a dark card, the number in orange */
+.pay-card.account { background: var(--ink); color: var(--on-ink); border: 0; padding: 16px; text-align: left; }
+.account-wait[hidden], #pay-failed[hidden] { display: none; }
+.account-wait { display: flex; justify-content: center; padding: 20px 0; }
+#pay-details { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+#pay-details[hidden] { display: none; }
+#pay-details .bank { font-size: 13px; line-height: 18px; color: var(--on-ink-muted); }
+#pay-details .number { color: var(--orange); font-family: var(--display); font-size: 30px; line-height: 36px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+#pay-details .holder { font-size: 15px; line-height: 20px; color: var(--on-ink); }
+#pay-details .btn { min-height: 44px; margin-top: 6px; }
+.account-note { margin: 0; font-size: 13px; line-height: 18px; color: var(--on-ink-muted); }
+#pay-add .waiting { justify-content: center; gap: 8px; padding: 12px 0 0; background: none; border-radius: 0; font-size: 13px; line-height: 18px; color: var(--muted); }
+#pay-add .waiting[hidden] { display: none; }
+#pay-add .waiting .spinner { width: 14px; height: 14px; border-width: 2px; }
+#pay-add .waiting span:last-child { font-size: 13px; color: var(--muted); }

@@ -124,6 +124,7 @@
   }
   function expired(chatUrl) {
     if (shownView === 'expired') return;
+    routeAdd = null;   // a dead token: hideSheets must not post a cancel
     stopped = true;
     clearTimeout(polling);
     hideSheets();
@@ -170,6 +171,64 @@
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+  /**
+   * A driver's face in the avatar circle, over the initials. Only a signed https URL is used (anything
+   * else keeps the initials); a picture that fails to load is hidden and the initials show through.
+   * One <img> per driverPhotoKey is kept and moved into each redrawn avatar, so a poll (or a redrawn
+   * card) neither re-downloads nor flashes it. A new key makes a new <img>; the same key with a new
+   * signed URL is tried again only if the first one failed.
+   */
+  var photos = {};   // key -> { node, url, failed }
+  function photoFor(url, key) {
+    if (typeof url !== 'string' || !/^https:\/\/[^\s]+$/i.test(url)) return null;
+    var id = typeof key === 'string' && key ? key : url;
+    var kept = photos[id];
+    if (kept && !(kept.failed && kept.url !== url)) return kept;
+    var node = document.createElement('img');
+    node.setAttribute('referrerpolicy', 'no-referrer');
+    node.setAttribute('alt', '');
+    node.setAttribute('decoding', 'async');
+    node.className = 'avatar-photo';
+    var entry = { node: node, url: url, failed: false, id: id };
+    node.onerror = function () { entry.failed = true; node.style.display = 'none'; };
+    node.src = url;
+    photos[id] = entry;
+    return entry;
+  }
+  /**
+   * "4.8 ★ · 120 rides" under a driver's name. No rating: "120 rides". No count: the rating only. Neither: ''. Zero rides: "New driver".
+   * The count is driverRidesCompleted when the server sends it, else the older totalRides.
+   */
+  function driverStats(rating, completed, total) {
+    var stars = Number(rating) > 0 ? Number(rating).toFixed(1) + ' ★' : '';
+    var count = [completed, total].map(function (n) { return typeof n === 'number' && isFinite(n) && n >= 0 ? Math.floor(n) : null; })
+      .filter(function (n) { return n !== null; })[0];
+    // A driver with no rides yet: "New driver" (or just the rating when there is one).
+    var rides = count === undefined ? '' : count === 0 ? (stars ? '' : 'New driver') : count + (count === 1 ? ' ride' : ' rides');
+    return [stars, rides].filter(Boolean).join(' · ');
+  }
+  /** The avatar's initials, and the photo over them when there is one. Safe to call at every poll. */
+  function setAvatar(node, text, url, key, label) {
+    // The circle is named for screen readers (the driver); the picture itself stays alt="".
+    node.setAttribute('aria-label', label || 'Driver');
+    var photo = photoFor(url, key);
+    var wanted = photo && !photo.failed ? photo.id : '';
+    if (node.dataset.initials !== text) {
+      // Setting the text removes anything inside the circle, the photo too.
+      node.textContent = text;
+      node.dataset.initials = text;
+      node.dataset.photoKey = '';
+      node.photoNode = null;
+    }
+    if (photo && photo.failed && node.photoNode === photo.node) wanted = '';
+    if ((node.dataset.photoKey || '') === wanted && (wanted === '' || (node.photoNode === photo.node && photo.node.parentNode === node))) return;
+    if (node.photoNode && node.photoNode.parentNode === node) node.removeChild(node.photoNode);
+    node.photoNode = null;
+    node.dataset.photoKey = wanted;
+    if (!wanted) return;
+    node.appendChild(photo.node);
+    node.photoNode = photo.node;
   }
   var SVG_NS = 'http://www.w3.org/2000/svg';
   /** A small line icon: the paths drawn with the current colour. */
@@ -513,6 +572,8 @@
     // Put away without an answer: no search starts.
     if (askingAuto) { var auto = askingAuto; askingAuto = null; auto(null); }
     if (askingRoute) { var routeAnswer = askingRoute; askingRoute = null; routeAnswer(null); }
+    // Backed out of the add-money step for a route change: the server drops it, the trip stays as it was.
+    if (routeAdd) { routeAdd = null; track('route_add_backed_out'); api('POST', '/ride-page/trip-route/cancel').catch(function () { /* it lapses by itself */ }); }
   }
 
   /**
@@ -601,9 +662,19 @@
   function addStepOpen() { return !W.$('sheet-pay').hidden && !W.$('pay-add').hidden; }
 
   function sheetPutAway() {
-    var leftAdd = addStepOpen();
-    var leftPay = !W.$('sheet-pay').hidden;
-    noteSheetLeft();
+    // The add-money step of a route change is not a driver's pay sheet: closing it cancels the change (hideSheets).
+    var forRoute = Boolean(routeAdd);
+    var leftAdd = addStepOpen() && !forRoute;
+    var leftPay = !W.$('sheet-pay').hidden && !forRoute;
+    if (!forRoute) noteSheetLeft();
+    if (forRoute) {
+      // As the app: back to the trip. navHome puts the sheet away (hideSheets cancels once) and steps the history back once for all.
+      navHome();
+      render();
+      paying = null;
+      payWith = null;
+      return;
+    }
     closeSheets();
     if (leftAdd) keepLooking(paying && paying.key);
     if (leftPay) payingClose();
@@ -1432,18 +1503,28 @@
       var extra = quote ? Math.round(Number(quote.extraNgn) || 0) : 0;
       if (!quote || extra === 0) return sendRoute(destination, stops, fare, button, attempt);
       done();
-      return askRoutePrice(fare, extra).then(function (yes) {
-        if (yes === null) return;   // put away: Change your route stays as it is
-        track('route_price_answered', { yes: yes, extraNgn: extra });
-        if (!yes) return;   // "Keep my trip": already back on the trip
-        if (busy) return;
-        busy = true;
-        button.className = 'btn primary busy';
-        return sendRoute(destination, stops, fare, button, attempt);
-      });
+      return priceThenSend(destination, stops, fare, extra, button, attempt);
     }).catch(function (error) {
+      if (!W.$('sheet-route-price').hidden) closeSheets();
       routeFailed(error);
       done();
+    });
+  }
+  /** The price asked about; "Update route" sends the change at that price. */
+  function priceThenSend(destination, stops, fare, extra, button, attempt) {
+    return askRoutePrice(fare, extra).then(function (yes) {
+      if (yes === null) return;   // put away: Change your route stays as it is
+      track('route_price_answered', { yes: yes, extraNgn: extra });
+      if (!yes) return;   // "Keep my trip": already back on the trip
+      if (busy) { closeSheets(); return; }
+      busy = true;
+      button.className = 'btn primary busy';
+      return sendRoute(destination, stops, fare, button, attempt).catch(function (error) {
+        closeSheets();
+        routeFailed(error);
+        busy = false;
+        button.className = 'btn primary';
+      });
     });
   }
   function sendRoute(destination, stops, fare, button, attempt) {
@@ -1456,10 +1537,193 @@
       navHome();
       apply(next);
     }, function (error) {
-      // The fare moved between the quote and the change: quoted again, asked again (once).
-      if (error.code === 'PRICE_CHANGED' && attempt < 1) return changeRoute(destination, stops, button, attempt + 1);
+      var info = error.body || {};
+      // The fare moved between the quote and the change: the new price is shown, asked again (once).
+      if (error.code === 'PRICE_CHANGED' && attempt < 1) {
+        var now = Math.round(Number(info.fareNgn));
+        if (now > 0) {
+          var more = Math.round(Number(info.extraNgn) || 0);
+          // Sent unasked only when it is the very fare the rider accepted; a different fare is always asked, whatever the extra.
+          if (now === fare) return sendRoute(destination, stops, now, button, attempt + 1);
+          busy = false;
+          button.className = 'btn primary';
+          return priceThenSend(destination, stops, now, more, button, attempt + 1);
+        }
+        return changeRoute(destination, stops, button, attempt + 1);
+      }
+      // The wallet cannot hold the new price: the add-money step. Nothing moves until the money lands.
+      if (error.code === 'WALLET_SHORT' && Number(info.neededNgn) > 0 && fare !== null) {
+        busy = false;
+        button.className = 'btn primary';
+        return openRouteAdd(info, body);
+      }
       throw error;
     });
+  }
+
+  /* ── a route change the wallet cannot hold yet: Add ₦X, the change goes to the driver when the money lands ── */
+
+  // The route change waiting on money: { body (what to send again), wantedSig/baseSig (route addresses, for a server with no routePending),
+  // fareNgn, neededNgn, sendNgn (fee in, from the server), topupSendNgn, balanceNgn, until, account, askedAt, lastTry, trying, loading, sawPending, goneLooks }.
+  var routeAdd = null;
+  var ROUTE_RETRY_GAP_MS = 8000;
+  function routeSig(destAddress, stopAddresses) { return JSON.stringify([destAddress || '', (stopAddresses || []).map(function (a) { return a || ''; })]); }
+  /** 'loading' (the bank is opening it), 'ready', or 'failed' (the look-up failed: tried again at the next look). */
+  function showAccount(mode, account) {
+    W.show(W.$('pay-loading'), mode === 'loading');
+    W.show(W.$('pay-details'), mode === 'ready');
+    W.show(W.$('pay-failed'), mode === 'failed');
+    W.show(W.$('pay-waiting'), mode === 'ready');
+    if (mode !== 'ready') return;
+    var digits = String(account.accountNumber || '');
+    W.$('pay-bank').textContent = account.bankName;
+    // 4-3-3, as the app; the copy button takes the plain digits.
+    W.$('pay-number').textContent = /^\d{10}$/.test(digits) ? digits.slice(0, 4) + ' ' + digits.slice(4, 7) + ' ' + digits.slice(7) : digits;
+    W.$('pay-name').textContent = account.accountName;
+    W.$('pay-copy').onclick = function () {
+      track('account_copied');
+      W.copy(digits).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
+    };
+  }
+  function fillAccount(account) { showAccount(account ? 'ready' : 'loading', account); }
+  function drawRouteAdd() {
+    var r = routeAdd;
+    if (!r) return;
+    // The server's figure with the fee in (402 body, routePending), else the top-up's, else what is short.
+    W.$('add-title').textContent = 'Add ' + W.naira(r.sendNgn || r.topupSendNgn || r.neededNgn);
+    W.$('add-sub').textContent = 'New fare ' + W.naira(r.fareNgn);
+  }
+  /** The deposit account (the same figure to send as the pay sheet's); asked again while the bank is still opening it. */
+  function loadRouteAccount() {
+    var r = routeAdd;
+    if (!r || r.loading) return;
+    r.loading = true;
+    r.askedAt = Date.now();
+    api('GET', '/ride-page/topup?amount=' + encodeURIComponent(r.neededNgn)).then(function (info) {
+      if (routeAdd !== r) return;
+      r.account = info && info.account ? info.account : null;
+      fillAccount(r.account);
+      if (info && Number(info.sendNgn) > 0) r.topupSendNgn = Math.round(Number(info.sendNgn));
+      drawRouteAdd();
+    }).catch(function () {
+      if (routeAdd === r && !r.account) showAccount('failed');   // asked again at a later look
+    }).then(function () { r.loading = false; });
+  }
+  function openRouteAdd(info, body) {
+    var until = Date.parse(info.pendingUntil);
+    var wanted = routeSig(body.destination && body.destination.address, (body.stops || []).map(function (stop) { return stop.address; }));
+    var base = state && state.route ? routeSig(state.route.destAddress, state.route.stopAddresses) : null;
+    track('route_wallet_short_shown', { neededNgn: Number(info.neededNgn) });
+    showPayPart('add');
+    openSheet('sheet-pay');
+    routeAdd = {
+      body: body, wantedSig: wanted, baseSig: base,
+      fareNgn: Math.round(Number(info.fareNgn) || body.acceptedFareNgn), neededNgn: Math.round(Number(info.neededNgn)),
+      balanceNgn: Number(info.balanceNgn) || 0, until: isFinite(until) ? until : 0,
+      sendNgn: Number(info.sendNgn) > 0 ? Math.round(Number(info.sendNgn)) : 0, topupSendNgn: 0,
+      account: null, askedAt: 0, lastTry: 0, trying: false, loading: false
+    };
+    drawRouteAdd();
+    fillAccount(null);
+    loadRouteAccount();
+  }
+  /** Every look while the add-money step shows: applied, dropped, or the money may be in (try the same change again). */
+  function watchRouteAdd(s) {
+    var r = routeAdd;
+    if (!r) return;
+    // routeAdd goes first so the sheet being put away sends no cancel. navHome steps the history back once for the screens and the sheet.
+    function leave() { routeAdd = null; navHome(); }
+    if (s.phase !== 'confirmed') { routeAdd = null; return; }   // the trip ended: applyState's navHome puts the sheet away
+    var sig = s.route ? routeSig(s.route.destAddress, s.route.stopAddresses) : null;
+    var moved = sig !== null && sig === r.wantedSig && sig !== r.baseSig;
+    var pending = s.routePending && typeof s.routePending === 'object' ? s.routePending : null;
+    if (pending) {
+      // The server still holds the change: the sheet stays. Its figures are the server's.
+      r.sawPending = true;
+      r.goneLooks = 0;
+      var need = Math.round(Number(pending.neededNgn));
+      if (need > 0 && need !== r.neededNgn) { r.neededNgn = need; r.account = null; r.topupSendNgn = 0; r.askedAt = 0; }
+      r.sendNgn = Number(pending.sendNgn) > 0 ? Math.round(Number(pending.sendNgn)) : 0;
+      if (Number(pending.fareNgn) > 0) r.fareNgn = Math.round(Number(pending.fareNgn));
+      var until = Date.parse(pending.pendingUntil);
+      if (isFinite(until)) r.until = until;
+      drawRouteAdd();
+      if (!r.account && Date.now() - r.askedAt >= ROUTE_RETRY_GAP_MS) loadRouteAccount();
+      // Money in: the same change, the same price, once more.
+      if (need === 0 && !r.trying && Date.now() - r.lastTry >= ROUTE_RETRY_GAP_MS) retryRoute();
+      return;
+    }
+    if (moved) {
+      // The deposit landed and the server made the change itself.
+      track('route_applied_after_deposit');
+      leave();
+      return;
+    }
+    if (r.sawPending) {
+      // The marker went and the route has not moved yet: give it a look or two to land.
+      r.goneLooks = (r.goneLooks || 0) + 1;
+      if (r.goneLooks > 2) {
+        track('route_pending_gone');
+        leave();
+        say('Route not changed');
+      }
+      return;
+    }
+    // A server with no marker: not applied by the time it lapses, so the server dropped it and the trip is as it was.
+    if (r.until && Date.now() > r.until) {
+      track('route_pending_lapsed');
+      leave();
+      say('Route not changed');
+      return;
+    }
+    if (!r.account && Date.now() - r.askedAt >= ROUTE_RETRY_GAP_MS) loadRouteAccount();
+    // The wallet now covers what was short: the same change, the same price, once more.
+    if (typeof s.balanceNgn === 'number' && s.balanceNgn + 0.004 >= r.balanceNgn + r.neededNgn && !r.trying && Date.now() - r.lastTry >= ROUTE_RETRY_GAP_MS) retryRoute();
+  }
+  function retryRoute() {
+    var r = routeAdd;
+    if (!r) return;
+    r.trying = true;
+    r.lastTry = Date.now();
+    api('POST', '/ride-page/trip-route', r.body).then(function (next) {
+      if (routeAdd !== r) return;
+      track('route_retry_applied');
+      routeAdd = null;
+      navHome();
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) { routeAdd = null; return dead(error); }
+      if (routeAdd !== r) return;
+      var info = error.body || {};
+      if (error.code === 'WALLET_SHORT' && Number(info.neededNgn) > 0) {
+        r.neededNgn = Math.round(Number(info.neededNgn));
+        r.sendNgn = Number(info.sendNgn) > 0 ? Math.round(Number(info.sendNgn)) : 0;
+        r.topupSendNgn = 0;
+        r.balanceNgn = Number(info.balanceNgn) || r.balanceNgn;
+        r.fareNgn = Math.round(Number(info.fareNgn)) || r.fareNgn;
+        var until = Date.parse(info.pendingUntil);
+        if (isFinite(until)) r.until = until;
+        drawRouteAdd();
+        r.account = null;
+        loadRouteAccount();
+      } else if (error.code === 'PRICE_CHANGED' && Number(info.fareNgn) > 0) {
+        // The price moved while waiting: the sheet goes (the old change is dropped), the new price is asked.
+        var body = r.body;
+        var now = Math.round(Number(info.fareNgn));
+        var more = Math.round(Number(info.extraNgn) || 0);
+        routeAdd = null;   // the old change lapses by itself; no cancel here
+        closeSheets();
+        if (now === body.acceptedFareNgn) sendRoute(body.destination, body.stops, now, W.$('plan-go'), 1).catch(routeFailed);
+        else priceThenSend(body.destination, body.stops, now, more, W.$('plan-go'), 1);
+      } else if (error.status === 409 || error.status === 404) {
+        // The trip moved on: closed, and the next look shows where it is.
+        routeAdd = null;
+        if (error.message) say(error.message, error.code === 'ROUTE_CANCELLED' ? undefined : 'bad');
+        navHome();
+        refresh();
+      }
+      // Anything else (no answer): it stays, and a later look tries again.
+    }).then(function () { r.trying = false; });
   }
   function routeFailed(error) {
     if (linkDead(error)) return dead(error);
@@ -1467,7 +1731,7 @@
     W.$('plan-err').textContent = error.message;
     W.show(W.$('plan-err'), true);
     // The trip moved on (it ended, or was cancelled): the next look shows where it is.
-    if (error.status === 409 || error.status === 404) refresh();
+    if (error.status === 409 || error.status === 404) { say(error.message, 'bad'); refresh(); }
   }
 
   /** "₦X more will be held" / "₦X less will be held", the new fare under it: true, false, or null when put away. */
@@ -1475,18 +1739,27 @@
   function askRoutePrice(fare, extra) {
     return new Promise(function (resolve) {
       openSheet('sheet-route-price');
-      W.$('rp-title').textContent = W.naira(Math.abs(extra)) + (extra > 0 ? ' more' : ' less') + ' will be held';
-      W.$('rp-text').textContent = fare ? 'New fare ' + W.naira(fare) + '.' : '';
-      W.show(W.$('rp-text'), Boolean(fare));
+      var line = extra === 0 ? '' : W.naira(Math.abs(extra)) + (extra > 0 ? ' more will be held' : ' back to your wallet');
+      W.$('rp-title').textContent = fare ? 'New fare ' + W.naira(fare) : line;
+      W.$('rp-text').textContent = fare ? line : '';
+      W.show(W.$('rp-text'), Boolean(fare && line));
+      // A fresh question (or the new price on the same open sheet): not busy.
+      W.$('rp-yes').className = 'btn primary';
+      W.$('rp-no').disabled = false;
       askingRoute = resolve;
     });
   }
   function answerRoute(yes) {
     var answer = askingRoute;
     askingRoute = null;
-    // "Keep my trip": back to the trip, the sheet's and the screen's history entries together.
-    if (yes) closeSheets();
-    else { navHome(); render(); }
+    if (yes) {
+      // The sheet stays open, busy, until the change settles (the caller closes it or asks again).
+      W.$('rp-yes').className = 'btn primary busy';
+      W.$('rp-no').disabled = true;
+    } else {
+      // "Keep my trip": back to the trip, the sheet's and the screen's history entries together.
+      navHome(); render();
+    }
     if (answer) answer(yes);
   }
   W.$('rp-yes').addEventListener('click', function () { answerRoute(true); });
@@ -2433,6 +2706,7 @@
     if (!addFor || !paying || paying.key !== addFor.key || !addStepOpen()) { if (!addStepOpen()) addFor = null; return; }
     var offer = (s.offers || []).filter(function (o) { return o.key === addFor.key; })[0];
     if (!offer) return;   // gone: handled above, with "offer ended"
+    loadOfferAccount();
     if (Math.round(offer.priceNgn) !== Math.round(addFor.fareNgn)) {
       // The figure to send is wrong now: let that choice go, and show the new price.
       var key = addFor.key;
@@ -2589,11 +2863,14 @@
       var card = el('div', 'offer' + (index === 0 && !asDeclined && !isPaying ? ' featured' : '') + (isNew ? ' in' : '') + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
       var top = el('div', 'offer-top');
       var name = offer.driverName || 'Driver';
-      top.appendChild(el('div', 'avatar', initials(name)));
+      var face = el('div', 'avatar', initials(name));
+      setAvatar(face, initials(name), offer.driverPhotoUrl, offer.driverPhotoKey, offer.driverName);
+      top.appendChild(face);
       var who = el('div', 'who');
       who.appendChild(el('strong', '', name));
+      var stats = driverStats(offer.rating, offer.driverRidesCompleted, offer.totalRides);
+      if (stats) who.appendChild(el('span', 'who-stats', stats));
       who.appendChild(el('span', '', [
-        offer.rating ? Number(offer.rating).toFixed(1) + ' rating' : '',
         offer.vehicle || '',
         offer.etaMin ? minutes(offer.etaMin) + ' away' : ''
       ].filter(Boolean).join(' · ')));
@@ -2758,19 +3035,28 @@
     addFor = { key: offer.key, fareNgn: Number(info.fareNgn) || offer.priceNgn, name: offer.driverName || '', coveredLooks: 0, lastLookAt: 0 };
     W.$('add-title').textContent = 'Add ' + W.naira(info.sendNgn);
     W.$('add-sub').textContent = 'Fare ' + W.naira(info.fareNgn) + ' · wallet ' + W.naira(info.balanceNgn);
-    var account = info.account;
-    W.show(W.$('pay-wait-account'), !account);
-    W.$('pay-bank').textContent = account ? account.bankName : '—';
-    W.$('pay-number').textContent = account ? account.accountNumber : '—';
-    W.$('pay-name').textContent = account ? account.accountName : '—';
-    W.$('pay-copy').onclick = function () {
-      if (!account) return;
-      track('account_copied');
-      W.copy(account.accountNumber).then(function () { W.$('pay-copy').textContent = 'Copied'; setTimeout(function () { W.$('pay-copy').textContent = 'Copy'; }, 1800); });
-    };
+    fillAccount(info.account);
+    // The bank may still be opening the account (null): asked for, and again at later looks, 8 s apart.
+    addFor.account = info.account || null;
+    addFor.shortNgn = Number(info.shortNgn) > 0 ? Math.round(Number(info.shortNgn)) : Math.round(Number(info.sendNgn)) || 0;
+    addFor.askedAt = 0;
     showPayPart('add');
     openSheet('sheet-pay');
     payingOpenFor(offer.key);
+    loadOfferAccount();
+  }
+  function loadOfferAccount() {
+    var a = addFor;
+    if (!a || a.account || a.loading || !(a.shortNgn > 0) || Date.now() - a.askedAt < ROUTE_RETRY_GAP_MS) return;
+    a.loading = true;
+    a.askedAt = Date.now();
+    api('GET', '/ride-page/topup?amount=' + encodeURIComponent(a.shortNgn)).then(function (info) {
+      if (addFor !== a) return;
+      a.account = info && info.account ? info.account : null;
+      if (a.account) fillAccount(a.account);
+    }).catch(function () {
+      if (addFor === a && !a.account) showAccount('failed');
+    }).then(function () { a.loading = false; });
   }
 
   function drawConfirming() {
@@ -3064,11 +3350,11 @@
     var driver = s.driver || {};
     var name = (driver.name || '').trim();
     var first = firstName(name);
-    W.$('fd-initial').textContent = name ? initials(name) : 'W';
+    setAvatar(W.$('fd-initial'), name ? initials(name) : 'W', driver.driverPhotoUrl, driver.driverPhotoKey, name);
     W.$('fd-title').textContent = first ? first + ' is your driver' : 'Your driver is confirmed';
-    var rated = Number(driver.rating) > 0;
-    W.show(W.$('fd-rating'), rated);
-    W.$('fd-rating').textContent = rated ? Number(driver.rating).toFixed(1) + ' rating' : '';
+    var stats = driverStats(driver.rating, driver.driverRidesCompleted, driver.totalRides);
+    W.show(W.$('fd-rating'), Boolean(stats));
+    W.$('fd-rating').textContent = stats;
     var fare = driver.fareNgn || s.offerNgn;
     W.show(W.$('fd-price'), fare > 0);
     W.$('fd-fare').textContent = W.naira(fare);
@@ -3209,7 +3495,7 @@
     W.$('trip-title').textContent = status === 'IN_PROGRESS' ? 'Heading to ' + (dest || 'your destination')
       : status === 'ARRIVED' ? first + ' has arrived'
       : first + ' is on the way';
-    W.$('d-initial').textContent = initials(name);
+    setAvatar(W.$('d-initial'), initials(name), driver.driverPhotoUrl, driver.driverPhotoKey, driver.name);
     W.$('d-name').textContent = name + (driver.rating ? ' · ' + Number(driver.rating).toFixed(1) : '');
     W.$('d-fare').textContent = W.naira(driver.fareNgn || s.offerNgn);
     W.$('d-vehicle').textContent = driver.vehicle || '';
@@ -3516,6 +3802,7 @@
     if (shownView === 'expired' || shownView === 'fatal') return;
     var before = state && state.phase;
     state = next;
+    if (routeAdd) watchRouteAdd(next);
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;
     // Booked, cancelled or ended under an open pay sheet: the driver's card is let go.

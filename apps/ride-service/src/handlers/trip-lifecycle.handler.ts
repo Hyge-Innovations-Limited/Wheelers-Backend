@@ -1,5 +1,5 @@
 import { GoogleMapsRoutePlanner } from '@wheleers/config';
-import { DriverStatus, driverClient, rideClient } from '@wheleers/db';
+import { DriverStatus, PRICE_CHANGEABLE_STATUSES, driverClient, rideClient } from '@wheleers/db';
 import type { MessageContext } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 
@@ -10,11 +10,9 @@ export type TripLifecycleHandler = {
   handleRideEvent(value: unknown, ctx: MessageContext): Promise<void>;
 };
 
-const LIVE_STATUSES = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
-
 /** A trip still running and, for a driver's action, still that driver's (a bail or completion may have come between). */
 function isLiveFor(ride: { status: unknown; driverId: string | null } | null | undefined, driverId: string | undefined): boolean {
-  if (!ride || !LIVE_STATUSES.includes(String(ride.status))) return false;
+  if (!ride || !PRICE_CHANGEABLE_STATUSES.includes(ride.status as never)) return false;
   return driverId === undefined || ride.driverId === driverId;
 }
 
@@ -115,12 +113,18 @@ export function createTripLifecycleHandler(params?: {
 
       if (event.eventType === 'RIDE_ROUTE_UPDATE_REQUESTED') {
         try {
-          // An unpriced change (no accepted quote) moves the route but never the fare: the trip
-          // keeps the agreed price, so the hold cannot be lowered by re-planning the rest of it.
+          // The ride is read again here: a trip that has ended, or a driver who is no longer its driver, changes nothing.
           const current = await rideClient.findById(event.rideId);
           if (!isLiveFor(current, event.updatedBy === 'driver' ? event.driverId : undefined)) return;
+          // STOP_FIXED_PRICE_ENABLED: only the rider's accepted fare can become the agreed fare. Anything else
+          // (an older app, the driver) moves the route but never the fare: the trip keeps the agreed price,
+          // so the hold cannot be lowered by re-planning the rest of it.
+          const formulaPriced = event.acceptedFareNgn !== undefined && event.updatedBy === 'rider';
+          const acceptedFareNgn = formulaPriced ? Math.round(event.acceptedFareNgn as number) : undefined;
           const agreedFareNgn = current?.agreedFareNgn != null ? Number(current.agreedFareNgn) : undefined;
           const unpricedFare = agreedFareNgn !== undefined && agreedFareNgn > 0 ? agreedFareNgn : undefined;
+          // The stops as they were, only to say what a priced change did.
+          const before = formulaPriced ? await rideClient.findRouteStops(event.rideId).catch(() => []) : [];
           const planned =
             event.plannedDistanceKm !== undefined &&
             event.plannedDurationSeconds !== undefined &&
@@ -134,12 +138,61 @@ export function createTripLifecycleHandler(params?: {
               : await planUpdatedRoute(event.rideId, event.destination, event.stops);
           const plannedRoute = planned && unpricedFare !== undefined ? { ...planned, fareEstimateNgn: Math.max(planned.fareEstimateNgn, unpricedFare) } : planned;
           const keepFare = unpricedFare !== undefined ? Math.max(unpricedFare, event.fareEstimateNgn ?? 0) : event.fareEstimateNgn;
+          // A priced change stores exactly the fare the rider accepted (it may be lower: a stop removed).
+          // STOP_FIXED_PRICE_ENABLED marks an unpriced rider change by carrying plannedTotalKm: it keeps the agreed fare
+          // whatever the replanned route would cost (an older app sends no plan, so ride-service would plan it itself).
+          const keepsAgreed = acceptedFareNgn === undefined && event.plannedTotalKm !== undefined && event.updatedBy === 'rider';
+          const fareOut = acceptedFareNgn !== undefined ? acceptedFareNgn : (keepsAgreed ? keepFare : (plannedRoute?.fareEstimateNgn ?? keepFare));
 
           const routeStops = await rideClient.syncRouteStops(event.rideId, {
             destination: event.destination,
             stops: event.stops,
-            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? keepFare,
+            fareEstimateNgn: fareOut,
+            ...(acceptedFareNgn !== undefined ? { agreedFareNgn: acceptedFareNgn } : {}),
+            // Priced: the km the new fare is for. Unpriced (STOP_FIXED_PRICE_ENABLED): the planned km moved by the change in the road
+            // left, so the distance already driven is kept.
+            ...(event.plannedTotalKm !== undefined && (acceptedFareNgn !== undefined || event.updatedBy === 'rider') ? { plannedDistanceKm: event.plannedTotalKm } : {}),
+            ...(event.baseAgreedFareNgn !== undefined
+              ? { base: { agreedFareNgn: event.baseAgreedFareNgn, plannedDistanceKm: event.basePlannedKm ?? null, doneStops: event.baseDoneStops } }
+              : {}),
           });
+          if (!routeStops) {
+            const now = await rideClient.findById(event.rideId).catch(() => null);
+            // The same change delivered again after it was made: the ride already has this fare and km (priced), or this
+            // route and planned km (unpriced). It is done.
+            const at6 = (p: { lat: number; lng: number }) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
+            const routeNow = (now?.routeStops ?? []).filter((st) => st.status === 'PENDING').sort((x, y) => x.stopOrder - y.stopOrder).map(at6).join('|');
+            const sameKm = event.plannedTotalKm === undefined || Math.abs(Number(now?.plannedDistanceKm) - event.plannedTotalKm) < 1e-6;
+            const alreadyMade = acceptedFareNgn !== undefined
+              ? !!now && Math.round(Number(now.agreedFareNgn)) === acceptedFareNgn && sameKm
+              : !!now && event.plannedTotalKm !== undefined && sameKm && routeNow === [...event.stops, event.destination].map(at6).join('|');
+            if (now && alreadyMade) {
+              console.info('[ride-service] priced route change already made: sending its update again', { rideId: event.rideId });
+              // The first delivery may have died between the commit and the publish: say it again (consumers cope with a repeat).
+              await publishRouteUpdatedSnapshot({
+                rideId: event.rideId, riderId: event.riderId, driverId: event.driverId,
+                fareEstimateNgn: acceptedFareNgn ?? Number(now.agreedFareNgn ?? now.fareEstimateNgn), agreedFareNgn: acceptedFareNgn ?? Number(now.agreedFareNgn ?? now.fareEstimateNgn), priced: acceptedFareNgn !== undefined,
+                updatedBy: event.updatedBy, routeStops: now.routeStops,
+              });
+              return;
+            }
+            console.warn('[ride-service] priced route change skipped: the ride changed since it was priced', { rideId: event.rideId });
+            // The gateway may already have raised the hold for it: say how the ride really stands, so the hold
+            // goes back to the agreed fare and the rider's screen to the real route.
+            const agreed = now?.agreedFareNgn ?? now?.fareEstimateNgn;
+            if (now) {
+              await publishRouteUpdatedSnapshot({
+                rideId: event.rideId,
+                riderId: event.riderId,
+                driverId: event.driverId,
+                updatedBy: 'system',
+                routeStops: now.routeStops,
+                ...(agreed != null ? { fareEstimateNgn: Number(agreed), agreedFareNgn: Number(agreed) } : {}),
+                reverted: true,
+              });
+            }
+            return;
+          }
           syncRouteState(event.rideId, routeStops);
           await publishRouteUpdatedSnapshot({
             rideId: event.rideId,
@@ -147,11 +200,13 @@ export function createTripLifecycleHandler(params?: {
             driverId: event.driverId,
             plannedDistanceKm: plannedRoute?.distanceKm ?? event.plannedDistanceKm,
             plannedDurationSeconds: plannedRoute?.durationSeconds ?? event.plannedDurationSeconds,
-            fareEstimateNgn: plannedRoute?.fareEstimateNgn ?? keepFare,
-            priced: event.priced === true,
+            fareEstimateNgn: fareOut,
+            priced: event.priced === true || acceptedFareNgn !== undefined,
             route: plannedRoute?.geometry ?? event.route,
             updatedBy: event.updatedBy,
             routeStops,
+            ...(acceptedFareNgn !== undefined ? { agreedFareNgn: acceptedFareNgn } : {}),
+            ...(acceptedFareNgn !== undefined ? { change: describeRouteChange(before, routeStops) } : {}),
           });
         } catch (err) {
           console.warn(`[ride-service] route update skipped:`, (err as any)?.message ?? err);
@@ -311,6 +366,9 @@ export function createTripLifecycleHandler(params?: {
     };
     priced?: boolean;
     updatedBy: 'rider' | 'driver' | 'system';
+    agreedFareNgn?: number;
+    change?: 'stop_added' | 'stop_removed' | 'destination_changed' | 'route_changed';
+    reverted?: boolean;
     routeStops: Array<{
       id: string;
       stopOrder: number;
@@ -364,8 +422,11 @@ export function createTripLifecycleHandler(params?: {
       plannedDistanceKm: params.plannedDistanceKm,
       plannedDurationSeconds: params.plannedDurationSeconds,
       fareEstimateNgn: params.fareEstimateNgn,
-      route: params.route,
+      ...(params.agreedFareNgn !== undefined ? { agreedFareNgn: params.agreedFareNgn } : {}),
+      ...(params.change ? { change: params.change } : {}),
+      ...(params.reverted ? { reverted: true } : {}),
       priced: params.priced,
+      route: params.route,
       updatedBy: params.updatedBy,
       timestamp: new Date().toISOString(),
     });
@@ -455,6 +516,22 @@ function resolveDurationSeconds(startedAt: Date | null, completedAt: Date): numb
 
   const deltaMs = completedAt.getTime() - startedAt.getTime();
   return Math.max(0, Math.round(deltaMs / 1000));
+}
+
+type StopRow = { type: string; status: string; lat: number; lng: number };
+
+/** What a route change did, for the driver's "new stop" line: stops still ahead, before and after. */
+function describeRouteChange(before: StopRow[], after: StopRow[]): 'stop_added' | 'stop_removed' | 'destination_changed' | 'route_changed' {
+  const ahead = (rows: StopRow[]) => rows.filter((s) => s.status === 'PENDING');
+  const b = ahead(before);
+  const a = ahead(after);
+  if (a.length > b.length) return 'stop_added';
+  if (a.length < b.length) return 'stop_removed';
+  const fin = (rows: StopRow[]) => rows.find((s) => s.type === 'FINAL');
+  const fb = fin(b);
+  const fa = fin(a);
+  if (fb && fa && (fb.lat !== fa.lat || fb.lng !== fa.lng)) return 'destination_changed';
+  return 'route_changed';
 }
 
 function resolveFareNgn(params: {

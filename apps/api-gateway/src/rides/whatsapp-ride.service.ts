@@ -440,7 +440,7 @@ async function confirmOnce(
     // A hold left by an earlier attempt on this ride (this driver's) may carry a different fare.
     if (!hold.applied && hold.holdAmountNgn !== fareNgn) {
       const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: fareNgn });
-      if (!adjusted) throw new Error(`existing hold of ₦${hold.holdAmountNgn} could not be adjusted to ₦${fareNgn}`);
+      if (!adjusted || (!adjusted.applied && adjusted.holdAmountNgn !== fareNgn)) throw new Error(`existing hold of ₦${hold.holdAmountNgn} could not be adjusted to ₦${fareNgn}`);
     }
   } catch (error) {
     console.error('[ride-service] ride hold FAILED — rider could not pay', {

@@ -17,6 +17,9 @@ const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handle
 const { createTripLifecycleHandler } = require('../apps/ride-service/dist/handlers/trip-lifecycle.handler.js');
 const { createRideEventsConsumer } = require('../apps/wallet-service/dist/consumers/ride-events.consumer.js');
 
+const __quote = require('../apps/api-gateway/dist/rides/trip-route-quote.js');
+async function withFlag(on, fn) { const prev = __quote.stopFixedPriceEnabled(); __quote.setStopFixedPriceEnabled(on); try { return await fn(); } finally { __quote.setStopFixedPriceEnabled(prev); } }
+
 const prisma = new PrismaClient();
 const made = { users: [], rides: [], drivers: [] };
 const realConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
@@ -180,7 +183,7 @@ test('wallet-service backstop: an unpriced RIDE_ROUTE_UPDATED with a low estimat
   assert.equal(await holdOf(ride.id), HOLD);
 });
 
-test('the assigned driver changing the destination: the route moves, the hold is unchanged', async () => {
+test('the assigned driver changing the destination: the route moves, the hold is unchanged', () => withFlag(false, async () => {
   const { driver, ride, rider } = await trip('DRIVER_EN_ROUTE');
   const w = gateway();
   const auth = { userId: driver.userId, driverId: driver.driverId, role: 'DRIVER' };
@@ -193,9 +196,9 @@ test('the assigned driver changing the destination: the route moves, the hold is
   assert.equal(await holdOf(ride.id), HOLD);
   const stop = await prisma.rideStop.findFirst({ where: { rideId: ride.id, type: 'FINAL' } });
   assert.equal(stop.lat, IKEJA.lat, 'the destination did move');
-});
+}));
 
-test('a user with a driver record who is the ride\'s RIDER is the rider: the priced path still runs', async () => {
+test('a user with a driver record who is the ride\'s RIDER is the rider: the priced path still runs', () => withFlag(false, async () => {
   const { rider, ride } = await trip('IN_PROGRESS', 3000);
   const mine = await makeDriver();
   const w = gateway();
@@ -203,9 +206,9 @@ test('a user with a driver record who is the ride\'s RIDER is the rider: the pri
   const refused = await update(w, { rideId: ride.id, destination: IKEJA, stops: [], acceptedFareNgn: 4000 }, auth, planner(6000));
   assert.deepEqual([refused.type, refused.payload.reason, refused.payload.fareNgn], ['ride:route:update:rejected', 'PRICE_CHANGED', 6000]);
   assert.equal(w.events.length, 0);
-});
+}));
 
-test('the priced path still works: the hold moves to exactly the accepted price', async () => {
+test('the priced path still works: the hold moves to exactly the accepted price', () => withFlag(false, async () => {
   const { rider, ride } = await trip('IN_PROGRESS', 3000);
   const w = gateway();
   const auth = { userId: rider, role: 'RIDER' };
@@ -217,7 +220,7 @@ test('the priced path still works: the hold moves to exactly the accepted price'
   assert.equal(w.events[0].priced, true);
   await runServices(w.events[0]);
   assert.equal(await holdOf(ride.id), calculateRideFees(6000).totalNgn);
-});
+}));
 
 test('a ride that is not running (requested, completed, cancelled) is refused', async () => {
   for (const status of ['MATCHING', 'COMPLETED', 'CANCELLED']) {
@@ -229,7 +232,7 @@ test('a ride that is not running (requested, completed, cancelled) is refused', 
   }
 });
 
-test('ride:stop:confirm: the rider or assigned driver only, ids from the ride', async () => {
+test('ride:stop:confirm: the rider or assigned driver only, ids from the ride', () => withFlag(false, async () => {
   const { rider, driver, ride } = await trip('IN_PROGRESS');
   const stranger = await makeUser('RIDER');
   const w = gateway();
@@ -238,11 +241,11 @@ test('ride:stop:confirm: the rider or assigned driver only, ids from the ride', 
   await handleRideMessage('ride:stop:confirm', { rideId: ride.id, riderId: stranger, driverId: randomUUID() }, { userId: rider, role: 'RIDER' }, w.publisher, {}, w.redis);
   await handleRideMessage('ride:stop:confirm', { rideId: ride.id }, { userId: driver.userId, driverId: driver.driverId, role: 'DRIVER' }, w.publisher, {}, w.redis);
   assert.deepEqual(w.events.map((e) => [e.riderId, e.driverId, e.confirmedBy]), [[rider, driver.driverId, 'rider'], [rider, driver.driverId, 'driver']]);
-});
+}));
 
 const walletConsumer = () => createRideEventsConsumer({ walletRepository: walletClient, walletEventsProducer: new Proxy({}, { get: () => async () => {} }) });
 
-test('a priced re-quote of the unchanged route near the end cannot cut the hold; the driver is paid the full agreed fare even after the rider withdraws', async () => {
+test('a priced re-quote of the unchanged route near the end cannot cut the hold; the driver is paid the full agreed fare even after the rider withdraws', () => withFlag(false, async () => {
   const { rider, driver, ride } = await trip('IN_PROGRESS');
   const w = gateway();
   const auth = { userId: rider, role: 'RIDER' };
@@ -255,7 +258,7 @@ test('a priced re-quote of the unchanged route near the end cannot cut the hold;
   assert.equal(await balanceOf(rider), 0, 'nothing freed to withdraw');
   await walletConsumer().handle({ eventType: 'RIDE_COMPLETED', rideId: ride.id, riderId: rider, driverId: driver.driverId, driverUserId: driver.userId, fareNgn: AGREED, distanceKm: 3, durationSeconds: 600, paymentMethod: 'WALLET', endedBy: 'both_confirmed', completedAt: new Date().toISOString(), timestamp: new Date().toISOString() }, CTX);
   assert.equal(await balanceOf(driver.userId), calculateRideFees(AGREED).driverPayoutNgn);
-});
+}));
 
 test('wallet-service: no route event, priced or not, sets the hold below the agreed fare', async () => {
   const { rider, ride } = await trip();
@@ -264,7 +267,7 @@ test('wallet-service: no route event, priced or not, sets the hold below the agr
   assert.equal(await holdOf(ride.id), HOLD);
 });
 
-test('a priced ADD stop still raises the hold', async () => {
+test('a priced ADD stop still raises the hold', () => withFlag(false, async () => {
   const { rider, ride } = await trip('IN_PROGRESS', 3000);
   const w = gateway();
   const auth = { userId: rider, role: 'RIDER' };
@@ -273,7 +276,7 @@ test('a priced ADD stop still raises the hold', async () => {
   await update(w, { rideId: ride.id, destination: VI, stops: [IKEJA], acceptedFareNgn: 6000 }, auth, plan);
   await runServices(w.events[0]);
   assert.equal(await holdOf(ride.id), calculateRideFees(6000).totalNgn);
-});
+}));
 
 test('a wallet-side ride lookup failure leaves the hold unchanged', async () => {
   const { rider, ride } = await trip('IN_PROGRESS', 3000);
@@ -309,3 +312,71 @@ test('the route quote is refused on a ride that is not running, and is rate-limi
   }
   assert.equal(refused, 2);
 });
+
+// ── The same four, with STOP_FIXED_PRICE_ENABLED on: the formula prices, and the same route is refused.
+// (The stub planner prices any route at 6000; at 2 km planned, 2 km driven and 2 km left: 5200 x 2/4 + 6000 = 8600.)
+const FORMULA = 8600;
+
+test('flag ON: a user with a driver record who is the ride\'s RIDER is the rider; a wrong price is refused with the formula price', () => withFlag(true, async () => {
+  const { rider, ride } = await trip('IN_PROGRESS', 6000);
+  const mine = await makeDriver();
+  const w = gateway();
+  const refused = await update(w, { rideId: ride.id, destination: IKEJA, stops: [], acceptedFareNgn: 4000 }, { userId: rider, driverId: mine.driverId, role: 'BOTH' }, planner(6000));
+  assert.deepEqual([refused.type, refused.payload.reason, refused.payload.fareNgn], ['ride:route:update:rejected', 'PRICE_CHANGED', FORMULA]);
+  assert.equal(w.events.length, 0);
+}));
+
+test('flag ON: the priced path moves the hold to exactly the formula price, which becomes the agreed fare', () => withFlag(true, async () => {
+  const { rider, ride } = await trip('IN_PROGRESS', 6000);
+  const w = gateway();
+  const auth = { userId: rider, role: 'RIDER' };
+  const plan = planner(6000);
+  const q = await handleRideMessage('ride:route:quote', { rideId: ride.id, destination: IKEJA, stops: [] }, auth, w.publisher, plan, w.redis);
+  assert.equal(q.payload.fareNgn, FORMULA);
+  const done = await update(w, { rideId: ride.id, destination: IKEJA, stops: [], acceptedFareNgn: FORMULA }, auth, plan);
+  assert.equal(done.type, 'ride:route:update:accepted');
+  assert.equal(w.events[0].priced, true);
+  assert.equal(w.events[0].acceptedFareNgn, FORMULA);
+  await runServices(w.events[0]);
+  assert.equal(await holdOf(ride.id), calculateRideFees(FORMULA).totalNgn);
+  assert.equal(Number((await prisma.ride.findUnique({ where: { id: ride.id } })).agreedFareNgn), FORMULA);
+}));
+
+test('flag ON: re-quoting the route the trip already has is refused (no free reprice)', () => withFlag(true, async () => {
+  const { rider, ride } = await trip('IN_PROGRESS');
+  const w = gateway();
+  const auth = { userId: rider, role: 'RIDER' };
+  await assert.rejects(handleRideMessage('ride:route:quote', { rideId: ride.id, destination: VI, stops: [] }, auth, w.publisher, planner(1500), w.redis), /already have/);
+  await assert.rejects(update(w, { rideId: ride.id, destination: VI, stops: [], acceptedFareNgn: 1500 }, auth, planner(1500)), /already have/);
+  assert.equal(w.events.length, 0);
+  assert.equal(await holdOf(ride.id), HOLD);
+}));
+
+test('flag ON: a priced ADD stop raises the hold to the formula price', () => withFlag(true, async () => {
+  const { rider, ride } = await trip('IN_PROGRESS', 6000);
+  const w = gateway();
+  const auth = { userId: rider, role: 'RIDER' };
+  const plan = planner(6000);
+  await handleRideMessage('ride:route:quote', { rideId: ride.id, destination: VI, stops: [IKEJA] }, auth, w.publisher, plan, w.redis);
+  await update(w, { rideId: ride.id, destination: VI, stops: [IKEJA], acceptedFareNgn: FORMULA }, auth, plan);
+  await runServices(w.events[0]);
+  assert.equal(await holdOf(ride.id), calculateRideFees(FORMULA).totalNgn);
+}));
+
+test('flag ON: the driver cannot change the route at all; their stop confirm needs the car at the stop', () => withFlag(true, async () => {
+  const { rider, driver, ride } = await trip('IN_PROGRESS');
+  const w = gateway();
+  const dauth = { userId: driver.userId, driverId: driver.driverId, role: 'DRIVER' };
+  await assert.rejects(update(w, { rideId: ride.id, origin: YABA, destination: IKEJA, stops: [] }, dauth, planner(1500)), /Only the rider/);
+  // The car (6.5, 3.37) is kilometres from the stop (VI): refused. Moved to ~50 m from it, fresh: allowed.
+  await assert.rejects(handleRideMessage('ride:stop:confirm', { rideId: ride.id }, dauth, w.publisher, {}, w.redis), /not at the stop yet/);
+  await prisma.driver.update({ where: { id: driver.driverId }, data: { lat: VI.lat + 0.0004, lng: VI.lng, lastSeenAt: new Date() } });
+  await handleRideMessage('ride:stop:confirm', { rideId: ride.id }, dauth, w.publisher, {}, w.redis);
+  // No recent location: refused with a clear message.
+  await prisma.driver.update({ where: { id: driver.driverId }, data: { lastSeenAt: new Date(Date.now() - 5 * 60_000) } });
+  await assert.rejects(handleRideMessage('ride:stop:confirm', { rideId: ride.id }, dauth, w.publisher, {}, w.redis), /cannot see your location/);
+  assert.equal(w.events.length, 1);
+  // The rider's own confirm is not location-checked.
+  await handleRideMessage('ride:stop:confirm', { rideId: ride.id }, { userId: rider, role: 'RIDER' }, w.publisher, {}, w.redis);
+  assert.equal(w.events.length, 2);
+}));

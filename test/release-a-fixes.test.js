@@ -20,6 +20,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const __quote = require('../apps/api-gateway/dist/rides/trip-route-quote.js');
+// These tests encode today's (flag off) pricing: pinned whatever the run's flag.
+async function withRouteFlagOff(fn) { const prev = __quote.stopFixedPriceEnabled(); __quote.setStopFixedPriceEnabled(false); try { return await fn(); } finally { __quote.setStopFixedPriceEnabled(prev); } }
 const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
 
@@ -330,7 +333,7 @@ test('a price typed in the WhatsApp chat never keeps a yes (through the webhook)
 
 /* ── C3: a route change asks first ────────────────────────────────────── */
 
-test('trip route: the quote says what more is held, moves nothing; the change goes ahead only at that price, held exactly; 5 stops as in the app', async () => {
+test('trip route: the quote says what more is held, moves nothing; the change goes ahead only at that price, held exactly; 5 stops as in the app', () => withRouteFlagOff(async () => {
   const calls = { n: 0 };
   const w = world({ routePlanner: planner(6000, calls) });
   const { rider, ride } = await bookedTrip('IN_PROGRESS');
@@ -363,9 +366,9 @@ test('trip route: the quote says what more is held, moves nothing; the change go
 
   const stranger = await makeRider();
   assert.equal((await call(w.deps, stranger, 'POST', '/ride-page/trip-route/quote', { stops: [IKEJA] })).body.code, 'NO_TRIP');
-});
+}));
 
-test('the app\'s socket: ride:route:quote, and ride:route:update with acceptedFareNgn refused at another price; without it, as before', async () => {
+test('the app\'s socket: ride:route:quote, and ride:route:update with acceptedFareNgn refused at another price; without it, as before', () => withRouteFlagOff(async () => {
   const redis = memoryRedis();
   const events = [];
   const publisher = { publishRideEvent: async (e) => { events.push(e); } };
@@ -388,7 +391,7 @@ test('the app\'s socket: ride:route:quote, and ride:route:update with acceptedFa
 
   const stranger = await makeRider();
   await assert.rejects(handleRideMessage('ride:route:quote', { rideId: ride.id, destination: VI, stops: [] }, { userId: stranger, role: 'RIDER' }, publisher, plan, redis), /not yours/);
-});
+}));
 
 test('a route changed in the app: the trip\'s road on the page is the new one (RIDE_ROUTE_UPDATED)', async () => {
   const w = world();

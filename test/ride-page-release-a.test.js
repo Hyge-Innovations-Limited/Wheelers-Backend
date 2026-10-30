@@ -29,6 +29,9 @@ const { handleRidePageRoute } = require('../apps/api-gateway/dist/http/ride-page
 const { handleRideEvent, deliverPageCatchup, scheduledHeldText } = require('../apps/api-gateway/dist/kafka/consumer.js');
 const { sayRidePageEventInChat } = require('../apps/api-gateway/dist/whatsapp/ride-card.js');
 const { SCHEDULED_START_HELD_REASON } = require('../apps/api-gateway/dist/rides/scheduled-whatsapp.js');
+const __quote = require('../apps/api-gateway/dist/rides/trip-route-quote.js');
+// This test is about today's (flag off) pricing: pin it, whatever the run's flag.
+async function withRouteFlagOff(fn) { const prev = __quote.stopFixedPriceEnabled(); __quote.setStopFixedPriceEnabled(false); try { return await fn(); } finally { __quote.setStopFixedPriceEnabled(prev); } }
 const template = require('../apps/api-gateway/dist/whatsapp/scheduled-template.js');
 const { dispatchSingleRide } = require('../apps/ride-service/dist/handlers/scheduled-rides.handler.js');
 const { createRideRequestedConsumer } = require('../apps/ride-service/dist/consumers/ride-requested.consumer.js');
@@ -708,7 +711,7 @@ test('cancel during the trip is allowed (as in the app); with no driver yet it i
   assert.equal((await call(deps, searching, 'POST', '/ride-page/cancel-ride', { reason: 'My plans changed' })).body.code, 'NO_TRIP');
 });
 
-test('change a booked trip\'s route: the app\'s ride:route:update at the price the rider was shown (the driver is told)', async () => {
+test('change a booked trip\'s route: the app\'s ride:route:update at the price the rider was shown (the driver is told)', () => withRouteFlagOff(async () => {
   const { deps, events } = world();
   const { rider, driver, ride } = await bookedTrip('IN_PROGRESS');
 
@@ -741,7 +744,7 @@ test('change a booked trip\'s route: the app\'s ride:route:update at the price t
 
   const stranger = await makeRider();
   assert.equal((await call(deps, stranger, 'POST', '/ride-page/trip-route', { stops: [IKEJA], acceptedFareNgn: 5200 })).body.code, 'NO_TRIP');
-});
+}));
 
 test('the Emergency button raises the same alert as the ride card\'s SOS, once; "I\'m safe" withdraws it', async () => {
   const { deps } = world();

@@ -6,7 +6,7 @@ export { userClient }           from './clients/user.client';
 export { driverClient }         from './clients/driver.client';
 export { driverPresence, PRESENCE_FRESH_MS, DB_FLUSH_SECONDS } from './clients/driver-presence';
 export type { RedisSend, PresenceRecord, NearbyDriver } from './clients/driver-presence';
-export { rideClient, SEARCH_TIMED_OUT_REASON } from './clients/rider.client';
+export { rideClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from './clients/rider.client';
 export { driverLocationClient, shouldRecordPoint } from './clients/driver-location.client';
 export { driverShiftClient, SHIFT_STALE_AFTER_MS } from './clients/driver-shift.client';
 export type { ShiftEndReason } from './clients/driver-shift.client';

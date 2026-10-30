@@ -602,6 +602,8 @@ export const walletClient = {
   adjustRideHold: async (params: {
     rideId: string;
     targetAmountNgn: number;
+    /** Change the hold only if it is exactly this now (an undo must not overwrite what happened since). */
+    expectedAmountNgn?: number;
   }): Promise<(RideHoldMutationResult & { previousHoldAmountNgn: number }) | null> => {
     const { rideId, targetAmountNgn } = params;
 
@@ -621,7 +623,13 @@ export const walletClient = {
 
       const currentAmountNgn = Number(hold.amountNgn);
       const normalizedTarget = Math.max(0, targetAmountNgn);
-      const deltaNgn = normalizedTarget - currentAmountNgn;
+      // To the kobo, so the guarded subtract never works on a float tail.
+      const deltaNgn = Math.round((normalizedTarget - currentAmountNgn) * 100) / 100;
+
+      if (params.expectedAmountNgn !== undefined && Math.abs(currentAmountNgn - params.expectedAmountNgn) >= 0.01) {
+        const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
+        return { wallet, holdAmountNgn: currentAmountNgn, previousHoldAmountNgn: currentAmountNgn, applied: false as const };
+      }
 
       if (Math.abs(deltaNgn) < 0.01) {
         const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
@@ -633,27 +641,45 @@ export const walletClient = {
         };
       }
 
-      if (deltaNgn > 0) {
+      // Safe against a withdrawal, a charge or another change at the same moment. The hold is changed only
+      // if it is still ACTIVE and still the amount just read (one guarded update: a hold that was charged or
+      // moved changes zero rows, and nothing is written). A raise then takes the money from the wallet's balance
+      // in one statement that checks the balance as it subtracts, so the balance can never go below zero.
+      const moved = await tx.rideHold.updateMany({
+        where: { rideId, status: 'ACTIVE', amountNgn: hold.amountNgn },
+        data: { amountNgn: normalizedTarget },
+      });
+      if (moved.count === 0) {
+        const fresh = await tx.rideHold.findUnique({ where: { rideId } });
         const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
-        if (Number(wallet.balanceNgn) < deltaNgn) {
+        return {
+          wallet,
+          holdAmountNgn: fresh ? Number(fresh.amountNgn) : currentAmountNgn,
+          previousHoldAmountNgn: currentAmountNgn,
+          applied: false as const,
+        };
+      }
+
+      let wallet;
+      if (deltaNgn > 0) {
+        wallet = await takeFromBalance(tx, hold.walletId, deltaNgn, { lock: true });
+        if (!wallet) {
+          // Throwing undoes the hold update above: nothing changed.
           throw new Error(
             `Insufficient balance on wallet ${hold.walletId} to adjust ride hold by ${deltaNgn} NGN`,
           );
         }
+      } else {
+        const back = -deltaNgn;
+        const released = await tx.wallet.updateMany({
+          where: { id: hold.walletId, lockedNgn: { gte: back } },
+          data: { balanceNgn: { increment: back }, lockedNgn: { decrement: back } },
+        });
+        if (released.count === 0) {
+          throw new Error(`Wallet ${hold.walletId} has less locked than the ride hold to release by ${back} NGN`);
+        }
+        wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
       }
-
-      const wallet = await tx.wallet.update({
-        where: { id: hold.walletId },
-        data: {
-          balanceNgn: { increment: -deltaNgn },
-          lockedNgn: { increment: deltaNgn },
-        },
-      });
-
-      await tx.rideHold.update({
-        where: { rideId },
-        data: { amountNgn: normalizedTarget },
-      });
 
       return {
         wallet,

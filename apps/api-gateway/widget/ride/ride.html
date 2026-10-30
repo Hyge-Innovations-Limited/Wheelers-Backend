@@ -443,15 +443,19 @@
   <div class="sheet-part" id="pay-add" hidden>
     <h2 id="add-title"></h2>
     <p class="sub" id="add-sub"></p>
-    <div class="pay-card">
-      <div class="pay-row"><span class="label">Bank</span><strong id="pay-bank"></strong></div>
-      <div class="pay-row"><div><span class="label">Account number</span><strong class="number" id="pay-number"></strong></div><button class="btn small dark" type="button" id="pay-copy">Copy</button></div>
-      <div class="pay-row"><span class="label">Account name</span><strong id="pay-name"></strong></div>
-      <p class="hint" id="pay-wait-account" hidden>Your account number is being set up.</p>
+    <div class="pay-card account" id="pay-account">
+      <div class="account-wait" id="pay-loading" role="status" aria-label="Getting your account number"><span class="spinner big"></span></div>
+      <div id="pay-details" hidden>
+        <span class="bank" id="pay-bank"></span>
+        <strong class="number" id="pay-number"></strong>
+        <span class="holder" id="pay-name"></span>
+        <button class="btn small dark" type="button" id="pay-copy">Copy</button>
+      </div>
+      <p class="account-note" id="pay-failed" hidden>Could not get your account number. Trying again.</p>
     </div>
-    <div class="waiting">
-      <span class="spinner"></span>
-      <div><strong>Waiting for your transfer…</strong></div>
+    <div class="waiting" id="pay-waiting" hidden>
+      <span class="spinner orange"></span>
+      <span>Waiting for your transfer…</span>
     </div>
     <button class="btn quiet" type="button" data-close>Back</button>
   </div>

@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverBidClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { driverBidClient, driverClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
+import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
 import { createWalletPageToken, PageLinkExpiredError, RIDE_PAGE_TOKEN_TTL_SECONDS, verifyWalletPageToken } from '../auth/local';
 import type { Queue } from 'bullmq';
 import { buildScheduledRideJobId, parseScheduledFor } from './ride.route';
@@ -19,14 +20,15 @@ import { clearActiveRideIfMatches, clearBookingStage, clearPendingRoute, clearPe
 import { getSearchStatus } from '../rides/search-status';
 import { isSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { autoAcceptOnAtStart, autoAcceptStatus, switchAutoAccept } from '../rides/auto-accept';
-import { quoteTripRoute } from '../rides/trip-route-quote';
+import { RouteChangeRefused, quoteTripRoute, stopFixedPriceEnabled } from '../rides/trip-route-quote';
+import { cancelPendingRoute, readPendingRoute, walletShortfall } from '../rides/trip-route-pending';
 import { takeRidePageOpenCode } from '../whatsapp/scheduled-template';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { overLimit } from '../trip-chat/limits';
-import { LIVE_TRIP_STATUSES } from '../rides/live-trip';
+import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
   cancelWhatsappRide,
   changeRiderOffer,
@@ -74,6 +76,7 @@ import { refusalCode } from '../utils/service-area';
  *   POST /ride-page/scheduled/:id/cancel        cancel one of them
  *   POST /ride-page/cancel-ride   { reason, detail? }   cancel the trip once a driver is booked (the app's ride:cancel)
  *   POST /ride-page/trip-route/quote { destination?, stops }   what that change would cost: { fareNgn, extraNgn } (nothing moves)
+ *   POST /ride-page/trip-route/cancel   back out of a change waiting on money (WALLET_SHORT): the trip stays as it was
  *   POST /ride-page/trip-route    { destination?, stops, acceptedFareNgn }   change where a booked trip goes (the app's
  *                                               ride:route:update), at the quoted price (else 409 PRICE_CHANGED)
  *   POST /ride-page/sos           { kind? }     the Emergency button: the safety team is alerted (as the ride card's SOS)
@@ -112,6 +115,8 @@ export interface RidePageRouteDeps {
   /** The page's Google map (a key restricted to our web address). Absent: the page keeps its old map. */
   googleMapsBrowserKey?: string;
   routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'>;
+  /** DRIVER_PHOTO_ENABLED: driverPhotoUrl / driverPhotoKey on offers and the confirmed driver. Absent: the state is exactly as before. */
+  driverPhoto?: DriverPhotoResolver;
   /** Tells the chat what happened on the page (search started, ride confirmed). Absent in tests. */
   notifyChat?: (event: RidePageChatEvent) => Promise<void>;
   /** Rides for later: the scheduler's queue and how long before the pickup the search starts. Absent: no "Later". */
@@ -139,6 +144,11 @@ class PageError extends Error {
   constructor(message: string, readonly status: number, readonly code: string, readonly extra: Record<string, unknown> = {}) {
     super(message);
   }
+}
+
+/** A refused route change as the page's answer: 409 with the server's own words (429 for the rate limit), never a 500. */
+function refusedPage(error: RouteChangeRefused): PageError {
+  return error.tooMany ? new PageError(error.message, 429, 'RATE_LIMITED') : new PageError(error.message, 409, 'ROUTE_CHANGE_REFUSED');
 }
 
 function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
@@ -264,6 +274,30 @@ async function buildState(deps: RidePageRouteDeps, userId: string) {
   return { ...(await buildPhaseState(deps, userId)), mapsKey: deps.googleMapsBrowserKey ?? null };
 }
 
+/**
+ * STOP_FIXED_PRICE_ENABLED: a route change waiting on the rider's deposit, for the page to show and to watch.
+ * { routePending: { pendingUntil (ISO), fareNgn, neededNgn } }; nothing at all when none is waiting or the flag is off.
+ * Read only. The page treats it vanishing as decided: made if the route moved, otherwise dropped.
+ */
+async function routePendingField(deps: RidePageRouteDeps, userId: string, rideId: string): Promise<{ routePending?: { pendingUntil: string; fareNgn: number; neededNgn: number; sendNgn: number } }> {
+  if (!stopFixedPriceEnabled()) return {};
+  const pending = await readPendingRoute(deps.redisClient, rideId).catch(() => null);
+  if (!pending || pending.riderId !== userId) return {};
+  const short = await walletShortfall(rideId, userId, pending.fareNgn).catch(() => null);
+  return { routePending: { pendingUntil: pending.expiresAt, fareNgn: pending.fareNgn, neededNgn: short?.neededNgn ?? 0, sendNgn: short && short.neededNgn > 0 ? depositNeededFor(short.neededNgn) : 0 } };
+}
+
+/** The ACCEPTED driver's id (from their user id), remembered for a minute so a polling page does not look them up on every poll. */
+const driverIdsByUser = new Map<string, { driverId: string | null; until: number }>();
+async function rideDriverId(driverUserId: string): Promise<string | null> {
+  const known = driverIdsByUser.get(driverUserId);
+  if (known && known.until > Date.now()) return known.driverId;
+  const driverId = (await driverClient.findByUserId(driverUserId).catch(() => null))?.id ?? null;
+  if (driverIdsByUser.size > 500) driverIdsByUser.clear();
+  if (driverId) driverIdsByUser.set(driverUserId, { driverId, until: Date.now() + 60_000 });
+  return driverId;
+}
+
 async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
   const [pointer, balanceNgn, live] = await Promise.all([getActiveRide(deps.redisClient, userId), balanceOf(userId), liveTripFor(userId)]);
   // Cancelled on the page a moment ago: over, though the database has not caught up yet.
@@ -294,9 +328,11 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       driver: {
         name: trip.driver.name, phone: trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
+        ...(await driverPhotoFields(deps.driverPhoto, trip.driverId)),
       },
       tripCode,
       paidWithXlm,
+      ...(await routePendingField(deps, userId, trip.rideId)),
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
       trip: {
@@ -348,6 +384,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
             plate: accepted.vehiclePlate,
             etaMin: Math.ceil(accepted.etaSeconds / 60),
             fareNgn: accepted.fareNgn,
+            ...(deps.driverPhoto ? await driverPhotoFields(deps.driverPhoto, await rideDriverId(accepted.driverUserId)) : {}),
           } : null,
         };
       }
@@ -379,7 +416,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         // All the page says about offers: how many are waiting in the chat, and the way back to it.
         offerCount: bids.length,
         chatUrl: CHAT_URL,
-        offers: bids.map((bid) => ({
+        offers: await Promise.all(bids.map(async (bid) => ({
           key: offerKey(bid),
           // Wallet short for THIS offer? Then this is what to deposit — the bank's
           // cut and Wheelers' fee already folded in, so the figure on the Accept
@@ -393,7 +430,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
           etaMin: Math.max(1, Math.ceil(bid.etaSeconds / 60)),
           distanceKm: bid.distanceKm ?? null,
           receivedAt: bid.receivedAt,
-        })),
+          ...(await driverPhotoFields(deps.driverPhoto, bid.driverId, { riderId: userId })),
+        }))),
       };
     }
   }
@@ -463,7 +501,7 @@ export const RIDE_CANCEL_REASONS = [
 const OWN_WORDS_MAX = 140;
 
 /** As many stops as the app allows on a trip (MAX_ADDITIONAL_STOPS), for changing a booked trip's route. */
-export const TRIP_MAX_STOPS = 5;
+export const TRIP_MAX_STOPS = MAX_TRIP_STOPS;
 
 /** On a booked trip: the cancel reasons, who to reach for help (Quick Actions' support), the Emergency kinds, an open SOS. */
 async function tripExtras(userId: string) {
@@ -1354,6 +1392,7 @@ async function handleTripRouteQuote(req: IncomingMessage, res: ServerResponse, d
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const { ride, destination, stops } = await readTripRoute(deps, userId, await readJsonBody(req).catch(() => null));
   const quote = await quoteTripRoute({ redis: deps.redisClient, routePlanner: deps.routePlanner! }, ride.id, destination, stops).catch((error) => {
+    if (error instanceof RouteChangeRefused) throw refusedPage(error);
     console.warn(`${TAG} route not priced`, { rideId: ride.id, error: error instanceof Error ? error.message : String(error) });
     throw new PageError('Could not price that route just now. Please try again.', 503, 'QUOTE_FAILED');
   });
@@ -1374,7 +1413,10 @@ async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: 
   const accepted = isRecord(body) && typeof body.acceptedFareNgn === 'number' && Number.isFinite(body.acceptedFareNgn) ? body.acceptedFareNgn : null;
   if (accepted === null) {
     // Never moved without the rider seeing the price: the price, to ask about.
-    const quote = await quoteTripRoute({ redis: deps.redisClient, routePlanner: deps.routePlanner! }, ride.id, destination, stops);
+    const quote = await quoteTripRoute({ redis: deps.redisClient, routePlanner: deps.routePlanner! }, ride.id, destination, stops).catch((error) => {
+      if (error instanceof RouteChangeRefused) throw refusedPage(error);
+      throw error;
+    });
     throw new PageError(`The price is now ₦${quote.fareNgn.toLocaleString()}.`, 409, 'PRICE_CHANGED', { fareNgn: quote.fareNgn, extraNgn: quote.extraNgn });
   }
   let reply;
@@ -1382,7 +1424,17 @@ async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: 
     reply = await handleRideMessage('ride:route:update', { rideId: ride.id, driverId: ride.driverId, destination, stops, acceptedFareNgn: accepted }, riderAuth(userId), deps.publisher, deps.routePlanner as never, deps.redisClient);
   } catch (error) {
     if (refusalCode(error) === 'OUTSIDE_SERVICE_AREA') throw new PageError(OUTSIDE_SERVICE_AREA_LINE, 400, 'OUTSIDE_SERVICE_AREA');
+    if (error instanceof RouteChangeRefused) throw refusedPage(error);
     throw error;
+  }
+  if (reply?.type === 'ride:route:update:rejected' && reply.payload['reason'] === 'WALLET_SHORT') {
+    // The wallet cannot hold the new price yet: the change waits (5 minutes) for the deposit; nothing has moved.
+    const p = reply.payload;
+    throw new PageError(String(p['message']), 402, 'WALLET_SHORT', { fareNgn: p['fareNgn'], extraNgn: p['extraNgn'], neededNgn: p['neededNgn'], sendNgn: p['sendNgn'], balanceNgn: p['balanceNgn'], pendingUntil: p['pendingUntil'] });
+  }
+  if (reply?.type === 'ride:route:update:rejected' && reply.payload['reason'] === 'CANCELLED') {
+    // The rider backed out of this change while it was being put back: nothing was changed.
+    throw new PageError('Route not changed', 409, 'ROUTE_CANCELLED');
   }
   if (reply?.type === 'ride:route:update:rejected') {
     const fareNgn = Number(reply.payload['fareNgn']);
@@ -1393,6 +1445,17 @@ async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: 
   if (Array.isArray(line) && line.length) await storeTripLine(deps.redisClient, ride.id, line).catch(() => undefined);
   logActivity({ userId, eventType: 'ride_route_changed', source: 'ride_page', rideId: ride.id, metadata: { stops: stops.length, fareNgn: accepted } });
   sendJson(res, 200, await buildState(deps, userId));
+}
+
+/**
+ * POST /ride-page/trip-route/cancel: the rider backs out of a route change that was waiting on money
+ * (WALLET_SHORT). The trip stays as it was. Nothing waiting: still { ok: true }.
+ */
+async function handleTripRouteCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const ride = await bookedTrip(deps, userId).catch(() => null);
+  const cancelled = ride ? await cancelPendingRoute(deps.redisClient, ride.id, userId) : false;
+  sendJson(res, 200, { ok: true, cancelled });
 }
 
 /**
@@ -1618,6 +1681,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/topup': { method: 'GET', run: handleTopup },
   '/ride-page/cancel-ride': { method: 'POST', run: handleCancelRide },
   '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
+  '/ride-page/trip-route/cancel': { method: 'POST', run: handleTripRouteCancel },
   '/ride-page/trip-route/quote': { method: 'POST', run: handleTripRouteQuote },
   '/ride-page/notice/seen': { method: 'POST', run: handleNoticeSeen },
   '/ride-page/sos': { method: 'POST', run: handleSos },

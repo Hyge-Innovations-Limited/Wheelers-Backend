@@ -65,6 +65,9 @@ function buildRouteStops(params: {
 /** The one cancel reason a later assignment may undo: the search timed out, nobody chose to cancel. */
 export const SEARCH_TIMED_OUT_REASON = 'No driver accepted in time';
 
+/** Statuses in which a route change may move the agreed fare. */
+export const PRICE_CHANGEABLE_STATUSES: RideStatus[] = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'];
+
 export const rideClient = {
   /**
    * Which pricing rules a ride settles by (see Ride.pricingVersion). A ride
@@ -304,6 +307,11 @@ export const rideClient = {
     destAddress:      string;
     stops?:           RouteStopInput[];
     fareEstimateNgn:  number;
+    plannedDistanceKm?: number;
+    /** The km of the route as priced at booking. */
+    pricedPlannedKm?: number;
+    /** Our suggested fare for the route at booking (the negotiated rate's base). */
+    bookingSuggestedFareNgn?: number;
     status?:          RideStatus;
     paymentMethod?:   RidePaymentMethod;
     riderOfferNgn?:   number;
@@ -387,8 +395,17 @@ export const rideClient = {
     paymentMethod?: RidePaymentMethod;
     /** The rider the assignment is for: another rider's ride is never assigned. */
     riderId?: string;
-  }) =>
-    prisma.ride.updateMany({
+  }) => (async () => {
+    // The negotiated rate is fixed here, once, with the agreed fare: agreed / our suggested fare at booking.
+    let bargainRate: number | null = null;
+    if (opts?.agreedFareNgn !== undefined && opts.agreedFareNgn > 0) {
+      const row = await prisma.ride.findUnique({ where: { id: rideId }, select: { bookingSuggestedFareNgn: true, bargainRate: true } });
+      const suggested = row?.bookingSuggestedFareNgn != null ? Number(row.bookingSuggestedFareNgn) : 0;
+      // The rate of the ride is its first bargain: a re-match (a driver bailed) keeps it, and a missing one never overwrites a value.
+      if (row?.bargainRate != null && row.bargainRate > 0) bargainRate = row.bargainRate;
+      else if (suggested > 0) bargainRate = opts.agreedFareNgn / suggested;
+    }
+    return prisma.ride.updateMany({
       where: {
         id: rideId,
         ...(opts?.riderId !== undefined ? { riderId: opts.riderId } : {}),
@@ -405,9 +422,11 @@ export const rideClient = {
         cancelReason: null,
         cancelledAt: null,
         ...(opts?.agreedFareNgn !== undefined ? { agreedFareNgn: opts.agreedFareNgn } : {}),
+        ...(bargainRate !== null ? { bargainRate } : {}),
         ...(opts?.paymentMethod !== undefined ? { paymentMethod: opts.paymentMethod } : {}),
       },
-    }),
+    });
+  })(),
 
   markDriverEnRoute: (rideId: string) =>
     prisma.ride.update({
@@ -507,8 +526,31 @@ export const rideClient = {
     destination: RouteDestinationInput;
     stops?: RouteStopInput[];
     fareEstimateNgn?: number;
+    /** The fare the rider accepted for the new route: settlement uses agreedFareNgn first. */
+    agreedFareNgn?: number;
+    /** The km the agreed fare is measured against. Written with a priced change, or alone by an unpriced one (so the driven distance is kept), only while the trip can still change price. */
+    plannedDistanceKm?: number;
+    /** With a priced change: the ride must still be as it was when the price was set, else nothing is changed (null returned). */
+    base?: { agreedFareNgn?: number; plannedDistanceKm?: number | null; doneStops?: number };
   }) =>
     prisma.$transaction(async (tx) => {
+      if (data.base) {
+        // One guarded update decides (a concurrent change makes it match zero rows); then the stop count.
+        const claimed = await tx.ride.updateMany({
+          where: {
+            id: rideId,
+            status: { in: PRICE_CHANGEABLE_STATUSES },
+            ...(data.base.agreedFareNgn !== undefined ? { agreedFareNgn: data.base.agreedFareNgn } : {}),
+            ...(data.base.plannedDistanceKm !== undefined ? { plannedDistanceKm: data.base.plannedDistanceKm } : {}),
+          },
+          data: { updatedAt: new Date() },
+        });
+        if (claimed.count === 0) return null;
+        if (data.base.doneStops !== undefined) {
+          const done = await tx.rideStop.count({ where: { rideId, status: 'COMPLETED' } });
+          if (done !== data.base.doneStops) return null;
+        }
+      }
       const existingCompletedStops = await tx.rideStop.findMany({
         where: {
           rideId,
@@ -517,6 +559,10 @@ export const rideClient = {
         orderBy: { stopOrder: 'asc' },
       });
 
+      // The agreed fare moves only on a trip that is booked and not over: never a finished or cancelled ride.
+      const current = await tx.ride.findUnique({ where: { id: rideId }, select: { status: true, plannedDistanceKm: true, pricedPlannedKm: true } });
+      const priceWritable = !!current && PRICE_CHANGEABLE_STATUSES.includes(current.status);
+
       await tx.ride.update({
         where: { id: rideId },
         data: {
@@ -524,6 +570,11 @@ export const rideClient = {
           destLng: data.destination.lng,
           destAddress: data.destination.address,
           ...(data.fareEstimateNgn !== undefined ? { fareEstimateNgn: data.fareEstimateNgn } : {}),
+          ...(priceWritable && data.agreedFareNgn !== undefined ? { agreedFareNgn: data.agreedFareNgn } : {}),
+          ...(priceWritable && data.plannedDistanceKm !== undefined ? { plannedDistanceKm: data.plannedDistanceKm } : {}),
+          // The priced baseline moves only with a PRICED change. An unpriced one pins it (once) to the km as they stood.
+          ...(priceWritable && data.plannedDistanceKm !== undefined && data.agreedFareNgn !== undefined ? { pricedPlannedKm: data.plannedDistanceKm } : {}),
+          ...(priceWritable && data.plannedDistanceKm !== undefined && data.agreedFareNgn === undefined && current?.pricedPlannedKm == null && current?.plannedDistanceKm != null ? { pricedPlannedKm: current.plannedDistanceKm } : {}),
         },
       });
 
@@ -628,6 +679,10 @@ export const rideClient = {
     timestamp: Date;
   }) =>
     prisma.gpsLog.create({ data }),
+
+  /** The newest recorded point of the ride (uses the (rideId, timestamp) index). */
+  lastGpsPoint: (rideId: string) =>
+    prisma.gpsLog.findFirst({ where: { rideId }, orderBy: { timestamp: 'desc' }, select: { lat: true, lng: true, timestamp: true } }),
 
   findGpsLogs: (rideId: string) =>
     prisma.gpsLog.findMany({

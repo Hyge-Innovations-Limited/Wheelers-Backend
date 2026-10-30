@@ -519,7 +519,7 @@ async function acceptBidOnce(
       }
       if (hold.holdAmountNgn !== bid.counterOfferNgn) {
         const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: bid.counterOfferNgn });
-        if (!adjusted) throw new Error('hold could not be adjusted');
+        if (!adjusted || (!adjusted.applied && adjusted.holdAmountNgn !== bid.counterOfferNgn)) throw new Error('hold could not be adjusted');
       }
     }
   } catch (holdError) {

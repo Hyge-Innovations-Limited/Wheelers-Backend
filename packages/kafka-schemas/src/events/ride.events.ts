@@ -72,6 +72,14 @@ export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
   plannedDistanceKm: z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
+  /** The fare the rider ACCEPTED for this route (server quote): becomes the ride's agreed fare. Absent: older app. */
+  acceptedFareNgn:  z.number().optional(),
+  /** With acceptedFareNgn (STOP_FIXED_PRICE_ENABLED): the km that fare was set for, stored as Ride.plannedDistanceKm. */
+  plannedTotalKm:   z.number().optional(),
+  /** What the price was set against: the change applies only if the ride still looks like this (a stale change is skipped). */
+  baseAgreedFareNgn: z.number().optional(),
+  basePlannedKm:    z.number().nullable().optional(),
+  baseDoneStops:    z.number().int().optional(),
   route:            RouteGeometry.optional(),
   // True only when the rider accepted this route's quoted price; otherwise the change moves no money.
   priced:           z.boolean().optional(),
@@ -207,6 +215,11 @@ export const RideRouteUpdatedEvent = BaseRideEvent.extend({
   plannedDistanceKm: z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
+  /** The trip's agreed fare after a priced change (the driver's new fare). Absent: the change was not priced. */
+  agreedFareNgn:    z.number().optional(),
+  change:           z.enum(['stop_added', 'stop_removed', 'destination_changed', 'route_changed']).optional(),
+  /** A priced change was NOT made (the ride moved on): this is the route as it stands, so screens and the hold go back to it. */
+  reverted:         z.boolean().optional(),
   route:            RouteGeometry.optional(),
   priced:           z.boolean().optional(),
   updatedBy:        z.enum(['rider', 'driver', 'system']),

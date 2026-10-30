@@ -148,6 +148,17 @@ export const driverClient = {
     return (await driverPresence.overlay(driver))!;
   },
 
+  /** Where a driver's face can come from: the profile photo field and the KYC selfie key, in one indexed read (driver PK, kyc unique driverId). */
+  photoSourcesOf: (driverId: string) =>
+    prisma.driver.findUnique({
+      where:  { id: driverId },
+      select: { user: { select: { photoUrl: true } }, kycSubmission: { select: { selfieKey: true } } },
+    }),
+
+  /** Rides this driver has finished (Ride @@index([driverId, status])). The rider sees it next to the photo. */
+  completedRidesOf: (driverId: string) =>
+    prisma.ride.count({ where: { driverId, status: 'COMPLETED' } }),
+
   findByUserId: (userId: string) =>
     prisma.driver.findUnique({
       where:   { userId },

@@ -1,6 +1,7 @@
 import { driverBidClient, driverClient, groupRideClient, rideClient, walletClient } from '@wheleers/db';
 import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
+import { driverPhotoFields, getDriverPhotoResolver } from '../drivers/driver-photo';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { HandlerResponse } from '../websocket/handlers/types';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
@@ -149,7 +150,7 @@ async function acceptOnce(
   // currentFareNgn: the driver's price now, so the app can show it.
   // counterOffer: the offer as it stands, in the shape of ride:counter_offer — the server sends it
   // on after this refusal, so an app that keeps the old price updates its card instead of retrying it.
-  const offerChanged = (currentFareNgn: number, row: { id: string; etaSeconds: number; distanceKm: number | null }): HandlerResponse => ({
+  const offerChanged = async (currentFareNgn: number, row: { id: string; etaSeconds: number; distanceKm: number | null }): Promise<HandlerResponse> => ({
     type: 'ride:accept_offer:rejected',
     payload: {
       rideId, driverId, reason: 'offer_changed', currentFareNgn, message: 'That offer has changed — check the latest price and try again.',
@@ -158,6 +159,8 @@ async function acceptOnce(
         driverName: driver.user?.name ?? 'Driver', driverRating: driver.rating ?? 5,
         vehiclePlate: driver.vehiclePlate ?? '', vehicleModel: driver.vehicleModel ?? '',
         etaSeconds: row.etaSeconds, distanceKm: row.distanceKm ?? undefined,
+        // DRIVER_PHOTO_ENABLED: the same face the rider saw on the offer.
+        ...(await driverPhotoFields(getDriverPhotoResolver(), driverId, { riderId })),
       },
     },
   });
@@ -282,7 +285,7 @@ async function acceptOnce(
         // A hold left by an earlier attempt on this ride may carry a different fare.
         if (hold.holdAmountNgn !== agreedFareNgn) {
           const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: agreedFareNgn });
-          if (!adjusted) throw new Error('hold could not be adjusted');
+          if (!adjusted || (!adjusted.applied && adjusted.holdAmountNgn !== agreedFareNgn)) throw new Error('hold could not be adjusted');
         }
       }
       if (hold.applied) {

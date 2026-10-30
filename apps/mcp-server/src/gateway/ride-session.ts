@@ -102,9 +102,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function stripHeavy(payload: Record<string, unknown>): Record<string, unknown> {
+export function stripHeavy(payload: Record<string, unknown>): Record<string, unknown> {
   // Route geometry can be thousands of points; keep the event log readable.
-  const { route: _route, ...rest } = payload;
+  // The driver's photo link is for the rider's screen: the agent does not need a selfie URL.
+  const { route: _route, driverPhotoUrl: _photoUrl, driverPhotoKey: _photoKey, ...rest } = payload;
   return rest;
 }
 

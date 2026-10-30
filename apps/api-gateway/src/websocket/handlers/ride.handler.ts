@@ -7,8 +7,9 @@ import {
   calculateSuggestedFare,
   validateDriverOffer, fareFromRatePerKmNgn,
   validateRiderOffer,
+  depositNeededFor,
 } from '@wheleers/config';
-import { driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
+import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
 import {
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
@@ -22,6 +23,7 @@ import {
   RideRequestedEvent,
   RideStopConfirmedEvent,
   RideStartedEvent,
+  WalletHoldAdjustedEvent,
 } from '@wheleers/kafka-schemas';
 import type { GatewayAuthContext } from '../../types';
 import { getBoolean, getNumber, getRecord, getString } from '../../utils/object';
@@ -34,11 +36,13 @@ import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
-import { forgetTripRouteQuote, quoteTripRoute } from '../../rides/trip-route-quote';
+import { RouteChangeRefused, forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled, unpricedRouteChange } from '../../rides/trip-route-quote';
+import { cancelPendingRoute, claimPublish, clearPendingRoute, fundRouteHold, releasePublish, readPendingRoute, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../../rides/trip-route-pending';
+import type { HoldFunding, PendingRouteChange, RouteBase } from '../../rides/trip-route-pending';
 import { clearSearchEnded, markSearchEnded } from '../../rides/booking-lock';
 import { closePayingUnlessBooking, openPaying, payingStatusEnabled, readPaying, withinPayingRate } from '../../rides/paying-status';
 import { assertInServiceArea } from '../../utils/service-area';
-import { LIVE_TRIP_STATUSES } from '../../rides/live-trip';
+import { LIVE_TRIP_STATUSES, MAX_ADDRESS_CHARS, TRIP_MAX_STOPS } from '../../rides/live-trip';
 import { overLimit } from '../../trip-chat/limits';
 
 interface LatLngAddress {
@@ -90,9 +94,34 @@ async function assertPartyToLiveRide(
   const isDriver = !isRider && Boolean(auth.driverId) && ride.driverId === auth.driverId;
   if (!isRider && !isDriver) throw new Error('This ride is not yours.');
   if (!LIVE_TRIP_STATUSES.includes(String(ride.status))) {
-    throw new Error('This trip is not running, so its route cannot be changed.');
+    throw new RouteChangeRefused('This trip is not running, so its route cannot be changed.');
   }
   return { ride, role: isRider ? ('rider' as const) : ('driver' as const) };
+}
+
+/** A route asked for by the app: at most TRIP_MAX_STOPS stops, and addresses short enough to store and show. */
+function assertRouteShape(destination: LatLngAddress, stops: LatLngAddress[]): void {
+  if (stops.length > TRIP_MAX_STOPS) throw new RouteChangeRefused(`A trip can have at most ${TRIP_MAX_STOPS} stops.`);
+  for (const place of [destination, ...stops]) {
+    if (place.address.length > MAX_ADDRESS_CHARS) throw new RouteChangeRefused('An address is too long.');
+  }
+}
+
+/** STOP_FIXED_PRICE_ENABLED: the driver is at the stop they confirm (latest GPS point under 60 s old, within 150 m). */
+async function assertDriverAtNextStop(rideId: string): Promise<void> {
+  const ride = await rideClient.findWithDriver(rideId);
+  const next = (ride.routeStops ?? []).filter((st) => st.status === 'PENDING').sort((a, b) => a.stopOrder - b.stopOrder)[0];
+  if (!next) return;
+  const now = Date.now();
+  let at: { lat: number; lng: number } | null = null;
+  const d = ride.driver;
+  if (d?.lat != null && d.lng != null && d.lastSeenAt && now - new Date(d.lastSeenAt).getTime() <= 60_000) at = { lat: d.lat, lng: d.lng };
+  if (!at) {
+    const last = await rideClient.lastGpsPoint(rideId).catch(() => null);
+    if (last && now - new Date(last.timestamp).getTime() <= 60_000) at = { lat: last.lat, lng: last.lng };
+  }
+  if (!at) throw new RouteChangeRefused('We cannot see your location. Try again in a moment.');
+  if (haversineKm(at.lat, at.lng, next.lat, next.lng) * 1000 > 150) throw new RouteChangeRefused('You are not at the stop yet.');
 }
 
 async function assertRideOpenForBids(rideId: string) {
@@ -598,14 +627,33 @@ export async function handleRideMessage(
     const rideId = requireString(payload, 'rideId');
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
+    assertRouteShape(destination, stops);
     assertInServiceArea([destination, ...stops]);
     if (!redis) throw new Error('Route prices are not available right now.');
     // Each quote is a Maps call: only the rider, only while the trip runs, and a few a minute.
     const { role } = await assertPartyToLiveRide(rideId, auth);
     if (role !== 'rider') throw new Error('This ride is not yours.');
-    if (await overLimit(redis, `ride-route-quote:${auth.userId}`, 10, 60)) throw new Error('Too many price checks. Try again in a minute.');
-    const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
+    if (await overLimit(redis, `ride-route-quote:${auth.userId}`, 10, 60)) throw new RouteChangeRefused('Too many price checks. Try again in a minute.', true);
+    let quote: Awaited<ReturnType<typeof quoteTripRoute>>;
+    try {
+      quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
+    } catch (error) {
+      if (error instanceof RouteChangeRefused) throw error;
+      throw error;
+    }
     return { type: 'ride:route:quote:result', payload: { rideId, fareNgn: quote.fareNgn, extraNgn: quote.extraNgn } };
+  }
+
+  if (type === 'ride:route:pending:cancel') {
+    // The rider backs out of a route change that was waiting on money: the trip stays as it was.
+    const rideId = requireString(payload, 'rideId');
+    if (!redis) throw new Error('Not available right now.');
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (!ride || ride.riderId !== auth.userId) throw new Error('This ride is not yours.');
+    // Only the caller that takes the waiting change off may say it is cancelled; if a deposit already
+    // made the change, `cancelled` is false and the trip has the new route.
+    const withdrawn = await cancelPendingRoute(redis, rideId, auth.userId);
+    return { type: 'ride:route:pending:cancelled', payload: { rideId, cancelled: withdrawn } };
   }
 
   if (type === 'ride:route:update') {
@@ -619,16 +667,62 @@ export async function handleRideMessage(
     const origin = getRecord(payload, 'origin') ? parseLatLng(payload, 'origin') : undefined;
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
+    assertRouteShape(destination, stops);
     // A new destination or stop mid-trip stays in Lagos too; where the car is now does not matter.
     assertInServiceArea([destination, ...stops]);
+    if (stopFixedPriceEnabled()) {
+      // Only the rider changes a route (the driver app never sends this), and each change is a Maps call.
+      if (role !== 'rider') throw new RouteChangeRefused('Only the rider can change the route.');
+      if (redis && await overLimit(redis, `ride-route-quote:${auth.userId}`, 10, 60)) throw new RouteChangeRefused('Too many price checks. Try again in a minute.', true);
+    }
     // The price the rider was shown for this route (ride:route:quote): the change goes ahead only
     // at that price, and the wallet's hold moves to exactly it. Absent (an older app, or the
     // driver): the route moves but the money held does not (ride-service and wallet-service keep it).
     const acceptedFareNgn = getNumber(payload, 'acceptedFareNgn');
     let quotedRoute: Awaited<ReturnType<typeof quoteTripRoute>>['planned'] | null = null;
+    // STOP_FIXED_PRICE_ENABLED: the fare the rider accepted becomes the trip's agreed fare (set only
+    // when the server's own formula priced it), and a wallet that cannot hold it must add money first.
+    let pricedFareNgn: number | undefined;
+    let pricedTotalKm: number | undefined;
+    let pricedBase: RouteBase = {};
+    let funded: Extract<HoldFunding, { ok: true }> | null = null;
+    let publishKey: string | null = null;
     if (acceptedFareNgn !== undefined && role === 'rider') {
       if (!redis) throw new Error('Route changes are not available right now.');
-      const quote = await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops);
+      const fixed = stopFixedPriceEnabled();
+      if (fixed && ride.paymentMethod === 'XLM') throw new RouteChangeRefused('Route changes are not available for this payment.');
+      const placeKey = [...stops, destination].map((q) => `${q.lat.toFixed(6)},${q.lng.toFixed(6)}`).join('|');
+      // A retry of the change that was waiting on money: the same plan and fare, not priced again from a car
+      // that has moved. Taking it is atomic, so a deposit and a retry together publish it once.
+      let taken: PendingRouteChange | null = null;
+      if (fixed) {
+        const waiting = await readPendingRoute(redis, rideId);
+        if (waiting && waiting.routeKey === placeKey && Math.round(acceptedFareNgn) === waiting.fareNgn) {
+          if (!sameBase(waiting, routeBaseOf(ride))) {
+            await clearPendingRoute(redis, rideId, auth.userId); // the trip moved on since: priced again below
+          } else {
+            taken = await takePendingRoute(redis, rideId, auth.userId);
+            if (!taken) {
+              // The deposit took it first. Only if the ride has visibly moved on (its base changed) is it known to be
+              // made; until then the honest answer is "in progress".
+              const now = await rideClient.findById(rideId).catch(() => null);
+              const applied = !!now && !sameBase(waiting, routeBaseOf(now));
+              return { type: 'ride:route:update:accepted', payload: { rideId, destination, stops, fareNgn: waiting.fareNgn, ...(applied ? { alreadyApplied: true } : { inProgress: true }) } };
+            }
+          }
+        }
+      }
+      // A waiting price older than 2 minutes, or set for a car that has since moved on, is priced again.
+      const stale = taken ? await stampIsStale(rideId, taken) : false;
+      let quote: Awaited<ReturnType<typeof quoteTripRoute>>;
+      try {
+        quote = taken && !stale
+          ? { fareNgn: taken.fareNgn, extraNgn: 0, planned: taken.planned, plannedTotalKm: taken.plannedTotalKm, formula: true }
+          : await quoteTripRoute({ redis, routePlanner }, rideId, destination, stops, { fresh: stale, acceptedFareNgn, ...(stale && taken ? { shownStaleFareNgn: taken.fareNgn } : {}) });
+      } catch (error) {
+        if (error instanceof RouteChangeRefused) throw error;
+        throw error;
+      }
       if (Math.round(acceptedFareNgn) !== quote.fareNgn) {
         return {
           type: 'ride:route:update:rejected',
@@ -636,6 +730,58 @@ export async function handleRideMessage(
         };
       }
       quotedRoute = quote.planned;
+      if (fixed && quote.formula) {
+        pricedBase = taken && !stale
+          ? { baseAgreedFareNgn: taken.baseAgreedFareNgn, basePlannedKm: taken.basePlannedKm, baseDoneStops: taken.baseDoneStops, pricedAt: taken.pricedAt, car: taken.car, kmDriven: taken.kmDriven }
+          : (quote.base ?? routeBaseOf(ride));
+        publishKey = await claimPublish(redis, { rideId, routeKey: placeKey, fareNgn: quote.fareNgn, ...pricedBase });
+        if (!publishKey) {
+          // The same change is going out from somewhere else. Only if the ride has visibly moved on (its base changed)
+          // is it known to be made; until then the honest answer is "in progress".
+          const now = await rideClient.findById(rideId).catch(() => null);
+          const applied = !!now && !sameBase(pricedBase, routeBaseOf(now));
+          return { type: 'ride:route:update:accepted', payload: { rideId, destination, stops, fareNgn: quote.fareNgn, ...(applied ? { alreadyApplied: true } : { inProgress: true }) } };
+        }
+        if (ride.paymentMethod === 'WALLET') {
+          // Where the money moves: the hold goes to the new fare now, or the change does not go.
+          const fundedNow = await fundRouteHold(rideId, auth.userId, quote.fareNgn);
+          if (!fundedNow.ok) {
+            await releasePublish(redis, publishKey);
+            const pending = await savePendingRoute(redis, {
+              rideId, riderId: auth.userId, driverId,
+              destination, stops, fareNgn: quote.fareNgn, plannedTotalKm: quote.plannedTotalKm, planned: quote.planned, routeKey: placeKey, ...pricedBase,
+            }, taken ? taken.expiresAt : undefined);
+            if (!pending) return { type: 'ride:route:update:rejected', payload: { rideId, reason: 'CANCELLED', message: 'You backed out of that change.' } };
+            return {
+              type: 'ride:route:update:rejected',
+              payload: {
+                rideId, reason: 'WALLET_SHORT', sendNgn: depositNeededFor(fundedNow.neededNgn), fareNgn: quote.fareNgn, extraNgn: fundedNow.extraNgn, neededNgn: fundedNow.neededNgn,
+                balanceNgn: fundedNow.balanceNgn, pendingUntil: pending.expiresAt,
+                message: `Add ₦${fundedNow.neededNgn.toLocaleString('en-NG')} to your wallet to change the route.`,
+              },
+            };
+          }
+          funded = fundedNow;
+        }
+        pricedFareNgn = quote.fareNgn;
+        pricedTotalKm = quote.plannedTotalKm;
+      }
+    }
+    // An UNPRICED rider change (an older app, no accepted price) under the flag: it may not make the trip longer
+    // (that would be an unpaid stop), and it keeps the distance already driven by moving the planned km with the road.
+    let unpricedTotalKm: number | undefined;
+    let unpricedBase: RouteBase = {};
+    if (stopFixedPriceEnabled() && pricedFareNgn === undefined && acceptedFareNgn === undefined) {
+      try {
+        const changed = await unpricedRouteChange(routePlanner, rideId, destination, stops);
+        // Not longer than before, and never stretched past the last PRICED plan by more than 0.5 km in total (the small ones cannot stack).
+        if (changed.longerByKm > 0.5 || (changed.pricedBaselineKm != null && changed.plannedTotalKm > changed.pricedBaselineKm + 0.5)) throw new RouteChangeRefused('Update the app to add stops.');
+        unpricedTotalKm = changed.plannedTotalKm;
+        unpricedBase = changed.base;
+      } catch (error) {
+        if (error instanceof RouteChangeRefused) throw error;
+        throw error;
+      }
     }
     const plannedRoute = quotedRoute ?? (origin
       ? await routePlanner.planRoute({
@@ -653,15 +799,37 @@ export async function handleRideMessage(
       stops,
       plannedDistanceKm: plannedRoute?.distanceKm,
       plannedDurationSeconds: plannedRoute?.durationSeconds,
-      fareEstimateNgn: plannedRoute?.suggestedFareNgn,
+      // An unpriced change cannot lower money: ride-service and wallet-service never go below the agreed fare.
+      // With STOP_FIXED_PRICE_ENABLED it cannot raise it either (only the rider's accepted price moves the bargain).
+      // A formula-priced change carries the whole trip's fare, which becomes the agreed fare.
+      fareEstimateNgn: pricedFareNgn ?? (stopFixedPriceEnabled() && Number(ride.agreedFareNgn) > 0
+        ? (plannedRoute ? Math.min(plannedRoute.suggestedFareNgn, Number(ride.agreedFareNgn)) : Number(ride.agreedFareNgn))
+        : plannedRoute?.suggestedFareNgn),
+      // The server's own fare the rider agreed to, rounded once: settlement charges exactly it.
+      acceptedFareNgn: pricedFareNgn,
+      plannedTotalKm: pricedTotalKm ?? unpricedTotalKm,
+      ...(pricedFareNgn !== undefined ? pricedBase : unpricedBase),
       route: plannedRoute?.geometry,
       priced: quotedRoute !== null,
       updatedBy: role,
       timestamp,
     });
 
-    await publisher.publishRideEvent(event);
+    try {
+      await publisher.publishRideEvent(event);
+    } catch (error) {
+      if (funded) await restoreRouteHold(event.rideId, funded); // the hold moved for a change that did not go
+      if (redis) await releasePublish(redis, publishKey);
+      throw error;
+    }
+    if (funded?.applied && funded.walletId && funded.userId && funded.previousHoldNgn !== null) {
+      await Promise.resolve().then(() => publisher.publishWalletEvent(WalletHoldAdjustedEvent.parse({
+        eventType: 'WALLET_HOLD_ADJUSTED', walletId: funded.walletId, userId: funded.userId, rideId: event.rideId,
+        previousLockedAmountNgn: funded.previousHoldNgn, lockedAmountNgn: funded.newHoldNgn, reason: 'ride_route_updated', timestamp,
+      }))).catch(() => undefined); // a notice only: the money has moved either way
+    }
     if (quotedRoute && redis) await forgetTripRouteQuote(redis, event.rideId);
+    if (pricedFareNgn !== undefined && redis) await clearPendingRoute(redis, event.rideId, auth.userId);
     return {
       type: 'ride:route:update:accepted',
       payload: {
@@ -671,6 +839,7 @@ export async function handleRideMessage(
         route: plannedRoute?.geometry,
         plannedDistanceKm: event.plannedDistanceKm,
         plannedDurationSeconds: event.plannedDurationSeconds,
+        ...(pricedFareNgn !== undefined ? { fareNgn: pricedFareNgn } : {}),
         // Mid-trip the car is the start; only where the trip now ends decides an area factor.
         ...buildRideEstimatePricing(event.plannedDistanceKm, event.plannedDurationSeconds, { destination }),
       },
@@ -681,6 +850,8 @@ export async function handleRideMessage(
     const rideId = requireString(payload, 'rideId');
     const { ride, role } = await assertPartyToLiveRide(rideId, auth);
     if (!ride.driverId) throw new Error('This ride has no driver yet.');
+    // A driver confirms a stop only at it: the latest GPS point must be recent and within about 150 m of the next stop.
+    if (stopFixedPriceEnabled() && role === 'driver') await assertDriverAtNextStop(rideId);
     const event = RideStopConfirmedEvent.parse({
       eventType: 'RIDE_STOP_CONFIRMED',
       rideId,

@@ -127,8 +127,12 @@ const GatewayEnvSchema = z.object({
   LIVE_CALL_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // "Rider accepted · paying now": the pay sheet tells the driver (ws ride:pay_sheet, POST /ride-page/paying). Off = today's behaviour.
   DRIVER_PAYING_STATUS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // A route change is priced like a new ride at that point (driven share + the rest), the rider accepts that exact fare, and a short wallet must add money first. Off = today's behaviour.
+  STOP_FIXED_PRICE_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Driver status pushes: app:state background presence, and a push when the rider is paying. Off = today's behaviour.
   DRIVER_STATUS_PUSHES_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // The driver's face in the rider's avatar: driverPhotoUrl / driverPhotoKey on offers, matched, /rides/active and the ride page. Off = payloads exactly as today.
+  DRIVER_PHOTO_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Our own STUN/TURN server (coturn, infra/turn). The secret is the
   // static-auth-secret in /etc/turnserver.conf on that machine.
   TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),
@@ -149,6 +153,9 @@ const GatewayEnvSchema = z.object({
   R2_ACCESS_KEY_ID:   z.string().optional().transform(v => v?.trim() || undefined),
   R2_SECRET_ACCESS_KEY: z.string().optional().transform(v => v?.trim() || undefined),
   R2_BUCKET:          z.string().optional().transform(v => v?.trim() || undefined),
+  // Optional read-only R2 token: when both are set, driver photo links are signed with it instead of the read-write key.
+  R2_READ_ACCESS_KEY_ID:     z.string().optional().transform(v => v?.trim() || undefined),
+  R2_READ_SECRET_ACCESS_KEY: z.string().optional().transform(v => v?.trim() || undefined),
 });
 
 export type GatewayEnv = z.infer<typeof GatewayEnvSchema>;

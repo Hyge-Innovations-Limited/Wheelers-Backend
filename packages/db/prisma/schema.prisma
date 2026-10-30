@@ -433,6 +433,14 @@ model Ride {
   pickupZone             String?
   destZone               String?
   distanceKm             Float?
+  /// The km of the route the current agreed fare was set for (booking, then each priced route change). Null on older rides.
+  plannedDistanceKm      Float?
+  /// Our own suggested fare for the route at booking: what the agreed fare is measured against (agreed / this = the ride's negotiated rate, kept by every route change). Null on older rides.
+  bookingSuggestedFareNgn Decimal?                   @db.Decimal(18, 2)
+  /// The ride's negotiated rate: the agreed fare at the match / bookingSuggestedFareNgn. Written once, when the driver is matched; no route change ever recomputes it. Null: 1.
+  bargainRate            Float?
+  /// The km of the route as last PRICED (set at booking and by every priced route change, never by an unpriced one): the most an older app's unpriced changes may stretch the trip is 0.5 km past it. Null on older rides.
+  pricedPlannedKm        Float?
   durationSeconds        Int?
   cancelStage            CancelStage?
   cancelReason           String?

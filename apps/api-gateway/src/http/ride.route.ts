@@ -15,6 +15,7 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
+import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
 
@@ -27,6 +28,8 @@ interface RideHistoryRouteDeps {
   jwtSecret: string;
   /** Auto-accept's record for an open search (GET /rides/active). Absent: reported off. */
   redisClient?: RedisClient;
+  /** DRIVER_PHOTO_ENABLED: driverPhotoUrl / driverPhotoKey on the driver and the offers. Absent: as before. */
+  driverPhoto?: DriverPhotoResolver;
 }
 
 interface ScheduledRideRouteDeps {
@@ -646,7 +649,7 @@ export async function handleActiveRideRoute(
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
-          offers: (await rideClient.pendingBids(active.id).catch(() => [])).map((bid) => ({
+          offers: await Promise.all((await rideClient.pendingBids(active.id).catch(() => [])).map(async (bid) => ({
             bidId: bid.id,
             driverId: bid.driverId,
             driverUserId: bid.driverUserId,
@@ -658,10 +661,13 @@ export async function handleActiveRideRoute(
             etaSeconds: bid.etaSeconds,
             distanceKm: bid.distanceKm,
             receivedAt: bid.createdAt.toISOString(),
-          })),
+            ...(await driverPhotoFields(deps.driverPhoto, bid.driverId, { riderId: user.id })),
+          }))),
         }
       : null;
-    sendJson(res, 200, { ride: { ...serializeRideDetail(ride), tripCode, search } });
+    const detail = serializeRideDetail(ride);
+    const driverPhoto = detail.driver ? await driverPhotoFields(deps.driverPhoto, detail.driver.id) : {};
+    sendJson(res, 200, { ride: { ...detail, ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}), tripCode, search } });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }

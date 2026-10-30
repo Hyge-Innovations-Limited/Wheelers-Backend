@@ -24,6 +24,13 @@ const { handleRideMessage } = at('apps/api-gateway/dist/websocket/handlers/ride.
 const { createTripLifecycleHandler } = at('apps/ride-service/dist/handlers/trip-lifecycle.handler.js');
 const { createRideEventsConsumer } = at('apps/wallet-service/dist/consumers/ride-events.consumer.js');
 
+const __quote = require(path.join(ROOT, 'apps/api-gateway/dist/rides/trip-route-quote.js'));
+// On a root without the flag (REGRESSION_ROOT = production HEAD) "flag off" is simply how that build runs.
+async function withFlag(on, fn) {
+  if (typeof __quote.setStopFixedPriceEnabled !== 'function') { if (on) throw new Error('this build has no STOP_FIXED_PRICE_ENABLED'); return fn(); }
+  const prev = __quote.stopFixedPriceEnabled(); __quote.setStopFixedPriceEnabled(on); try { return await fn(); } finally { __quote.setStopFixedPriceEnabled(prev); }
+}
+
 const prisma = new PrismaClient();
 const made = { users: [], rides: [], drivers: [] };
 const real = { log: console.log, info: console.info, warn: console.warn };
@@ -74,9 +81,9 @@ async function trip(spareNgn = 0) {
   return { rider, driverUserId: du, driverId: driver.id, ride };
 }
 const gateway = () => { const events = []; return { events, publisher: { publishRideEvent: async (e) => { events.push(e); } }, redis: memoryRedis() }; };
-async function runServices(event) {
+async function runServices(event, routePlanner) {
   const updated = [];
-  await createTripLifecycleHandler({ rideEventsProducer: { rideRouteUpdated: async (e) => { updated.push(e); } } }).handleRideEvent(JSON.parse(JSON.stringify(event)), CTX);
+  await createTripLifecycleHandler({ routePlanner, rideEventsProducer: { rideRouteUpdated: async (e) => { updated.push(e); } } }).handleRideEvent(JSON.parse(JSON.stringify(event)), CTX);
   const consumer = createRideEventsConsumer({ walletRepository: walletClient, walletEventsProducer: new Proxy({}, { get: () => async () => {} }) });
   for (const u of updated) await consumer.handle(JSON.parse(JSON.stringify(u)), CTX);
   return updated;
@@ -96,22 +103,33 @@ test.after(async () => {
   await prisma.$disconnect();
 });
 
-test('OLD rider app, own live ride, no acceptedFareNgn: the route still moves (navigation); the hold stays at agreed', async () => {
-  const t = await trip();
-  const w = gateway();
-  // Exactly the old payload: riderId/driverId from the client, no acceptedFareNgn, a mid-trip origin.
-  const answer = await handleRideMessage('ride:route:update', { rideId: t.ride.id, riderId: t.rider, driverId: t.driverId, origin: { lat: 6.45, lng: 3.40, address: 'x' }, destination: IKEJA, stops: [] }, { userId: t.rider, role: 'RIDER' }, w.publisher, planner(1500), w.redis);
-  assert.equal(answer.type, 'ride:route:update:accepted');
-  assert.ok(answer.payload.route, 'the reply still carries the road to draw');
-  assert.equal(w.events[0].eventType, 'RIDE_ROUTE_UPDATE_REQUESTED');
-  assert.equal(w.events[0].destination.lat, IKEJA.lat);
-  await runServices(w.events[0]);
-  const stop = await prisma.rideStop.findFirst({ where: { rideId: t.ride.id, type: 'FINAL' } });
-  assert.equal(stop.lat, IKEJA.lat, 'the destination moved');
-  assert.equal(await holdOf(t.ride.id), HOLD, 'hold at agreed');
-});
+// ride-service's own planner prices the new route ABOVE the agreed fare (9000 against 5200).
+const dearRoutePlanner = { planRoute: async () => ({ distanceKm: 2, durationSeconds: 300, fareEstimateNgn: 9000, suggestedFareNgn: 9000, geometry: { coordinates: LINE, bounds: { northEast: VI, southWest: YABA } } }) };
 
-test('RAISED priced change (app / ride-page trip-route path): hold goes up to the accepted fare; agreed fare (settlement) unchanged', async () => {
+for (const flagOn of [false, true]) {
+  test(`OLD rider app (flag ${flagOn ? 'ON' : 'OFF'}), the real payload with NO origin: the route moves${flagOn ? '; fare AND hold stay at agreed' : ' (HEAD: the hold follows the dearer plan)'}`, () => withFlag(flagOn, async () => {
+    const t = await trip(6000);
+    const w = gateway();
+    // Exactly the old payload: riderId/driverId from the client, no acceptedFareNgn, and no origin.
+    const answer = await handleRideMessage('ride:route:update', { rideId: t.ride.id, riderId: t.rider, driverId: t.driverId, destination: IKEJA, stops: [] }, { userId: t.rider, role: 'RIDER' }, w.publisher, planner(1500), w.redis);
+    assert.equal(answer.type, 'ride:route:update:accepted');
+    assert.equal(w.events[0].eventType, 'RIDE_ROUTE_UPDATE_REQUESTED');
+    assert.equal(w.events[0].destination.lat, IKEJA.lat);
+    await runServices(w.events[0], dearRoutePlanner);
+    const stop = await prisma.rideStop.findFirst({ where: { rideId: t.ride.id, type: 'FINAL' } });
+    assert.equal(stop.lat, IKEJA.lat, 'the destination moved');
+    const row = await prisma.ride.findUnique({ where: { id: t.ride.id } });
+    assert.equal(Number(row.agreedFareNgn), AGREED, 'settlement still charges the agreed fare');
+    if (flagOn) {
+      assert.equal(await holdOf(t.ride.id), HOLD, 'hold at agreed');
+      assert.equal(Number(row.fareEstimateNgn), AGREED);
+    } else {
+      assert.equal(await holdOf(t.ride.id), calculateRideFees(9000).totalNgn, 'HEAD: a dearer plan still raises the hold');
+    }
+  }));
+}
+
+test('RAISED priced change (app / ride-page trip-route path): hold goes up to the accepted fare; agreed fare (settlement) unchanged', () => withFlag(false, async () => {
   const t = await trip(4000);
   const w = gateway();
   const auth = { userId: t.rider, role: 'RIDER' };
@@ -125,7 +143,7 @@ test('RAISED priced change (app / ride-page trip-route path): hold goes up to th
   assert.equal(await holdOf(t.ride.id), calculateRideFees(7000).totalNgn);
   const row = await prisma.ride.findUnique({ where: { id: t.ride.id } });
   assert.equal(Number(row.agreedFareNgn), AGREED, 'settlement still charges the agreed fare');
-});
+}));
 
 test('mixed deploy: old-gateway events (no priced) parse in new schemas; new events parse with the old shape', () => {
   const base = { rideId: randomUUID(), riderId: randomUUID(), driverId: randomUUID(), destination: { lat: 6.5, lng: 3.4, address: 'Yaba, Lagos' }, stops: [], fareEstimateNgn: 1200, updatedBy: 'rider', timestamp: new Date().toISOString() };
@@ -148,10 +166,26 @@ test('old-gateway RIDE_ROUTE_UPDATE_REQUESTED (no priced) through the NEW ride-s
   assert.equal(await holdOf(t.ride.id), HOLD);
 });
 
-test('stop confirm: the driver (old app payload: rideId only) and the rider both still publish', async () => {
+test('stop confirm: the driver (old app payload: rideId only) and the rider both still publish', () => withFlag(false, async () => {
   const t = await trip();
   const w = gateway();
   await handleRideMessage('ride:stop:confirm', { rideId: t.ride.id, riderId: t.rider, driverId: t.driverId }, { userId: t.driverUserId, driverId: t.driverId, role: 'DRIVER' }, w.publisher, {}, w.redis);
   await handleRideMessage('ride:stop:confirm', { rideId: t.ride.id, riderId: t.rider }, { userId: t.rider, role: 'RIDER' }, w.publisher, {}, w.redis);
   assert.deepEqual(w.events.map((e) => e.confirmedBy), ['driver', 'rider']);
-});
+}));
+
+test('flag ON: a RAISED priced change takes the formula price; it becomes the agreed fare and the hold follows', () => withFlag(true, async () => {
+  const t = await trip(6000);
+  const w = gateway();
+  const auth = { userId: t.rider, role: 'RIDER' };
+  const plan = planner(7000);
+  // Stub: 2 km planned, 2 km driven, 2 km left -> 5200 x 2/4 + 7000.
+  const FORMULA = 2600 + 7000;
+  const q = await handleRideMessage('ride:route:quote', { rideId: t.ride.id, destination: IKEJA, stops: [] }, auth, w.publisher, plan, w.redis);
+  assert.equal(q.payload.fareNgn, FORMULA);
+  const a = await handleRideMessage('ride:route:update', { rideId: t.ride.id, driverId: t.driverId, destination: IKEJA, stops: [], acceptedFareNgn: FORMULA }, auth, w.publisher, plan, w.redis);
+  assert.equal(a.type, 'ride:route:update:accepted');
+  await runServices(w.events[0]);
+  assert.equal(await holdOf(t.ride.id), calculateRideFees(FORMULA).totalNgn);
+  assert.equal(Number((await prisma.ride.findUnique({ where: { id: t.ride.id } })).agreedFareNgn), FORMULA);
+}));

@@ -81,6 +81,8 @@ import { premblyConfigFromEnv } from "./verification/prembly";
 import { handleDriverPhoneRoute } from "./http/driver-phone.route";
 import { handleSupportChatRoute } from "./http/support-chat.route";
 import { startPaperReminderJob } from "./drivers/paper-notify";
+import { ridePageCsp } from "./http/ride-page-csp";
+import { createDriverPhotoResolver, setDriverPhotoResolver } from "./drivers/driver-photo";
 import {
   handleAdminListDriversRoute,
   handleAdminGetDriverRoute,
@@ -254,6 +256,7 @@ import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
 import { GatewayPublisher } from "./websocket/publisher";
 import { SocketRegistry } from "./websocket/registry";
 import { setPayingStatusEnabled } from "./rides/paying-status";
+import { setStopFixedPriceEnabled } from "./rides/trip-route-quote";
 import { createGatewayWebSocketServer } from "./websocket/server";
 import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
@@ -328,12 +331,6 @@ const WIDGET_CSP =
 
 // The ride page draws its maps with Google Maps (as the app does): Google's own
 // list of hosts for its script, tiles and data. Its <style> tags need inline styles.
-const GOOGLE_MAPS_HOSTS = "https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com";
-const RIDE_PAGE_CSP =
-  `default-src 'self'; script-src 'self' ${GOOGLE_MAPS_HOSTS} blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; ` +
-  // Google Maps only (no Leaflet tiles) and no socket: the ride page polls over HTTPS.
-  `img-src 'self' data: blob: ${GOOGLE_MAPS_HOSTS}; connect-src 'self' ${GOOGLE_MAPS_HOSTS} data: blob:; ` +
-  `frame-src *.google.com; worker-src blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
@@ -371,7 +368,7 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
       // The ride page's map is Google's, and its key is locked to our address:
       // that page sends its origin (the link token is in the #fragment, never sent).
       "Referrer-Policy": relative.startsWith("ride/") ? "origin" : "no-referrer",
-      "Content-Security-Policy": relative.startsWith("ride/") ? RIDE_PAGE_CSP : WIDGET_CSP,
+      "Content-Security-Policy": relative.startsWith("ride/") ? ridePageCsp(process.env.R2_ACCOUNT_ID) : WIDGET_CSP,
     });
     res.end(data);
   } catch {
@@ -534,6 +531,23 @@ async function bootstrap(): Promise<void> {
         prefix: 'drivers/kyc',
       })
     : null;
+  // DRIVER_PHOTO_ENABLED: the driver's face for the rider's avatar. Undefined (flag off) keeps every payload as it was.
+  const driverPhoto = gatewayEnv.DRIVER_PHOTO_ENABLED
+    ? createDriverPhotoResolver({
+      // Signed with a read-only R2 token when one is set (R2_READ_ACCESS_KEY_ID / _SECRET), else with the usual key.
+      storage: driverKycStorage && gatewayEnv.R2_READ_ACCESS_KEY_ID && gatewayEnv.R2_READ_SECRET_ACCESS_KEY
+        ? new DriverKycStorage({
+            accountId: gatewayEnv.R2_ACCOUNT_ID!,
+            accessKeyId: gatewayEnv.R2_READ_ACCESS_KEY_ID,
+            secretAccessKey: gatewayEnv.R2_READ_SECRET_ACCESS_KEY,
+            bucket: gatewayEnv.R2_BUCKET!,
+            prefix: 'drivers/kyc',
+          })
+        : driverKycStorage,
+      redis: redisCommandClient,
+    })
+    : undefined;
+  setDriverPhotoResolver(driverPhoto);
   // Reads the driver's licence photo for the admin's licence check (Gemini, Groq as backup).
   const licenceReader = createLlm({ groqApiKey: gatewayEnv.GROQ_API_KEY, groqModel: gatewayEnv.GROQ_MODEL, timeoutMs: Math.max(gatewayEnv.GROQ_TIMEOUT_MS, 30_000) });
 
@@ -553,6 +567,7 @@ async function bootstrap(): Promise<void> {
   // on the WhatsApp rider's Trip chat page. Calls stay off until the TURN
   // server is configured and LIVE_CALL_ENABLED says so.
   setPayingStatusEnabled(gatewayEnv.DRIVER_PAYING_STATUS_ENABLED);
+  setStopFixedPriceEnabled(gatewayEnv.STOP_FIXED_PRICE_ENABLED);
   if (gatewayEnv.LIVE_CALL_ENABLED && !(gatewayEnv.TURN_HOST && gatewayEnv.TURN_SHARED_SECRET)) {
     console.warn("[live-call] LIVE_CALL_ENABLED is on but TURN_HOST or TURN_SHARED_SECRET is missing: calls on mobile data will often fail to connect.");
   }
@@ -1117,6 +1132,7 @@ async function bootstrap(): Promise<void> {
         redisClient: redisCommandClient,
         publisher,
         paymentsClient,
+        driverPhoto,
         notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
         // Changing the trip on the page: the chat's place lookup and route planner.
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
@@ -2217,7 +2233,7 @@ async function bootstrap(): Promise<void> {
         sendMethodNotAllowed(res);
         return;
       }
-      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient });
+      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, driverPhoto });
       return;
     }
 
@@ -2661,6 +2677,8 @@ async function bootstrap(): Promise<void> {
   await startGatewayKafkaConsumer({
     consumer,
     driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
+    driverPhoto,
+    routePlanner,
     registry,
     publisher,
     redisClient: redisCommandClient,
