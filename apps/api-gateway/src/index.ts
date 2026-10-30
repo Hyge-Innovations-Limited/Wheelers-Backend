@@ -167,6 +167,7 @@ import {
   handleWalletOverviewRoute,
   handleWalletTransactionsRoute,
   handleWalletDepositInfoRoute,
+  handleWalletDepositPreviewRoute,
 } from "./http/wallet.route";
 import { PaymentsClient } from "@wheleers/payments";
 import {
@@ -2479,6 +2480,16 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleWalletDepositInfoRoute(req, res, walletDeps);
+      return;
+    }
+
+    if (url.pathname === "/wallet/deposit-preview") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleWalletDepositPreviewRoute(req, res, walletDeps, url);
       return;
     }
 

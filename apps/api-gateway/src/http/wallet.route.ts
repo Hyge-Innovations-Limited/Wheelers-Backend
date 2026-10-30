@@ -25,7 +25,7 @@ import { getBanks } from "../payments/banks";
 import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
-import { MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
+import { depositNeededFor, MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
 
 // ─── Deps ──────────────────────────────────────────────────────────
 
@@ -870,6 +870,32 @@ export async function handleWalletDepositInfoRoute(
           : "Could not load deposit information.",
     });
   }
+}
+
+/**
+ * GET /wallet/deposit-preview?amount=: the rider says what must land in the
+ * wallet, we say what to send. The deposit charges are folded into that one
+ * figure, worked out here so the app never has to know them.
+ */
+export async function handleWalletDepositPreviewRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WalletRouteDeps,
+  url: URL,
+): Promise<void> {
+  try {
+    await authenticateHttpUser(req, deps.jwtSecret);
+  } catch (error) {
+    sendJson(res, 401, { error: error instanceof Error ? error.message : "Sign in again." });
+    return;
+  }
+  const amount = Number(url.searchParams.get("amount"));
+  if (!Number.isFinite(amount) || amount < 1 || amount > 10_000_000) {
+    sendJson(res, 400, { error: "Enter an amount.", code: "AMOUNT_INVALID" });
+    return;
+  }
+  const walletGetsNgn = Math.ceil(amount);
+  sendJson(res, 200, { walletGetsNgn, sendNgn: depositNeededFor(walletGetsNgn) });
 }
 
 export async function handleProvisionVirtualAccountRoute(
