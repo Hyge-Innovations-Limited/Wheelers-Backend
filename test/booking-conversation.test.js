@@ -16,6 +16,7 @@ const { PrismaClient } = require('@prisma/client');
 
 const { handleMetaWhatsappWebhookRoute, placeChoiceRows, sayRidePageEventInChat, createWhatsappDepositFinisher, createOffersFormChatHooks } = require('../apps/api-gateway/dist/http/whatsapp.route.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
+require('./fixtures/bid-rows.js');
 const { classifyBookingIntent, mightNotBeAnAddress, sharedPlaceWords } = require('../apps/api-gateway/dist/LLM/booking-intent.js');
 const { geocodeAddress, geocodeAddressCandidates, kmBetween, resetPlacesAvailability } = require('../apps/api-gateway/dist/LLM/geocoding.js');
 

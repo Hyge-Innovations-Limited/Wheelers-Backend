@@ -1059,15 +1059,18 @@ export async function handleRideEvent(
         // still winnable) and put the rider back into the bidding flow, so
         // this offer reaches them and "pay" still works.
         const ride = await rideClient.findById(event.rideId).catch(() => null);
+        // The ride's own rider (from the database) must be the one the event names; the chat state
+        // is never rebuilt for anyone else.
         const winnable =
           ride &&
+          ride.riderId === event.riderId &&
           (ride.status === 'REQUESTED' ||
             ride.status === 'MATCHING' ||
             (ride.status === 'CANCELLED' && ride.cancelStage === 'BEFORE_MATCH'));
         if (winnable && ride) {
           const offerNgn = Number(ride.riderOfferNgn ?? ride.fareEstimateNgn ?? event.counterOfferNgn);
           meta = {
-            riderId: event.riderId,
+            riderId: ride.riderId,
             phone,
             pickupAddress: ride.pickupAddress,
             pickupLat: ride.pickupLat ?? undefined,
@@ -1088,9 +1091,9 @@ export async function handleRideEvent(
           await addBid(deps.redisClient, event.rideId, bid);
           await setRideState(deps.redisClient, event.rideId, 'bidding');
           // Never yank the pointer off a ride the rider has since started.
-          const currentActive = await getActiveRide(deps.redisClient, event.riderId).catch(() => null);
+          const currentActive = await getActiveRide(deps.redisClient, ride.riderId).catch(() => null);
           if (!currentActive || currentActive === event.rideId) {
-            await setActiveRide(deps.redisClient, event.riderId, event.rideId);
+            await setActiveRide(deps.redisClient, ride.riderId, event.rideId);
           }
         }
       }

@@ -352,6 +352,24 @@ export const rideClient = {
       data:  { status: 'MATCHING', driverId: null },
     }),
 
+  /** Who owns a ride id and where it stands; null when no ride has that id. Errors propagate. */
+  findStanding: (rideId: string) =>
+    prisma.ride.findUnique({
+      where: { id: rideId },
+      select: { id: true, riderId: true, status: true, cancelStage: true, cancelReason: true },
+    }),
+
+  /**
+   * The rider's own open search (REQUESTED or MATCHING) is MATCHING: the only thing written.
+   * Any other ride, status or owner is untouched (count 0). The route, fare and payment method
+   * are never rewritten here, so a repeated request cannot change a ride under its bids.
+   */
+  restartSearch: (id: string, riderId: string) =>
+    prisma.ride.updateMany({
+      where: { id, riderId, status: { in: ['REQUESTED', 'MATCHING'] } },
+      data: { status: 'MATCHING' },
+    }),
+
   markMatching: (rideId: string) =>
     prisma.ride.update({
       where: { id: rideId },
@@ -367,10 +385,13 @@ export const rideClient = {
   assignDriver: (rideId: string, driverId: string, opts?: {
     agreedFareNgn?: number;
     paymentMethod?: RidePaymentMethod;
+    /** The rider the assignment is for: another rider's ride is never assigned. */
+    riderId?: string;
   }) =>
     prisma.ride.updateMany({
       where: {
         id: rideId,
+        ...(opts?.riderId !== undefined ? { riderId: opts.riderId } : {}),
         OR: [
           { status: { in: ['REQUESTED', 'MATCHING'] } },
           { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: SEARCH_TIMED_OUT_REASON },

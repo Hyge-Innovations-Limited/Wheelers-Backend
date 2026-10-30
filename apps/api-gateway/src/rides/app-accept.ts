@@ -1,4 +1,4 @@
-import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
+import { driverBidClient, driverClient, groupRideClient, rideClient, walletClient } from '@wheleers/db';
 import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
@@ -68,7 +68,23 @@ async function acceptOnce(
 
   // A second accept on a ride that already has a driver (double-tap on two
   // offers) must not publish a second assignment.
-  const acceptingRide = await rideClient.findById(rideId).catch(() => null);
+  // Fails closed: a lookup that errors is 'busy' (try again); a ride that does not exist is refused
+  // unless it is a group match request of this caller.
+  let acceptingRide: Awaited<ReturnType<typeof rideClient.findStanding>>;
+  try {
+    acceptingRide = await rideClient.findStanding(rideId);
+  } catch {
+    return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'busy', message: 'Try again.' } };
+  }
+  if (!acceptingRide) {
+    let groupMember: unknown = null;
+    try {
+      groupMember = await groupRideClient.findMatchRequestByIdForUser(rideId, riderId);
+    } catch {
+      return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'busy', message: 'Try again.' } };
+    }
+    if (!groupMember) throw new Error('This ride is not yours.');
+  }
   if (acceptingRide && acceptingRide.riderId !== riderId) {
     throw new Error('This ride is not yours.');
   }

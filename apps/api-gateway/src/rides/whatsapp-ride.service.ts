@@ -342,6 +342,9 @@ async function confirmOnce(
 ): Promise<ConfirmResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  // The database decides whose ride this is, not the chat's own memory of it.
+  const owned = await rideClient.findStanding(rideId).catch(() => null);
+  if (!owned || owned.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
   // Auto-accept on a search the rider has just ended (cancelled while it waited for the lock): nothing.
   if (options.auto && await isSearchEnded(deps.redisClient, rideId)) return { ok: false, code: 'RIDE_GONE' };
   // Booked already (inside the lock, so not by a booking still on its way): never a second driver.
@@ -352,6 +355,10 @@ async function confirmOnce(
 
   const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
   if (!bid) return { ok: false, code: 'OFFER_GONE' };
+  // Every time: the offer must be a real, still-pending bid by this driver on this ride.
+  const pendingBid = (await driverBidClient.findByRide(rideId).catch(() => []))
+    .some((row) => row.driverId === bid.driverId && row.status === 'PENDING');
+  if (!pendingBid) return { ok: false, code: 'OFFER_GONE' };
   const fareNgn = bid.counterOfferNgn;
   if (options.expectedFareNgn !== undefined && Math.abs(fareNgn - options.expectedFareNgn) >= 0.5) return { ok: false, code: 'OFFER_CHANGED', fareNgn };
   const payWithXlm = options.method === 'XLM';

@@ -11,6 +11,7 @@ const { PrismaClient } = require('@prisma/client');
 
 const local = require('../apps/api-gateway/dist/auth/local.js');
 const bidState = require('../apps/api-gateway/dist/whatsapp-flows/bid-state.js');
+require('./fixtures/bid-rows.js');
 const { handleRidePageRoute } = require('../apps/api-gateway/dist/http/ride-page.route.js');
 const notifier = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
 
@@ -333,7 +334,7 @@ test('a driver who went quiet, went offline, or is being taken by someone else c
   for (const bid of [quiet, offline, taken]) await bidState.addBid(redis, body.rideId, bid);
   await redis.set(`whatsapp:driver:${contested.driverId}:accepting`, 'another-riders-ride');
 
-  for (const [bid, code] of [[quiet, 'DRIVER_UNAVAILABLE'], [offline, 'DRIVER_UNAVAILABLE'], [taken, 'DRIVER_TAKEN']]) {
+  for (const [bid, code] of [[quiet, 'DRIVER_AWAY'], [offline, 'DRIVER_AWAY'], [taken, 'DRIVER_TAKEN']]) { // their bids are real and held, so they are away, not gone
     const result = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId });
     assert.equal(result.status, 409);
     assert.equal(result.body.code, code);

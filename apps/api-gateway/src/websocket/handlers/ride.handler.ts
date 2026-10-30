@@ -320,6 +320,26 @@ export async function handleRideMessage(
 
   if (type === 'ride:request') {
     const rideId = getString(payload, 'rideId') ?? randomUUID();
+    // A client-chosen id must be a new v4 UUID: no ride row and no group match request has it.
+    // Real clients never reuse an id, so a reused one is only ever an attack on someone's ride.
+    if (getString(payload, 'rideId')) {
+      const refuse = (error: string): HandlerResponse => {
+        console.warn('[ride:request] refused: bad or used ride id', { rideId, userId: auth.userId });
+        return { type: 'ride:request:rejected', payload: { rideId, error } };
+      };
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rideId)) {
+        return refuse('Invalid ride id.');
+      }
+      try {
+        const [standing, groupRequest] = await Promise.all([
+          rideClient.findStanding(rideId),
+          groupRideClient.findMatchRequestById(rideId),
+        ]);
+        if (standing || groupRequest) return refuse('This ride id is already in use.');
+      } catch {
+        return refuse('Could not start the search. Please try again.');
+      }
+    }
     const pickup = parseLatLng(payload, 'pickup');
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
@@ -483,41 +503,8 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:counter_offer') {
-    const counterRideId = requireString(payload, 'rideId');
-    // A counter sent as a rate per km becomes the fare the rider would pay.
-    await resolveDriverBidFareNgn(counterRideId, payload, 'counterOfferNgn');
-    const proximity = await computeBidProximity(
-      auth.userId,
-      counterRideId,
-      requireNumber(payload, 'etaSeconds'),
-    );
-    const event = RideCounterOfferEvent.parse({
-      eventType: 'RIDE_COUNTER_OFFER',
-      rideId: counterRideId,
-      riderId: requireString(payload, 'riderId'),
-      driverId: getString(payload, 'driverId') ?? auth.driverId ?? auth.userId,
-      driverUserId: auth.userId,
-      counterOfferNgn: requireNumber(payload, 'counterOfferNgn'),
-      driverName: requireString(payload, 'driverName'),
-      driverRating: requireNumber(payload, 'driverRating'),
-      vehiclePlate: requireString(payload, 'vehiclePlate'),
-      vehicleModel: requireString(payload, 'vehicleModel'),
-      etaSeconds: proximity.etaSeconds,
-      distanceKm: proximity.distanceKm,
-      timestamp,
-    });
-
-    await assertOfferWithinBand(event.rideId, event.counterOfferNgn, 'driver');
-
-    await publisher.publishRideEvent(event);
-
-    return {
-      type: 'ride:counter_offer:accepted',
-      payload: {
-        rideId: event.rideId,
-        counterOfferNgn: event.counterOfferNgn,
-      },
-    };
+    // Legacy and unguarded (identity and rider came from the payload). Drivers bid with driver:accept.
+    return { type: 'ride:counter_offer:rejected', payload: { rideId: getString(payload, 'rideId'), error: 'Use driver:accept' } };
   }
 
   if (type === 'ride:accept_offer') {
@@ -845,38 +832,27 @@ export async function handleRideMessage(
   if (type === 'driver:accept') {
     // Only an approved driver may bid on or take a request.
     await assertDriverApproved(auth.userId);
-    // Driver accepts / bids — look up real driver profile from DB
-    const driverId = getString(payload, 'driverId') ?? auth.driverId ?? auth.userId;
-
-    let driverName = getString(payload, 'driverName') ?? 'Driver';
-    let driverRating = getNumber(payload, 'driverRating') ?? 5.0;
-    let vehiclePlate = getString(payload, 'vehiclePlate') ?? '';
-    let vehicleModel = getString(payload, 'vehicleModel') ?? '';
-    let driverRowId: string | null = null;
+    // The driver is whoever is signed in. Identity, name, rating and car come from the
+    // database only, never the payload.
+    const driver = await driverClient.findByUserId(auth.userId).catch(() => null);
+    if (!driver) throw new Error('Only a driver can do that.');
+    const driverId = driver.id;
+    const driverRowId: string = driver.id;
+    const driverName = driver.user.name ?? driver.user.phone ?? 'Driver';
+    const driverRating = driver.rating ?? 5.0;
+    const vehiclePlate = driver.vehiclePlate ?? '';
+    const vehicleModel = driver.vehicleModel ?? '';
     let bidRowId: string | undefined;
 
-    try {
-      const driver = await driverClient.findByUserId(auth.userId);
-      if (driver) {
-        driverRowId = driver.id;
-        driverName = driver.user.name ?? driver.user.phone ?? driverName;
-        driverRating = driver.rating ?? driverRating;
-        vehiclePlate = driver.vehiclePlate ?? vehiclePlate;
-        vehicleModel = driver.vehicleModel ?? vehicleModel;
-      }
-    } catch {
-      // Use client-provided fallbacks
-    }
-
     const acceptRideId = requireString(payload, 'rideId');
-    // The rider's id normally rides in the payload — but a bid card rebuilt
-    // from history may not know it. The ride row always does; a missing or
-    // empty riderId must not kill a legitimate bid.
-    let bidRiderId = getString(payload, 'riderId');
+    // The rider is the ride's own, never the payload's.
+    const bidRide = await rideClient.findById(acceptRideId).catch(() => null);
+    const bidRiderId = bidRide?.riderId;
     if (!bidRiderId) {
-      bidRiderId = (await rideClient.findById(acceptRideId).catch(() => null))?.riderId;
+      throw new Error('This request no longer exists.');
     }
-    if (!bidRiderId) {
+    const claimedRiderId = getString(payload, 'riderId');
+    if (claimedRiderId && claimedRiderId !== bidRiderId) {
       throw new Error('This request no longer exists.');
     }
     // The request must still be taking bids, and the bid must sit inside
@@ -892,7 +868,7 @@ export async function handleRideMessage(
     );
 
     // A driver already on a trip is not in the market.
-    if (driverRowId) {
+    {
       const busy = await rideClient.findActiveByDriver(driverRowId).catch(() => null);
       if (busy) {
         throw new Error('Finish your current trip before bidding on new requests.');
@@ -901,7 +877,7 @@ export async function handleRideMessage(
 
     // Record the bid FIRST so its durable id travels with the offer — the
     // rider's acceptance can then name this exact bid and price.
-    if (driverRowId) {
+    {
       try {
         const bidRow = await driverBidClient.record({
           rideId: acceptRideId,

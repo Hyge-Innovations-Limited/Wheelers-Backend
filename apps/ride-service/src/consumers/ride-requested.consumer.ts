@@ -265,9 +265,30 @@ export function createRideRequestedConsumer(params: {
     } catch (err) {
       console.warn(`[ride-service] ride create skipped:`, (err as any)?.message ?? err);
       try {
-        await rideClient.markMatching(event.rideId);
+        // Only the rider's own open search, and only if this is the same request again (a
+        // redelivery): the same route. Never another rider's ride, nor one matched, under way or
+        // finished, nor an open one asked for a different route (its bids are for the old one).
+        const restarted = await rideClient.restartSearch(event.rideId, event.riderId);
+        const row = restarted.count === 0 ? null : await rideClient.findById(event.rideId);
+        const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+        const sameRoute = row != null
+          && near(row.pickupLat, event.pickup.lat) && near(row.pickupLng, event.pickup.lng)
+          && near(row.destLat, event.destination.lat) && near(row.destLng, event.destination.lng)
+          && (() => {
+            const rowStops = row.routeStops.filter((stop) => stop.type === 'INTERMEDIATE');
+            return rowStops.length === event.stops.length
+              && rowStops.every((stop, i) => near(stop.lat, event.stops[i]!.lat) && near(stop.lng, event.stops[i]!.lng));
+          })();
+        if (!sameRoute) {
+          console.warn('[ride-service] ride request refused: ride id is not this rider\'s open search for this route', { rideId: event.rideId, userId: event.riderId });
+          state.routeByRideId.delete(event.rideId);
+          return;
+        }
       } catch (markErr) {
-        console.warn(`[ride-service] ride matching persistence skipped:`, (markErr as any)?.message ?? markErr);
+        // Could not tell whose ride this is: no broadcast.
+        console.warn(`[ride-service] ride matching persistence failed, request dropped:`, (markErr as any)?.message ?? markErr);
+        state.routeByRideId.delete(event.rideId);
+        return;
       }
     }
 
@@ -481,6 +502,13 @@ export function createRideRequestedConsumer(params: {
   async function handleOfferAccepted(event: RideOfferAcceptedEvent): Promise<void> {
     const pending = state.pendingMatchesByRideId.get(event.rideId);
 
+    // The rider on the event must be the ride's own. Anyone else's accept does nothing.
+    const owned = await rideClient.findStanding(event.rideId).catch(() => undefined);
+    if (owned && owned.riderId !== event.riderId) {
+      console.warn('[ride-service] offer accepted by someone who is not the ride\'s rider — ignored', { rideId: event.rideId, userId: event.riderId });
+      return;
+    }
+
     // One driver, one trip. Two riders accepting the same driver inside the
     // Kafka lag both passed the gateway's busy check; the second assignment
     // used to go through and overwrite the first on the driver's app.
@@ -569,18 +597,15 @@ export function createRideRequestedConsumer(params: {
     const poolDriver = pending?.candidates.find((d) => d.driverId === event.driverId)
       ?? state.onlineDrivers.get(event.driverId);
 
-    // Only hit the DB when memory could not supply the driver's details.
-    const dbDriver =
-      counterOfferInfo || poolDriver
-        ? null
-        : await driverClient.findById(event.driverId).catch((err) => {
-            console.warn('[ride-service] driver lookup failed while rebuilding assignment', {
-              rideId: event.rideId,
-              driverId: event.driverId,
-              error: (err as any)?.message ?? err,
-            });
-            return null;
-          });
+    // The driver's name, rating and car come from the database, never from a bid's own words.
+    const dbDriver = await driverClient.findById(event.driverId).catch((err) => {
+      console.warn('[ride-service] driver lookup failed while rebuilding assignment', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        error: (err as any)?.message ?? err,
+      });
+      return null;
+    });
 
     // Publish RIDE_DRIVER_ASSIGNED
     await rideEventsProducer.rideDriverAssigned({
@@ -589,10 +614,10 @@ export function createRideRequestedConsumer(params: {
       riderId: event.riderId,
       driverId: event.driverId,
       driverUserId: event.driverUserId,
-      driverName: counterOfferInfo?.driverName ?? dbDriver?.user?.name ?? 'Driver',
-      driverRating: counterOfferInfo?.driverRating ?? Number(dbDriver?.rating ?? 5.0),
-      vehiclePlate: counterOfferInfo?.vehiclePlate ?? poolDriver?.vehiclePlate ?? dbDriver?.vehiclePlate ?? '',
-      vehicleModel: counterOfferInfo?.vehicleModel ?? poolDriver?.vehicleModel ?? dbDriver?.vehicleModel ?? '',
+      driverName: dbDriver?.user?.name ?? counterOfferInfo?.driverName ?? 'Driver',
+      driverRating: dbDriver?.rating != null ? Number(dbDriver.rating) : counterOfferInfo?.driverRating ?? 5.0,
+      vehiclePlate: dbDriver?.vehiclePlate ?? poolDriver?.vehiclePlate ?? counterOfferInfo?.vehiclePlate ?? '',
+      vehicleModel: dbDriver?.vehicleModel ?? poolDriver?.vehicleModel ?? counterOfferInfo?.vehicleModel ?? '',
       etaSeconds: counterOfferInfo?.etaSeconds ?? 0,
       agreedFareNgn: event.agreedFareNgn,
       lockedFareNgn: event.agreedFareNgn,
@@ -614,10 +639,10 @@ export function createRideRequestedConsumer(params: {
         riderIds: pending.group.riderIds,
         driverId: event.driverId,
         driverUserId: event.driverUserId,
-        driverName: counterOfferInfo?.driverName ?? dbDriver?.user?.name ?? 'Driver',
-        driverRating: counterOfferInfo?.driverRating ?? Number(dbDriver?.rating ?? 5.0),
-        vehiclePlate: counterOfferInfo?.vehiclePlate ?? poolDriver?.vehiclePlate ?? dbDriver?.vehiclePlate ?? '',
-        vehicleModel: counterOfferInfo?.vehicleModel ?? poolDriver?.vehicleModel ?? dbDriver?.vehicleModel ?? '',
+        driverName: dbDriver?.user?.name ?? counterOfferInfo?.driverName ?? 'Driver',
+        driverRating: dbDriver?.rating != null ? Number(dbDriver.rating) : counterOfferInfo?.driverRating ?? 5.0,
+        vehiclePlate: dbDriver?.vehiclePlate ?? poolDriver?.vehiclePlate ?? counterOfferInfo?.vehiclePlate ?? '',
+        vehicleModel: dbDriver?.vehicleModel ?? poolDriver?.vehicleModel ?? counterOfferInfo?.vehicleModel ?? '',
         etaSeconds: counterOfferInfo?.etaSeconds ?? 0,
         timestamp: new Date().toISOString(),
       }).catch((err) => {

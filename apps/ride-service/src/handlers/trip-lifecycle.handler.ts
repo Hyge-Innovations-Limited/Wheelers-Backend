@@ -46,6 +46,7 @@ export function createTripLifecycleHandler(params?: {
           const assigned = await rideClient.assignDriver(event.rideId, event.driverId, {
             agreedFareNgn: event.agreedFareNgn,
             paymentMethod: event.paymentMethod,
+            riderId: event.riderId,
           });
           if (assigned.count === 0) {
             // We did not write it. Either another driver won the race — they
