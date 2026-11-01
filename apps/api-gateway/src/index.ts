@@ -263,7 +263,7 @@ import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
 import { TripRecordingStorage } from "./storage/trip-recording-storage";
-import { handleTripRecordingRoute, recordsTrips, sweepTripRecordings } from "./http/trip-recording.route";
+import { handleTripRecordingRoute, sweepTripRecordings } from "./http/trip-recording.route";
 import { startReferralJobs } from "./referrals/jobs";
 import { clientIp } from "./utils/client-ip";
 import { handlePasskeyRoute } from "./http/passkey.route";
@@ -504,10 +504,12 @@ async function bootstrap(): Promise<void> {
 
   const r2Configured = !!(gatewayEnv.R2_ACCOUNT_ID && gatewayEnv.R2_ACCESS_KEY_ID && gatewayEnv.R2_SECRET_ACCESS_KEY && gatewayEnv.R2_BUCKET);
 
-  // Trip voice recording: its own bucket, never the documents one. Off unless TRIP_RECORDING_ENABLED.
+  // Trip voice recording: its own bucket, never the documents one. Phones record only with
+  // TRIP_RECORDING_ENABLED; the bucket alone keeps the 30-day sweep running, so switching
+  // recording off never stops what was recorded from being deleted.
   const tripRecordingBucket = gatewayEnv.TRIP_RECORDING_R2_BUCKET;
   const tripRecordingStorage =
-    gatewayEnv.TRIP_RECORDING_ENABLED && r2Configured && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET
+    r2Configured && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET
       ? new TripRecordingStorage({
           accountId: gatewayEnv.R2_ACCOUNT_ID!,
           accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!,
@@ -2686,7 +2688,6 @@ async function bootstrap(): Promise<void> {
     routePlanner,
     redis: redisCommandClient,
     driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
-    tripRecording: tripRecordingStorage ? { recordsFor: (driverId: string) => recordsTrips(tripRecordingDeps, driverId) } : undefined,
     maxPayloadBytes: gatewayEnv.WS_MAX_PAYLOAD_BYTES,
     rateLimitPerSecond: gatewayEnv.WS_RATE_LIMIT_PER_SECOND,
     rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,

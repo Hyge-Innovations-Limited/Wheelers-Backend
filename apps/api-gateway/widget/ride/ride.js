@@ -3511,8 +3511,6 @@
     var chat = W.$('d-chat');
     W.show(chat, Boolean(s.tripChatUrl));
     if (s.tripChatUrl) chat.setAttribute('href', s.tripChatUrl);
-    // The driver's phone is recording the trip (an older server never says so).
-    W.show(W.$('d-recording'), s.recording === true);
     // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';

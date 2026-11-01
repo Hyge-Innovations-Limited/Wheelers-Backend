@@ -8,7 +8,6 @@ const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
 
 const { handleTripRecordingRoute, recordsTrips, sweepTripRecordings } = require('../apps/api-gateway/dist/http/trip-recording.route.js');
-const { handleTripRecordingMessage } = require('../apps/api-gateway/dist/websocket/trip-recording.js');
 const local = require('../apps/api-gateway/dist/auth/local.js');
 
 const prisma = new PrismaClient();
@@ -16,16 +15,31 @@ const SECRET = 'test-secret-that-is-at-least-32-characters-long';
 const ADMIN_KEY = 'test-admin-key';
 const seeded = { users: [], drivers: [], rides: [], admins: [] };
 
+const M4A = Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20]);
+
 function fakeStorage() {
+  // key -> { size, etag, bytes, modified }
   const objects = new Map();
   return {
     objects,
     removed: [],
+    failDelete: new Set(),
+    put(key, size, { etag = `"e-${key}"`, bytes = M4A, modified = new Date() } = {}) { objects.set(key, { size, etag, bytes, modified }); },
     keyFor: (rideId, i) => `trips/${rideId}/segment-${String(i).padStart(3, '0')}.m4a`,
     uploadUrl: async (key) => `https://r2.example/put/${key}`,
     listenUrl: async (key) => `https://r2.example/get/${key}`,
-    sizeOf: async (key) => (objects.has(key) ? objects.get(key) : null),
-    remove: async function (keys) { for (const k of keys) { objects.delete(k); this.removed.push(k); } },
+    stat: async (key) => (objects.has(key) ? { size: objects.get(key).size, etag: objects.get(key).etag } : null),
+    head: async (key) => objects.get(key)?.bytes ?? Buffer.alloc(0),
+    remove: async function (keys) {
+      const failed = [];
+      for (const k of keys) {
+        if (this.failDelete.has(k)) { failed.push(k); continue; }
+        objects.delete(k);
+        this.removed.push(k);
+      }
+      return failed;
+    },
+    listOlderThan: async (cutoff) => [...objects.entries()].filter(([, o]) => o.modified < cutoff).map(([k]) => k),
   };
 }
 
@@ -65,6 +79,8 @@ async function seedRide(riderId, driverId, extra = {}) {
       pickupLat: 6.6018, pickupLng: 3.3515, pickupAddress: 'Opebi, Ikeja',
       destLat: 6.4969, destLng: 3.3556, destAddress: 'Surulere',
       fareEstimateNgn: 5200, agreedFareNgn: 5200,
+      // The phone started recording 10 minutes ago.
+      recordingStartedAt: new Date(Date.now() - 10 * 60 * 1000),
       ...extra,
     },
   });
@@ -125,7 +141,9 @@ test('the ride\'s own driver gets an upload link; another driver gets 403', asyn
   assert.equal((await call(deps(storage), 'POST', '/drivers/me/trip-recordings/upload-url', { body: { rideId: ride.id } })).status, 401);
 });
 
-test('oversize, a bad segment, a ride not running and a ride ended over 30 days ago are refused', async () => {
+const HOUR = 60 * 60 * 1000;
+
+test('refused: oversize, a bad segment, a trip never announced, a ride not running, too old, longer than the trip', async () => {
   const { driver, token } = await seedDriver();
   const rider = await seedUser('RIDER');
   const storage = fakeStorage();
@@ -135,45 +153,99 @@ test('oversize, a bad segment, a ride not running and a ride ended over 30 days 
   assert.equal((await post({ rideId: live.id, segmentIndex: 0, bytes: 21 * 1024 * 1024 })).status, 413);
   assert.equal((await post({ rideId: live.id, segmentIndex: 40, bytes: 1000 })).status, 400);
   assert.equal((await post({ rideId: live.id, segmentIndex: -1, bytes: 1000 })).status, 400);
+  assert.equal((await post({ rideId: 'no-such-ride', segmentIndex: 0, bytes: 1000 })).status, 403);
+
+  const never = await seedRide(rider.id, driver.id, { recordingStartedAt: null });
+  const unannounced = await post({ rideId: never.id, segmentIndex: 0, bytes: 1000 });
+  assert.deepEqual([unannounced.status, unannounced.body.code], [409, 'not_recorded'], 'never marked as recorded while it ran: nothing is taken');
+  const neverDone = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: new Date(), recordingStartedAt: null });
+  assert.equal((await post({ rideId: neverDone.id, segmentIndex: 0, bytes: 1000 })).body.code, 'not_recorded');
 
   const assigned = await seedRide(rider.id, driver.id, { status: 'DRIVER_ASSIGNED' });
   assert.equal((await post({ rideId: assigned.id, segmentIndex: 0, bytes: 1000 })).status, 409);
 
-  const old = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000) });
-  assert.equal((await post({ rideId: old.id, segmentIndex: 0, bytes: 1000 })).status, 409);
+  const old = await seedRide(rider.id, driver.id, { status: 'COMPLETED', recordingStartedAt: new Date(Date.now() - 50 * HOUR), completedAt: new Date(Date.now() - 49 * HOUR) });
+  assert.equal((await post({ rideId: old.id, segmentIndex: 0, bytes: 1000 })).body.code, 'too_old');
+  const noEnd = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: null });
+  assert.equal((await post({ rideId: noEnd.id, segmentIndex: 0, bytes: 1000 })).body.code, 'too_old', 'a finished ride with no end time is treated as too old');
 
-  const recent = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) });
+  // 10 minutes in: pieces 0-1, plus 3 for restarts and the last short piece.
+  assert.equal((await post({ rideId: live.id, segmentIndex: 4, bytes: 1000 })).status, 200);
+  const tooLong = await post({ rideId: live.id, segmentIndex: 5, bytes: 1000 });
+  assert.deepEqual([tooLong.status, tooLong.body.code], [409, 'too_long']);
+  const short = await seedRide(rider.id, driver.id, { status: 'COMPLETED', recordingStartedAt: new Date(Date.now() - 3 * HOUR), completedAt: new Date(Date.now() - 3 * HOUR + 10 * 60 * 1000) });
+  assert.equal((await post({ rideId: short.id, segmentIndex: 39, bytes: 1000 })).body.code, 'too_long', 'a 10-minute trip cannot gain 40 pieces later');
+
+  const recent = await seedRide(rider.id, driver.id, { status: 'COMPLETED', recordingStartedAt: new Date(Date.now() - 3 * HOUR), completedAt: new Date(Date.now() - 2 * HOUR) });
   assert.equal((await post({ rideId: recent.id, segmentIndex: 0, bytes: 1000 })).status, 200, 'a finished trip may still upload its last segments');
+  const cancelled = await seedRide(rider.id, driver.id, { status: 'CANCELLED', recordingStartedAt: new Date(Date.now() - 3 * HOUR), cancelledAt: new Date(Date.now() - 2 * HOUR) });
+  assert.equal((await post({ rideId: cancelled.id, segmentIndex: 0, bytes: 1000 })).status, 200, 'a trip cancelled mid-way keeps its recording');
 });
 
-test('complete: needs the object there, records it once, and a repeat is the same row', async () => {
+test('complete: needs a real m4a there, records it once with its ETag, and a recorded piece never gets a new link', async () => {
   const { driver, token } = await seedDriver();
   const rider = await seedUser('RIDER');
   const ride = await seedRide(rider.id, driver.id);
   const storage = fakeStorage();
-  const complete = () => call(deps(storage), 'POST', '/drivers/me/trip-recordings/complete', { token, body: { rideId: ride.id, segmentIndex: 2, durationSec: 300 } });
+  const complete = (segmentIndex = 1) => call(deps(storage), 'POST', '/drivers/me/trip-recordings/complete', { token, body: { rideId: ride.id, segmentIndex, durationSec: 300 } });
+  const key = `trips/${ride.id}/segment-001.m4a`;
 
-  assert.equal((await complete()).status, 409, 'nothing uploaded yet');
-  storage.objects.set(`trips/${ride.id}/segment-002.m4a`, 1_200_000);
+  const early = await complete();
+  assert.deepEqual([early.status, early.body.code], [425, 'not_arrived'], 'not there yet: the phone tries again, it does not drop the file');
+  storage.put(key, 1_200_000);
   assert.equal((await complete()).status, 200);
   assert.equal((await complete()).status, 200);
   const rows = await prisma.tripRecording.findMany({ where: { rideId: ride.id } });
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].bytes, 1_200_000);
-  assert.equal(rows[0].durationSec, 300);
+  assert.deepEqual([rows[0].bytes, rows[0].durationSec, rows[0].etag], [1_200_000, 300, `"e-${key}"`]);
 
-  storage.objects.set(`trips/${ride.id}/segment-003.m4a`, 25 * 1024 * 1024);
-  const big = await call(deps(storage), 'POST', '/drivers/me/trip-recordings/complete', { token, body: { rideId: ride.id, segmentIndex: 3 } });
-  assert.equal(big.status, 413);
-  assert.ok(storage.removed.includes(`trips/${ride.id}/segment-003.m4a`), 'an oversize upload is deleted');
+  const again = await call(deps(storage), 'POST', '/drivers/me/trip-recordings/upload-url', { token, body: { rideId: ride.id, segmentIndex: 1, bytes: 1_200_000 } });
+  assert.deepEqual([again.status, again.body.code], [409, 'already_recorded'], 'nobody can overwrite a recorded piece');
+
+  storage.put(`trips/${ride.id}/segment-002.m4a`, 25 * 1024 * 1024);
+  assert.equal((await complete(2)).status, 413);
+  assert.ok(storage.removed.includes(`trips/${ride.id}/segment-002.m4a`), 'an oversize upload is deleted');
+
+  storage.put(`trips/${ride.id}/segment-003.m4a`, 5000, { bytes: Buffer.from('<html>not audio') });
+  assert.equal((await complete(3)).status, 415);
+  assert.ok(storage.removed.includes(`trips/${ride.id}/segment-003.m4a`), 'a file that is not a recording is deleted');
 });
 
-test('listening: support and owners only, signed links, and every listen logged', async () => {
+test('start: only the ride\'s driver on a running trip; it marks the trip once and gives the next piece number', async () => {
+  const mine = await seedDriver();
+  const other = await seedDriver();
+  const rider = await seedUser('RIDER');
+  const ride = await seedRide(rider.id, mine.driver.id, { recordingStartedAt: null });
+  const storage = fakeStorage();
+  const d = deps(storage);
+  const start = (token, rideId = ride.id) => call(d, 'POST', '/drivers/me/trip-recordings/start', { token, body: { rideId } });
+
+  assert.equal((await start(other.token)).status, 403);
+  const ok = await start(mine.token);
+  assert.deepEqual([ok.status, ok.body.ok, ok.body.nextSegmentIndex], [200, true, 0]);
+  const marked = (await prisma.ride.findUnique({ where: { id: ride.id } })).recordingStartedAt;
+  assert.ok(marked);
+  await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: mine.driver.id, segmentIndex: 0, objectKey: 'k0', bytes: 1 } });
+  const again = await start(mine.token);
+  assert.equal(again.body.nextSegmentIndex, 1, 'after a reinstall the phone carries on from the server, never over a recorded piece');
+  assert.equal((await prisma.ride.findUnique({ where: { id: ride.id } })).recordingStartedAt.getTime(), marked.getTime(), 'marked once: a second start keeps the first time');
+
+  const done = await seedRide(rider.id, mine.driver.id, { status: 'COMPLETED', completedAt: new Date(), recordingStartedAt: null });
+  assert.equal((await start(mine.token, done.id)).body.code, 'not_running');
+  assert.equal((await call(deps(storage, { enabled: false }), 'POST', '/drivers/me/trip-recordings/start', { token: mine.token, body: { rideId: ride.id } })).status, 404);
+});
+
+test('listening: support and owners only, logged first, and a changed file is marked', async () => {
   const { driver } = await seedDriver();
   const rider = await seedUser('RIDER');
   const ride = await seedRide(rider.id, driver.id);
   const storage = fakeStorage();
-  await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 0, objectKey: `trips/${ride.id}/segment-000.m4a`, bytes: 1000 } });
+  const key0 = `trips/${ride.id}/segment-000.m4a`;
+  const key1 = `trips/${ride.id}/segment-001.m4a`;
+  storage.put(key0, 1000, { etag: '"a"' });
+  storage.put(key1, 1000, { etag: '"swapped"' });
+  await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 0, objectKey: key0, bytes: 1000, etag: '"a"' } });
+  await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 1, objectKey: key1, bytes: 1000, etag: '"b"' } });
   const path = `/admin/rides/${ride.id}/recordings`;
 
   assert.equal((await call(deps(storage), 'GET', path)).status, 401);
@@ -181,8 +253,9 @@ test('listening: support and owners only, signed links, and every listen logged'
 
   const support = await call(deps(storage), 'GET', path, { token: await seedAdmin('SUPPORT') });
   assert.equal(support.status, 200);
-  assert.equal(support.body.recordings.length, 1);
-  assert.equal(support.body.recordings[0].url, `https://r2.example/get/trips/${ride.id}/segment-000.m4a`);
+  assert.deepEqual(support.body.recordings.map((r) => [r.segmentIndex, r.changed]), [[0, false], [1, true]]);
+  assert.equal(support.body.recordings[0].url, `https://r2.example/get/${key0}`);
+  assert.ok(support.body.recordingStartedAt);
   const owner = await call(deps(storage), 'GET', path, { headers: { 'x-admin-key': ADMIN_KEY } });
   assert.equal(owner.status, 200);
 
@@ -191,41 +264,26 @@ test('listening: support and owners only, signed links, and every listen logged'
   assert.ok(logged.every((row) => row.flagged));
 });
 
-test('the sweep deletes only what is older than 30 days, object and row', async () => {
+test('the sweep: older than 30 days goes, object and row; a failed delete is kept to retry; a never-confirmed upload goes too', async () => {
   const { driver } = await seedDriver();
   const rider = await seedUser('RIDER');
   const ride = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: new Date() });
   const storage = fakeStorage();
-  const old = await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 0, objectKey: 'trips/old.m4a', bytes: 1, createdAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000) } });
-  const fresh = await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 1, objectKey: 'trips/fresh.m4a', bytes: 1, createdAt: new Date(Date.now() - 29 * 24 * 60 * 60 * 1000) } });
+  const DAY = 24 * HOUR;
+  const old = await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 0, objectKey: `sweep-${ride.id}/old.m4a`, bytes: 1, createdAt: new Date(Date.now() - 31 * DAY) } });
+  const stuck = await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 2, objectKey: `sweep-${ride.id}/stuck.m4a`, bytes: 1, createdAt: new Date(Date.now() - 31 * DAY) } });
+  const fresh = await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: 1, objectKey: `sweep-${ride.id}/fresh.m4a`, bytes: 1, createdAt: new Date(Date.now() - 29 * DAY) } });
+  storage.put(`sweep-${ride.id}/stuck.m4a`, 1);
+  storage.failDelete.add(`sweep-${ride.id}/stuck.m4a`);
+  storage.put(`trips/${ride.id}/orphan.m4a`, 1, { modified: new Date(Date.now() - 31 * DAY) });
+  storage.put(`trips/${ride.id}/recent-orphan.m4a`, 1, { modified: new Date(Date.now() - 2 * DAY) });
 
-  const removed = await sweepTripRecordings(storage);
-  assert.ok(removed >= 1);
-  assert.ok(storage.removed.includes('trips/old.m4a'));
-  assert.ok(!storage.removed.includes('trips/fresh.m4a'));
+  await sweepTripRecordings(storage);
+  assert.ok(storage.removed.includes(`sweep-${ride.id}/old.m4a`));
+  assert.ok(!storage.removed.includes(`sweep-${ride.id}/fresh.m4a`));
   assert.ok((await prisma.tripRecording.findUnique({ where: { id: old.id } })).deletedAt);
+  assert.equal((await prisma.tripRecording.findUnique({ where: { id: stuck.id } })).deletedAt, null, 'R2 did not delete it: the row stays, the next sweep tries again');
   assert.equal((await prisma.tripRecording.findUnique({ where: { id: fresh.id } })).deletedAt, null);
-});
-
-test('ride:recording:started: only the ride\'s driver on a running trip; the rider is told once', async () => {
-  const { driver, user } = await seedDriver();
-  const other = await seedDriver();
-  const rider = await seedUser('RIDER');
-  const ride = await seedRide(rider.id, driver.id);
-  const sent = [];
-  const wsDeps = { recordsFor: () => true, registry: { sendToUser: async (userId, type, payload) => { sent.push({ userId, type, payload }); } } };
-  const auth = (u, d) => ({ userId: u.id, driverId: d.id });
-
-  assert.equal(await handleTripRecordingMessage('ride:other', { rideId: ride.id }, auth(user, driver), wsDeps), null);
-  const stranger = await handleTripRecordingMessage('ride:recording:started', { rideId: ride.id }, auth(other.user, other.driver), wsDeps);
-  assert.equal(stranger.payload.ok, false);
-
-  const ok = await handleTripRecordingMessage('ride:recording:started', { rideId: ride.id }, auth(user, driver), wsDeps);
-  assert.equal(ok.payload.ok, true);
-  await handleTripRecordingMessage('ride:recording:started', { rideId: ride.id }, auth(user, driver), wsDeps);
-  assert.deepEqual(sent, [{ userId: rider.id, type: 'ride:recording', payload: { rideId: ride.id } }], 'told once');
-  assert.ok((await prisma.ride.findUnique({ where: { id: ride.id } })).recordingId);
-
-  const off = await handleTripRecordingMessage('ride:recording:started', { rideId: ride.id }, auth(user, driver), { ...wsDeps, recordsFor: () => false });
-  assert.equal(off.payload.ok, false);
+  assert.ok(storage.removed.includes(`trips/${ride.id}/orphan.m4a`), 'an upload never confirmed is deleted at 30 days too');
+  assert.ok(!storage.removed.includes(`trips/${ride.id}/recent-orphan.m4a`));
 });

@@ -318,12 +318,3 @@ test('the Driver found card shows the same line, and nothing when there is neith
   assert.equal(none.el('fd-rating').hidden, true);
   assert.equal(none.el('fd-rating').textContent, '');
 });
-
-test('the trip screen says the ride is being recorded only when the server says so', async () => {
-  const recorded = await loadPage(makeServer({ ...trip({}), recording: true }));
-  assert.equal(recorded.el('d-recording').hidden, false);
-  for (const state of [trip({}), { ...trip({}), recording: false }]) {
-    const page = await loadPage(makeServer(state));
-    assert.equal(page.el('d-recording').hidden, true, 'an older server sends nothing: no line');
-  }
-});

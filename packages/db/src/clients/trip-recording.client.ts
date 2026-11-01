@@ -1,16 +1,16 @@
 import { prisma } from '../prisma';
 
-/** How long a trip's recording is kept, then its objects and rows go. */
+/** How long a trip's recording is kept, then its object goes and its row is marked deleted. */
 export const TRIP_RECORDING_KEEP_DAYS = 30;
 
 /**
  * Trip voice recordings: one row per uploaded 5-minute segment. A segment is
- * recorded once (rideId + segmentIndex), so a repeated "uploaded" is the same
- * row, never a second one.
+ * recorded once (rideId + segmentIndex): a repeated "uploaded" is the same
+ * row, and a recorded segment is never given a new upload link.
  */
 export const tripRecordingClient = {
   /** Records an uploaded segment; a repeat of the same segment returns the row already there. */
-  async recordSegment(data: { rideId: string; driverId: string; segmentIndex: number; objectKey: string; bytes: number; durationSec?: number | null }) {
+  async recordSegment(data: { rideId: string; driverId: string; segmentIndex: number; objectKey: string; bytes: number; etag?: string | null; durationSec?: number | null }) {
     return prisma.tripRecording.upsert({
       where: { rideId_segmentIndex: { rideId: data.rideId, segmentIndex: data.segmentIndex } },
       create: {
@@ -19,10 +19,22 @@ export const tripRecordingClient = {
         segmentIndex: data.segmentIndex,
         objectKey: data.objectKey,
         bytes: data.bytes,
+        etag: data.etag ?? null,
         durationSec: data.durationSec ?? null,
       },
       update: {},
     });
+  },
+
+  /** Was this segment ever recorded (kept or already deleted)? */
+  async segmentExists(rideId: string, segmentIndex: number): Promise<boolean> {
+    return (await prisma.tripRecording.count({ where: { rideId, segmentIndex } })) > 0;
+  },
+
+  /** The next segment the phone should use: one past the highest recorded. */
+  async nextSegmentIndex(rideId: string): Promise<number> {
+    const last = await prisma.tripRecording.findFirst({ where: { rideId }, orderBy: { segmentIndex: 'desc' }, select: { segmentIndex: true } });
+    return last ? last.segmentIndex + 1 : 0;
   },
 
   async countForRide(rideId: string): Promise<number> {
@@ -34,7 +46,7 @@ export const tripRecordingClient = {
     return prisma.tripRecording.findMany({
       where: { rideId, deletedAt: null },
       orderBy: { segmentIndex: 'asc' },
-      select: { id: true, segmentIndex: true, objectKey: true, bytes: true, durationSec: true, uploadedAt: true },
+      select: { id: true, segmentIndex: true, objectKey: true, bytes: true, etag: true, durationSec: true, uploadedAt: true },
     });
   },
 
@@ -55,9 +67,9 @@ export const tripRecordingClient = {
     return result.count;
   },
 
-  /** Marks the ride as recorded (the rider is told). Returns true the first time. */
-  async markRideRecording(rideId: string): Promise<boolean> {
-    const result = await prisma.ride.updateMany({ where: { id: rideId, recordingId: null }, data: { recordingId: rideId } });
+  /** Marks the ride as recorded from now (uploads are accepted only after this). Returns true the first time. */
+  async markRideRecording(rideId: string, now = new Date()): Promise<boolean> {
+    const result = await prisma.ride.updateMany({ where: { id: rideId, recordingStartedAt: null }, data: { recordingStartedAt: now } });
     return result.count > 0;
   },
 };

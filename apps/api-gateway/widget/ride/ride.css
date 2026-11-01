@@ -24,9 +24,6 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 /* No font boosting in the phone's in-app browser: the sizes below are the app's. */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-/* The trip is being recorded on the driver's phone. */
-.recording-note { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; line-height: 17px; font-weight: 600; color: var(--muted); }
-.recording-note .rec-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 999px; background: #D93025; }
 body {
   margin: 0;
   background: var(--page);

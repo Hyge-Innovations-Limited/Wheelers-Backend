@@ -18,7 +18,6 @@ import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
 import { handleAppStateMessage } from './app-state';
-import { handleTripRecordingMessage } from './trip-recording';
 import { publicMessage } from '../http/public-error';
 
 interface WebSocketServerDeps {
@@ -32,8 +31,6 @@ interface WebSocketServerDeps {
   redis: RedisClient;
   /** DRIVER_STATUS_PUSHES_ENABLED: accept app:state. Off, it is an unknown message as before. */
   driverStatusPushes?: boolean;
-  /** TRIP_RECORDING_ENABLED: whose phone records. Absent (off): ride:recording:started is an unknown message. */
-  tripRecording?: { recordsFor(driverId: string): boolean };
   /** Takes a bid withdrawn here (driver offline) off its WhatsApp search's list: the ride page and the chat. */
   dropWithdrawnBid?: DropWithdrawnBid;
   /** A larger message closes the socket (code 1009). */
@@ -377,9 +374,6 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         const response =
           tripChatResponse ??
           (deps.driverStatusPushes && !auth.page && auth.client !== 'mcp' ? await handleAppStateMessage(parsed.type, payload, auth, deps.redis) : null) ??
-          (deps.tripRecording && !auth.page && auth.client !== 'mcp'
-            ? await handleTripRecordingMessage(parsed.type, payload, auth, { recordsFor: deps.tripRecording.recordsFor, registry: deps.registry })
-            : null) ??
           // A Trip chat page's socket does nothing else.
           (auth.page
             ? null

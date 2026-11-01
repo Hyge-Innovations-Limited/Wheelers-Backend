@@ -446,6 +446,8 @@ model Ride {
   cancelReason           String?
   penaltyNgn             Decimal?          @db.Decimal(18, 2)
   recordingId            String?
+  /// When the driver's phone started recording this trip. Recordings are accepted only after it.
+  recordingStartedAt     DateTime?
   matchedAt              DateTime?
   arrivedAt              DateTime?
   startedAt              DateTime?
@@ -1941,6 +1943,8 @@ model TripRecording {
   objectKey    String
   bytes        Int
   durationSec  Int?
+  /// The object's ETag when it was recorded: a later listen that finds a different one shows the file changed.
+  etag         String?
   uploadedAt   DateTime  @default(now())
   createdAt    DateTime  @default(now())
   deletedAt    DateTime?
