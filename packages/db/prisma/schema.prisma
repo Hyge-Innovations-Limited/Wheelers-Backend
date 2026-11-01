@@ -1928,3 +1928,24 @@ model MailDraft {
 
   @@index([mailbox, updatedAt])
 }
+
+/// A piece of a trip's voice recording, made on the driver's phone in 5-minute
+/// segments and uploaded to its own R2 bucket. Only support and owners can
+/// listen (each listen is logged); kept 30 days, then the object and the row
+/// go. No foreign key: the ride may be archived while its recording is kept.
+model TripRecording {
+  id           String    @id @default(uuid())
+  rideId       String
+  driverId     String
+  segmentIndex Int
+  objectKey    String
+  bytes        Int
+  durationSec  Int?
+  uploadedAt   DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  @@unique([rideId, segmentIndex])
+  @@index([rideId])
+  @@index([createdAt])
+}

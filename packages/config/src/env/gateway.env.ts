@@ -156,6 +156,12 @@ const GatewayEnvSchema = z.object({
   // Optional read-only R2 token: when both are set, driver photo links are signed with it instead of the read-write key.
   R2_READ_ACCESS_KEY_ID:     z.string().optional().transform(v => v?.trim() || undefined),
   R2_READ_SECRET_ACCESS_KEY: z.string().optional().transform(v => v?.trim() || undefined),
+  // Trip voice recording (driver's phone → R2, support listens, kept 30 days). Off by default.
+  TRIP_RECORDING_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // Only these drivers record, comma-separated Driver ids (a pilot). Empty with the flag on: every driver.
+  TRIP_RECORDING_DRIVER_IDS: z.string().optional().transform((v) => (v ?? '').split(',').map((id) => id.trim()).filter(Boolean)),
+  // The recordings' own bucket, never the app's documents bucket. Same R2 account and keys as above.
+  TRIP_RECORDING_R2_BUCKET: z.string().optional().transform(v => v?.trim() || undefined),
 });
 
 export type GatewayEnv = z.infer<typeof GatewayEnvSchema>;

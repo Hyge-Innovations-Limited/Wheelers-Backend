@@ -667,7 +667,16 @@ export async function handleActiveRideRoute(
       : null;
     const detail = serializeRideDetail(ride);
     const driverPhoto = detail.driver ? await driverPhotoFields(deps.driverPhoto, detail.driver.id) : {};
-    sendJson(res, 200, { ride: { ...detail, ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}), tripCode, search } });
+    sendJson(res, 200, {
+      ride: {
+        ...detail,
+        ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}),
+        tripCode,
+        search,
+        // The driver's phone is recording this trip: the app says so.
+        ...((ride as { recordingId?: string | null }).recordingId ? { recording: true } : {}),
+      },
+    });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }

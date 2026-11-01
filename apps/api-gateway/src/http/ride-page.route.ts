@@ -332,6 +332,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       },
       tripCode,
       paidWithXlm,
+      // The driver's phone is recording this trip: the page says so.
+      ...(payment?.recordingId ? { recording: true } : {}),
       ...(await routePendingField(deps, userId, trip.rideId)),
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),

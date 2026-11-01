@@ -27,6 +27,8 @@ const ALLOWED: Array<[string, RegExp]> = [
   ['GET', /^\/admin\/desk\/trips\/[^/]+$/],
   ['POST', /^\/admin\/desk\/people\/[^/]+\/balance-request$/],
   ['GET', /^\/admin\/desk\/people\/[^/]+\/balance$/],
+  // A trip's voice recording, for a complaint: every listen is logged and flagged.
+  ['GET', /^\/admin\/rides\/[^/]+\/recordings$/],
 ];
 
 export function supportDeskAllows(method: string | undefined, path: string): boolean {

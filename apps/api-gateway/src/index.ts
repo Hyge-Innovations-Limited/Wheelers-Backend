@@ -262,6 +262,8 @@ import { createGatewayWebSocketServer } from "./websocket/server";
 import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
+import { TripRecordingStorage } from "./storage/trip-recording-storage";
+import { handleTripRecordingRoute, recordsTrips, sweepTripRecordings } from "./http/trip-recording.route";
 import { startReferralJobs } from "./referrals/jobs";
 import { clientIp } from "./utils/client-ip";
 import { handlePasskeyRoute } from "./http/passkey.route";
@@ -501,6 +503,42 @@ async function bootstrap(): Promise<void> {
   );
 
   const r2Configured = !!(gatewayEnv.R2_ACCOUNT_ID && gatewayEnv.R2_ACCESS_KEY_ID && gatewayEnv.R2_SECRET_ACCESS_KEY && gatewayEnv.R2_BUCKET);
+
+  // Trip voice recording: its own bucket, never the documents one. Off unless TRIP_RECORDING_ENABLED.
+  const tripRecordingBucket = gatewayEnv.TRIP_RECORDING_R2_BUCKET;
+  const tripRecordingStorage =
+    gatewayEnv.TRIP_RECORDING_ENABLED && r2Configured && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET
+      ? new TripRecordingStorage({
+          accountId: gatewayEnv.R2_ACCOUNT_ID!,
+          accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!,
+          secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY!,
+          bucket: tripRecordingBucket,
+        })
+      : null;
+  if (gatewayEnv.TRIP_RECORDING_ENABLED && !tripRecordingStorage) {
+    console.warn('[trip-recording] TRIP_RECORDING_ENABLED is on but TRIP_RECORDING_R2_BUCKET is missing, or is the documents bucket: nothing records');
+  }
+  const tripRecordingDeps = {
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    adminApiKey: process.env.ADMIN_API_KEY ?? '',
+    enabled: gatewayEnv.TRIP_RECORDING_ENABLED,
+    driverIds: gatewayEnv.TRIP_RECORDING_DRIVER_IDS,
+    storage: tripRecordingStorage,
+  };
+  if (tripRecordingStorage) {
+    // The 30-day sweep, every 6 hours, one gateway process at a time.
+    const sweep = async () => {
+      const mine = await redisCommandClient.setIfNotExists('trip-recording:sweep', '1', 5 * 60 * 60).catch(() => false);
+      if (!mine) return;
+      const removed = await sweepTripRecordings(tripRecordingStorage).catch((error) => {
+        console.warn('[trip-recording] sweep failed', error instanceof Error ? error.message : String(error));
+        return 0;
+      });
+      if (removed) console.log(`[trip-recording] removed ${removed} segment(s) older than 30 days`);
+    };
+    setTimeout(() => void sweep(), 60_000).unref();
+    setInterval(() => void sweep(), 6 * 60 * 60 * 1000).unref();
+  }
 
   const groupRideFaceStorage = r2Configured
     ? new GroupRideFaceStorage({
@@ -1115,6 +1153,11 @@ async function bootstrap(): Promise<void> {
       });
 
       return;
+    }
+
+    if (url.pathname === "/drivers/me/trip-recording" || url.pathname.startsWith("/drivers/me/trip-recordings/") || /^\/admin\/rides\/[^/]+\/recordings$/.test(url.pathname)) {
+      const handled = await handleTripRecordingRoute(req, res, tripRecordingDeps, url);
+      if (handled) return;
     }
 
     if (url.pathname.startsWith("/stellar/") || url.pathname === "/admin/stellar") {
@@ -2643,6 +2686,7 @@ async function bootstrap(): Promise<void> {
     routePlanner,
     redis: redisCommandClient,
     driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
+    tripRecording: tripRecordingStorage ? { recordsFor: (driverId: string) => recordsTrips(tripRecordingDeps, driverId) } : undefined,
     maxPayloadBytes: gatewayEnv.WS_MAX_PAYLOAD_BYTES,
     rateLimitPerSecond: gatewayEnv.WS_RATE_LIMIT_PER_SECOND,
     rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,
