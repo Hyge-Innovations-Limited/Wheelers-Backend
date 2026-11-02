@@ -133,6 +133,11 @@ const GatewayEnvSchema = z.object({
   DRIVER_STATUS_PUSHES_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // The driver's face in the rider's avatar: driverPhotoUrl / driverPhotoKey on offers, matched, /rides/active and the ride page. Off = payloads exactly as today.
   DRIVER_PHOTO_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // WhatsApp welcome form (read by the bot straight from process.env).
+  TERMS_URL: z.string().url().optional(),
+  WHATSAPP_WELCOME_FLOW_ID: z.string().optional().transform(v => v?.trim() || undefined),
+  WHATSAPP_WELCOME_FORM: z.enum(['off', 'test', 'on']).default('off'),
+  WHATSAPP_WELCOME_FORM_PHONES: z.string().optional().transform(v => v?.trim() || undefined),
   // Our own STUN/TURN server (coturn, infra/turn). The secret is the
   // static-auth-secret in /etc/turnserver.conf on that machine.
   TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),

@@ -129,7 +129,7 @@ export async function handleMetaWhatsappWebhookRoute(
   }
 }
 
-async function handleIncomingMetaMessage(
+export async function handleIncomingMetaMessage(
   deps: MetaWhatsappRouteDeps,
   msgInfo: MetaMessageInfo,
 ): Promise<void> {

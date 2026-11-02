@@ -43,6 +43,9 @@ model User {
   /// (no bank account is opened) and the bot books nothing.
   privacyConsent             PrivacyConsent              @default(PENDING)
   privacyConsentAt           DateTime?
+  /// Typed on WhatsApp, unverified, never used to sign in or link accounts (social-auth.route.ts links by User.email).
+  contactEmail               String?
+  contactEmailAt             DateTime?
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
@@ -444,6 +447,12 @@ model Ride {
   durationSeconds        Int?
   cancelStage            CancelStage?
   cancelReason           String?
+  /// Who ended the ride, written in the same update that sets CANCELLED: 'rider' | 'driver' | 'system'. Null on rides before this column and on rides that were not cancelled. (There is no admin cancel; if one is added it counts as 'system'.) A driver backing out after accept sends the ride back to matching and writes nothing here.
+  cancelledBy            String?
+  /// The rider's first price, set once at creation; riderOfferNgn is overwritten by every counter offer. Null on older rides.
+  firstRiderOfferNgn     Decimal?          @db.Decimal(18, 2)
+  /// How many times the rider changed their price during the search.
+  riderOfferChanges      Int               @default(0)
   penaltyNgn             Decimal?          @db.Decimal(18, 2)
   recordingId            String?
   /// When the driver's phone started recording this trip. Recordings are accepted only after it.

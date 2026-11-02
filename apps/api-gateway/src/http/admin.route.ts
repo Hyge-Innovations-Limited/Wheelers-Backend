@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient } from '@wheleers/db';
+import { vehicleTankLitres } from '@wheleers/config';
 import { isRecord, getString } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { verifyAdminAuth } from './admin-auth.route';
@@ -110,6 +111,8 @@ export async function handleAdminGetDriverRoute(
     email: driver.user.email,
     phone: driver.user.phone,
     kycStatus: driver.kycStatus,
+    // Fuel tank in litres from the maker's spec table; null when the car or year is not in it.
+    tankLitres: vehicleTankLitres(submission.vehicleMake, submission.vehicleModel, submission.vehicleYear),
     submission: {
       status: submission.status,
       submittedAt: submission.submittedAt,

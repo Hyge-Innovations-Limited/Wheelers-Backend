@@ -255,6 +255,23 @@ export const userClient = {
       select: { id: true, privacyConsent: true, privacyConsentAt: true },
     }),
 
+  /** One atomic update: true only for the call that moved the user to AGREED. */
+  agreePrivacyOnce: async (userId: string, now = new Date()): Promise<boolean> => {
+    const r = await prisma.user.updateMany({
+      where: { id: userId, privacyConsent: { not: 'AGREED' } },
+      data: { privacyConsent: 'AGREED', privacyConsentAt: now },
+    });
+    return r.count === 1;
+  },
+
+  /** Contact email typed on WhatsApp. Unverified; never touches User.email. */
+  setContactEmail: async (userId: string, email: string, now = new Date()): Promise<void> => {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { contactEmail: email.trim().toLowerCase(), contactEmailAt: now },
+    });
+  },
+
   softDelete: (userId: string) =>
     prisma.$transaction([
       // Anonymize user PII

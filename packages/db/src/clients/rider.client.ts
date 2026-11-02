@@ -322,7 +322,14 @@ export const rideClient = {
     prisma.$transaction(async (tx) => {
       const { stops, ...rideData } = data;
       // Stamped with the rules it is priced under now, so it settles by them whenever it ends.
-      const ride = await tx.ride.create({ data: { pricingVersion: CURRENT_PRICING_VERSION, ...rideData } });
+      // The rider's first price is kept for good; riderOfferNgn is overwritten by counter offers.
+      const ride = await tx.ride.create({
+        data: {
+          pricingVersion: CURRENT_PRICING_VERSION,
+          ...rideData,
+          ...(rideData.riderOfferNgn !== undefined ? { firstRiderOfferNgn: new Prisma.Decimal(rideData.riderOfferNgn) } : {}),
+        },
+      });
       await tx.rideStop.createMany({
         data: buildRouteStops({
           rideId: data.id,
@@ -344,8 +351,13 @@ export const rideClient = {
    */
   updateRiderOffer: (rideId: string, riderOfferNgn: number) =>
     prisma.ride.updateMany({
-      where: { id: rideId, status: { in: ['REQUESTED', 'MATCHING'] } },
-      data:  { riderOfferNgn: new Prisma.Decimal(riderOfferNgn) },
+      // A same-price offer or a redelivered event is not a change: nothing is written or counted.
+      where: {
+        id: rideId,
+        status: { in: ['REQUESTED', 'MATCHING'] },
+        OR: [{ riderOfferNgn: null }, { riderOfferNgn: { not: new Prisma.Decimal(riderOfferNgn) } }],
+      },
+      data:  { riderOfferNgn: new Prisma.Decimal(riderOfferNgn), riderOfferChanges: { increment: 1 } },
     }),
 
   /**
@@ -421,6 +433,7 @@ export const rideClient = {
         cancelStage: null,
         cancelReason: null,
         cancelledAt: null,
+        cancelledBy: null,
         ...(opts?.agreedFareNgn !== undefined ? { agreedFareNgn: opts.agreedFareNgn } : {}),
         ...(bargainRate !== null ? { bargainRate } : {}),
         ...(opts?.paymentMethod !== undefined ? { paymentMethod: opts.paymentMethod } : {}),
@@ -484,6 +497,8 @@ export const rideClient = {
   cancel: (rideId: string, data: {
     cancelReason?: string;
     cancelStage?: 'BEFORE_MATCH' | 'AFTER_MATCH' | 'DRIVER_EN_ROUTE' | 'ACTIVE_TRIP';
+    /** Who ended it; stored in this same update. */
+    cancelledBy?: 'rider' | 'driver' | 'system';
   }) =>
     prisma.ride.update({
       where: { id: rideId },
@@ -506,6 +521,7 @@ export const rideClient = {
         status: 'CANCELLED',
         cancelStage: 'BEFORE_MATCH',
         cancelReason,
+        cancelledBy: 'system',
         cancelledAt: new Date(),
       },
     }),

@@ -11,6 +11,7 @@ import { sendFlowOffersMessage } from './whatsapp-notifier';
 import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
+import { handleWelcomeFlow } from './welcome-flow';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -80,6 +81,8 @@ export interface WhatsappFlowEndpointDeps {
   onBookOnPage?: QuickActionsFlowDeps['onBookOnPage'];
   /** A bid placed in the Edit-trip or Quick Actions form: the chat gets the See driver offers button. */
   onBidPlaced?: QuickActionsFlowDeps['onBidPlaced'];
+  /** The Welcome form agreed for the first time: the chat says "You're all set." and carries on (createQuickActionsChatHooks). */
+  onWelcomeAgreed?: (userId: string) => Promise<void>;
 }
 
 /** The one Continue button on each screen of the two original flows. */
@@ -227,6 +230,11 @@ export async function handleFlowAction(
       onWalletShort: deps.onWalletShort,
       onSearchCancelled: deps.onSearchCancelled,
     });
+  }
+
+  // ── The Welcome form (token `welcome:<userId>`): email, privacy policy, terms. Handled whatever the switch says. ──
+  if (rideId === 'welcome') {
+    return handleWelcomeFlow(body, userId, { redisClient: deps.redisClient, onWelcomeAgreed: deps.onWelcomeAgreed });
   }
 
   // ── Quick Actions (token `menu:<userId>`): the menu and everything behind it ──

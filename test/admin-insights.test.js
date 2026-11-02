@@ -328,7 +328,8 @@ test('RIDE FILTERS · deposits and Paystack costs belong to no ride, so a channe
 });
 
 test('EXCEL · the overview workbook has every sheet, formatted, with the filtered rows; phones only when asked; the fees workbook too', async () => {
-  const res = await get(`/admin/insights/export?${q({ scope: 'overview' })}`, { raw: true });
+  // raw=0: the workbook as it was before the raw sheets (those are tested in excel-raw-sheets.test.js).
+  const res = await get(`/admin/insights/export?${q({ scope: 'overview', raw: '0' })}`, { raw: true });
   assert.equal(res.status, 200);
   assert.match(res.headers['content-type'], /spreadsheetml/);
   assert.match(res.headers['content-disposition'], /wheelers-overview-2024-03-04-to-2024-03-10\.xlsx/);

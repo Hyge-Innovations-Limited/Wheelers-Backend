@@ -74,6 +74,7 @@
     "db:backup:list": "node scripts/run-with-env.cjs node scripts/backup-db.mjs --list",
     "db:backup:check": "node scripts/run-with-env.cjs node scripts/backup-restore-check.mjs",
     "flow:push:quick-actions": "node scripts/whatsapp-form-push.mjs quick-actions",
+    "flow:push:welcome": "node scripts/whatsapp-form-push.mjs welcome",
     "flow:push:forms": "npm run flow:push:edit-trip && npm run flow:push:offers && npm run flow:push:quick-actions",
     "sms": "node scripts/run-with-env.cjs node scripts/sms.mjs",
     "alerts": "node scripts/run-with-env.cjs node scripts/alerts.mjs",

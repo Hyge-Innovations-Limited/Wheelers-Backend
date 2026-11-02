@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { adminAnalyticsClient, CHANNEL_LABELS, excelInsightsClient, tripActivityClient } from '@wheleers/db';
 import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
+import { vehicleTankLitres } from '@wheleers/config';
 import { cleanName, cleanText } from './clean-text';
 
 /**
@@ -426,7 +427,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
   ], wd.items.map((r) => ({ ...r, name: cleanName(r.name), accountName: cleanName(r.accountName), createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
 }
 
-export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<Buffer> {
+export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean, raw = false): Promise<Buffer> {
   const book = new ExcelJS.Workbook();
   book.creator = 'Wheelers admin';
   book.created = new Date();
@@ -516,6 +517,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
     await stellarSheet(book, f, trips);
 
     const drivers = await all((offset) => adminAnalyticsClient.drivers(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
+    const carOf = raw ? await adminAnalyticsClient.driverExtras(f, drivers.items.map((d) => d.driverId)) : new Map<string, { make: string | null; model: string | null; year: number | null; cancels: number }>();
     addSheet(book, 'Drivers', [
       { header: 'Driver ID', key: 'driverId', width: 38 },
       { header: 'Name', key: 'name', width: 22 },
@@ -534,9 +536,24 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'Shifts', key: 'shifts', format: WHOLE },
       { header: 'Trips per hour online', key: 'tripsPerOnlineHour', format: '#,##0.00', width: 21 },
       { header: 'Last online (Lagos)', key: 'lastOnlineAt', width: 19 },
-    ], drivers.items.map((d) => ({ ...d, name: cleanName(d.name, 'Unnamed driver'), lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) })), cut(drivers.items.length, drivers.total));
+      ...(raw ? [
+        { header: 'Car', key: 'car', width: 24 },
+        { header: 'Tank (litres)', key: 'tankLitres', format: WHOLE, width: 14, note: 'From the maker\'s spec; blank when the car or year is not in the table.' },
+        { header: 'Cancels', key: 'cancels', format: WHOLE },
+        { header: 'Earnings per online hour', key: 'earningsPerHour', format: NAIRA, width: 24, note: 'Blank under a quarter of an hour online.' },
+      ] : []),
+    ], drivers.items.map((d) => {
+      const x = carOf.get(d.driverId);
+      return { ...d, ...(raw ? {
+        car: [x?.make, x?.model, x?.year].filter(Boolean).join(' '),
+        tankLitres: vehicleTankLitres(x?.make, x?.model, x?.year),
+        cancels: x?.cancels ?? 0,
+        earningsPerHour: d.onlineHours > 0.25 ? Math.round(d.earningsNgn / d.onlineHours) : null,
+      } : {}), name: cleanName(d.name, 'Unnamed driver'), lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) };
+    }), cut(drivers.items.length, drivers.total));
 
     const riders = await all((offset) => adminAnalyticsClient.riders(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
+    const rideOf = raw ? await adminAnalyticsClient.riderExtras(riders.items.map((r) => r.riderId)) : new Map<string, { firstRideAt: string | null; lastRideAt: string | null; cameBack: boolean }>();
     addSheet(book, 'Riders', [
       { header: 'Rider ID', key: 'riderId', width: 38 },
       { header: 'Name', key: 'name', width: 22 },
@@ -552,7 +569,15 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
       { header: 'WhatsApp messages', key: 'messages', format: WHOLE, width: 18 },
       { header: 'Messages per trip', key: 'messagesPerTrip', format: '#,##0.0', width: 17 },
       { header: 'Wallet balance', key: 'walletBalanceNgn', format: NAIRA },
-    ], riders.items.map((r) => ({ ...r, name: cleanName(r.name), joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
+      ...(raw ? [
+        { header: 'First ride (Lagos)', key: 'firstRideAt', width: 18 },
+        { header: 'Last ride (Lagos)', key: 'lastRideAt', width: 18 },
+        { header: 'Came back', key: 'cameBack', width: 11, note: 'Yes when the rider has completed rides on two or more different Lagos days.' },
+      ] : []),
+    ], riders.items.map((r) => ({ ...r, ...(raw ? {
+      firstRideAt: lagosTime(rideOf.get(r.riderId)?.firstRideAt ?? null), lastRideAt: lagosTime(rideOf.get(r.riderId)?.lastRideAt ?? null),
+      cameBack: rideOf.get(r.riderId)?.cameBack ? 'Yes' : 'No',
+    } : {}), name: cleanName(r.name), joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
 
     await feesSheets(book, f, bucket, contacts);
 
@@ -573,6 +598,7 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
 
     // Where riders stop, and why.
     await whySheets(book, f);
+    if (raw) await rawSheets(book, f, contacts);
   }
 
   return Buffer.from(await book.xlsx.writeBuffer());
@@ -847,4 +873,64 @@ async function whySheets(book: ExcelJS.Workbook, f: AnalyticsFilters): Promise<v
     { sheet: 'Money journey', what: 'Riders told to add money: did they deposit and book? And how many trips were paid in XLM.' },
     { sheet: 'All of them', what: 'Times are Lagos time. The period applies to every sheet. Zone and channel apply to Funnel, Where rides stopped, Price vs booking, Speed of service, Supply vs demand, Trips per rider (not its riders at risk) and the trips in Driver quality; channel also to Shown a price. The WhatsApp sheets, Driver counter-offers, Raising the price, the cohorts, Rider types and Money journey cover every zone and channel. Ride type, driver and rider filters do not apply to these sheets. Row-by-row data for Power BI or Python: admin → Data → Download CSV.' },
   ]);
+}
+
+/* ── raw rows: lost requests, cancels, prices ───────────────────────── */
+
+async function rawSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, contacts: boolean): Promise<void> {
+  const lost = await all((offset) => adminAnalyticsClient.rawLost(f, PAGE, offset));
+  addSheet(book, 'Lost requests', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }] : []),
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Drivers on shift that hour', key: 'driversOnShift', format: WHOLE, width: 24, note: 'Blank before shifts were recorded.' },
+    { header: 'Price asked', key: 'priceAskedNgn', format: NAIRA },
+    { header: 'Km', key: 'distanceKm', format: '#,##0.0' },
+    { header: 'How it ended', key: 'endedAs', width: 28 },
+  ], lost.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), createdAt: lagosTime(r.createdAt), channel: channel(r.channel) })),
+  cut(lost.items.length, lost.total) ?? 'Requests that ended with no driver: the same cancelled-in-period rides as Home counts as no driver or cancelled before a match.');
+
+  const cancels = await all((offset) => adminAnalyticsClient.rawCancels(f, PAGE, offset));
+  addSheet(book, 'Cancels', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }] : []),
+    { header: 'Driver', key: 'driverName', width: 22 },
+    ...(contacts ? [{ header: 'Driver phone', key: 'driverPhone', width: 16 }] : []),
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Cancelled (Lagos)', key: 'cancelledAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Who cancelled', key: 'cancelledBy', width: 14, note: 'Blank for cancellations before this was recorded.' },
+    { header: 'Stage', key: 'stage', width: 16 },
+    { header: 'Minutes since request', key: 'minutesSinceRequest', format: '#,##0.0', width: 20 },
+    { header: 'Reason', key: 'reason', width: 34 },
+  ], cancels.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), driverName: r.driverName ? cleanName(r.driverName) : '', cancelledAt: lagosTime(r.cancelledAt), channel: channel(r.channel), reason: cleanText(r.reason ?? '') })),
+  cut(cancels.items.length, cancels.total));
+
+  const prices = await all((offset) => adminAnalyticsClient.rawPrices(f, PAGE, offset));
+  addSheet(book, 'Prices', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Status', key: 'status', width: 16 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    { header: 'Driver', key: 'driverName', width: 22 },
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Km', key: 'distanceKm', format: '#,##0.0' },
+    { header: 'First rider price', key: 'firstRiderPriceNgn', format: NAIRA, width: 17, note: 'The rider\'s first price; for older rides, their last.' },
+    { header: 'Rider price changes', key: 'riderPriceChanges', format: WHOLE, width: 19 },
+    { header: 'Driver offers', key: 'driverOffers', format: WHOLE },
+    { header: 'Agreed price', key: 'agreedNgn', format: NAIRA },
+    { header: 'Our suggestion', key: 'suggestedNgn', format: NAIRA, note: 'Blank on rides before it was recorded.' },
+  ], prices.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), driverName: r.driverName ? cleanName(r.driverName) : '', createdAt: lagosTime(r.createdAt), channel: channel(r.channel) })),
+  cut(prices.items.length, prices.total) ?? 'One row per request in the period, the same requests Home counts. inDrive and Linc prices are not per ride yet.');
 }

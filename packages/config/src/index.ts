@@ -96,3 +96,7 @@ export type {
   RouteWaypoint,
 } from './routing';
 export { formatTripId, parseTripId, TRIP_ID_PREFIX } from './trip-id';
+
+// Fuel tank size of common cars (litres), from makers' specs
+export { VEHICLE_TANKS, vehicleTankLitres } from './vehicle-tanks';
+export type { VehicleTankEntry } from './vehicle-tanks';

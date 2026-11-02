@@ -168,6 +168,14 @@ export function createQuickActionsChatHooks(deps: MetaWhatsappRouteDeps) {
   return {
     ...createOffersFormChatHooks(deps),
     supportContact,
+    /** The Welcome form agreed for the first time: the same follow-up as a typed Continue. */
+    onWelcomeAgreed: async (userId: string): Promise<void> => {
+      const who = await userClient.findById(userId).catch(() => null);
+      if (!who?.phone) return;
+      const { finishConsent } = await import('./consent');
+      const { handleIncomingMetaMessage } = await import('../http/whatsapp.route');
+      await finishConsent(deps, who, who.phone, 'welcome_form', (first) => handleIncomingMetaMessage(deps, first));
+    },
     /** A bid placed inside a form (Edit trip or Quick Actions): the chat gets its one message, the See driver offers button. */
     onBidPlaced: async (userId: string, rideId: string, offerNgn: number): Promise<void> => {
       const [who, meta] = await Promise.all([userClient.findById(userId).catch(() => null), getRideMeta(deps.redisClient, rideId)]);

@@ -1552,6 +1552,146 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
   ];
 }
 
+
+/* ── raw rows for the owners' Excel (one row per item, nothing summed) ──── */
+
+export interface RawPage<T> { items: T[]; total: number; hasMore: boolean }
+
+const lagosParts = (col: string) => `((${col} AT TIME ZONE 'UTC') AT TIME ZONE 'Africa/Lagos')`;
+
+/** Car and cancels for the drivers on a Drivers sheet. */
+async function driverExtras(f: AnalyticsFilters, driverIds: string[]) {
+  if (!driverIds.length) return new Map<string, { make: string | null; model: string | null; year: number | null; cancels: number }>();
+  const q = new Sql();
+  const ids = q.p(driverIds);
+  const cond = [...rideConditions(q, f), `f.status = 'CANCELLED'`, between(q, 'f.cancelled_day', f), `f.driver_id = ANY(${ids}::text[])`];
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT d.id, d."vehicleMake" AS make, d."vehicleModel" AS model, d."vehicleYear" AS year,
+           (SELECT count(*) FROM ride_facts f ${where([...cond, `f.driver_id = d.id`])})::int AS cancels
+    FROM "Driver" d WHERE d.id = ANY(${ids}::text[])`);
+  return new Map(result.map((r) => [String(r.id), { make: (r.make as string | null) ?? null, model: (r.model as string | null) ?? null, year: r.year == null ? null : Number(r.year), cancels: num(r.cancels) }]));
+}
+
+/** First ride, last ride and whether they rode on two different days, for the riders on a Riders sheet. */
+async function riderExtras(riderIds: string[]) {
+  if (!riderIds.length) return new Map<string, { firstRideAt: string | null; lastRideAt: string | null; cameBack: boolean }>();
+  const q = new Sql();
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT f.rider_id, min(f.completed_at) AS first_ride, max(f.completed_at) AS last_ride, count(DISTINCT f.completed_day)::int AS ride_days
+    FROM ride_facts f WHERE f.rider_id = ANY(${q.p(riderIds)}::text[]) AND f.status = 'COMPLETED' GROUP BY 1`);
+  return new Map(result.map((r) => [String(r.rider_id), { firstRideAt: iso(r.first_ride), lastRideAt: iso(r.last_ride), cameBack: num(r.ride_days) >= 2 }]));
+}
+
+const RAW_WHO = `LEFT JOIN "User" ru ON ru.id = f.rider_id LEFT JOIN "Driver" d ON d.id = f.driver_id LEFT JOIN "User" du ON du.id = d."userId"`;
+
+/**
+ * Requests that ended with no driver: Home's "no driver" plus "cancelled before a driver" (same filters,
+ * same cancelled day), one row each, with how many drivers were on shift in that hour.
+ */
+async function rawLost(f: AnalyticsFilters, limit: number, offset: number) {
+  const q = new Sql();
+  const cond = [...rideConditions(q, f), `f.status = 'CANCELLED'`, between(q, 'f.cancelled_day', f),
+    `(f.no_driver OR f.cancel_stage IS NULL OR f.cancel_stage = 'BEFORE_MATCH')`];
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT f.id, f.created_at, f.channel, f.pickup_zone, f.distance_km, f.no_driver,
+           coalesce(f.first_rider_offer_ngn, f.rider_offer_ngn) AS asked,
+           ru.name AS rider_name, ru.phone AS rider_phone,
+           extract(hour FROM ${lagosParts('f.created_at')})::int AS hour,
+           trim(to_char(${lagosParts('f.created_at')}, 'Day')) AS weekday,
+           (SELECT count(*) FROM "DriverBid" b WHERE b."rideId" = f.id)::int AS bids,
+           CASE WHEN f.created_at < (SELECT min(s0."startedAt") FROM "DriverShift" s0) THEN NULL ELSE (
+             SELECT count(DISTINCT s."driverId") FROM "DriverShift" s JOIN "Driver" d ON d.id = s."driverId"
+             WHERE s."startedAt" < date_trunc('hour', f.created_at) + interval '1 hour'
+               AND ${SHIFT_END} > date_trunc('hour', f.created_at)
+           )::int END AS drivers_on_shift,
+           count(*) OVER () AS total
+    FROM ride_facts f LEFT JOIN "User" ru ON ru.id = f.rider_id
+    ${where(cond)}
+    ORDER BY f.created_at, f.id
+    LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
+  const total = num(result[0]?.total);
+  return {
+    items: result.map((r) => ({
+      id: String(r.id), riderName: (r.rider_name as string | null) ?? null, riderPhone: (r.rider_phone as string | null) ?? null,
+      pickupZone: (r.pickup_zone as string | null) ?? null, createdAt: iso(r.created_at)!, weekday: String(r.weekday), hour: num(r.hour),
+      channel: String(r.channel) as RideChannelName, driversOnShift: r.drivers_on_shift == null ? null : num(r.drivers_on_shift),
+      priceAskedNgn: optNum(r.asked), distanceKm: optNum(r.distance_km),
+      endedAs: r.no_driver ? 'No driver accepted in time' : num(r.bids) > 0 ? 'Cancelled after offers' : 'Cancelled with no offer',
+    })),
+    total, hasMore: offset + result.length < total,
+  } as RawPage<{
+    id: string; riderName: string | null; riderPhone: string | null; pickupZone: string | null; createdAt: string; weekday: string; hour: number;
+    channel: RideChannelName; driversOnShift: number | null; priceAskedNgn: number | null; distanceKm: number | null; endedAs: string;
+  }>;
+}
+
+/** Every cancelled ride in the period (Home's "cancelled"), one row each. */
+async function rawCancels(f: AnalyticsFilters, limit: number, offset: number) {
+  const q = new Sql();
+  const cond = [...rideConditions(q, f), `f.status = 'CANCELLED'`, between(q, 'f.cancelled_day', f)];
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT f.id, f.cancelled_at, f.created_at, f.channel, f.pickup_zone, f.cancel_stage, f.cancel_reason, f.cancelled_by,
+           ru.name AS rider_name, ru.phone AS rider_phone, du.name AS driver_name, du.phone AS driver_phone,
+           extract(hour FROM ${lagosParts('f.cancelled_at')})::int AS hour,
+           trim(to_char(${lagosParts('f.cancelled_at')}, 'Day')) AS weekday,
+           extract(epoch FROM f.cancelled_at - f.created_at) / 60.0 AS minutes,
+           count(*) OVER () AS total
+    FROM ride_facts f ${RAW_WHO}
+    ${where(cond)}
+    ORDER BY f.cancelled_at, f.id
+    LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
+  const total = num(result[0]?.total);
+  return {
+    items: result.map((r) => ({
+      id: String(r.id), riderName: (r.rider_name as string | null) ?? null, riderPhone: (r.rider_phone as string | null) ?? null,
+      driverName: (r.driver_name as string | null) ?? null, driverPhone: (r.driver_phone as string | null) ?? null,
+      pickupZone: (r.pickup_zone as string | null) ?? null, cancelledAt: iso(r.cancelled_at), weekday: String(r.weekday), hour: num(r.hour),
+      channel: String(r.channel) as RideChannelName, cancelledBy: (r.cancelled_by as string | null) ?? null,
+      stage: (r.cancel_stage as string | null) ?? null, minutesSinceRequest: r.minutes == null ? null : Math.round(Number(r.minutes) * 10) / 10,
+      reason: (r.cancel_reason as string | null) ?? null,
+    })),
+    total, hasMore: offset + result.length < total,
+  } as RawPage<{
+    id: string; riderName: string | null; riderPhone: string | null; driverName: string | null; driverPhone: string | null; pickupZone: string | null;
+    cancelledAt: string | null; weekday: string; hour: number; channel: RideChannelName; cancelledBy: string | null; stage: string | null;
+    minutesSinceRequest: number | null; reason: string | null;
+  }>;
+}
+
+/** Every request in the period (Home's "requests"), with what was asked, countered, agreed and suggested. */
+async function rawPrices(f: AnalyticsFilters, limit: number, offset: number) {
+  const q = new Sql();
+  const cond = [...rideConditions(q, f), between(q, 'f.created_day', f)];
+  const result = await rows<Record<string, unknown>>(q, `
+    SELECT f.id, f.status, f.created_at, f.channel, f.pickup_zone, f.rider_offer_changes, f.agreed_fare_ngn, f.booking_suggested_fare_ngn,
+           coalesce(f.distance_km, f.planned_distance_km) AS km,
+           coalesce(f.first_rider_offer_ngn, f.rider_offer_ngn) AS first_price,
+           ru.name AS rider_name, du.name AS driver_name,
+           extract(hour FROM ${lagosParts('f.created_at')})::int AS hour,
+           trim(to_char(${lagosParts('f.created_at')}, 'Day')) AS weekday,
+           (SELECT count(*) FROM "DriverBid" b WHERE b."rideId" = f.id)::int AS driver_offers,
+           count(*) OVER () AS total
+    FROM ride_facts f ${RAW_WHO}
+    ${where(cond)}
+    ORDER BY f.created_at, f.id
+    LIMIT ${q.p(limit)} OFFSET ${q.p(offset)}`);
+  const total = num(result[0]?.total);
+  return {
+    items: result.map((r) => ({
+      id: String(r.id), status: String(r.status), riderName: (r.rider_name as string | null) ?? null, driverName: (r.driver_name as string | null) ?? null,
+      pickupZone: (r.pickup_zone as string | null) ?? null, createdAt: iso(r.created_at)!, weekday: String(r.weekday), hour: num(r.hour),
+      channel: String(r.channel) as RideChannelName, distanceKm: optNum(r.km), firstRiderPriceNgn: optNum(r.first_price),
+      riderPriceChanges: num(r.rider_offer_changes), driverOffers: num(r.driver_offers),
+      agreedNgn: optNum(r.agreed_fare_ngn), suggestedNgn: optNum(r.booking_suggested_fare_ngn),
+    })),
+    total, hasMore: offset + result.length < total,
+  } as RawPage<{
+    id: string; status: string; riderName: string | null; driverName: string | null; pickupZone: string | null; createdAt: string; weekday: string; hour: number;
+    channel: RideChannelName; distanceKm: number | null; firstRiderPriceNgn: number | null; riderPriceChanges: number; driverOffers: number;
+    agreedNgn: number | null; suggestedNgn: number | null;
+  }>;
+}
+
 /* ── options ──────────────────────────────────────────────────────────── */
 
 function options() {
@@ -1577,4 +1717,9 @@ export const adminAnalyticsClient = {
   withdrawals,
   reconcile,
   options,
+  driverExtras,
+  riderExtras,
+  rawLost,
+  rawCancels,
+  rawPrices,
 };

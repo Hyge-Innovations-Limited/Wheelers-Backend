@@ -28,7 +28,7 @@ import { sendJson } from './utils';
  *   GET /admin/insights/drivers?q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/riders?q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/reconcile                each headline total computed two ways
- *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1   the Excel workbook
+ *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1&raw=0   the Excel workbook (raw=0 leaves out the raw sheets)
  *   GET /admin/fees/summary?bucket=
  *   GET /admin/fees/ledger?kind=&q=&sort=&dir=&limit=&offset=
  *   GET /admin/fees/deposits?q=&sort=&dir=&limit=&offset=      every deposit made (not tied to a ride)
@@ -158,14 +158,16 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         const scope = pick<WorkbookScope>(url, 'scope', ['overview', 'fees'], 'overview');
         const bucket = pick(url, 'bucket', BUCKETS, 'day');
         const contacts = url.searchParams.get('contacts') === '1';
+        // The one-row-per-item sheets (lost requests, cancels, prices) and the extra Drivers / Riders columns: always, unless raw=0.
+        const raw = url.searchParams.get('raw') !== '0';
         // The workbook holds every rider's and driver's details: owners only.
         if (auth.role !== 'OWNER') {
           recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export-blocked', page: path, flagged: true, ip: clientIp(req), detail: { scope, from: f.from, to: f.to } });
           sendJson(res, 403, { error: 'This download is not available.' });
           return true;
         }
-        recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope, from: f.from, to: f.to, contacts } });
-        const file = await buildWorkbook(scope, f, bucket, contacts);
+        recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope, from: f.from, to: f.to, contacts, raw } });
+        const file = await buildWorkbook(scope, f, bucket, contacts, raw);
         const name = `wheelers-${scope}-${f.from}-to-${f.to}.xlsx`;
         res.statusCode = 200;
         res.setHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

@@ -339,6 +339,7 @@ export function createTripLifecycleHandler(params?: {
           state?.rideParticipantsByRideId.delete(event.rideId);
           await rideClient.cancel(event.rideId, {
             cancelReason: event.reason,
+            cancelledBy: event.cancelledBy ?? 'rider',
           });
           if (event.driverId) {
             await driverClient.updateStatus(event.driverId, DriverStatus.ONLINE);
