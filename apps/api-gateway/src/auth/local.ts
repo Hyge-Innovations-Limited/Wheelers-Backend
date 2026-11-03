@@ -151,11 +151,12 @@ export type WalletPageScope = 'deposit' | 'withdraw' | 'ride' | 'trip';
 export const TRIP_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
 
 /**
- * A search for drivers can outlast 15 minutes, and the rider comes back to
- * the same link from the chat for the trip, the next booking and a ride for
- * later: six hours. Past that the page says so, with the way back to WhatsApp.
+ * The rider's booking page link lasts (Timi, 3 Nov 2026): they come back to the
+ * same link from the chat for every booking. Ten years is "for good" while the
+ * token keeps its expiry field. What ends a link is the rider typing "new link"
+ * (User.rideLinksEndedAt): links made before that are refused.
  */
-export const RIDE_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+export const RIDE_PAGE_TOKEN_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
 
 /** A genuine page link (its signature checks) whose time is up: told apart from a bad link. */
 export class PageLinkExpiredError extends Error {
@@ -210,7 +211,7 @@ export function createWalletPageToken(
 export function verifyWalletPageToken(
   token: string,
   jwtSecret: string | undefined,
-): { userId: string; scope: WalletPageScope; rideId?: string } {
+): { userId: string; scope: WalletPageScope; rideId?: string; issuedAt: number } {
   const secret = requireSecret(jwtSecret);
   const [header, payload, signature] = token.split('.');
   if (!header || !payload || !signature) {
@@ -227,7 +228,7 @@ export function verifyWalletPageToken(
   if (!isRecord(parsed) || parsed.typ !== PAGE_TOKEN_TYPE) {
     throw new Error('Page token type is invalid.');
   }
-  const { sub, scope, exp, rid } = parsed;
+  const { sub, scope, exp, rid, iat } = parsed;
   if (typeof sub !== 'string' || sub.length === 0) {
     throw new Error('Page token is missing subject.');
   }
@@ -243,5 +244,5 @@ export function verifyWalletPageToken(
   if (exp <= Math.floor(Date.now() / 1000)) {
     throw new PageLinkExpiredError();
   }
-  return { userId: sub, scope, ...(scope === 'trip' ? { rideId: rid as string } : {}) };
+  return { userId: sub, scope, ...(scope === 'trip' ? { rideId: rid as string } : {}), issuedAt: typeof iat === 'number' ? iat : 0 };
 }

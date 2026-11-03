@@ -151,7 +151,36 @@ function refusedPage(error: RouteChangeRefused): PageError {
   return error.tooMany ? new PageError(error.message, 429, 'RATE_LIMITED') : new PageError(error.message, 409, 'ROUTE_CHANGE_REFUSED');
 }
 
-function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
+/** When each rider last typed "new link", kept a short while so the page's polling is not a database read every time. */
+const LINKS_ENDED_TTL_MS = 30_000;
+const linksEndedCache = new Map<string, { at: number; endedAt: number | null }>();
+
+async function rideLinksEndedAtSec(userId: string): Promise<number | null> {
+  const hit = linksEndedCache.get(userId);
+  if (hit && Date.now() - hit.at < LINKS_ENDED_TTL_MS) return hit.endedAt;
+  const ended = await userClient.rideLinksEndedAt(userId);
+  const endedAt = ended ? Math.floor(ended.getTime() / 1000) : null;
+  if (linksEndedCache.size > 50_000) linksEndedCache.clear();
+  linksEndedCache.set(userId, { at: Date.now(), endedAt });
+  return endedAt;
+}
+
+/** "new link" was typed: the next request reads the new moment at once. */
+export function forgetRideLinksEnded(userId: string): void {
+  linksEndedCache.delete(userId);
+}
+
+async function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): Promise<string> {
+  const userId = authenticateLink(req, deps);
+  const endedAt = await rideLinksEndedAtSec(userId.userId);
+  // A link made before the rider asked for a new one: replaced, said the way an expired link is.
+  if (endedAt !== null && userId.issuedAt < endedAt) {
+    throw new PageError('This link was replaced. Use the newest link in WhatsApp, or send any message for a new one.', 401, 'LINK_EXPIRED', { chatUrl: EXPIRED_CHAT_URL });
+  }
+  return userId.userId;
+}
+
+function authenticateLink(req: IncomingMessage, deps: RidePageRouteDeps): { userId: string; issuedAt: number } {
   const token = extractBearerToken(req.headers.authorization);
   if (!token) throw new PageError('This link is not valid. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_INVALID');
   let session;
@@ -166,7 +195,7 @@ function authenticate(req: IncomingMessage, deps: RidePageRouteDeps): string {
     throw new PageError('This link is not valid. Go back to WhatsApp and send any message for a new one.', 401, 'LINK_INVALID');
   }
   if (session.scope !== 'ride') throw new PageError('This link cannot be used for that.', 403, 'LINK_WRONG_SCOPE');
-  return session.userId;
+  return { userId: session.userId, issuedAt: session.issuedAt };
 }
 
 /** The price in a body already read: whole naira, or refused in words. */
@@ -547,7 +576,7 @@ async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
 }
 
 async function handleState(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   sendJson(res, 200, await buildState(deps, userId));
 }
@@ -555,7 +584,7 @@ async function handleState(req: IncomingMessage, res: ServerResponse, deps: Ride
 /* ── POST /ride-page/find ─────────────────────────────────────────────── */
 
 async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const amountNgn = amountIn(body);
@@ -598,7 +627,7 @@ async function startSearch(deps: RidePageRouteDeps, userId: string, quote: Pendi
 /* ── POST /ride-page/auto-accept ──────────────────────────────────────── */
 
 async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body) || typeof body.on !== 'boolean') throw new PageError('Say on or off.', 400, 'BAD_REQUEST');
@@ -623,7 +652,7 @@ async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps:
  * planned again so its price is today's (kept as it was when planning fails).
  */
 async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const amountNgn = amountIn(body);
@@ -667,7 +696,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
 /* ── POST /ride-page/offer ────────────────────────────────────────────── */
 
 async function handleOffer(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const amountNgn = amountIn(body);
@@ -704,7 +733,7 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
 };
 
 async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const key = isRecord(body) && typeof body.key === 'string' ? body.key : '';
@@ -759,7 +788,7 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
 /* ── POST /ride-page/decline ──────────────────────────────────────────── */
 
 async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const key = isRecord(body) && typeof body.key === 'string' ? body.key : '';
@@ -789,7 +818,7 @@ async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: Ri
  * already on is left alone.
  */
 async function handleDiscardTrip(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   if (!(await getActiveRide(deps.redisClient, userId))) {
     await clearPendingRoute(deps.redisClient, userId).catch(() => undefined);
@@ -809,7 +838,7 @@ async function handlePaying(req: IncomingMessage, res: ServerResponse, deps: Rid
     sendJson(res, 404, { error: 'Not found' });
     return;
   }
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const body = await readJsonBody(req).catch(() => null);
   const key = isRecord(body) && typeof body.offerKey === 'string' ? body.offerKey : isRecord(body) && typeof body.key === 'string' ? body.key : '';
   if (!key || !isRecord(body) || typeof body.open !== 'boolean') throw new PageError('Pick an offer first.', 400, 'BAD_REQUEST');
@@ -843,7 +872,7 @@ async function handlePaying(req: IncomingMessage, res: ServerResponse, deps: Rid
 }
 
 async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   // The offer they backed out of (optional; older pages send none): only that driver is let go.
   const body = await readJsonBody(req).catch(() => null);
@@ -866,7 +895,7 @@ async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps
 /* ── POST /ride-page/decline-all ──────────────────────────────────────── */
 
 async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
@@ -903,7 +932,7 @@ async function readCancelReason(req: IncomingMessage): Promise<string | null> {
 }
 
 async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   // A page opened before reasons were asked sends none: it still cancels.
   const reason = await readCancelReason(req);
   const rideId = await getActiveRide(deps.redisClient, userId);
@@ -959,7 +988,7 @@ async function whileNotConfirming(deps: RidePageRouteDeps, rideId: string, work:
 
 /** The rider's search box: places matching what they typed, near the other end of the trip. */
 async function handlePlaces(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   if (!deps.googleMapsApiKey) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
   const query = (url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (query.length < 3) return sendJson(res, 200, { places: [] });
@@ -984,7 +1013,7 @@ async function handlePlaces(req: IncomingMessage, res: ServerResponse, deps: Rid
 
 /** Where the rider's phone says they are, as a place: the pickup "Use my current location" fills in. */
 async function handleWhere(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   if (!deps.googleMapsApiKey) throw new PageError('Type your pickup instead.', 503, 'EDIT_OFF');
   const lat = Number(url.searchParams.get('lat'));
   const lng = Number(url.searchParams.get('lng'));
@@ -1014,7 +1043,7 @@ function sessionFrom(url: URL): string | undefined {
 
 /** The search box, as the app's: Google's suggestions for what is typed, inside Lagos. */
 async function handleSuggest(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   if (!deps.googleMapsApiKey) throw new PageError('Search is not available right now. Send your trip in the chat.', 503, 'EDIT_OFF');
   const query = (url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (query.length < 2) return sendJson(res, 200, { places: [] });
@@ -1031,7 +1060,7 @@ async function handleSuggest(req: IncomingMessage, res: ServerResponse, deps: Ri
 
 /** A suggestion picked: where it is. Refused outside Lagos, as everywhere a trip is planned. */
 async function handlePlace(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   if (!deps.googleMapsApiKey) throw new PageError('Search is not available right now. Send your trip in the chat.', 503, 'EDIT_OFF');
   const placeId = url.searchParams.get('id') ?? '';
   if (!PLACE_ID.test(placeId)) throw new PageError('Pick a place from the list.', 400, 'PLACE_INVALID');
@@ -1067,7 +1096,7 @@ function readPlace(value: unknown, label: string): RouteStop {
  * checks the chat's trip form makes (another city, two places the same).
  */
 async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   if (!deps.routePlanner) throw new PageError('Changing the trip is not available right now. Send the new trip in the chat.', 503, 'EDIT_OFF');
   if (await getActiveRide(deps.redisClient, userId)) throw new PageError('Drivers are already looking at this trip. Go back to change it.', 409, 'ALREADY_SEARCHING');
@@ -1181,7 +1210,7 @@ async function scheduleLimit(deps: RidePageRouteDeps, userId: string): Promise<v
 
 /** POST /ride-page/schedule/quote: the trip for later, planned and priced. Nothing is kept. */
 async function handleScheduleQuote(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const { routePlanner } = schedulingOn(deps);
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
@@ -1212,7 +1241,7 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
  * WhatsApp search, on the page and in the chat. A double tap books once.
  */
 async function handleSchedule(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const { scheduling, routePlanner } = schedulingOn(deps);
   const body = await readJsonBody(req).catch(() => null);
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
@@ -1298,7 +1327,7 @@ function lagosTime(at: Date): string {
 
 /** GET /ride-page/scheduled: the rider's rides for later still waiting. */
 async function handleScheduledList(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   sendJson(res, 200, { scheduled: await scheduledList(userId) });
 }
 
@@ -1306,7 +1335,7 @@ const SCHEDULED_CANCEL = /^\/ride-page\/scheduled\/([0-9a-fA-F-]{36})\/cancel$/;
 
 /** POST /ride-page/scheduled/:id/cancel: only the rider's own, only while it waits. */
 async function handleScheduledCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const id = SCHEDULED_CANCEL.exec(url.pathname)?.[1] ?? '';
   const result = await scheduledRideClient.cancel(id, userId, 'rider_cancelled_schedule');
   if (result.count === 0) throw new PageError('This ride has already started or ended.', 404, 'SCHEDULED_GONE', { scheduled: await scheduledList(userId) });
@@ -1344,7 +1373,7 @@ async function bookedTrip(deps: RidePageRouteDeps, userId: string) {
  * driver being told all follow from it). The chat says nothing: they did it here.
  */
 async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const picked = isRecord(body) && typeof body.reason === 'string' ? body.reason.trim() : '';
@@ -1388,7 +1417,7 @@ async function readTripRoute(deps: RidePageRouteDeps, userId: string, body: unkn
  * "₦X more will be held" with it, then sends the change with acceptedFareNgn.
  */
 async function handleTripRouteQuote(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const { ride, destination, stops } = await readTripRoute(deps, userId, await readJsonBody(req).catch(() => null));
   const quote = await quoteTripRoute({ redis: deps.redisClient, routePlanner: deps.routePlanner! }, ride.id, destination, stops).catch((error) => {
@@ -1406,7 +1435,7 @@ async function handleTripRouteQuote(req: IncomingMessage, res: ServerResponse, d
  * (else 409 PRICE_CHANGED with the price now), and the wallet holds exactly it.
  */
 async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const { ride, destination, stops } = await readTripRoute(deps, userId, body);
@@ -1452,7 +1481,7 @@ async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: 
  * (WALLET_SHORT). The trip stays as it was. Nothing waiting: still { ok: true }.
  */
 async function handleTripRouteCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const ride = await bookedTrip(deps, userId).catch(() => null);
   const cancelled = ride ? await cancelPendingRoute(deps.redisClient, ride.id, userId) : false;
   sendJson(res, 200, { ok: true, cancelled });
@@ -1464,7 +1493,7 @@ async function handleTripRouteCancel(req: IncomingMessage, res: ServerResponse, 
  * or its code; absent or unknown: "I need help now").
  */
 async function handleSos(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const body = await readJsonBody(req).catch(() => null);
   const asked = isRecord(body) && typeof body.kind === 'string' ? body.kind.trim() : '';
   const kind = SOS_KINDS.find((k) => k.kind === asked || k.label.toLowerCase() === asked.toLowerCase())?.kind ?? 'SOS';
@@ -1475,7 +1504,7 @@ async function handleSos(req: IncomingMessage, res: ServerResponse, deps: RidePa
 
 /** POST /ride-page/sos/cancel: "I'm safe" — the rider's own open alert is withdrawn. */
 async function handleSosCancel(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const withdrawn = await cancelRiderSos(userId, 'ride_page');
   sendJson(res, 200, { ok: true, withdrawn });
 }
@@ -1512,7 +1541,7 @@ async function handleOpen(res: ServerResponse, deps: RidePageRouteDeps, url: URL
 
 /** Home's one line (state.notice) was seen: { id }. Answers the state, without it. */
 async function handleNoticeSeen(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const body = await readJsonBody(req).catch(() => null);
   const id = isRecord(body) && typeof body.id === 'string' ? body.id : '';
@@ -1528,7 +1557,7 @@ async function handleNoticeSeen(req: IncomingMessage, res: ServerResponse, deps:
  * The chat is not told it was cancelled: the rider has not given up.
  */
 async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) return sendJson(res, 200, await buildState(deps, userId));
@@ -1598,7 +1627,7 @@ function cleanProps(value: unknown): Record<string, string | number | boolean> |
  * whatever was kept. Does not count as "the rider is looking" (the poll does).
  */
 async function handleEvents(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   const body = await readJsonBody(req).catch(() => null);
   // The page sends a batch every few seconds; far more than that is not a person. Dropped, never refused.
   if (await overLimit(deps.redisClient, `ride-page:events:${userId}`, 60, 60)) return sendJson(res, 202, { ok: true, kept: 0 });
@@ -1636,7 +1665,7 @@ async function depositAccountFor(deps: RidePageRouteDeps, userId: string) {
 }
 
 async function handleTopup(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL): Promise<void> {
-  const userId = authenticate(req, deps);
+  const userId = await authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const wanted = Math.floor(Number(url.searchParams.get('amount')));
   if (!Number.isFinite(wanted) || wanted < 1 || wanted > 10_000_000) throw new PageError('Enter an amount.', 400, 'AMOUNT_INVALID');
