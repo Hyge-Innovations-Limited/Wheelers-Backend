@@ -45,11 +45,21 @@
                 "visible": "${data.has_error}"
               },
               {
+                "type": "TextBody",
+                "text": "Enter your email"
+              },
+              {
                 "type": "TextInput",
                 "name": "email",
                 "label": "Email",
                 "input-type": "email",
                 "required": true
+              },
+              {
+                "type": "OptIn",
+                "name": "marketing",
+                "label": "Send me news and offers by email",
+                "required": false
               },
               {
                 "type": "Footer",
@@ -58,7 +68,8 @@
                   "name": "data_exchange",
                   "payload": {
                     "action": "welcome_email",
-                    "email": "${form.email}"
+                    "email": "${form.email}",
+                    "marketing": "${form.marketing}"
                   }
                 }
               }
@@ -91,6 +102,10 @@
         "has_error": {
           "type": "boolean",
           "__example__": false
+        },
+        "marketing": {
+          "type": "boolean",
+          "__example__": false
         }
       },
       "layout": {
@@ -104,6 +119,10 @@
                 "type": "TextCaption",
                 "text": "${data.error}",
                 "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Read our Privacy Policy and Terms and Conditions."
               },
               {
                 "type": "EmbeddedLink",
@@ -122,16 +141,8 @@
                 }
               },
               {
-                "type": "OptIn",
-                "name": "agree",
-                "label": "I agree",
-                "required": true
-              },
-              {
-                "type": "OptIn",
-                "name": "marketing",
-                "label": "Send me news and offers by email",
-                "required": false
+                "type": "TextCaption",
+                "text": "By tapping Get started, you agree to both."
               },
               {
                 "type": "Footer",
@@ -141,8 +152,7 @@
                   "payload": {
                     "action": "welcome_agree",
                     "email": "${data.email}",
-                    "agree": "${form.agree}",
-                    "marketing": "${form.marketing}"
+                    "marketing": "${data.marketing}"
                   }
                 }
               }

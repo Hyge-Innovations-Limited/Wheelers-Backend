@@ -5,10 +5,12 @@ import { actionFor } from './flow-dispatch';
 
 /**
  * The Welcome form (token `welcome:<userId>`): email, then the Privacy Policy and
- * Terms with an "I agree" tick. The user comes only from the signed token.
+ * Terms. The user comes only from the signed token.
  *
- *   EMAIL  one box                         [Next]        -> TERMS
- *   TERMS  two links, the I agree tick, an optional news-and-offers tick   [Get started] -> the form closes
+ *   EMAIL  the email, an optional news-and-offers tick   [Next]        -> TERMS
+ *   TERMS  "Read our Privacy Policy and Terms", two links  [Get started] -> agreed, the form closes
+ *
+ * No forced tick: tapping Get started is the agreement, and the screen says so.
  *
  * Agreeing goes through userClient.agreePrivacyOnce: one winner, and only the
  * winner starts the chat follow-up (onWelcomeAgreed). The email is saved as
@@ -50,8 +52,8 @@ function emailScreen(email: string, error = ''): Screen {
   return { screen: 'EMAIL', data: { email, error, has_error: Boolean(error) } };
 }
 
-function termsScreen(email: string, error = ''): Screen {
-  return { screen: 'TERMS', data: { email, privacy_url: privacyUrl(), terms_url: termsUrl(), error, has_error: Boolean(error) } };
+function termsScreen(email: string, error = '', marketing = false): Screen {
+  return { screen: 'TERMS', data: { email, marketing, privacy_url: privacyUrl(), terms_url: termsUrl(), error, has_error: Boolean(error) } };
 }
 
 /** Closes the form. Meta posts its small reply bubble; the chat follow-up is separate. */
@@ -86,18 +88,18 @@ export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, d
   if (!email) {
     return emailScreen(typeof data['email'] === 'string' ? data['email'].trim() : '', 'Enter a valid email.');
   }
-  if (action === WELCOME_ACTIONS.EMAIL) return termsScreen(email);
+  // The optional tick, on the email screen; carried to the agreement.
+  const marketing = data['marketing'] === true || data['marketing'] === 'true';
+  if (action === WELCOME_ACTIONS.EMAIL) return termsScreen(email, '', marketing);
 
-  // TERMS: the tick is required.
-  const ticked = data['agree'] === true || data['agree'] === 'true';
-  if (!ticked) return termsScreen(email, 'Tick I agree to continue.');
+  // TERMS: tapping Get started under "By tapping Get started, you agree to both" is the agreement.
 
   // Already agreed (an old form, the app, or the typed Continue): nothing saved, nothing said.
   if ((await userClient.getPrivacyConsent(userId)) === 'AGREED') return closed(body.flow_token);
 
   await userClient.setContactEmail(userId, email);
   // The optional tick: kept apart from the agreement, and only when they agree.
-  await userClient.setMarketingEmailOptIn(userId, data['marketing'] === true || data['marketing'] === 'true');
+  await userClient.setMarketingEmailOptIn(userId, marketing);
   const won = await userClient.agreePrivacyOnce(userId);
   if (won && deps.onWelcomeAgreed) {
     // The form must answer Meta within seconds; the chat follow-up runs on its own.

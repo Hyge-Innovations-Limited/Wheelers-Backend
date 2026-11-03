@@ -115,7 +115,7 @@ test('test mode: only listed phones get the form', async () => {
   assert.deepEqual(other.sent.at(-1).interactive.action.buttons.map((b) => b.reply.title), ['Continue', 'Not now']);
 });
 
-test('the form screens: bad email stays, good email goes on, the tick is needed, agree closes once with one follow-up', async () => {
+test('the form screens: bad email stays, good email goes on with the news tick, Get started agrees (no forced tick), once with one follow-up', async () => {
   const { deps, sent, redis, user } = await newcomer('on');
   const fd = flowDeps(deps);
   const token = signFlowToken(`welcome:${user.id}`, SECRET);
@@ -130,11 +130,10 @@ test('the form screens: bad email stays, good email goes on, the tick is needed,
   assert.equal(good.data.privacy_url, 'https://wheelersng.com/privacy');
   assert.equal(good.data.terms_url, 'https://wheelersng.com/terms');
   assert.equal(good.data.email, 'ada@example.com');
-
-  const noTick = await handleFlowAction(body(token, 'TERMS', { email: 'ada@example.com', agree: false }), fd);
-  assert.equal(noTick.screen, 'TERMS');
-  assert.ok(noTick.data.has_error);
-  assert.equal((await prisma.user.findUnique({ where: { id: user.id } })).privacyConsent, 'PENDING');
+  assert.equal(good.data.marketing, false, 'the news tick, left empty on the email screen');
+  const ticked = await handleFlowAction(body(token, 'EMAIL', { email: 'ada@example.com', marketing: true }), fd);
+  assert.equal(ticked.data.marketing, true, 'carried to the terms screen');
+  assert.equal((await prisma.user.findUnique({ where: { id: user.id } })).privacyConsent, 'PENDING', 'nothing agreed before Get started');
 
   const before = sent.length;
   const [a, b] = await Promise.all([
@@ -164,7 +163,7 @@ test('the news-and-offers tick is optional and kept apart: ticked is yes, left e
   for (const [marketing, want] of [[true, true], [undefined, false], [false, false]]) {
     const { deps, user } = await newcomer('on');
     const token = signFlowToken(`welcome:${user.id}`, SECRET);
-    await handleFlowAction(body(token, 'TERMS', { email: 'a@b.co', agree: true, ...(marketing === undefined ? {} : { marketing }) }), flowDeps(deps));
+    await handleFlowAction(body(token, 'TERMS', { email: 'a@b.co', ...(marketing === undefined ? {} : { marketing }) }), flowDeps(deps));
     await wait(200);
     const row = await prisma.user.findUnique({ where: { id: user.id } });
     assert.equal(row.privacyConsent, 'AGREED', `agreed (tick ${marketing})`);
