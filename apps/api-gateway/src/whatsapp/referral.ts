@@ -38,15 +38,18 @@ export const WHEELERS_NUMBER = '2348141979106';
  * the bot share: a chat with the Wheelers bot with "My referral code is CODE"
  * already typed. The bot adds the code when the friend sends it.
  */
+/** What a referral link types in the friend's chat with the bot. */
+export const referralLinkMessage = (code: string) => `Hi W my referral code is ${code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+
 /**
- * The referral link: the bot's WhatsApp chat with REF-CODE typed, e.g.
- * wa.me/2348141979106?text=REF-TIMI. Nothing in it needs encoding, so it reads
- * clean wherever it is shown. (Links shared before, with "My referral code is
- * …", are still read.)
+ * The referral link: the bot's WhatsApp chat with "Hi W my referral code is
+ * TIMI" typed, e.g. wa.me/2348141979106?text=Hi%20W%20my%20referral%20code%20is%20TIMI.
+ * The bot reads "my referral code is …"; links shared before, with REF-TIMI,
+ * are still read. It never expires.
  */
 export function referralWhatsappLink(code: string, botNumber = process.env['WHATSAPP_BOT_NUMBER'] || WHEELERS_NUMBER): string {
   const digits = botNumber.replace(/\D/g, '') || WHEELERS_NUMBER;
-  return `https://wa.me/${digits}?text=REF-${code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(referralLinkMessage(code))}`;
 }
 
 /** The link as a person reads it: no https://. */

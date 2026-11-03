@@ -89,11 +89,10 @@ test('Your referral code: the code, the QR of the link, the link, and Share with
   const screen = await choose(userId, 'my_code');
   assert.equal(screen.screen, 'NOTE');
   assert.equal(screen.data.headline, `Your code is ${code}`);
-  // The bot's WhatsApp link, short and clean: wa.me/234…?text=REF-CODE, nothing encoded.
+  // The bot's WhatsApp link with the message typed: wa.me/234…?text=Hi W my referral code is CODE.
   const link = referralShareLink(code);
-  assert.match(link, new RegExp(`^https://wa\\.me/\\d+\\?text=REF-${code}$`));
+  assert.match(link, new RegExp(`^https://wa\\.me/\\d+\\?text=Hi%20W%20my%20referral%20code%20is%20${code}$`));
   assert.ok(screen.data.note.includes(link.replace(/^https:\/\//, '')), 'the link is shown');
-  assert.ok(!screen.data.note.includes('%20'), 'nothing encoded on the screen');
   assert.equal(screen.data.has_share, true);
   const png = Buffer.from(screen.data.qr_image, 'base64');
   assert.equal(png.subarray(1, 4).toString(), 'PNG', 'a PNG, base64 without a data: prefix');

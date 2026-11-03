@@ -54,7 +54,7 @@ test('INIT -> Create -> save -> INIT shows View code, never Create; View opens t
   const view = await menuTap(flow, userId, 'my_code');
   assert.equal(view.screen, 'NOTE');
   assert.equal(view.data.has_share, true);
-  assert.match(view.data.note, new RegExp(`wa\\.me/\\d+\\?text=REF-${code}`));
+  assert.match(view.data.note, new RegExp(`wa\\.me/\\d+\\?text=Hi%20W%20my%20referral%20code%20is%20${code}`));
 });
 
 test('a read error never shows Create: Try again, then a short error; saving during it creates nothing', async () => {

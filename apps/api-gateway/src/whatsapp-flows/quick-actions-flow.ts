@@ -559,7 +559,7 @@ async function shareMyCode(userId: string, code: string, _deps: QuickActionsFlow
     joined > 0 ? `${joined} ${joined === 1 ? 'person has' : 'people have'} joined with it.` : '',
     rode > 0 ? `${rode} ${rode === 1 ? 'has' : 'have'} taken a ride.` : '',
   ].filter(Boolean).join(' ');
-  // The bot's WhatsApp link with REF-CODE typed: short and clean (wa.me/234…?text=REF-TIMI).
+  // The bot's WhatsApp link with "Hi W my referral code is TIMI" typed (wa.me/234…?text=Hi%20W%20my%20referral%20code%20is%20TIMI).
   const shown = doneScreen(`Your code is ${code}`, `Your link: ${referralLinkText(code)}${stats ? `\n\n${stats}` : ''}`, false);
   // The QR of the link (a friend scans it) and Share (WhatsApp's own, with the forward message typed).
   if (!shareInForm()) return shown;
