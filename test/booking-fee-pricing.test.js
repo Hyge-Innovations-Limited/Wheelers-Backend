@@ -29,7 +29,7 @@ test('10 km at ₦350/km: ₦3,500 + ₦262.50 VAT + ₦350 = ₦4,112.50, the r
 });
 
 test('a ₦4,150 fare taken apart: 5% commission, the ₦300 WhatsApp fee and the levy come off the driver', () => {
-  const f = calculateRideFees(4150);
+  const f = calculateRideFees(4150, 3);
   assert.equal(f.pricingVersion, 3);
   assert.deepEqual(
     { booking: f.bookingFeeNgn, trip: f.tripFareNgn, vat: f.vatNgn, commission: f.commissionNgn, whatsapp: f.whatsappFeeNgn, levy: f.stateLevyNgn, paid: f.driverPayoutNgn },
@@ -120,9 +120,22 @@ async function settledRide(fareNgn, pricingVersion) {
   };
 }
 
-test('a new ride settles by the new rules: the rider pays the fare, the driver the trip fare less 5%, the ₦300 WhatsApp fee and the levy', async () => {
-  const { row, riderLeft, driverGot } = await settledRide(4150);
-  assert.equal(row.pricingVersion, 3, 'new rides are version 3 without being told');
+test('a new ride settles by version 4: the ₦300 WhatsApp fee off the fare, then VAT, the levy and 5% from the rest', async () => {
+  const { row, riderLeft, driverGot } = await settledRide(3300);
+  assert.equal(row.pricingVersion, 4, 'new rides are version 4 without being told');
+  assert.equal(riderLeft, 10_000 - 3300);
+  assert.equal(driverGot, 2595);
+  assert.equal(Number(row.serviceFeeNgn), 0, 'no booking fee');
+  assert.equal(Number(row.whatsappFeeNgn), 300);
+  assert.equal(Number(row.vatNgn), 225);
+  assert.equal(Number(row.stateLevyNgn), 30);
+  assert.equal(Number(row.commissionNgn), 150);
+  assert.equal(Number(row.platformFeeNgn), 705);
+});
+
+test('a ride booked under version 3 (21 Oct to 3 Nov 2026) still settles with the booking fee, 5%, the ₦300 WhatsApp fee and the levy', async () => {
+  const { row, riderLeft, driverGot } = await settledRide(4150, 3);
+  assert.equal(row.pricingVersion, 3);
   assert.equal(riderLeft, 10_000 - 4150);
   assert.equal(driverGot, 3028.14);
   assert.equal(Number(row.serviceFeeNgn), 350, 'service charge');

@@ -233,7 +233,7 @@ async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: '
     { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
     { header: 'Platform total', key: 'platformTotalNgn', format: NAIRA },
     { header: 'Driver payout', key: 'driverPayoutNgn', format: NAIRA },
-    { header: 'Pricing', key: 'pricingVersion', format: WHOLE, width: 9, note: '1: 4% commission, VAT from the driver. 2: 10% commission, VAT added to the fare. 3: 5% commission and the ₦300 WhatsApp fee.' },
+    { header: 'Pricing', key: 'pricingVersion', format: WHOLE, width: 9, note: '1: 4% commission, VAT from the driver. 2: 10% commission, VAT added to the fare. 3: 5% commission and the ₦300 WhatsApp fee. 4 (from 3 Nov 2026): no booking fee; the ₦300 WhatsApp fee off the fare, then VAT, the levy and 5% commission from the rest.' },
     { header: 'Split estimated', key: 'feeSplitEstimated', width: 15 },
     { header: 'Distance km', key: 'distanceKm', format: '#,##0.0' },
     { header: 'Trip minutes', key: 'minutes', format: WHOLE },
@@ -380,7 +380,7 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
     { header: 'Withdrawal transfers', key: 'transfers', format: WHOLE, width: 20 },
     { header: 'Withdrawals that paid the fee', key: 'feeWithdrawals', format: WHOLE, width: 26 },
     { header: 'Commission, estimated split', key: 'estimatedCommissionNgn', format: NAIRA, width: 26 },
-  ], points, 'Income is commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before), the ₦300 WhatsApp fee, the booking fee, the ₦30 deposit fee and the withdrawal fee. The state levy (for Lagos State) and VAT (7.5% of the trip fare) are collected and owed, so they are not income.');
+  ], points, 'Income is commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before), the ₦300 WhatsApp fee, the booking fee (none from 3 Nov 2026), the ₦30 deposit fee and the withdrawal fee. The state levy (for Lagos State) and VAT (7.5% of the trip fare) are collected and owed, so they are not income.');
 
   const { items, total } = await all((offset) => adminAnalyticsClient.feeLedger(f, null, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
   addSheet(book, 'Fee ledger', [

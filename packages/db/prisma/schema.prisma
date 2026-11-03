@@ -419,15 +419,17 @@ model Ride {
   serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
   vatNgn                 Decimal?          @db.Decimal(18, 2)
   stateLevyNgn           Decimal?          @db.Decimal(18, 2)
-  /// ₦300 flat from the driver on every version 3 ride. Null on rides settled before it existed.
+  /// ₦300 flat on every version 3 and 4 ride. Null on rides settled before it existed.
   whatsappFeeNgn         Decimal?          @db.Decimal(18, 2)
   /// Which pricing rules this ride was priced under, and settles by. 1: until
   /// 2026-10-10 (booking fee, then 4% commission and 7.5% VAT from the
   /// driver). 2: VAT and the booking fee are in the rider's fare; the driver
   /// gives up 10% commission and the levy. 3 (from 2026-10-21): as 2, with 5%
-  /// commission and a flat ₦300 WhatsApp fee from the driver. Rides from
-  /// before the column existed are 1; new ones are 3.
-  pricingVersion         Int               @default(3)
+  /// commission and a flat ₦300 WhatsApp fee from the driver. 4 (from
+  /// 2026-11-03): no booking fee; the ₦300 WhatsApp fee off the fare, then
+  /// VAT 7.5%, the levy and 5% commission from the rest. Rides from before the
+  /// column existed are 1; new ones are 4.
+  pricingVersion         Int               @default(4)
   /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
   feeSplitEstimated      Boolean           @default(false)
   /// How the ride was booked.

@@ -705,7 +705,10 @@ async function trips(f: AnalyticsFilters, status: TripStatusFilter, t: TableQuer
         negotiateSeconds: r.negotiate_secs == null ? null : Math.max(0, Math.round(Number(r.negotiate_secs))),
         messagesToBook: r.messages_to_book == null ? null : Number(r.messages_to_book),
         fareNgn: fare,
-        tripFareNgn: fare != null && serviceFee != null && vat != null ? num(fare - serviceFee - (pricingVersion !== 1 ? vat : 0)) : null,
+        // Version 4: the trip fare is the fare after the WhatsApp fee (VAT comes out of it). Earlier: after the booking fee, and (2, 3) its VAT.
+        tripFareNgn: pricingVersion === 4
+          ? (fare != null ? num(fare - (optNum(r.whatsapp_fee_ngn) ?? 0)) : null)
+          : fare != null && serviceFee != null && vat != null ? num(fare - serviceFee - (pricingVersion !== 1 ? vat : 0)) : null,
         pricingVersion,
         commissionNgn: optNum(r.commission_ngn),
         whatsappFeeNgn: optNum(r.whatsapp_fee_ngn),

@@ -559,7 +559,7 @@ export const walletClient = {
             serviceFeeNgn: fees.bookingFeeNgn,
             vatNgn: fees.vatNgn,
             stateLevyNgn: fees.stateLevyNgn,
-            whatsappFeeNgn: fees.pricingVersion === 3 ? fees.whatsappFeeNgn : null,
+            whatsappFeeNgn: fees.pricingVersion >= 3 ? fees.whatsappFeeNgn : null,
             feeSplitEstimated: false,
           },
         });

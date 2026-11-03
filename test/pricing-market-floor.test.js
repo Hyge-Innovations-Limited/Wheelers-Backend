@@ -98,11 +98,15 @@ test('in a build with no trained model, the small fitted one only watches until 
   assert.equal(calculateSuggestedFare(16, { durationSeconds: 41 * 60, at: QUIET }).suggestedFareNgn, 7500, 'a low model cannot pull the fare under the floor');
 });
 
-test('the books still add up at a floor fare, and the service charge is ₦350', () => {
-  const f = calculateRideFees(7500);
+test('the books still add up at a floor fare: version 3 with the ₦350 service charge, version 4 without it', () => {
+  const f = calculateRideFees(7500, 3);
   assert.equal(f.bookingFeeNgn, 350);
   assert.equal(Math.round((f.driverPayoutNgn + f.bookingFeeNgn + f.commissionNgn + f.whatsappFeeNgn + f.vatNgn + f.stateLevyNgn) * 100), 750000);
   assert.equal(f.driverPayoutNgn, 5988.6, 'version 3: 5% commission, the ₦300 WhatsApp fee and the levy');
+  const v4 = calculateRideFees(7500);
+  assert.equal(v4.bookingFeeNgn, 0);
+  assert.equal(Math.round((v4.driverPayoutNgn + v4.commissionNgn + v4.whatsappFeeNgn + v4.vatNgn + v4.stateLevyNgn) * 100), 750000);
+  assert.equal(v4.driverPayoutNgn, 6270, 'version 4: 7,500 − 300 = 7,200; − VAT 540, levy 30, 5% 360');
 });
 
 test('bad settings are made safe: numbers in range, a missing model stays off', () => {
