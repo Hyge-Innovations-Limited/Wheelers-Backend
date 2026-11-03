@@ -20,6 +20,7 @@ import {
  *   POST /drivers/me/trip-recordings/upload-url  { rideId, segmentIndex, bytes } → { url, key, expiresInSeconds }
  *   POST /drivers/me/trip-recordings/complete    { rideId, segmentIndex, durationSec? } → { ok }
  *   GET  /admin/rides/:id/recordings             support/owner: signed 5-minute links, each listen logged first
+ *   GET  /admin/trip-recordings?from=&to=&q=&limit=&offset=   support/owner: every recorded trip, newest first, with its R2 bucket and keys
  *
  * A segment is accepted only for a trip marked as recorded while it ran (start),
  * within 48 hours of its end, no more segments than the trip's length
@@ -97,10 +98,43 @@ function fail(res: ServerResponse, error: unknown) {
 export async function handleTripRecordingRoute(req: IncomingMessage, res: ServerResponse, deps: TripRecordingDeps, url: URL): Promise<boolean> {
   const path = url.pathname;
   const admin = /^\/admin\/rides\/([^/]+)\/recordings$/.exec(path);
+  const list = path === '/admin/trip-recordings';
   const mine = path === '/drivers/me/trip-recording' || path.startsWith('/drivers/me/trip-recordings/');
-  if (!admin && !mine) return false;
+  if (!admin && !list && !mine) return false;
 
   try {
+    if (list) {
+      // The list (no audio, no links): support and owners, every view logged.
+      if (req.method !== 'GET') throw new RecordingError('Method not allowed', 405);
+      const auth = await verifyAdminAuth(req, { jwtSecret: deps.jwtSecret, adminApiKey: deps.adminApiKey });
+      if (!auth) throw new RecordingError('Unauthorized', 401);
+      if (auth.role !== 'SUPPORT' && auth.role !== 'OWNER') throw new RecordingError('Support and owners only.', 403);
+      const day = (key: string, endOfDay: boolean): Date | null => {
+        const raw = url.searchParams.get(key);
+        if (!raw) return null;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(Date.parse(`${raw}T00:00:00+01:00`))) throw new RecordingError(`${key} must be a day, YYYY-MM-DD.`, 400);
+        // Lagos days: from the start of `from` to the end of `to`.
+        const at = new Date(`${raw}T00:00:00+01:00`);
+        return endOfDay ? new Date(at.getTime() + 24 * 60 * 60 * 1000) : at;
+      };
+      const from = day('from', false);
+      const to = day('to', true);
+      const q = (url.searchParams.get('q') ?? '').slice(0, 80);
+      const limit = Number(url.searchParams.get('limit') ?? 50);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      await adminActivityClient.record({
+        adminId: auth.adminId,
+        adminName: auth.adminName,
+        kind: 'view',
+        page: path,
+        detail: { from: url.searchParams.get('from'), to: url.searchParams.get('to'), q: q || null },
+        ip: clientIp(req),
+      });
+      const result = await tripRecordingClient.listRides({ from, to, q, limit: Number.isFinite(limit) ? limit : 50, offset: Number.isFinite(offset) ? offset : 0 });
+      sendJson(res, 200, { bucket: deps.storage?.bucketName ?? null, keepDays: TRIP_RECORDING_KEEP_DAYS, ...result });
+      return true;
+    }
+
     if (path === '/drivers/me/trip-recording') {
       if (req.method !== 'GET') throw new RecordingError('Method not allowed', 405);
       const driver = await driverOf(req, deps);

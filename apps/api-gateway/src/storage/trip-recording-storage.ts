@@ -29,6 +29,11 @@ export class TripRecordingStorage {
     this.bucket = params.bucket;
   }
 
+  /** The R2 bucket, for the admin list (where to look in Cloudflare). */
+  get bucketName(): string {
+    return this.bucket;
+  }
+
   keyFor(rideId: string, segmentIndex: number): string {
     return `trips/${rideId}/segment-${String(segmentIndex).padStart(3, '0')}.m4a`;
   }

@@ -287,3 +287,41 @@ test('the sweep: older than 30 days goes, object and row; a failed delete is kep
   assert.ok(storage.removed.includes(`trips/${ride.id}/orphan.m4a`), 'an upload never confirmed is deleted at 30 days too');
   assert.ok(!storage.removed.includes(`trips/${ride.id}/recent-orphan.m4a`));
 });
+
+test('admin list: every recorded trip with its bucket and keys, newest first; found by trip code or name; support and owners only, logged', async () => {
+  const { driver } = await seedDriver();
+  const rider = await prisma.user.create({ data: { privyDid: `did:test:${randomUUID()}`, role: 'RIDER', name: `Listrider ${randomUUID().slice(0, 6)}` } });
+  seeded.users.push(rider.id);
+  const ride = await seedRide(rider.id, driver.id, { status: 'COMPLETED', completedAt: new Date() });
+  const keys = [0, 1, 2].map((i) => `trips/${ride.id}/segment-00${i}.m4a`);
+  for (const [i, key] of keys.entries()) {
+    await prisma.tripRecording.create({ data: { rideId: ride.id, driverId: driver.id, segmentIndex: i, objectKey: key, bytes: 1000 * (i + 1), durationSec: 300 } });
+  }
+  const storage = { ...fakeStorage(), bucketName: 'wheelers-trip-recordings' };
+  const path = '/admin/trip-recordings';
+
+  assert.equal((await call(deps(storage), 'GET', path)).status, 401);
+  assert.equal((await call(deps(storage), 'GET', path, { token: await seedAdmin('STAFF') })).status, 403);
+
+  const trip = (await prisma.ride.findUniqueOrThrow({ where: { id: ride.id } })).tripNumber;
+  const byCode = await call(deps(storage), 'GET', `${path}?q=WH-${String(trip).padStart(5, '0')}`, { token: await seedAdmin('SUPPORT') });
+  assert.equal(byCode.status, 200);
+  assert.equal(byCode.body.bucket, 'wheelers-trip-recordings');
+  const row = byCode.body.items.find((r) => r.rideId === ride.id);
+  assert.ok(row, 'found by its trip code');
+  assert.deepEqual(row.objectKeys, keys, 'every piece, in order');
+  assert.deepEqual([row.pieces, row.kept, row.bytes, row.seconds, row.ended], [3, 3, 6000, 900, 'completed']);
+  assert.equal(row.riderName, rider.name);
+  assert.ok(Date.parse(row.deletesFrom) > Date.now() + 29 * 24 * 60 * 60 * 1000, '30 days after it was recorded');
+
+  const byName = await call(deps(storage), 'GET', `${path}?q=${encodeURIComponent(rider.name)}`, { headers: { 'x-admin-key': ADMIN_KEY } });
+  assert.deepEqual(byName.body.items.map((r) => r.rideId), [ride.id]);
+  const tomorrow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const later = await call(deps(storage), 'GET', `${path}?from=${tomorrow}&q=${encodeURIComponent(rider.name)}`, { headers: { 'x-admin-key': ADMIN_KEY } });
+  assert.deepEqual(later.body.items, [], 'the period narrows it');
+  assert.equal((await call(deps(storage), 'GET', `${path}?from=yesterday`, { headers: { 'x-admin-key': ADMIN_KEY } })).status, 400);
+
+  const views = await prisma.adminActivity.count({ where: { kind: 'view', page: path } });
+  assert.ok(views >= 2, 'each view is logged');
+  await prisma.adminActivity.deleteMany({ where: { kind: 'view', page: path } });
+});
