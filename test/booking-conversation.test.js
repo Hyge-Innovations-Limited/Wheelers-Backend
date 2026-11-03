@@ -2120,7 +2120,7 @@ test('REVERSE is the same trip backwards — ends swapped, stops in reverse orde
   assert.equal((await bidState.getPendingRoute(redis, user.id)).pickupAddress, YABA.address);
 });
 
-test('the RECEIPT carries Repeat / Reverse; a rating is still a typed 1–5; a group seat gets no such buttons', async () => {
+test('the RECEIPT carries one Quick Actions button (repeat and reverse are inside it); a rating is still a typed 1–5', async () => {
   const { sendRideCompletedNotification, setGroupRideChecker } = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
   const sent = [];
   global.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => '' }; };
@@ -2129,12 +2129,12 @@ test('the RECEIPT carries Repeat / Reverse; a rating is still a typed 1–5; a g
 
   await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'ride-1');
   const receipt = sent[0].interactive;
-  assert.equal(receipt.type, 'button');
   assert.match(receipt.body.text, /You've arrived[\s\S]*₦[\d,]+ paid from your wallet[\s\S]*Wallet balance ₦7,600[\s\S]*Reply \*1\* to \*5\* to rate/);
-  assert.deepEqual(receipt.action.buttons.map((b) => [b.reply.id, b.reply.title]), [['qa_again:ride-1', 'Repeat this ride'], ['qa_back:ride-1', 'Reverse this ride']]);
+  assert.equal(receipt.action.button, 'Quick Actions', 'one button: the menu, where repeat and reverse are');
+  assert.equal(receipt.action.buttons, undefined, 'no Repeat / Reverse buttons of its own');
 
   await sendRideCompletedNotification(meta, '+234', 2400, 5.2, 7600, 'seat-1');
-  assert.equal(sent[1].interactive.action.button, 'Quick Actions', 'a group seat: the receipt with the menu, not Repeat/Reverse');
+  assert.equal(sent[1].interactive.action.button, 'Quick Actions', 'a group seat too');
   setGroupRideChecker(async () => false);
 });
 

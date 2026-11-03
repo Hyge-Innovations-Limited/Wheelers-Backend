@@ -670,8 +670,8 @@ async function sendRideCompletedNotification(
   fareNgn: number,
   distanceKm: number,
   balanceNgn?: number,
-  /** The trip just finished. With it, the receipt carries Repeat / Reverse buttons — "now take me home" is one tap. */
-  rideId?: string,
+  /** The trip just finished (kept for callers; the receipt's one button is Quick Actions, where repeat and reverse are). */
+  _rideId?: string,
   tripId?: string | null,
   /** Paid from the rider's Stellar (testnet) balance: the XLM it cost. Their naira wallet was not touched. */
   paidXlm?: string | null,
@@ -688,18 +688,8 @@ async function sendRideCompletedNotification(
     `How was your driver? Reply *1* to *5* to rate them.`,
   ].join('\n');
 
-  // The rating stays a typed digit: a message has three buttons at most, and
-  // two of them are the trip itself. Group rides never carry these — a seat is
-  // not a trip a rider can book again on their own.
-  const buttons = rideId && !(await isGroupRideId(rideId)) ? {
-    type: 'button',
-    body: { text },
-    action: { buttons: [
-      { type: 'reply', reply: { id: `qa_again:${rideId}`, title: 'Repeat this ride' } },
-      { type: 'reply', reply: { id: `qa_back:${rideId}`, title: 'Reverse this ride' } },
-    ] },
-  } : null;
-  if (buttons && await postInteractive(deps, phone, buttons)) return;
+  // One Quick Actions button (Timi, 3 Nov 2026): repeat and reverse are already
+  // inside it, so the receipt no longer carries its own two buttons.
   await sendMetaWhatsappMessage(deps, phone, text);
 }
 
