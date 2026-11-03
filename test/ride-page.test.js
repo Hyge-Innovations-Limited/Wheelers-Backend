@@ -123,9 +123,9 @@ test('the link opens the bidding page and nothing else; money links cannot open 
   assert.equal(bad.body.code, 'LINK_INVALID', 'a tampered link is not "expired"');
   assert.equal(bad.body.chatUrl, undefined);
 
-  // A ride link lasts for good (ten years; "new link" in the chat is what ends one) — not the 30 minutes of a money link.
+  // A ride link lasts six hours — not the 30 minutes of a money link.
   const payload = JSON.parse(Buffer.from(local.createWalletPageToken(rider, 'ride', JWT_SECRET, local.RIDE_PAGE_TOKEN_TTL_SECONDS).split('.')[1], 'base64url').toString());
-  assert.equal(payload.exp - payload.iat, 10 * 365 * 24 * 60 * 60);
+  assert.equal(payload.exp - payload.iat, 6 * 60 * 60);
 });
 
 /* ── name your price ──────────────────────────────────────────────────── */

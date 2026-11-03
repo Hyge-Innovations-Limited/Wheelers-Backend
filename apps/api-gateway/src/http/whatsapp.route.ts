@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { groupRideClient, walletClient, walletSecurityClient, withdrawalClient, rideClient, userClient } from '@wheleers/db';
+import { groupRideClient, walletClient, walletSecurityClient, withdrawalClient, rideClient } from '@wheleers/db';
 import { RideRequestedEvent, RideCancelledEvent, FeedbackLoggedEvent } from '@wheleers/kafka-schemas';
 import { QUICK_ACTION_IDS, isQuickActionId, asksForMenu } from './quick-actions';
 import { onboardWhatsappUser } from '../onboarding/user-onboarding';
@@ -32,11 +32,10 @@ import { awaitingRouteConfirmation } from '../whatsapp/stages/awaiting-route-con
 import { addingStop } from '../whatsapp/stages/adding-stop';
 import { awaitingTripConfirm } from '../whatsapp/stages/awaiting-trip-confirm';
 import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
-import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaLinkButton, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
-import { forgetRideLinksEnded } from './ride-page.route';
+import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
 import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
-import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, ridePageUrl, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
+import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
 import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
 import { handleQuickAction, sendQuickActions } from '../whatsapp/menu';
 import { sendWalletPageButton } from '../whatsapp/wallet';
@@ -275,17 +274,6 @@ export async function handleIncomingMetaMessage(
     // FREEZE — someone locking a stolen phone's wallet must not meet a form.
     if (!activeRideId && !/^freeze$/i.test(incomingMessage.trim())) {
       if (await requirePrivacyConsent(deps, user, phone, msgInfo, (first) => handleIncomingMetaMessage(deps, first))) return;
-    }
-
-    // ── "new link": booking page links no longer expire, so this is how a rider ends them
-    // (a forwarded link, a lost phone). Every earlier link stops working; a fresh one comes back.
-    if (!isLocation && isNewLinkRequest(incomingMessage)) {
-      await userClient.endRideLinks(user.id);
-      forgetRideLinksEnded(user.id);
-      const url = ridePageUrl(deps, user.id);
-      if (url) await sendMetaLinkButton(deps, phone, 'Your old links no longer work. Here is your new one.', 'Open', url);
-      else await sendMetaReply(deps, phone, 'Your old links no longer work.');
-      return;
     }
 
     // ── Booking opener → the tappable FLOW form (meta-flows) ──────────────
@@ -1244,7 +1232,3 @@ export async function handleIncomingMetaMessage(
   }
 }
 
-/** "new link" (any case, a full stop or ! after it is fine). */
-export function isNewLinkRequest(text: string): boolean {
-  return /^\s*new\s+link[\s.!]*$/i.test(text);
-}

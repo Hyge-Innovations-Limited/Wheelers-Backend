@@ -26,16 +26,6 @@ export const userClient = {
     return now;
   },
 
-  /** "new link": every booking page link made before now stops working. */
-  endRideLinks: async (userId: string, now = new Date()): Promise<Date> => {
-    await prisma.user.updateMany({ where: { id: userId }, data: { rideLinksEndedAt: now } });
-    return now;
-  },
-
-  /** When this person's booking page links were last ended, if ever. */
-  rideLinksEndedAt: async (userId: string): Promise<Date | null> =>
-    (await prisma.user.findUnique({ where: { id: userId }, select: { rideLinksEndedAt: true } }))?.rideLinksEndedAt ?? null,
-
   /** Lightweight batch lookup for labelling ids in admin views. */
   findManyByIds: (userIds: string[]) =>
     prisma.user.findMany({

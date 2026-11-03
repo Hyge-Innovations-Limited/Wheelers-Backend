@@ -38,9 +38,6 @@ model User {
   /// Every login made before this moment is refused: an admin signed this
   /// person out of all their phones. They sign in again as usual.
   sessionsEndedAt            DateTime?
-  /// Every booking page link made before this moment is refused: the rider
-  /// typed "new link" (the links themselves no longer expire).
-  rideLinksEndedAt           DateTime?
   /// WhatsApp riders are asked once, before anything else, to accept the
   /// privacy policy. Until AGREED nothing about them goes to a third party
   /// (no bank account is opened) and the bot books nothing.
