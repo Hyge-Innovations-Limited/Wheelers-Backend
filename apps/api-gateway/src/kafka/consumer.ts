@@ -85,6 +85,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import { reactForRide, rideReactionsOn, type RideMoment } from '../whatsapp-flows/ride-reactions';
 import { clearOfferCount, hasOffersPageMessage, sendOffersPageMessage, showOfferCount } from '../whatsapp-flows/offers-page-message';
 import { loadTripChat } from '../trip-chat/access';
 import { hasRideCard, setCardStatus } from '../trip-chat/card-status';
@@ -403,6 +404,14 @@ async function carPhotoFor(deps: StartGatewayConsumerDeps, driverId: string): Pr
   } catch {
     return null;   // never let a missing picture delay "your driver is outside"
   }
+}
+
+/** A ride reaction on the rider's last message (ride-reactions.ts): a phone notification. Not while the ride page is open. */
+async function reactInChat(deps: StartGatewayConsumerDeps, riderId: string, phone: string, rideId: string, moment: RideMoment): Promise<void> {
+  const n = deps.whatsappNotifier;
+  if (!n || !rideReactionsOn()) return;
+  if (await isRidePageOpen(deps.redisClient, riderId).catch(() => false)) return;
+  await reactForRide({ redisClient: deps.redisClient, metaAccessToken: n.metaAccessToken, metaPhoneNumberId: n.metaPhoneNumberId }, phone, rideId, moment);
 }
 
 /** "Your driver is outside": the car, the plate, the trip code. */
@@ -1032,6 +1041,12 @@ export async function handleRideEvent(
       // even when the rider chatted with the bot today and the app is closed.
       if (waRider && !hasWaMeta && await isAppOnlyRide(deps, event.rideId)) waRider = false;
     }
+    // 🙋 the first driver offer on this ride.
+    if (waRider) {
+      void lookupPhoneByUserId(deps.redisClient, event.riderId)
+        .then((phone) => (phone ? reactInChat(deps, event.riderId, phone, event.rideId, 'offer') : undefined))
+        .catch(() => undefined);
+    }
     console.info('[consumer] counter-offer', {
       rideId: event.rideId,
       driver: event.driverName,
@@ -1450,6 +1465,10 @@ export async function handleRideEvent(
 
   if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
     await endOfferCount(deps, event.rideId);
+    // 🚗 a driver took the ride.
+    void whatsappRiderPhone(deps, event.riderId, event.rideId)
+      .then((phone) => (phone ? reactInChat(deps, event.riderId, phone, event.rideId, 'accepted') : undefined))
+      .catch(() => undefined);
     if (payingStatusEnabled()) await clearForBooking(deps, event.rideId, event.driverUserId).catch(() => undefined);
     rideParticipants.set(event.rideId, {
       riderId: event.riderId,
@@ -1690,6 +1709,8 @@ export async function handleRideEvent(
         await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'arrived', rideId: event.rideId, driverId: event.driverId }).catch(() => undefined);
       } else {
         await tellArrivedInChat(deps, phone, event.rideId, event.driverId);
+        // 📍 the driver is outside.
+        await reactInChat(deps, event.riderId, phone, event.rideId, 'arrived').catch(() => undefined);
       }
     } else {
       await registry.sendToUser(event.riderId, 'ride:driver_arrived', {
@@ -1762,6 +1783,8 @@ export async function handleRideEvent(
           formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null)),
           paidXlm,
         ).catch(() => {});
+        // ✅ the trip is done.
+        await reactInChat(deps, event.riderId, phone, event.rideId, 'done').catch(() => undefined);
         // Arm the rating reply: a bare 1–5 in the next day rates this driver.
         const completedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
         await storeLastCompletedRide(deps.redisClient, event.riderId, {

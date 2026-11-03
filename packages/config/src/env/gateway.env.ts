@@ -138,6 +138,8 @@ const GatewayEnvSchema = z.object({
   WHATSAPP_WELCOME_FLOW_ID: z.string().optional().transform(v => v?.trim() || undefined),
   WHATSAPP_WELCOME_FORM: z.enum(['off', 'test', 'on']).default('off'),
   WHATSAPP_WELCOME_FORM_PHONES: z.string().optional().transform(v => v?.trim() || undefined),
+  /** Ride reactions as notifications (👍 request, 🙋 offer, 🚗 accepted, 📍 arrived, ✅ done): on, else off. */
+  WHATSAPP_RIDE_REACTIONS: z.enum(['on', 'off']).optional(),
   // Our own STUN/TURN server (coturn, infra/turn). The secret is the
   // static-auth-secret in /etc/turnserver.conf on that machine.
   TURN_HOST:          z.string().optional().transform(v => v?.trim() || undefined),

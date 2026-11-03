@@ -9,6 +9,7 @@ import { MAX_CHAT_STOPS } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { sendBidPlacedMessage } from '../whatsapp-flows/whatsapp-notifier';
+import { reactForRide } from '../whatsapp-flows/ride-reactions';
 import { sendOffersPageMessage } from '../whatsapp-flows/offers-page-message';
 import { PRICE_ASK_START, priceCheckLines, tripLines as sharedTripLines } from '../whatsapp-flows/trip-text';
 import { MetaWhatsappRouteDeps } from './deps';
@@ -141,6 +142,13 @@ export async function sendSearchStarted(
   phone: string,
   trip: { pickupAddress: string; destAddress: string; offerNgn: number; stopAddresses?: string[] },
 ): Promise<string> {
+  // 👍 on their message: the request is in (a notification even with WhatsApp closed).
+  if (deps.metaAccessToken && deps.metaPhoneNumberId) {
+    const reactDeps = { redisClient: deps.redisClient, metaAccessToken: deps.metaAccessToken, metaPhoneNumberId: deps.metaPhoneNumberId };
+    void getActiveRide(deps.redisClient, user.id)
+      .then((rideId) => (rideId ? reactForRide(reactDeps, phone, rideId, 'requested') : false))
+      .catch(() => false);
+  }
   if (deps.metaAccessToken && deps.metaPhoneNumberId) {
     // The offers page (web): "Your bid is in", its button opens the live offers,
     // and the number of offers shows on the message. No offers message follows.
