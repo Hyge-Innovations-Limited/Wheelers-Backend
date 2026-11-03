@@ -272,6 +272,11 @@ export const userClient = {
     });
   },
 
+  /** The Welcome form's optional tick: news and offers by email, yes or no. */
+  setMarketingEmailOptIn: async (userId: string, optIn: boolean, now = new Date()): Promise<void> => {
+    await prisma.user.update({ where: { id: userId }, data: { marketingEmailOptIn: optIn, marketingEmailOptInAt: now } });
+  },
+
   softDelete: (userId: string) =>
     prisma.$transaction([
       // Anonymize user PII

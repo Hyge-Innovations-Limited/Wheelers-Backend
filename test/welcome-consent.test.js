@@ -160,6 +160,19 @@ test('the form screens: bad email stays, good email goes on, the tick is needed,
   assert.equal((await prisma.user.findUnique({ where: { id: user.id } })).contactEmail, 'ada@example.com');
 });
 
+test('the news-and-offers tick is optional and kept apart: ticked is yes, left empty is no, both agree', async () => {
+  for (const [marketing, want] of [[true, true], [undefined, false], [false, false]]) {
+    const { deps, user } = await newcomer('on');
+    const token = signFlowToken(`welcome:${user.id}`, SECRET);
+    await handleFlowAction(body(token, 'TERMS', { email: 'a@b.co', agree: true, ...(marketing === undefined ? {} : { marketing }) }), flowDeps(deps));
+    await wait(200);
+    const row = await prisma.user.findUnique({ where: { id: user.id } });
+    assert.equal(row.privacyConsent, 'AGREED', `agreed (tick ${marketing})`);
+    assert.equal(row.marketingEmailOptIn, want, `tick ${marketing}`);
+    assert.ok(row.marketingEmailOptInAt, 'when it was answered');
+  }
+});
+
 test('a first message over 2 hours old is not replayed: the menu comes instead', async () => {
   const { deps, sent, redis, user } = await newcomer('on');
   await redis.set(`whatsapp:user:${user.id}:pre_consent_message`, JSON.stringify({ at: Date.now() - 3 * 3600_000, msg: { messageId: '', phone: '1', messageBody: 'FREEZE', isLocation: false } }));

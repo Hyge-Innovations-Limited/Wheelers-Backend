@@ -46,6 +46,10 @@ model User {
   /// Typed on WhatsApp, unverified, never used to sign in or link accounts (social-auth.route.ts links by User.email).
   contactEmail               String?
   contactEmailAt             DateTime?
+  /// The optional tick on the Welcome form: news and offers by email to contactEmail. Separate from privacyConsent.
+  marketingEmailOptIn        Boolean                     @default(false)
+  /// When the tick was last answered (yes or no).
+  marketingEmailOptInAt      DateTime?
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt

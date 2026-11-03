@@ -8,7 +8,7 @@ import { actionFor } from './flow-dispatch';
  * Terms with an "I agree" tick. The user comes only from the signed token.
  *
  *   EMAIL  one box                         [Next]        -> TERMS
- *   TERMS  two links and the tick          [Get started] -> the form closes
+ *   TERMS  two links, the I agree tick, an optional news-and-offers tick   [Get started] -> the form closes
  *
  * Agreeing goes through userClient.agreePrivacyOnce: one winner, and only the
  * winner starts the chat follow-up (onWelcomeAgreed). The email is saved as
@@ -96,6 +96,8 @@ export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, d
   if ((await userClient.getPrivacyConsent(userId)) === 'AGREED') return closed(body.flow_token);
 
   await userClient.setContactEmail(userId, email);
+  // The optional tick: kept apart from the agreement, and only when they agree.
+  await userClient.setMarketingEmailOptIn(userId, data['marketing'] === true || data['marketing'] === 'true');
   const won = await userClient.agreePrivacyOnce(userId);
   if (won && deps.onWelcomeAgreed) {
     // The form must answer Meta within seconds; the chat follow-up runs on its own.
