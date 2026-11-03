@@ -508,17 +508,21 @@ async function bootstrap(): Promise<void> {
   // TRIP_RECORDING_ENABLED; the bucket alone keeps the 30-day sweep running, so switching
   // recording off never stops what was recorded from being deleted.
   const tripRecordingBucket = gatewayEnv.TRIP_RECORDING_R2_BUCKET;
+  // The account the recordings bucket is in: the main one's keys, or (TRIP_RECORDING_R2_ACCOUNT=backup)
+  // the backup account's, the ones the database backups use.
+  const recordingAccount = gatewayEnv.TRIP_RECORDING_R2_ACCOUNT === 'backup'
+    ? (gatewayEnv.BACKUP_R2_ACCOUNT_ID && gatewayEnv.BACKUP_R2_ACCESS_KEY_ID && gatewayEnv.BACKUP_R2_SECRET_ACCESS_KEY
+      ? { accountId: gatewayEnv.BACKUP_R2_ACCOUNT_ID, accessKeyId: gatewayEnv.BACKUP_R2_ACCESS_KEY_ID, secretAccessKey: gatewayEnv.BACKUP_R2_SECRET_ACCESS_KEY, jurisdiction: gatewayEnv.BACKUP_R2_JURISDICTION }
+      : null)
+    : (r2Configured
+      ? { accountId: gatewayEnv.R2_ACCOUNT_ID!, accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!, secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY! }
+      : null);
   const tripRecordingStorage =
-    r2Configured && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET
-      ? new TripRecordingStorage({
-          accountId: gatewayEnv.R2_ACCOUNT_ID!,
-          accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!,
-          secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY!,
-          bucket: tripRecordingBucket,
-        })
+    recordingAccount && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET && tripRecordingBucket !== gatewayEnv.BACKUP_R2_BUCKET
+      ? new TripRecordingStorage({ ...recordingAccount, bucket: tripRecordingBucket })
       : null;
   if (gatewayEnv.TRIP_RECORDING_ENABLED && !tripRecordingStorage) {
-    console.warn('[trip-recording] TRIP_RECORDING_ENABLED is on but TRIP_RECORDING_R2_BUCKET is missing, or is the documents bucket: nothing records');
+    console.warn('[trip-recording] TRIP_RECORDING_ENABLED is on but nothing records: TRIP_RECORDING_R2_BUCKET is missing or is the documents or backups bucket, or that account\'s keys are not set', { account: gatewayEnv.TRIP_RECORDING_R2_ACCOUNT });
   }
   const tripRecordingDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,

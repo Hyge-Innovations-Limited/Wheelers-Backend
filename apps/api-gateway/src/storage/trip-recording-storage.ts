@@ -17,10 +17,11 @@ export class TripRecordingStorage {
   private readonly s3: S3Client;
   private readonly bucket: string;
 
-  constructor(params: { accountId: string; accessKeyId: string; secretAccessKey: string; bucket: string }) {
+  constructor(params: { accountId: string; accessKeyId: string; secretAccessKey: string; bucket: string; jurisdiction?: string }) {
     this.s3 = new S3Client({
       region: 'auto',
-      endpoint: `https://${params.accountId}.r2.cloudflarestorage.com`,
+      // A bucket made in a jurisdiction (EU) lives at its own address.
+      endpoint: `https://${params.accountId}${params.jurisdiction ? `.${params.jurisdiction}` : ''}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId: params.accessKeyId, secretAccessKey: params.secretAccessKey },
       // No checksum of an empty body in the signed PUT: the phone sends the real file, and R2 would refuse it.
       requestChecksumCalculation: 'WHEN_REQUIRED',

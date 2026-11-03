@@ -167,8 +167,16 @@ const GatewayEnvSchema = z.object({
   TRIP_RECORDING_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   // Only these drivers record, comma-separated Driver ids (a pilot). Empty with the flag on: every driver.
   TRIP_RECORDING_DRIVER_IDS: z.string().optional().transform((v) => (v ?? '').split(',').map((id) => id.trim()).filter(Boolean)),
-  // The recordings' own bucket, never the app's documents bucket. Same R2 account and keys as above.
+  // The recordings' own bucket, never the app's documents bucket nor the backups one.
   TRIP_RECORDING_R2_BUCKET: z.string().optional().transform(v => v?.trim() || undefined),
+  // Which Cloudflare account the recordings bucket is in: main (the R2_* keys above, the default) or
+  // backup (the BACKUP_R2_* keys the database backups use, and BACKUP_R2_JURISDICTION if set).
+  TRIP_RECORDING_R2_ACCOUNT: z.enum(['main', 'backup']).default('main'),
+  BACKUP_R2_ACCOUNT_ID:         z.string().optional().transform(v => v?.trim() || undefined),
+  BACKUP_R2_ACCESS_KEY_ID:      z.string().optional().transform(v => v?.trim() || undefined),
+  BACKUP_R2_SECRET_ACCESS_KEY:  z.string().optional().transform(v => v?.trim() || undefined),
+  BACKUP_R2_BUCKET:             z.string().optional().transform(v => v?.trim() || undefined),
+  BACKUP_R2_JURISDICTION:       z.string().optional().transform(v => v?.trim().toLowerCase() || undefined),
 });
 
 export type GatewayEnv = z.infer<typeof GatewayEnvSchema>;
