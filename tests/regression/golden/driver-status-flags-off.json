@@ -2,18 +2,21 @@
   "rider_paying | driver connected": {
     "error": null,
     "log": [
+      "{\"push\":{\"title\":\"Rider accepted\",\"body\":\"Paying now\",\"data\":{\"type\":\"ride:rider_paying\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
       "{\"socket\":\"ride:rider_paying\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
     ]
   },
   "rider_paying | driver away": {
     "error": null,
     "log": [
+      "{\"push\":{\"title\":\"Rider accepted\",\"body\":\"Paying now\",\"data\":{\"type\":\"ride:rider_paying\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
       "{\"socket\":\"ride:rider_paying\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
     ]
   },
   "bids_declined | driver connected": {
     "error": null,
     "log": [
+      "{\"push\":{\"title\":\"Offer declined\",\"body\":\"Send a new price.\",\"data\":{\"type\":\"bid_declined\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
       "{\"socket\":\"ride:bid_declined\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\"}}"
     ]
   },
@@ -39,6 +42,7 @@
   "assignment_failed_closed | driver connected": {
     "error": null,
     "log": [
+      "{\"push\":{\"title\":\"Not chosen\",\"body\":\"Another driver got this ride.\",\"data\":{\"type\":\"ride:bid_lost\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
       "{\"socket\":\"ride:bid_lost\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"reason\":\"booked_other\"}}"
     ]
   },
@@ -95,6 +99,7 @@
   "offer_sent_repriced | driver connected": {
     "error": null,
     "log": [
+      "{\"push\":{\"title\":\"New price ₦3,500\",\"body\":\"Akoka → Yaba\",\"data\":{\"type\":\"ride:offer_updated\",\"rideId\":\"00000000-0000-4000-8000-000000000001\"},\"priority\":\"high\"}}",
       "{\"socket\":\"ride:offer\",\"payload\":{\"rideId\":\"00000000-0000-4000-8000-000000000001\",\"riderId\":\"00000000-0000-4000-8000-000000000002\",\"bidsCloseAt\":\"<time>\",\"pickup\":{\"lat\":6.5,\"lng\":3.3,\"address\":\"Akoka\"},\"destination\":{\"lat\":6.51,\"lng\":3.37,\"address\":\"Yaba\"},\"stops\":[],\"fareEstimateNgn\":3000,\"paymentMethod\":\"WALLET\",\"riderOfferNgn\":3500,\"suggestedFareNgn\":3000,\"bookingFeeNgn\":350,\"pricingVersion\":4,\"afterCurrentTrip\":false,\"expiresAt\":\"<time>\",\"isGroupRide\":false,\"riderCount\":1,\"stopKinds\":[],\"groupMembers\":[]}}"
     ]
   },

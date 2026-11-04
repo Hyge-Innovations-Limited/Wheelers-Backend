@@ -6,6 +6,10 @@
 //   capture: REGRESSION_CAPTURE=1 REGRESSION_ROOT=<a checkout of main, built> ...same command
 //
 // Known, intended differences (flag-independent bug fixes) are listed in INTENDED and asserted on their own.
+//
+// Re-captured 4 Nov 2026 (drivers get a push for everything): the only change was pushes ADDED
+// for a connected driver (rider accepted, offer declined, not chosen, new price) and "Rider accepted"
+// with the flag off. No socket message, error or other push changed.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { appBackgroundKey } from '../websocket/app-state';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
+import { tellRidePage } from '../rides/ride-page-live';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
 import { buildPricedRouteEvent, claimPublish, fundRouteHold, releasePublish, pendingRideOf, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../rides/trip-route-pending';
@@ -170,6 +170,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
           throw new Error(`Invalid ride event: ${parsed.error.message}`);
         }
         await handleRideEvent(parsed.data, deps, rideParticipants);
+        // The rider's booking page, if open: its new state now, not at its next poll.
+        if ('riderId' in parsed.data && typeof parsed.data.riderId === 'string') void tellRidePage(deps.registry, parsed.data.riderId);
         return;
       }
 
@@ -179,6 +181,7 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
           throw new Error(`Invalid wallet event: ${parsed.error.message}`);
         }
         await handleWalletEvent(parsed.data, deps, rideParticipants);
+        void tellRidePage(deps.registry, parsed.data.userId);
         return;
       }
 
@@ -617,9 +620,9 @@ async function endTimedOutSearch(
   // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
   await markSearchEnded(deps.redisClient, rideId);
   if (payingStatusEnabled()) await closePaying(deps, rideId, 'search_ended').catch(() => false);
-  // A bidder away from the app hears the search ended by push.
+  // Each bidder hears the search ended by push too.
   for (const userId of new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId))) {
-    await pushDriverIfAway(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId, generation: `timed_out@${timestamp}` });
+    await pushDriver(deps, userId, { title: 'Search ended', body: 'The rider did not choose a driver.', type: 'ride:bid_timeout', rideId, generation: `timed_out@${timestamp}` });
   }
 
   await driverBidClient.resolvePending(rideId, 'EXPIRED').catch(() => {});
@@ -773,30 +776,11 @@ const PUSH_DEDUPE_SECONDS = 10 * 60;
 /** The claim before the send: short, so a process dying mid-send loses the push for seconds, not minutes. */
 const PUSH_CLAIM_SECONDS = 30;
 /**
- * Away = no socket. With DRIVER_STATUS_PUSHES_ENABLED also: the app said it is
- * in the background (app:state, a short-lived flag the app refreshes). A
- * presence check that fails counts as away: a banner too many beats a driver
- * who never hears.
+ * A push to a driver for every piece of ride news, app open or not: an app in
+ * the background keeps its socket, so "has a socket" never meant "is looking".
+ * The app hides the banner itself while it is on screen. Never throws.
  */
-async function driverIsAway(deps: Pick<StartGatewayConsumerDeps, 'registry' | 'redisClient' | 'driverStatusPushes'>, driverUserId: string): Promise<boolean> {
-  try {
-    if (!(await deps.registry.isUserConnected(driverUserId))) return true;
-  } catch {
-    return true;
-  }
-  if (!deps.driverStatusPushes) return false;
-  try {
-    return (await deps.redisClient.get(appBackgroundKey(driverUserId))) !== null;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * A push to a driver whose app is not connected; a connected app has the
- * socket message and needs no banner on top. Never throws.
- */
-async function pushDriverIfAway(
+async function pushDriver(
   deps: StartGatewayConsumerDeps,
   driverUserId: string,
   /**
@@ -806,7 +790,6 @@ async function pushDriverIfAway(
    */
   message: { title: string; body: string; type: string; rideId: string; generation: string },
 ): Promise<void> {
-  if (!(await driverIsAway(deps, driverUserId))) return;
   const key = `push:driver:${message.rideId}:${driverUserId}:${message.type}:${message.generation}`;
   // Claimed before sending (atomic), so two events at once give one banner; given back if the send fails.
   const claimed = await deps.redisClient.setIfNotExists(key, '1', PUSH_CLAIM_SECONDS).catch(() => true);
@@ -1013,9 +996,9 @@ export async function handleRideEvent(
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
     await noteOfferedDriverUser(deps.redisClient, event.rideId, event.driverUserId).catch(() => undefined);
     if (status?.changed) sendSearchStatusSoon(deps, event.riderId, event.rideId, { driversNotified: status.driversNotified, bidsCloseAt: status.bidsCloseAt });
-    // The rider changed their price: a driver away from the app hears it by push.
+    // The rider changed their price: the driver hears it by push too.
     if (event.repriced) {
-      await pushDriverIfAway(deps, event.driverUserId, {
+      await pushDriver(deps, event.driverUserId, {
         title: `New price ₦${Math.round(event.riderOfferNgn ?? 0).toLocaleString('en-NG')}`,
         body: `${event.pickup.address} → ${event.destination.address}`,
         type: 'ride:offer_updated',
@@ -1075,6 +1058,8 @@ export async function handleRideEvent(
       };
       await addBid(deps.redisClient, event.rideId, bid);
       await setRideState(deps.redisClient, event.rideId, 'bidding');
+      // The open booking page gets the offer now, before the chat work below (it is sent again after).
+      void tellRidePage(registry, event.riderId);
 
       const phone = await lookupPhoneByUserId(deps.redisClient, event.riderId);
       let meta = await getRideMeta(deps.redisClient, event.rideId);
@@ -1224,6 +1209,7 @@ export async function handleRideEvent(
       agreedFareNgn: event.agreedFareNgn,
       paymentMethod: event.paymentMethod,
     });
+    await pushDriver(deps, event.driverUserId, { title: 'Offer accepted', body: `₦${Math.round(event.agreedFareNgn).toLocaleString('en-NG')}`, type: 'ride:offer_accepted', rideId: event.rideId, generation: event.timestamp });
     return;
   }
 
@@ -1302,22 +1288,7 @@ export async function handleRideEvent(
     for (const userId of new Set(event.driverUserIds)) {
       void registry.sendToUser(userId, 'ride:bid_declined', { rideId: event.rideId });
       if (payingStatusEnabled()) await closePaying(deps, event.rideId, 'declined', userId).catch(() => false);
-      if (deps.driverStatusPushes) {
-        // Deduped like the other driver pushes, and a backgrounded app counts as away.
-        await pushDriverIfAway(deps, userId, { title: 'Offer declined', body: 'Send a new price.', type: 'bid_declined', rideId: event.rideId, generation: `declined@${event.timestamp}` });
-        continue;
-      }
-      if (!(await driverIsAway(deps, userId))) continue;
-      await deps.publisher.publishNotificationEvent({
-        eventType: 'PUSH_SEND',
-        notificationId: randomUUID(),
-        userId,
-        title: 'Offer declined',
-        body: 'Send a new price.',
-        data: { type: 'bid_declined', rideId: event.rideId },
-        priority: 'high',
-        timestamp: new Date().toISOString(),
-      }).catch(() => {});
+      await pushDriver(deps, userId, { title: 'Offer declined', body: 'Send a new price.', type: 'bid_declined', rideId: event.rideId, generation: `declined@${event.timestamp}` });
     }
     return;
   }
@@ -1337,7 +1308,7 @@ export async function handleRideEvent(
         if (losingHold?.status === 'ACTIVE' && losingHold.driverUserId === event.driverUserId) {
           await walletClient.cancelRideHold(event.rideId, event.driverUserId).catch(() => {});
         }
-        await pushDriverIfAway(deps, event.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${ride?.driverId ?? 'none'}` });
+        await pushDriver(deps, event.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${ride?.driverId ?? 'none'}` });
         return;
       }
       // The rider ended it first and was told then; the driver, told they
@@ -1438,8 +1409,14 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_RIDER_PAYING_ENDED') {
-    // The card goes back to waiting. Not a banner: nothing needs the driver to act.
+    // The card goes back to waiting.
     void registry.sendToUser(event.driverUserId, 'ride:rider_paying_ended', { rideId: event.rideId, reason: event.reason });
+    // By push too while the request stays open; declined, chosen another, cancelled and
+    // search ended each have their own banner.
+    if (event.reason === 'closed' || event.reason === 'switched' || event.reason === 'failed') {
+      // Once per ride for the dedupe's 10 minutes: a rider opening and closing the pay sheet is not ten banners.
+      await pushDriver(deps, event.driverUserId, { title: "Rider didn't pay", body: 'Request still open', type: 'ride:rider_paying_ended', rideId: event.rideId, generation: 'ended' });
+    }
     return;
   }
 
@@ -1459,10 +1436,8 @@ export async function handleRideEvent(
       // The driver's own clock cannot be trusted: how long is left, by ours, right now.
       ...(event.payingUntil && payingStatusEnabled() ? { payingRemainingMs: Math.max(0, Date.parse(event.payingUntil) - Date.now()) } : {}),
     });
-    // Away from the app: the same news by push (once per event).
-    if (deps.driverStatusPushes) {
-      await pushDriverIfAway(deps, event.driverUserId, { title: 'Rider accepted', body: 'Paying now', type: 'ride:rider_paying', rideId: event.rideId, generation: event.payingSince ? `paying@${event.payingSince}` : 'paying' });
-    }
+    // The same news by push (once per event).
+    await pushDriver(deps, event.driverUserId, { title: 'Rider accepted', body: 'Paying now', type: 'ride:rider_paying', rideId: event.rideId, generation: event.payingSince ? `paying@${event.payingSince}` : 'paying' });
     return;
   }
 
@@ -1494,8 +1469,8 @@ export async function handleRideEvent(
         rideId: event.rideId,
         reason: 'booked_other',
       });
-      // Away from the app: a push, so the driver is not left waiting on this rider.
-      await pushDriverIfAway(deps, losing.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${event.driverId}` });
+      // A push too, so the driver is not left waiting on this rider.
+      await pushDriver(deps, losing.driverUserId, { title: 'Not chosen', body: 'Another driver got this ride.', type: 'ride:bid_lost', rideId: event.rideId, generation: `won_by:${event.driverId}` });
     }
     // Drivers who were offered it but never bid: their request card closes as
     // "Taken by another driver" instead of lingering until it expires.
@@ -1656,8 +1631,8 @@ export async function handleRideEvent(
       // The Start button asks for the rider's code. Never the code itself.
       tripCodeRequired: tripCodeNeeded,
     });
-    // Away from the app: the booking by push too.
-    await pushDriverIfAway(deps, event.driverUserId, {
+    // The booking by push too.
+    await pushDriver(deps, event.driverUserId, {
       title: "You're booked",
       body: rideSnapshot?.pickup?.address ? `Pick up at ${rideSnapshot.pickup.address}` : 'Open Wheelers to see the pickup.',
       type: 'ride:matched',
@@ -1693,6 +1668,11 @@ export async function handleRideEvent(
     const participants = await participantsFor(event.rideId, rideParticipants);
     if (participants?.driverUserId) {
       await registry.sendToUser(participants.driverUserId, 'ride:route:updated', routePayload);
+      // The rider changed the trip: by push too (a stop reached, or the driver's own change, is not news).
+      if (event.updatedBy === 'rider' && !event.reverted) {
+        const fare = event.agreedFareNgn !== undefined ? ` · ₦${Math.round(event.agreedFareNgn).toLocaleString('en-NG')}` : '';
+        await pushDriver(deps, participants.driverUserId, { title: 'Trip changed', body: `To ${event.destination.address}${fare}`, type: 'ride:route:updated', rideId: event.rideId, generation: event.timestamp });
+      }
     }
 
     return;
@@ -1830,6 +1810,7 @@ export async function handleRideEvent(
       durationSeconds: event.durationSeconds,
       completedAt: event.completedAt,
     });
+    await pushDriver(deps, event.driverUserId, { title: 'Trip done', body: `You earned ₦${Math.round(completionFees.driverPayoutNgn).toLocaleString('en-NG')}`, type: 'ride:completed', rideId: event.rideId, generation: 'done' });
 
     // Clean up WhatsApp Redis state
     await endOfferCount(deps, event.rideId);
@@ -1876,7 +1857,7 @@ export async function handleRideEvent(
         reason: searchEndReason,
       });
       if (searchEndReason === 'rider_cancelled') {
-        await pushDriverIfAway(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
+        await pushDriver(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
       }
     }
     // Drivers who were sent the request but never bid: it leaves their screen
@@ -2030,9 +2011,9 @@ export async function handleRideEvent(
           reason: event.reason,
           cancelledBy: event.cancelledBy ?? 'rider',
         });
-        // The rider called off a booked trip: a driver away from the app (driving to them) hears it by push.
+        // The rider called off a booked trip: the driver (driving to them) hears it by push too.
         if ((event.cancelledBy ?? 'rider') === 'rider' && driverUserId !== event.driverUserId) {
-          await pushDriverIfAway(deps, driverUserId, { title: 'Rider cancelled', body: 'This trip is off.', type: 'ride:cancelled', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
+          await pushDriver(deps, driverUserId, { title: 'Rider cancelled', body: 'This trip is off.', type: 'ride:cancelled', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
         }
       } else {
         console.warn('[gateway] ride cancelled but the driver could not be notified', {
@@ -2094,6 +2075,10 @@ export async function handleWalletEvent(
       direction: 'credit',
       referenceId: event.referenceId,
     });
+    // A driver's money in, by push. The credit's own reference names it (one banner per credit).
+    if (event.amountNgn > 0 && await driverClient.findByUserId(event.userId).catch(() => null)) {
+      await pushDriver(deps, event.userId, { title: `₦${Math.round(event.amountNgn).toLocaleString('en-NG')} in your wallet`, body: `Balance ₦${Math.round(event.newBalanceNgn).toLocaleString('en-NG')}`, type: 'wallet:updated', rideId: event.referenceId, generation: event.creditType });
+    }
 
     // A route change that was waiting on money goes ahead once the deposit covers it.
     if (event.creditType === 'deposit') await applyPendingRouteOnDeposit(deps, event.userId).catch((error) => {
@@ -2116,6 +2101,7 @@ export async function handleWalletEvent(
               riderFunded: true,
               message: 'Rider has funded their wallet. You can start heading to pickup!',
             });
+            await pushDriver(deps, participants.driverUserId, { title: 'Rider paid', body: `₦${Math.round(meta.offerNgn).toLocaleString('en-NG')}`, type: 'ride:rider_paid', rideId, generation: 'paid' });
             // The rider hears of a deposit from the plain confirmation below; any
             // other credit (a refund, a cashback) is not a "payment received".
           }

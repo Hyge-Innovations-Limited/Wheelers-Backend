@@ -119,7 +119,8 @@ import { handleWalletPageRoute } from "./http/wallet-page.route";
 import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
 import { recordRequestOutcome } from "./analytics/user-outcomes";
-import { handleRidePageRoute } from "./http/ride-page.route";
+import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
+import { setRidePageStateBuilder } from "./rides/ride-page-live";
 import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
@@ -729,6 +730,27 @@ async function bootstrap(): Promise<void> {
     legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
   });
 
+  // The WhatsApp booking page's deps: its routes, and the state its open socket is sent.
+  const ridePageDeps = (): RidePageRouteDeps => ({
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
+    redisClient: redisCommandClient,
+    publisher,
+    paymentsClient,
+    driverPhoto,
+    notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
+    // Changing the trip on the page: the chat's place lookup and route planner.
+    googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+    // The page's own map: a key locked to our web address, never the server's key.
+    googleMapsBrowserKey: process.env.GOOGLE_MAPS_BROWSER_KEY?.trim() || undefined,
+    routePlanner,
+    // Rides for later ("Later" on the page's home): the same queue and lead time as the app's.
+    scheduling: { dispatcherQueue, leadTimeMs },
+    // Paying with XLM (testnet): only when Stellar is on.
+    stellar: stellar ?? null,
+  });
+  setRidePageStateBuilder((riderId) => buildRidePageState(ridePageDeps(), riderId));
+
   // Every API request and database query, counted per minute for the admin Health page.
   const healthStats = createStatsRecorder();
   onPrismaQuery((name, ms, failed) => {
@@ -1186,24 +1208,7 @@ async function bootstrap(): Promise<void> {
     }
 
     if (url.pathname.startsWith("/ride-page/")) {
-      const handled = await handleRidePageRoute(req, res, {
-        jwtSecret: gatewayEnv.JWT_SECRET,
-        liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
-        redisClient: redisCommandClient,
-        publisher,
-        paymentsClient,
-        driverPhoto,
-        notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
-        // Changing the trip on the page: the chat's place lookup and route planner.
-        googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
-        // The page's own map: a key locked to our web address, never the server's key.
-        googleMapsBrowserKey: process.env.GOOGLE_MAPS_BROWSER_KEY?.trim() || undefined,
-        routePlanner,
-        // Rides for later ("Later" on the page's home): the same queue and lead time as the app's.
-        scheduling: { dispatcherQueue, leadTimeMs },
-        // Paying with XLM (testnet): only when Stellar is on.
-        stellar: stellar ?? null,
-      }, url);
+      const handled = await handleRidePageRoute(req, res, ridePageDeps(), url);
       if (handled) return;
     }
 

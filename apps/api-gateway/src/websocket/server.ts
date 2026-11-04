@@ -5,7 +5,7 @@ import WebSocket, { Server as WebSocketServer } from 'ws';
 import { driverClient, driverPresence, userClient } from '@wheleers/db';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildGatewayAuthContext } from '../auth/context';
-import { verifyLocalAccessToken, verifyWalletPageToken } from '../auth/local';
+import { RIDE_PAGE_TOKEN_TTL_SECONDS, verifyLocalAccessToken, verifyWalletPageToken } from '../auth/local';
 import type { GatewayAuthContext, InboundWsMessage } from '../types';
 import { isRecord } from '../utils/object';
 import { handleDriverMessage } from './handlers/driver.handler';
@@ -19,6 +19,7 @@ import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
 import { handleAppStateMessage } from './app-state';
+import { ridePageChannel } from '../rides/ride-page-live';
 import { publicMessage } from '../http/public-error';
 
 interface WebSocketServerDeps {
@@ -163,6 +164,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       // A Trip chat page signs in with its link, not a login: that socket may
       // only chat and call, and only on the ride its link names.
       let pageRideId: string | null = null;
+      // The WhatsApp booking page signs in with its link too: it may only listen.
+      let ridePage = false;
       try {
         const login = verifyLocalAccessToken(token, deps.jwtSecret);
         tokenSubject = login.sub;
@@ -175,7 +178,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
             return null;
           }
         })();
-        if (!page || page.scope !== 'trip' || !page.rideId) {
+        if (!page || !((page.scope === 'trip' && page.rideId) || page.scope === 'ride')) {
           counts.refusedAuth += 1;
           const message = error instanceof Error ? error.message : 'Invalid auth token';
           if (verbose) console.warn('[ws] reject: invalid access token', { message, ...getRequestLogContext(request, requestOrigin) });
@@ -183,14 +186,15 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           return;
         }
         tokenSubject = page.userId;
-        pageRideId = page.rideId;
+        pageRideId = page.rideId ?? null;
+        ridePage = page.scope === 'ride';
       }
 
       const originAllowed =
         deps.allowedOrigins.size === 0 ||
         !requestOrigin ||
         deps.allowedOrigins.has(requestOrigin) ||
-        (pageRideId !== null && (deps.pageOrigins?.has(requestOrigin) ?? false));
+        ((pageRideId !== null || ridePage) && (deps.pageOrigins?.has(requestOrigin) ?? false));
       if (!originAllowed) {
         console.warn('[ws] reject: origin not allowed', {
           allowedOrigins: Array.from(deps.allowedOrigins),
@@ -215,7 +219,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         }
 
         // A page socket is never a driver on shift: no driver record, no presence, no grace.
-        const driver = pageRideId ? null : await driverClient.findByUserId(user.id);
+        const driver = pageRideId || ridePage ? null : await driverClient.findByUserId(user.id);
 
         const auth = buildGatewayAuthContext({
           user,
@@ -224,6 +228,10 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         // The MCP server says so when it connects; used only to label bookings for analytics.
         auth.client = url.searchParams.get('client') === 'mcp' ? 'mcp' : 'app';
         if (pageRideId) auth.page = { scope: 'trip', rideId: pageRideId };
+        if (ridePage) {
+          auth.userId = ridePageChannel(user.id);
+          auth.ridePage = true;
+        }
 
         wsServer.handleUpgrade(request, socket as never, head, (ws: WebSocket) => {
           // Listen FIRST. The app speaks the moment its socket opens ("I am
@@ -235,6 +243,12 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           // handlers can run straight away.
           const registered = deps.registry.register(ws, auth);
           counts.opened += 1;
+          // A booking page listens no longer than its link lives; reconnecting needs a live link.
+          if (ridePage) {
+            const linkOver = setTimeout(() => ws.close(4001, 'Link expired'), RIDE_PAGE_TOKEN_TTL_SECONDS * 1000);
+            linkOver.unref?.();
+            ws.once('close', () => clearTimeout(linkOver));
+          }
           if (verbose) {
             console.info('[ws] connected', {
               userId: user.id,
@@ -373,12 +387,12 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           });
         }
 
-        const tripChatResponse = deps.tripChat ? await deps.tripChat.handleWsMessage(parsed.type, payload, auth) : null;
+        const tripChatResponse = deps.tripChat && !auth.ridePage ? await deps.tripChat.handleWsMessage(parsed.type, payload, auth) : null;
         const response =
           tripChatResponse ??
-          (deps.driverStatusPushes && !auth.page && auth.client !== 'mcp' ? await handleAppStateMessage(parsed.type, payload, auth, deps.redis) : null) ??
-          // A Trip chat page's socket does nothing else.
-          (auth.page
+          (deps.driverStatusPushes && !auth.page && !auth.ridePage && auth.client !== 'mcp' ? await handleAppStateMessage(parsed.type, payload, auth, deps.redis) : null) ??
+          // A Trip chat page's socket does nothing else; a booking page's only listens.
+          (auth.page || auth.ridePage
             ? null
             : (await handleRideMessage(
                 parsed.type,

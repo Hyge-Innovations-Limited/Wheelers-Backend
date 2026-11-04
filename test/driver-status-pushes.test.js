@@ -64,10 +64,10 @@ test('paying, flag on, no socket: one push, and a redelivered event is still one
   assert.equal(mine(w)[0].title, 'Rider accepted');
 });
 
-test('paying, flag on, socket open and app active: no push', async () => {
+test('paying, socket open and app active: still one push (the app hides the banner on screen)', async () => {
   const w = world({ isUserConnected: async () => true, flag: true });
   await run(w, paying());
-  assert.equal(mine(w).length, 0);
+  assert.equal(mine(w).length, 1);
 });
 
 test('paying, flag on, socket open but app reported background: push', async () => {
@@ -77,27 +77,20 @@ test('paying, flag on, socket open but app reported background: push', async () 
   assert.equal(mine(w).length, 1);
 });
 
-test('flag off: paying sends no push even with no socket (today)', async () => {
-  const w = world({ isUserConnected: async () => false, flag: false });
-  await run(w, paying());
-  assert.equal(mine(w).length, 0);
-});
-
-test('flag off: the background flag is ignored (old behaviour for a repriced request)', async () => {
+test('flag off: paying pushes too (it no longer needs DRIVER_STATUS_PUSHES_ENABLED)', async () => {
   const w = world({ isUserConnected: async () => true, flag: false });
-  w.redis.store.set(appBackgroundKey(DRIVER), '1');
-  await run(w, repriced('ride-bg'));
-  assert.equal(mine(w).length, 0);
+  await run(w, paying());
+  assert.equal(mine(w).length, 1);
+  assert.equal(mine(w)[0].title, 'Rider accepted');
 });
 
-test('flag on: a repriced request reaches a backgrounded driver, not an active one', async () => {
-  const bg = world({ isUserConnected: async () => true, flag: true });
-  bg.redis.store.set(appBackgroundKey(DRIVER), '1');
-  await run(bg, repriced('ride-r1'));
-  assert.equal(mine(bg).length, 1);
-  const active = world({ isUserConnected: async () => true, flag: true });
-  await run(active, repriced('ride-r2'));
-  assert.equal(mine(active).length, 0);
+test('a repriced request reaches a connected driver, flag on or off, active or background', async () => {
+  for (const flag of [true, false]) {
+    const w = world({ isUserConnected: async () => true, flag });
+    await run(w, repriced(`ride-r-${flag}`));
+    assert.equal(mine(w).length, 1, `flag ${flag}`);
+    assert.match(mine(w)[0].title, /^New price/);
+  }
 });
 
 test('bug fix, flag off: a presence check that throws sends the push', async () => {
@@ -113,15 +106,13 @@ test('bug fix, flag off: a throwing presence check on a declined bid sends the p
   assert.equal(mine(w)[0].data.type, 'bid_declined');
 });
 
-test('declined, flag off: connected driver gets no push; flag on, backgrounded gets one, deduped', async () => {
-  const off = world({ isUserConnected: async () => true, flag: false });
-  await run(off, declined());
-  assert.equal(mine(off).length, 0);
-  const on = world({ isUserConnected: async () => true, flag: true });
-  on.redis.store.set(appBackgroundKey(DRIVER), '1');
-  await run(on, declined()); await run(on, declined());
-  assert.equal(mine(on).length, 1);
-  assert.equal(mine(on)[0].data.type, 'bid_declined');
+test('declined: a connected driver gets one push, deduped, flag on or off', async () => {
+  for (const flag of [true, false]) {
+    const w = world({ isUserConnected: async () => true, flag });
+    await run(w, declined()); await run(w, declined());
+    assert.equal(mine(w).length, 1, `flag ${flag}`);
+    assert.equal(mine(w)[0].data.type, 'bid_declined');
+  }
 });
 
 test('declined, flag on: a different timestamp is new news and pushes; a redelivery does not', async () => {
@@ -195,14 +186,14 @@ test('app:state background stores the flag with a 2 minute TTL; active clears it
   assert.equal(await handleAppStateMessage('driver:online', {}, auth, redis), null);
 });
 
-test('end to end: app:state background then the event pushes; active then the event does not', async () => {
+test('end to end: app:state no longer decides; background or active, the event pushes', async () => {
   const w = world({ isUserConnected: async () => true, flag: true });
   await handleAppStateMessage('app:state', { state: 'background' }, { userId: DRIVER }, w.redis);
   await run(w, paying('ride-e1'));
   assert.equal(mine(w).length, 1);
   await handleAppStateMessage('app:state', { state: 'active' }, { userId: DRIVER }, w.redis);
   await run(w, paying('ride-e2'));
-  assert.equal(mine(w).length, 1);
+  assert.equal(mine(w).length, 2);
 });
 
 // ---- worker: channelId only for devices that declared it ----

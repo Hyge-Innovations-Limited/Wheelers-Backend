@@ -200,7 +200,7 @@ test('paying push: a resumed spell sends no second banner; a genuinely new spell
   const pushes = [];
   w.deps.registry.isUserConnected = async () => false;
   w.deps.publisher.publishNotificationEvent = async (e) => { pushes.push(e); };
-  const mineP = () => pushes.filter((p) => p.userId === A).length;
+  const mineP = () => pushes.filter((p) => p.userId === A && p.data.type === 'ride:rider_paying').length;
   await paying.openPaying(w.deps, RIDE, RIDER, A);
   await paying.closePaying(w.deps, RIDE, 'closed', A);
   await new Promise((r) => setTimeout(r, 5));

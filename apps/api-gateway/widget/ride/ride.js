@@ -15,7 +15,8 @@
 (function () {
   'use strict';
   var W = window.Wheelers;
-  var POLL_MS = 3000;        // while bidding: offers should feel instant
+  var POLL_MS = 3000;        // while bidding, with no socket: offers should feel instant
+  var LIVE_POLL_MS = 10000;  // the socket brings each change; the poll is its backup and keeps "on the page" (25 s) alive
   var TRACK_MS = 5000;       // while tracking: a car does not move far in five seconds
   var NUDGE_MS = 120000;     // no offer after two minutes: suggest a higher price
   var HOME_CENTER = { lat: 6.4473, lng: 3.4729 };   // the app's home map, before the phone says where
@@ -112,6 +113,7 @@
   function fatal(message) {
     stopped = true;
     clearTimeout(polling);
+    disconnectLive();
     shownView = 'fatal';
     document.body.classList.remove('on-home');
     W.fatal(message);
@@ -127,6 +129,7 @@
     routeAdd = null;   // a dead token: hideSheets must not post a cancel
     stopped = true;
     clearTimeout(polling);
+    disconnectLive();
     hideSheets();
     shownView = 'expired';
     document.body.classList.remove('on-home');
@@ -2685,6 +2688,7 @@
     W.show(W.$('offers-steps-2'), count === 0);
     W.show(W.$('offers-steps-3'), count > 0);
     W.show(W.$('decline-all'), count > 0 && !paying && !showingDeclined);
+    W.$('decline-all').textContent = count === 1 ? 'Decline' : 'Decline all';
 
     var back = W.$('back-to-chat');
     W.show(back, Boolean(s.chatUrl));
@@ -3073,7 +3077,7 @@
       title: count === 1 ? 'Decline this offer?' : 'Decline all ' + count + ' offers?',
       text: '',
       yes: count === 1 ? 'Decline offer' : 'Decline all',
-      no: 'Keep offers'
+      no: count === 1 ? 'Keep offer' : 'Keep offers'
     }).then(function (yes) { if (yes) declineAll(); });
   });
 
@@ -3854,9 +3858,54 @@
     });
   }
 
+  /* ── the socket: the server sends the page's state after every change ── */
+  var live = null;          // the open socket, once it says so
+  var liveTimer = null;
+  var liveDelay = 1000;
+  var liveRetry = null;
+  function connectLive() {
+    if (stopped || live || document.hidden || typeof WebSocket === 'undefined' || !window.__wheelersToken) return;
+    clearTimeout(liveTimer);
+    var ws;
+    try {
+      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?token=' + encodeURIComponent(window.__wheelersToken));
+    } catch (e) { return liveAgain(); }
+    ws.onopen = function () {
+      live = ws;
+      liveDelay = 1000;
+      refresh();   // anything that changed while it was down
+    };
+    ws.onmessage = function (event) {
+      var message;
+      try { message = JSON.parse(event.data); } catch (e) { return; }
+      if (message && message.type === 'ride-page:state') liveState(message.payload);
+    };
+    ws.onclose = function () {
+      if (live === ws) live = null;
+      if (!stopped && !document.hidden) liveAgain();
+    };
+    ws.onerror = function () { /* onclose follows */ };
+  }
+  function liveAgain() {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(connectLive, liveDelay);
+    liveDelay = Math.min(15000, liveDelay * 2);
+  }
+  function disconnectLive() {
+    clearTimeout(liveTimer);
+    if (live) { var ws = live; live = null; ws.onclose = null; ws.close(); }
+  }
+  /** A state sent by the server: newest truth, as an action's answer is. Mid-action, asked again a moment later. */
+  function liveState(next) {
+    clearTimeout(liveRetry);
+    if (stopped || document.hidden) return;
+    if (busy && !local.confirming) { liveRetry = setTimeout(function () { if (!busy) refresh(); else liveState(next); }, 700); return; }
+    apply(next);
+  }
+
   function loop() {
     if (stopped) return;
-    var wait = state && state.phase === 'confirmed' ? TRACK_MS : POLL_MS;
+    var wait = state && state.phase === 'confirmed' ? TRACK_MS : live ? LIVE_POLL_MS : POLL_MS;
     polling = setTimeout(function () {
       // Confirming keeps asking: the poll may see the driver confirmed before the accept answers.
       if (document.hidden || (busy && !local.confirming)) return loop();
@@ -3865,14 +3914,16 @@
   }
   track('page_opened');
   refresh().then(loop);
+  connectLive();
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
       track('page_hidden', { secondsOnPage: secondsHere() });
       sendSteps(true);
+      disconnectLive();
       return;
     }
     track('page_visible', { secondsOnPage: secondsHere() });
-    if (!stopped) refresh();
+    if (!stopped) { refresh(); connectLive(); }
   });
   // Back to a page kept in memory with its pay sheet still showing: the driver's card is told again.
   window.addEventListener('pageshow', function (event) {

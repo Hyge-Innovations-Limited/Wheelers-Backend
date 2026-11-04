@@ -130,12 +130,23 @@ export interface RidePageRouteDeps {
 }
 
 /** What the page needs to offer "Pay with XLM": the spendable balance and the rate (refreshed every 30 minutes). */
-async function xlmFor(deps: RidePageRouteDeps, userId: string) {
+async function xlmFor(deps: RidePageRouteDeps, userId: string): Promise<XlmSummary> {
   if (!deps.stellar) return null;
+  const known = xlmSummaries.get(userId);
+  if (known && known.until > Date.now()) return known.value;
   const summary = await deps.stellar.walletSummary(userId).catch(() => null);
-  if (!summary?.rate) return null;
-  return { balanceXlm: summary.balanceXlm, spendableXlm: summary.spendableXlm, ngnPerXlm: summary.rate.ngnPerXlm, rateAt: summary.rate.at };
+  const value: XlmSummary = summary?.rate ? { balanceXlm: summary.balanceXlm, spendableXlm: summary.spendableXlm, ngnPerXlm: summary.rate.ngnPerXlm, rateAt: summary.rate.at } : null;
+  if (xlmSummaries.size > 500) xlmSummaries.clear();
+  xlmSummaries.set(userId, { value, until: Date.now() + XLM_SUMMARY_MS });
+  return value;
 }
+/**
+ * Each answer kept 30 s: the page asks every 3 s and is sent its state after every
+ * event, and Stellar's network is slow; a slow Stellar slowed every offer.
+ */
+const XLM_SUMMARY_MS = 30_000;
+type XlmSummary = { balanceXlm: number; spendableXlm: number; ngnPerXlm: number; rateAt: string } | null;
+const xlmSummaries = new Map<string, { value: XlmSummary; until: number }>();
 
 export type RidePageChatEvent =
   | { kind: 'search_started'; userId: string; phone: string; rideId: string; offerNgn: number; pickupAddress: string; destAddress: string; stopAddresses?: string[]; scheduled?: boolean }
@@ -271,8 +282,8 @@ async function liveTripFor(userId: string) {
 
 /* ── GET /ride-page/state ─────────────────────────────────────────────── */
 
-/** Every answer the page gets: where the rider is, and the key for its map. */
-async function buildState(deps: RidePageRouteDeps, userId: string) {
+/** Every answer the page gets: where the rider is, and the key for its map. Also sent down an open page's socket (rides/ride-page-live). */
+export async function buildRidePageState(deps: RidePageRouteDeps, userId: string) {
   return { ...(await buildPhaseState(deps, userId)), mapsKey: deps.googleMapsBrowserKey ?? null };
 }
 
@@ -556,7 +567,7 @@ async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
 async function handleState(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/find ─────────────────────────────────────────────── */
@@ -572,11 +583,11 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   const quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
     // Already searching (a double tap, or they named a price in the chat)? Show that.
-    if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildState(deps, userId));
+    if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildRidePageState(deps, userId));
     throw new PageError('This quote has expired. Send your trip to the Wheelers bot again for a fresh one.', 409, 'QUOTE_EXPIRED');
   }
   await startSearch(deps, userId, quote, amountNgn, autoAccept);
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /** Drivers are asked: the search goes out at the rider's price (auto-accept only when they said yes). */
@@ -611,7 +622,7 @@ async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps:
   if (!isRecord(body) || typeof body.on !== 'boolean') throw new PageError('Say on or off.', 400, 'BAD_REQUEST');
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) {
-    if (!body.on) return sendJson(res, 200, await buildState(deps, userId));
+    if (!body.on) return sendJson(res, 200, await buildRidePageState(deps, userId));
     throw new PageError('This search has ended.', 409, 'NOT_SEARCHING');
   }
   // The price the rider was asked about (absent: the search's price now).
@@ -619,7 +630,7 @@ async function handleAutoAccept(req: IncomingMessage, res: ServerResponse, deps:
   const result = await switchAutoAccept(deps, userId, rideId, body.on, priceNgn);
   if (!result.ok) throw new PageError(result.message, 409, 'NOT_SEARCHING');
   logActivity({ userId, eventType: result.on ? 'ride_auto_accept_switched_on' : 'ride_auto_accept_switched_off', source: 'ride_page', rideId, metadata: result.booked ? { booked: true } : {} });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/search-again ─────────────────────────────────────── */
@@ -637,7 +648,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
   // The rider's yes to auto-booking, asked again at this Find (absent: off).
   const autoAccept = isRecord(body) && body.autoAccept === true;
   // Already searching (a double tap): show that.
-  if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildState(deps, userId));
+  if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildRidePageState(deps, userId));
 
   let quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
@@ -668,7 +679,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
   }
   await startSearch(deps, userId, quote, amountNgn, autoAccept);
   logActivity({ userId, eventType: 'ride_search_again', source: 'ride_page', metadata: { offerNgn: amountNgn } });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/offer ────────────────────────────────────────────── */
@@ -692,7 +703,7 @@ async function handleOffer(req: IncomingMessage, res: ServerResponse, deps: Ride
   }
   // A yes at the new price (a price above the last yes switches auto-accept off without one).
   if (autoAccept !== undefined) await switchAutoAccept(deps, userId, rideId, autoAccept, amountNgn).catch(() => undefined);
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/accept ───────────────────────────────────────────── */
@@ -724,7 +735,7 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   // wallet looks short — and they would be told to add money for a ride they
   // have. They are confirmed; show them that.
   const current = await getRideState(deps.redisClient, rideId);
-  if (current === 'confirmed' || current === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
+  if (current === 'confirmed' || current === 'in_progress') return sendJson(res, 200, await buildRidePageState(deps, userId));
 
   const method = isRecord(body) && body.method === 'xlm' ? 'XLM' as const : 'NGN' as const;
   // The price the page showed for this offer (optional; older pages send none): a driver who
@@ -760,7 +771,7 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   const user = await userClient.findById(userId);
   await deps.notifyChat?.({ kind: 'ride_confirmed', userId, phone: user?.phone ?? '', ride: result.ride })
     .catch((error) => console.warn(`${TAG} chat notice failed`, { error: error instanceof Error ? error.message : String(error) }));
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/decline ──────────────────────────────────────────── */
@@ -774,13 +785,13 @@ async function handleDecline(req: IncomingMessage, res: ServerResponse, deps: Ri
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
   const state = await getRideState(deps.redisClient, rideId);
-  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
+  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildRidePageState(deps, userId));
   const offer = (await getBids(deps.redisClient, rideId)).find((bid) => offerKey(bid) === key);
   if (offer) {
     await declineOneOffer(deps, userId, rideId, offer.driverId);
     logActivity({ userId, eventType: 'ride_offer_declined', source: 'ride_page', rideId, metadata: { driverId: offer.driverId } });
   }
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/keep-looking ─────────────────────────────────────── */
@@ -803,7 +814,7 @@ async function handleDiscardTrip(req: IncomingMessage, res: ServerResponse, deps
     await clearBookingStage(deps.redisClient, userId).catch(() => undefined);
     logActivity({ userId, eventType: 'ride_trip_discarded', source: 'ride_page' });
   }
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /**
@@ -867,7 +878,7 @@ async function handleKeepLooking(req: IncomingMessage, res: ServerResponse, deps
       await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
     });
   }
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/decline-all ──────────────────────────────────────── */
@@ -878,10 +889,10 @@ async function handleDeclineAll(req: IncomingMessage, res: ServerResponse, deps:
   const rideId = await getActiveRide(deps.redisClient, userId);
   if (!rideId) throw new PageError('This search has ended.', 409, 'RIDE_GONE');
   const state = await getRideState(deps.redisClient, rideId);
-  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildState(deps, userId));
+  if (state === 'confirmed' || state === 'in_progress') return sendJson(res, 200, await buildRidePageState(deps, userId));
   const { declined } = await declineAllOffers(deps, userId, rideId);
   logActivity({ userId, eventType: 'ride_offers_declined', source: 'ride_page', rideId, metadata: { declined } });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/cancel ───────────────────────────────────────────── */
@@ -927,7 +938,7 @@ async function handleCancel(req: IncomingMessage, res: ServerResponse, deps: Rid
     const user = await userClient.findById(userId);
     await deps.notifyChat?.({ kind: 'search_cancelled', userId, phone: user?.phone ?? '' }).catch(() => undefined);
   }
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /**
@@ -1116,7 +1127,7 @@ async function handleRoute(req: IncomingMessage, res: ServerResponse, deps: Ride
     await setBookingStage(deps.redisClient, userId, 'awaiting_price');
     logActivity({ userId, eventType: 'ride_trip_changed', source: 'ride_page', metadata: { distanceKm: planned.distanceKm, stops: stops.length } });
   }
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── rides for later ──────────────────────────────────────────────────── */
@@ -1365,7 +1376,7 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
   await clearActiveRideIfMatches(deps.redisClient, userId, ride.id).catch(() => false);
   await clearPendingAccept(deps.redisClient, userId).catch(() => undefined);
   logActivity({ userId, eventType: 'ride_cancelled', source: 'ride_page', rideId: ride.id, metadata: { reason, status: ride.status } });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /** A booked trip's new route from the page: { destination?, stops } (destination omitted: where it goes now). */
@@ -1451,7 +1462,7 @@ async function handleTripRoute(req: IncomingMessage, res: ServerResponse, deps: 
   const line = (reply?.payload['route'] as { coordinates?: Array<{ lat: number; lng: number }> } | undefined)?.coordinates;
   if (Array.isArray(line) && line.length) await storeTripLine(deps.redisClient, ride.id, line).catch(() => undefined);
   logActivity({ userId, eventType: 'ride_route_changed', source: 'ride_page', rideId: ride.id, metadata: { stops: stops.length, fareNgn: accepted } });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /**
@@ -1524,7 +1535,7 @@ async function handleNoticeSeen(req: IncomingMessage, res: ServerResponse, deps:
   const body = await readJsonBody(req).catch(() => null);
   const id = isRecord(body) && typeof body.id === 'string' ? body.id : '';
   if (id) await clearPageNotice(deps.redisClient, userId, id).catch(() => false);
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/edit-trip ────────────────────────────────────────── */
@@ -1538,7 +1549,7 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
   const userId = authenticate(req, deps);
   await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
   const rideId = await getActiveRide(deps.redisClient, userId);
-  if (!rideId) return sendJson(res, 200, await buildState(deps, userId));
+  if (!rideId) return sendJson(res, 200, await buildRidePageState(deps, userId));
   const [last, meta] = await Promise.all([getLastRoute(deps.redisClient, userId), getRideMeta(deps.redisClient, rideId)]);
   // The trip to bring back must be this search's trip. Some searches (the chat's
   // forms, a group seat) do not remember one, and an older trip is the wrong one.
@@ -1556,7 +1567,7 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
   await storePendingRoute(deps.redisClient, userId, { ...last, route: last.route, confirmed: true });
   await setBookingStage(deps.redisClient, userId, 'awaiting_price');
   logActivity({ userId, eventType: 'ride_search_cancelled', source: 'ride_page', rideId, metadata: { reason: 'Changed the trip' } });
-  sendJson(res, 200, await buildState(deps, userId));
+  sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /* ── POST /ride-page/events ───────────────────────────────────────────── */

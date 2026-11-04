@@ -92,7 +92,7 @@ function world(away = new Set()) {
 }
 const now = () => new Date().toISOString();
 
-test('search ended: bidders hear why on the socket, and a driver away from the app gets "Search ended"', async () => {
+test('search ended: bidders hear why on the socket, and each gets "Search ended" by push, connected or not', async () => {
   const riderId = await user('RIDER');
   const r = await ride(riderId);
   const here = await driver();
@@ -103,7 +103,7 @@ test('search ended: bidders hear why on the socket, and a driver away from the a
   await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId: r.id, riderId, timestamp: now() }, w.deps, new Map());
   const ended = w.toApp.filter((m) => m.type === 'ride:bid_timeout' && m.userId !== riderId);
   assert.deepEqual(ended.map((m) => m.payload.reason).sort(), ['timed_out', 'timed_out']);
-  assert.deepEqual(w.pushes.map((p) => [p.userId, p.title]), [[gone.userId, 'Search ended']], 'only the driver who is not connected');
+  assert.deepEqual(w.pushes.map((p) => [p.userId, p.title]).sort(), [[gone.userId, 'Search ended'], [here.userId, 'Search ended']].sort(), 'the app hides it while on screen');
 });
 
 test('rider cancelled: bidders hear "rider_cancelled"; the booked driver away from the app gets "Rider cancelled"', async () => {
@@ -156,7 +156,7 @@ test('a driver bailing does not end the request for drivers who never bid: the s
   assert.equal(w.toApp.filter((m) => m.userId === looker.userId && m.type === 'ride:bid_timeout').length, 0);
 });
 
-test('booked: the winner away from the app gets "You\'re booked"; the losing bidders hear "booked_other", and "Not chosen" when away', async () => {
+test('booked: the winner gets "You\'re booked"; the losing bidders hear "booked_other" and get "Not chosen", connected or not', async () => {
   const riderId = await user('RIDER');
   const r = await ride(riderId, { status: 'DRIVER_ASSIGNED' });
   const winner = await driver();
@@ -173,10 +173,10 @@ test('booked: the winner away from the app gets "You\'re booked"; the losing bid
   const lost = w.toApp.filter((m) => m.type === 'ride:bid_lost');
   assert.deepEqual(lost.map((m) => m.payload.reason), ['booked_other', 'booked_other']);
   const titles = w.pushes.filter((p) => p.userId !== riderId).map((p) => [p.userId, p.title]).sort();
-  assert.deepEqual(titles, [[loser.userId, 'Not chosen'], [winner.userId, "You're booked"]].sort());
+  assert.deepEqual(titles, [[loser.userId, 'Not chosen'], [watching.userId, 'Not chosen'], [winner.userId, "You're booked"]].sort());
 });
 
-test('a new price reaches a driver away from the app by push ("New price ₦X"); a connected one has the card', async () => {
+test('a new price reaches every driver by push ("New price ₦X"), connected or not', async () => {
   const riderId = await user('RIDER');
   const r = await ride(riderId);
   const away = await driver();
@@ -188,10 +188,10 @@ test('a new price reaches a driver away from the app by push ("New price ₦X");
   });
   await handleRideEvent(offer(away), w.deps, new Map());
   await handleRideEvent(offer(here), w.deps, new Map());
-  assert.deepEqual(w.pushes.map((p) => [p.userId, p.title, p.data.type]), [[away.userId, 'New price ₦3,500', 'ride:offer_updated']]);
+  assert.deepEqual(w.pushes.map((p) => [p.userId, p.title, p.data.type]), [[away.userId, 'New price ₦3,500', 'ride:offer_updated'], [here.userId, 'New price ₦3,500', 'ride:offer_updated']]);
   // A first offer (not a re-price) is pushed by the ride service, not here.
   await handleRideEvent({ ...offer(away), repriced: undefined }, w.deps, new Map());
-  assert.equal(w.pushes.length, 1);
+  assert.equal(w.pushes.length, 2);
 });
 
 test('a driver withdraws: the bid row is WITHDRAWN, the offer leaves the WhatsApp list, and the app is told which driver', async () => {
