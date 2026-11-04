@@ -121,6 +121,7 @@ import { attachRequestLog } from "./http/request-log";
 import { recordRequestOutcome } from "./analytics/user-outcomes";
 import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
 import { setRidePageStateBuilder } from "./rides/ride-page-live";
+import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
 import { createTripChatService } from "./trip-chat/service";
 import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
@@ -791,6 +792,15 @@ async function bootstrap(): Promise<void> {
       if (url.pathname.startsWith("/admin/") && url.pathname !== "/admin/login" && await supportDeskRefuses(req, gatewayEnv.JWT_SECRET)) {
         sendJson(res, 403, { error: "This is not part of the support desk." });
         return;
+      }
+
+      // Chats, Trip recordings and the money pages: the password again, five minutes at a time (admin/area-lock).
+      if (url.pathname.startsWith("/admin/")) {
+        if (await handleAdminAreaLockRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redis: redisCommandClient }, url)) return;
+        if (isLockedAdminPath(url) && await adminAreaLocked(req, gatewayEnv.JWT_SECRET, redisCommandClient)) {
+          sendJson(res, 423, ADMIN_LOCKED_BODY);
+          return;
+        }
       }
 
       if (req.method === "GET" && url.pathname === "/health") {

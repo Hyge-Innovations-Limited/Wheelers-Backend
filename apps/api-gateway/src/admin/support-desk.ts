@@ -16,6 +16,8 @@ export const SUPPORT_DESK_HOME = '/admin/dashboard/support';
 
 const ALLOWED: Array<[string, RegExp]> = [
   ['GET', /^\/admin\/me$/],
+  // Chats and recordings are locked areas: the password again to open them (admin/area-lock).
+  ['POST', /^\/admin\/(unlock|unlock\/ping|lock)$/],
   ['POST', /^\/admin\/activity$/],
   ['GET', /^\/admin\/support\/conversations$/],
   ['GET', /^\/admin\/support\/conversations\/[^/]+$/],
