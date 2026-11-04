@@ -3505,9 +3505,12 @@
     W.$('d-foot').textContent = s.paidWithXlm
       ? 'Paying ' + Number(s.paidWithXlm.amountXlm).toLocaleString('en-NG', { maximumFractionDigits: 2 }) + ' XLM from your Stellar wallet (testnet). It goes to your driver when the trip ends.'
       : '';
+    // Call: a Live call through Wheelers when the server has calls on (the trip page, dialling at once);
+    // the phone's dialler only when it does not.
     var call = W.$('d-call');
-    W.show(call, Boolean(driver.phone));
-    if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);
+    W.show(call, Boolean(s.callUrl || driver.phone));
+    if (s.callUrl) call.setAttribute('href', s.callUrl);
+    else if (driver.phone) call.setAttribute('href', 'tel:' + driver.phone);
     var chat = W.$('d-chat');
     W.show(chat, Boolean(s.tripChatUrl));
     if (s.tripChatUrl) chat.setAttribute('href', s.tripChatUrl);

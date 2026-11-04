@@ -117,6 +117,8 @@ export interface RidePageRouteDeps {
   routePlanner?: Pick<GoogleMapsRoutePlanner, 'planRoute'>;
   /** DRIVER_PHOTO_ENABLED: driverPhotoUrl / driverPhotoKey on offers and the confirmed driver. Absent: the state is exactly as before. */
   driverPhoto?: DriverPhotoResolver;
+  /** LIVE_CALL_ENABLED: Call on the page is a Live call (the trip page, dialling at once), and the driver's number is not sent. */
+  liveCallEnabled?: boolean;
   /** Tells the chat what happened on the page (search started, ride confirmed). Absent in tests. */
   notifyChat?: (event: RidePageChatEvent) => Promise<void>;
   /** Rides for later: the scheduler's queue and how long before the pickup the search starts. Absent: no "Later". */
@@ -326,7 +328,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       places: trip.places,
       ...(await tripExtras(userId)),
       driver: {
-        name: trip.driver.name, phone: trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
+        // With Live call on, the number is not sent: Call is a Live call (callUrl).
+        name: trip.driver.name, phone: deps.liveCallEnabled ? null : trip.driver.phone, rating: trip.driver.rating, totalRides: trip.driver.totalRides,
         vehicle: trip.driver.vehicle, plate: trip.driver.plate, etaMin: trip.etaMin, fareNgn: trip.fareNgn,
         ...(await driverPhotoFields(deps.driverPhoto, trip.driverId)),
       },
@@ -335,6 +338,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       ...(await routePendingField(deps, userId, trip.rideId)),
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
+      // Live call on: Call opens the same page and dials the driver through Wheelers.
+      ...(deps.liveCallEnabled ? { callUrl: `${tripPageUrl('', deps.jwtSecret, userId, trip.rideId)}&dial=1` } : {}),
       trip: {
         tripId: trip.tripId,
         status: trip.status,
@@ -375,9 +380,11 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
           trip: null,
           places: placesOf(meta),
           ...(await tripExtras(userId)),
+          // Live call on: Call dials through Wheelers (the trip page), and the number is not sent.
+          ...(deps.liveCallEnabled ? { callUrl: `${tripPageUrl('', deps.jwtSecret, userId, rideId)}&dial=1` } : {}),
           driver: accepted ? {
             name: accepted.driverName,
-            phone: accepted.driverPhone,
+            phone: deps.liveCallEnabled ? null : accepted.driverPhone,
             rating: accepted.driverRating,
             totalRides: accepted.totalRides,
             vehicle: accepted.vehicleModel,

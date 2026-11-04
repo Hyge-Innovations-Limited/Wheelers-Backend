@@ -1188,6 +1188,7 @@ async function bootstrap(): Promise<void> {
     if (url.pathname.startsWith("/ride-page/")) {
       const handled = await handleRidePageRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
+        liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
         redisClient: redisCommandClient,
         publisher,
         paymentsClient,

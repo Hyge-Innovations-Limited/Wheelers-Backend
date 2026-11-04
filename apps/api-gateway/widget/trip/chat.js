@@ -16,6 +16,8 @@
 
   // Read before takeToken() wipes the address: the call to answer on opening.
   var callParam = (/(?:^#|&)call=([^&]+)/.exec(window.location.hash) || [])[1];
+  // Opened from Call on the booking page: start the call as soon as calls are known to be on, once.
+  var dialOnOpen = /(?:^#|&)dial=1(?:&|$)/.test(window.location.hash);
   var answerOnOpen = callParam ? decodeURIComponent(callParam) : null;
   var token = W.takeToken();
   if (!token) { W.fatal('This link is not valid.'); return; }
@@ -118,6 +120,12 @@
     callBtn.hidden = !state.callsEnabled;
     callBtn.disabled = !state.open || !!call;
     callBtn.setAttribute('aria-label', first ? 'Call ' + first : 'Call your ' + roleWord(other.role));
+    if (dialOnOpen && state.callsEnabled && state.open && !call) {
+      dialOnOpen = false;
+      // Not again on a reload of this page.
+      try { history.replaceState(null, '', window.location.pathname + window.location.search + window.location.hash.replace(/&dial=1/, '')); } catch (e) { /* the link still works */ }
+      callBtn.click();
+    }
   }
 
   function drawOpen() {

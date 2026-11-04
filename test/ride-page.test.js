@@ -313,6 +313,13 @@ test('accept: the fare is held BEFORE the ride is confirmed, the chat is told, t
   assert.equal(chat.at(-1).kind, 'ride_confirmed');
   assert.equal(chat.at(-1).ride.driverName, 'Chinedu Okafor');
 
+  // Live call on (4 Nov 2026): no number on the page; Call is the trip page, dialling at once.
+  const live = await call({ ...deps, liveCallEnabled: true }, rider, 'GET', '/ride-page/state');
+  assert.equal(live.body.driver.phone, null, 'the number is not sent');
+  assert.ok(!JSON.stringify(live.body).includes('+2348031234567'));
+  assert.match(live.body.callUrl, /^\/widget\/trip\/chat\.html#t=[^&]+&dial=1$/);
+  assert.ok(!live.body.tripChatUrl || !live.body.tripChatUrl.includes('dial=1'), 'Chat stays the plain page');
+
   // Tapping again changes nothing.
   const twice = await call(deps, rider, 'POST', '/ride-page/accept', { key: bid.bidId });
   assert.equal(twice.status, 200);
