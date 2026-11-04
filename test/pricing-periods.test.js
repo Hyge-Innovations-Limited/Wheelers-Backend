@@ -22,7 +22,7 @@ test('the day splits into morning, afternoon, evening and night, Lagos time', ()
 });
 
 test('a part of the day with its own premium uses it; the rest keep the general one', () => {
-  config.setPricingSettings({ marketFloorOn: true, premiumNgn: 3000, periodPremiums: { evening: 5000, night: 4000 } });
+  config.setPricingSettings({ ceilingAboveNgn: null, marketFloorOn: true, premiumNgn: 3000, periodPremiums: { evening: 5000, night: 4000 } });
   for (const [hour, premium] of [[8, 3000], [14, 3000], [18, 5000], [23, 4000]]) {
     const fare = price(hour);
     assert.equal(config.premiumAt(lagos(hour)), premium);
@@ -31,9 +31,9 @@ test('a part of the day with its own premium uses it; the rest keep the general 
 });
 
 test('nothing set by part of the day: every hour prices exactly as before', () => {
-  config.setPricingSettings({ marketFloorOn: true, premiumNgn: 3000 });
+  config.setPricingSettings({ ceilingAboveNgn: null, marketFloorOn: true, premiumNgn: 3000 });
   const before = [8, 14, 18, 23].map((h) => price(h).suggestedFareNgn);
-  config.setPricingSettings({ marketFloorOn: true, premiumNgn: 3000, periodPremiums: {} });
+  config.setPricingSettings({ ceilingAboveNgn: null, marketFloorOn: true, premiumNgn: 3000, periodPremiums: {} });
   assert.deepEqual([8, 14, 18, 23].map((h) => price(h).suggestedFareNgn), before);
 });
 
@@ -87,7 +87,7 @@ test('a range: the same trip in the half hour gets the same amount; different tr
 });
 
 test('a fixed amount or no setting for the part of the day: as before, no position', () => {
-  config.setPricingSettings({ marketFloorOn: true, premiumNgn: 3000, periodPremiums: { afternoon: 4000 } });
+  config.setPricingSettings({ ceilingAboveNgn: null, marketFloorOn: true, premiumNgn: 3000, periodPremiums: { afternoon: 4000 } });
   assert.deepEqual(config.premiumFor(trip({ at: lagos(14), trafficRatio: 1.8 })), { premiumNgn: 4000, period: 'afternoon', position: null });
   assert.deepEqual(config.premiumFor(trip({ at: lagos(18) })), { premiumNgn: 3000, period: 'evening', position: null });
   config.setPricingSettings({});
@@ -95,7 +95,7 @@ test('a fixed amount or no setting for the part of the day: as before, no positi
 
 test('lift 1: traffic, a busy area and our own rate never take a price past the other app + the top of the premium', () => {
   const range = { minNgn: 500, maxNgn: 2000 };
-  const settings = { marketFloorOn: true, trafficOn: true, demandOn: true, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
+  const settings = { ceilingAboveNgn: null, marketFloorOn: true, trafficOn: true, demandOn: true, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
   let worst = 0;
   config.setPricingSettings({ ...settings, liftCap: 1 });
   for (const km of [1, 5, 16.7, 25, 40]) for (const minPerKm of [1.2, 3]) for (const trafficRatio of [1, 1.8, 2.5]) for (const demandFactor of [1, 1.8]) for (const hour of [8, 14, 18, 23]) {

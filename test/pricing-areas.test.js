@@ -61,6 +61,8 @@ test('every local government in Lagos is an area of its own, one area for any po
 });
 
 test('a trip from Ikorodu takes the pickup factor; one into Ikorodu the drop-off factor; the larger wins', () => {
+  // The area alone, without the ceiling (pricing-ceiling.test.js) cutting it.
+  config.setPricingSettings({ ceilingAboveNgn: null });
   const city = price(25, 55, { origin: YABA, destination: LEKKI_PHASE_1 });
   const from = price(25, 55, { origin: IKORODU, destination: YABA });
   const into = price(25, 55, { origin: YABA, destination: IKORODU });
@@ -74,6 +76,7 @@ test('a trip from Ikorodu takes the pickup factor; one into Ikorodu the drop-off
   assert.ok(from.maxOfferNgn > city.maxOfferNgn, 'drivers may ask more there too');
   const epeToIkorodu = price(40, 70, { origin: EPE, destination: IKORODU });
   assert.equal(epeToIkorodu.areaFactor, 1.7);
+  config.setPricingSettings({});
 });
 
 test('with the floor on, what the other app charges in Ikorodu is lifted too: the floor follows the area', () => {

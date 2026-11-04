@@ -21,7 +21,8 @@ const QUIET = new Date('2026-10-14T12:00:00Z'); // Wednesday 13:00 in Lagos
 const RUSH = new Date('2026-10-14T17:00:00Z');  // Wednesday 18:00 in Lagos
 // Round figures for the other app, so the sums below can be done by hand.
 // minOfferGapNgn 0: these tests are about the older minimum (a tenth off, no more than the premium).
-const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, minOfferGapNgn: 0, marketFloorOn: true, trafficOn: true, demandOn: true, quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 }, rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 } };
+// No ceiling here: these are the floor and the model on their own (pricing-ceiling.test.js has the ceiling).
+const FLOOR_ON = { ...DEFAULT_PRICING_SETTINGS, ceilingAboveNgn: null, minOfferGapNgn: 0, marketFloorOn: true, trafficOn: true, demandOn: true, quiet: { baseNgn: 500, perKmNgn: 290, perMinuteNgn: 50 }, rush: { baseNgn: 600, perKmNgn: 350, perMinuteNgn: 60 } };
 const made = { admins: [], rides: [], users: [] };
 let savedBefore;
 

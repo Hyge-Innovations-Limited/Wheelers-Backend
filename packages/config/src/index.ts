@@ -72,7 +72,7 @@ export {
   CURRENT_PRICING_VERSION, pricingVersionOf, WHATSAPP_FEE_NGN, MIN_OFFER_SHARE, MAX_COUNTER_SHARE, MARKET_RATE_PER_KM_NGN,
   fareFromRatePerKmNgn, fareFromTripFareNgn, tripFareNgn, offerLimitsNgn, rateLimitsPerKmNgn,
   recommendedRatePerKmNgn, trafficFactorOn, demandFactorOn,
-  getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS,
+  getPricingSettings, setPricingSettings, normalizePricingSettings, DEFAULT_PRICING_SETTINGS, LIVE_PRICING_BASELINE, CEILING_ABOVE_NGN,
   marketFareNgn, modelRatePerKmNgn, isRushHour, demandFactorForRatio,
   dayPeriodOf, premiumAt, premiumFor, DAY_PERIODS, PERIOD_PREMIUM_MAX_NGN,
   lagosClock, curveDay, curveValueAt, fitLincFigures, lincFareNgn, lincPeriodLifts, lincSlotOf, LINC_SLOTS, LINC_PERIOD_MIN_PRICES, LINC_SAMPLES_SEEN, isNightHour, NIGHT_START, rainFactorOf, marketHighFrom, MARKET_HIGH_MAX, MARKET_HIGH_MIN_PRICES, RAIN_START, RAIN_LIFT_MAX, COMBINED_LIFT_MAX, quietMarketFareNgn, seedHourCurve, hourFactorAt, surgeFactorOf, HOUR_CURVE_MIN, HOUR_CURVE_MAX, WEEKEND_HOUR_CURVE_MAX, hourCurveMax, SURGE_MAX_LIMIT, SURGE_MIN_LIMIT,

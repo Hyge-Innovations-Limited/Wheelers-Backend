@@ -97,7 +97,8 @@ test('Sunday is not priced like a weekday rush: 108 Opebi Road to Ijeshatedo, Su
   const r = 1.15;
   const weekday = [r, r, r, r, r, 1, 1, r, r, r, 1, 1, 1, 1, 1, 1, r, r, r, r, 1, 1, r, r];
   const weekend = [r, r, r, r, r, 1.08, 1.08, r, r, r, 1.08, 1.05, 1.06, 1.08, 1.08, 1.08, r, r, r, r, 1.08, 1.08, r, r];
-  const onServer = { ...live, marginPercent: 3, marketHigh: 1.15, hourCurveOn: true, hourCurve: { weekday, weekend } };
+  // As it was on the server then: no ceiling yet.
+  const onServer = { ...live, marginPercent: 3, marketHigh: 1.15, hourCurveOn: true, hourCurve: { weekday, weekend }, ceilingAboveNgn: null };
   const sunday = new Date(Date.UTC(2026, 9, 25, 8, 50)); // 09:50 Lagos
   const trip = (settings) => {
     config.setPricingSettings(settings);

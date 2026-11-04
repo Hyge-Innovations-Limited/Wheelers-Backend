@@ -4,6 +4,7 @@ import {
   fitHourCurve,
   getPricingSettings,
   curveValueAt,
+  LIVE_PRICING_BASELINE,
   marketHighFrom,
   normalizePricingSettings,
   quietMarketFareNgn,
@@ -66,10 +67,10 @@ const point = (lat: number, lng: number) => `${lat.toFixed(5)},${lng.toFixed(5)}
 
 /** The pricing settings owners edit, and the log of every price shown. */
 export const pricingClient = {
-  /** What is saved, made safe to price with. Defaults when nothing is. */
+  /** What is saved, made safe to price with. Nothing saved (a new server): the live settings of 4 Nov 2026. */
   async loadSettings(): Promise<{ settings: PricingSettings; updatedAt: Date | null; updatedBy: string | null }> {
     const row = await prisma.pricingSettings.findUnique({ where: { id: ROW } });
-    return { settings: normalizePricingSettings(row?.data), updatedAt: row?.updatedAt ?? null, updatedBy: row?.updatedBy ?? null };
+    return { settings: normalizePricingSettings(row ? row.data : LIVE_PRICING_BASELINE), updatedAt: row?.updatedAt ?? null, updatedBy: row?.updatedBy ?? null };
   },
 
   async saveSettings(settings: PricingSettings, updatedBy: string): Promise<PricingSettings> {

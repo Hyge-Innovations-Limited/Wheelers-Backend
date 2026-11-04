@@ -35,6 +35,7 @@
 //   npm run pricing simulate 19.9 25         a made-up day of our market, two minutes at a time, priced with the
 //                                            settings saved now: what riders would see and the least they could offer
 //
+//   npm run pricing ceiling 1000             never more than ₦1,000 over the higher of Linc and inDrive for the trip (off: no ceiling)
 //   npm run pricing extra 800                ₦800 on top of every price, after everything else (0: none);
 //                                            part of the fare, so the driver keeps it
 //   npm run pricing lift 1                   how far traffic and a busy area may lift a price past the floor
@@ -105,6 +106,7 @@ async function status() {
   console.log(`Floor (other app + ${naira(settings.premiumNgn)}): ${on(settings.marketFloorOn)}`);
   console.log(`  by time of day: ${config.DAY_PERIODS.map((p) => `${p} ${premiumText(settings, p)}`).join(', ')}  (now: ${config.dayPeriodOf()})`);
   console.log(`Linc as the guide: ${on(settings.lincOn)}  ${naira(settings.linc.baseNgn)} + ${naira(settings.linc.perKmNgn)} a km + ${naira(settings.linc.perMinuteNgn)} a minute, ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`}, from ${settings.lincSamples.length} Linc prices${settings.lincOn ? '; the extra and margin below are not added' : ''}  (npm run pricing linc)`);
+  console.log(`Ceiling: ${settings.ceilingAboveNgn === null ? 'off' : `never more than ${naira(settings.ceilingAboveNgn)} over the higher of Linc and inDrive for the trip; beats every lift`}  (npm run pricing ceiling N|off)`);
   console.log(`Flat extra on top of every price: ${settings.extraNgn > 0 ? naira(settings.extraNgn) : 'none'}`);
   console.log(`Margin that grows with the fare: ${settings.marginPercent > 0 ? `${settings.marginPercent}% of the other app's fare` : 'none'}  (npm run pricing margin N)`);
   console.log(`Never under inDrive's high end: ×${settings.marketHigh} our guess${settings.marketHighFittedAt ? `, learned ${lagosTime(new Date(settings.marketHighFittedAt))}` : ' (until 5 of its prices teach it)'}`);
@@ -744,6 +746,9 @@ const commands = {
   margin: () => save(() => ({ marginPercent: number(rest[0], 'the margin in %') }), (s) => (s.marginPercent > 0
     ? `Every price now has ${s.marginPercent}% of the other app's fare on top (with the flat ${naira(s.extraNgn)}): it grows as the fare grows.`
     : 'No percentage margin any more (the flat extra stays).')),
+  ceiling: () => save(() => ({ ceilingAboveNgn: rest[0] === 'off' ? null : number(rest[0], 'the ceiling') }), (s) => (s.ceilingAboveNgn === null
+    ? 'No ceiling any more: the lifts may stack again.'
+    : `No price is now more than ${naira(s.ceilingAboveNgn)} over the higher of Linc and inDrive for the trip.`)),
   extra: () => save(() => ({ extraNgn: number(rest[0], 'the extra') }), (s) => (s.extraNgn > 0
     ? `Every price now has ${naira(s.extraNgn)} on top, after everything else is worked out.`
     : 'No extra on top any more.')),
@@ -759,7 +764,7 @@ const commands = {
 
 const run = commands[command];
 if (!run) {
-  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | extra N | margin PERCENT | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE | linc [on | off | above N | sample KM MIN PRICE [at=…] | fit [save]]]');
+  console.log('Use: npm run pricing [status | floor|traffic|demand on|off | areas | area KEY PICKUP [DROPOFF] | area-fit [save] | model-on | model-off | quotes | try KM MINUTES [AREA] | discount N | closest N | premium N | ceiling N|off | extra N | margin PERCENT | lift N | curve [fit [save] | on | off] | holiday [list | add DATE | remove DATE | restore DATE] | rain [on | off | now] | surge [on | off | max N | min N] | simulate [KM MINUTES] | period morning|afternoon|evening|night N|MIN-MAX|off | report [DAYS] | trials SHARE | sample KM MINUTES PRICE [rush|quiet] [AREA] [at=YYYY-MM-DDTHH:MM] | samples | fit [save] | indrive quiet|rush BASE KM MINUTE | linc [on | off | above N | sample KM MIN PRICE [at=…] | fit [save]]]');
 } else {
   await run().catch((error) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
 }

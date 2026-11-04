@@ -136,6 +136,9 @@ export const PERIOD_PREMIUM_MAX_NGN = 10_000;
  */
 export type HourCurve = { weekday: number[]; weekend: number[]; sunday?: number[] };
 
+/** How far over the higher of Linc and inDrive a price may go, unless an owner sets it (npm run pricing ceiling). */
+export const CEILING_ABOVE_NGN = 1_000;
+
 /** One price read off Linc: the trip, what it cost, and when (ISO). */
 export type LincSample = { km: number; minutes: number; priceNgn: number; at: string };
 
@@ -148,6 +151,8 @@ export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
   { km: 19.2, minutes: 31, priceNgn: 8100, at: '2026-10-25T08:50:00Z' },
   { km: 16.6, minutes: 48, priceNgn: 11450, at: '2026-10-25T17:46:00Z' },
   { km: 16.6, minutes: 52, priceNgn: 13050, at: '2026-10-25T17:55:00Z' },
+  // Ikorodu (Orupodi) to Opebi, a weekday night, before its ₦1,000 ride bonus.
+  { km: 30, minutes: 54, priceNgn: 12950, at: '2026-11-04T02:30:00Z' },
 ];
 
 /**
@@ -452,6 +457,15 @@ export type PricingSettings = {
   lincNightLift: number;
   /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
   lincSamples: LincSample[];
+  /**
+   * The ceiling: no price more than this over the higher of what Linc and
+   * inDrive would charge for the trip (their figures on the live minutes, the
+   * hour, our surge and rain; not our own area lift). The lifts multiply (an
+   * outer area, the night, the high end) and nothing else stops them: 30 km
+   * from Ikorodu at night was ₦17,850 where the apps asked ₦13–15k. It beats
+   * every lift, the high end included. null: off.
+   */
+  ceilingAboveNgn: number | null;
 };
 
 /** A cut is never more than this share of the fare. */
@@ -500,6 +514,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   lincAboveNgn: 0,
   lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],
+  ceilingAboveNgn: CEILING_ABOVE_NGN,
   // A first guess from one real afternoon (Ikorodu: other apps ₦16k+, us ₦10k).
   // Tune with real prices: npm run pricing sample … AREA, then npm run pricing area-fit.
   areas: {
@@ -528,6 +543,47 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
     shomolu: { pickup: 1, dropoff: 1 },
     'lagos-mainland': { pickup: 1, dropoff: 1 },
     'lagos-island': { pickup: 1, dropoff: 1 },
+  },
+};
+
+/**
+ * What a server with no saved settings prices with: the live settings of
+ * 4 Nov 2026 (npm run pricing), with the ceiling. DEFAULT_PRICING_SETTINGS
+ * stays the plain starting point the tests build on; a new database (another
+ * server, a restore that lost the row) starts here instead, so moving servers
+ * does not quietly change prices. Learned parts (the hour curve, Linc's
+ * lifts) are learned again from its own prices.
+ */
+const UP_TO_500: PremiumRange = { minNgn: 0, maxNgn: 500 };
+export const LIVE_PRICING_BASELINE: Partial<PricingSettings> = {
+  marketFloorOn: true,
+  premiumNgn: 1000,
+  periodPremiums: { morning: UP_TO_500, afternoon: UP_TO_500, evening: UP_TO_500, night: UP_TO_500 },
+  quiet: { baseNgn: 500, perKmNgn: 301, perMinuteNgn: 28 },
+  rush: { baseNgn: 575, perKmNgn: 293, perMinuteNgn: 58 },
+  hourCurveOn: true,
+  rainOn: true,
+  surgeOn: true,
+  surgeMax: 1.15,
+  surgeMin: 0.9,
+  trafficOn: true,
+  demandOn: true,
+  modelOn: false,
+  trialShare: 0,
+  minOfferGapNgn: 900,
+  extraNgn: 1400,
+  marginPercent: 3,
+  marketHigh: 1.17,
+  lincOn: true,
+  lincAboveNgn: 0,
+  ceilingAboveNgn: CEILING_ABOVE_NGN,
+  areas: {
+    ...DEFAULT_PRICING_SETTINGS.areas,
+    ikorodu: { pickup: 1.2, dropoff: 1.15 },
+    epe: { pickup: 1.7, dropoff: 1.5 },
+    'ibeju-lekki': { pickup: 1.5, dropoff: 1.35 },
+    badagry: { pickup: 1.7, dropoff: 1.5 },
+    alimosho: { pickup: 1.15, dropoff: 1.2 },
   },
 };
 
@@ -675,6 +731,10 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
           : [];
       }).slice(-300)
       : [...d.lincSamples],
+    // Saved as null when switched off; never saved (settings from before it): the default.
+    ceilingAboveNgn: v.ceilingAboveNgn === null
+      ? null
+      : Math.round(finite(v.ceilingAboveNgn, CEILING_ABOVE_NGN, 0, 10_000) / 50) * 50,
     areas: areasFrom(v.areas, d.areas),
   };
 }
@@ -972,7 +1032,7 @@ export type SuggestedFare = {
   /** The suggested fare as the driver's rate per km. */
   ratePerKmNgn: number;
   /** What set the fare. "trial": a price near the model's, shown on a small share of trips so there is something to learn from. */
-  setBy: 'floor' | 'rules' | 'model' | 'trial' | 'linc';
+  setBy: 'floor' | 'rules' | 'model' | 'trial' | 'linc' | 'ceiling';
   /** The other app's fare for this trip, and the floor it gives (that + the premium). Null with the floor off. */
   marketFareNgn: number | null;
   floorFareNgn: number | null;
@@ -994,6 +1054,8 @@ export type SuggestedFare = {
   /** What Linc would charge for the trip (with our surge and rain), when the Linc guide is on; else null. */
   lincNgn: number | null;
   highEndNgn: number | null;
+  /** The most this trip may cost: the higher of Linc and inDrive for it, + ceilingAboveNgn. Null when off or the minutes are unknown. */
+  ceilingNgn: number | null;
   /** The premium over the other app this trip's floor carries, and why. Null with the floor off. */
   premium: TripPremium | null;
 };
@@ -1160,9 +1222,11 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const tripMinutes = factors.durationSeconds !== undefined && Number.isFinite(factors.durationSeconds) && factors.durationSeconds > 0
     ? factors.durationSeconds / 60
     : null;
-  const lincNgn = settings.lincOn && distanceKm > 0 && tripMinutes !== null
+  // What Linc would charge for the trip: the guide when it is on, and half of the ceiling either way.
+  const lincTripNgn = distanceKm > 0 && tripMinutes !== null
     ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * surgeFactor * rainFactor)
     : null;
+  const lincNgn = settings.lincOn ? lincTripNgn : null;
   if (lincNgn !== null) {
     suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
     setBy = 'linc';
@@ -1171,10 +1235,24 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     suggestedFareNgn += settings.extraNgn;
   }
   // Never under the other app's high end (a trial price excepted: it is never above today's anyway).
-  const highEndNgn = marketFare === null ? null : roundUpToIncrement(marketFare * settings.marketHigh, FARE_ROUNDING_INCREMENT);
+  // The area lift and the high end both say "the other app charges more here":
+  // the larger of the two counts, never both multiplied.
+  const marketPlainNgn = marketFare === null ? null : marketFare / areaFactor;
+  const highEndNgn = marketPlainNgn === null
+    ? null
+    : roundUpToIncrement(marketPlainNgn * Math.max(areaFactor, settings.marketHigh), FARE_ROUNDING_INCREMENT);
   if (highEndNgn !== null && suggestedFareNgn < highEndNgn && setBy !== 'trial') {
     suggestedFareNgn = highEndNgn;
     setBy = 'floor';
+  }
+  // Last of all, the ceiling: never more than ceilingAboveNgn over the higher of Linc and inDrive for this trip.
+  const marketTop = Math.max(lincTripNgn ?? 0, tripMinutes !== null ? marketPlainNgn ?? 0 : 0);
+  const ceilingNgn = settings.ceilingAboveNgn !== null && marketTop > 0
+    ? Math.max(MIN_FARE_NGN, roundUpToIncrement(marketTop + settings.ceilingAboveNgn, FARE_ROUNDING_INCREMENT))
+    : null;
+  if (ceilingNgn !== null && suggestedFareNgn > ceilingNgn) {
+    suggestedFareNgn = ceilingNgn;
+    setBy = 'ceiling';
   }
   const limits = offerLimitsNgn(suggestedFareNgn);
 
@@ -1197,6 +1275,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     marginFactor: marketFare === null ? 1 : Math.round(marginFactor * 1000) / 1000,
     highEndNgn,
     lincNgn,
+    ceilingNgn,
     premium: marketFare === null ? null : premium,
   };
 }
