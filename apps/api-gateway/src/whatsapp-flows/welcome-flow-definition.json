@@ -141,6 +141,12 @@
                 }
               },
               {
+                "type": "OptIn",
+                "name": "agree",
+                "label": "I agree",
+                "required": false
+              },
+              {
                 "type": "TextCaption",
                 "text": "By tapping Get started, you agree to both."
               },
@@ -152,7 +158,8 @@
                   "payload": {
                     "action": "welcome_agree",
                     "email": "${data.email}",
-                    "marketing": "${data.marketing}"
+                    "marketing": "${data.marketing}",
+                    "agree": "${form.agree}"
                   }
                 }
               }

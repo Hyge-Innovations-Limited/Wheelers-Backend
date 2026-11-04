@@ -242,3 +242,13 @@ test('email rule', () => {
   assert.equal(cleanEmail(' A@B.Co '), 'a@b.co');
   for (const bad of ['', 'a', 'a@b', 'a b@c.co', 'a@@b.co', 'a@b..co', '@b.co', 'a@.co', `${'a'.repeat(250)}@b.co`, 5]) assert.equal(cleanEmail(bad), null, String(bad));
 });
+
+test('the form as Meta shows it: news tick on the email screen; on the terms screen an I agree tick that is not forced', () => {
+  const def = require('../apps/api-gateway/src/whatsapp-flows/welcome-flow-definition.json');
+  const kids = (id) => def.screens.find((s) => s.id === id).layout.children[0].children;
+  const optIn = (id, name) => kids(id).find((k) => k.type === 'OptIn' && k.name === name);
+  assert.equal(optIn('EMAIL', 'marketing').required, false);
+  assert.equal(optIn('TERMS', 'agree').required, false, 'Get started works with or without the tick');
+  assert.equal(optIn('TERMS', 'marketing'), undefined);
+  assert.ok(kids('TERMS').some((k) => k.text === 'By tapping Get started, you agree to both.'));
+});

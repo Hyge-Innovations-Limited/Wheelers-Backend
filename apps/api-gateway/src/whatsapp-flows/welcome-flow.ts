@@ -8,9 +8,9 @@ import { actionFor } from './flow-dispatch';
  * Terms. The user comes only from the signed token.
  *
  *   EMAIL  the email, an optional news-and-offers tick   [Next]        -> TERMS
- *   TERMS  "Read our Privacy Policy and Terms", two links  [Get started] -> agreed, the form closes
+ *   TERMS  "Read our Privacy Policy and Terms", two links, an optional I agree tick  [Get started] -> agreed, the form closes
  *
- * No forced tick: tapping Get started is the agreement, and the screen says so.
+ * The I agree tick is not forced: ticked or not, tapping Get started is the agreement, and the screen says so.
  *
  * Agreeing goes through userClient.agreePrivacyOnce: one winner, and only the
  * winner starts the chat follow-up (onWelcomeAgreed). The email is saved as
