@@ -88,6 +88,13 @@ export const rideClient = {
 
   // ── Reads ──────────────────────────────────────────────────────────────────
 
+  /** Where each of these rides stands, and who ended it: enough to tell a driver a request they were shown is over. */
+  endStates: (rideIds: string[]) =>
+    prisma.ride.findMany({
+      where: { id: { in: rideIds } },
+      select: { id: true, status: true, driverId: true, cancelledBy: true, cancelReason: true },
+    }),
+
   findById: (rideId: string) =>
     prisma.ride.findUniqueOrThrow({
       where: { id: rideId },

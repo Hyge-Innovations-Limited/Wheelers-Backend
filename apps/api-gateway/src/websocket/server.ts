@@ -14,6 +14,7 @@ import { handleWalletMessage } from './handlers/wallet.handler';
 import type { RedisClient } from '../redis/client';
 import { createDriverOfflineGrace, withdrawDriverFromMarket, type DropWithdrawnBid } from './driver-offline-grace';
 import { resyncDriverActiveRide } from './driver-ride-sync';
+import { tellEndedRequests } from './driver-ended-requests';
 import type { GatewayPublisher } from './publisher';
 import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
@@ -253,6 +254,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
             // while backgrounded) gets their assigned ride back immediately.
             if (driver && ws.readyState === ws.OPEN) {
               void resyncDriverActiveRide(deps.registry, ws, driver.id);
+              // Requests that ended while the app was away leave its screen now.
+              void tellEndedRequests(deps.registry, ws, deps.redis, user.id, driver.id);
             }
           }).catch((error) => {
             console.error('[ws] registry error', {

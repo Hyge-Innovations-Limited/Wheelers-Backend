@@ -9,6 +9,7 @@ import type { RedisClient } from '../redis/client';
  *   ride:{rideId}:notified        SET    the drivers the request reached (a re-sent offer adds nobody)
  *   ride:{rideId}:bids-close-at   STRING when the search closes (ISO), the ride service's own clock
  *   ride:{rideId}:offered-users   SET    the driver accounts the request reached, told when the rider cancels
+ *   driver:{userId}:offered-rides SET    the requests a driver was shown, checked when their app reconnects
  *
  * A Kafka event delivered twice adds the same driver twice to a set: the count stays right.
  */
@@ -17,6 +18,7 @@ const KEEP_SECONDS = 2 * 60 * 60;
 const notifiedKey = (rideId: string) => `ride:${rideId}:notified`;
 const closeKey = (rideId: string) => `ride:${rideId}:bids-close-at`;
 const offeredUsersKey = (rideId: string) => `ride:${rideId}:offered-users`;
+const offeredRidesKey = (userId: string) => `driver:${userId}:offered-rides`;
 
 export interface SearchStatus {
   /** Drivers the request was sent to; null when none is known yet. */
@@ -56,6 +58,20 @@ export async function noteOfferSent(
 export async function noteOfferedDriverUser(redis: RedisClient, rideId: string, driverUserId: string): Promise<void> {
   await redis.send('SADD', offeredUsersKey(rideId), driverUserId).catch(() => undefined);
   await redis.send('EXPIRE', offeredUsersKey(rideId), String(KEEP_SECONDS)).catch(() => undefined);
+  await redis.send('SADD', offeredRidesKey(driverUserId), rideId).catch(() => undefined);
+  await redis.send('EXPIRE', offeredRidesKey(driverUserId), String(KEEP_SECONDS)).catch(() => undefined);
+}
+
+/** The requests this driver was shown in the last two hours. */
+export async function offeredRidesOf(redis: RedisClient, driverUserId: string): Promise<string[]> {
+  const members = await redis.send('SMEMBERS', offeredRidesKey(driverUserId)).catch(() => null);
+  return Array.isArray(members) ? members.filter((m): m is string => typeof m === 'string' && m.length > 0) : [];
+}
+
+/** Requests the driver has been told are over: not checked again. */
+export async function forgetOfferedRides(redis: RedisClient, driverUserId: string, rideIds: string[]): Promise<void> {
+  if (rideIds.length === 0) return;
+  await redis.send('SREM', offeredRidesKey(driverUserId), ...rideIds).catch(() => undefined);
 }
 
 /** Every driver account the request reached (bidders or not). */
