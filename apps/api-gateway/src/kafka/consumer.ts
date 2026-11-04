@@ -98,7 +98,7 @@ import type { CatchupItem } from '../whatsapp-flows/page-catchup';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
-import { noteOfferSent } from '../rides/search-status';
+import { noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rides/search-status';
 import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 
@@ -1011,6 +1011,7 @@ export async function handleRideEvent(
     });
     // The rider's waiting screen: drivers who saw the price, and the search's clock.
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
+    await noteOfferedDriverUser(deps.redisClient, event.rideId, event.driverUserId).catch(() => undefined);
     if (status?.changed) sendSearchStatusSoon(deps, event.riderId, event.rideId, { driversNotified: status.driversNotified, bidsCloseAt: status.bidsCloseAt });
     // The rider changed their price: a driver away from the app hears it by push.
     if (event.repriced) {
@@ -1876,6 +1877,15 @@ export async function handleRideEvent(
       });
       if (searchEndReason === 'rider_cancelled') {
         await pushDriverIfAway(deps, bid.driverUserId, { title: 'Rider cancelled', body: 'This request has ended.', type: 'ride:bid_timeout', rideId: event.rideId, generation: `cancelled@${event.timestamp}` });
+      }
+    }
+    // Drivers who were sent the request but never bid: it leaves their screen
+    // now, instead of staying biddable until it expires.
+    if (searchEndReason === 'rider_cancelled') {
+      const told = new Set(openBids.filter((bid) => isOpenBid(bid.status)).map((bid) => bid.driverUserId));
+      for (const userId of await offeredDriverUsers(deps.redisClient, event.rideId)) {
+        if (userId === event.driverUserId || told.has(userId)) continue;
+        void registry.sendToUser(userId, 'ride:bid_timeout', { rideId: event.rideId, reason: searchEndReason });
       }
     }
 

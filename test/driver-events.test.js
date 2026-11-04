@@ -41,7 +41,13 @@ function memoryRedis() {
     async set(k, v) { store.set(k, v); },
     async del(k) { store.delete(k); },
     async setIfNotExists(k, v) { if (store.has(k)) return false; store.set(k, v); return true; },
-    async send() { return null; },
+    // Only the set of drivers a request reached, for the cancel tests.
+    async send(cmd, key, value) {
+      if (!String(key).endsWith(':offered-users')) return null;
+      if (cmd === 'SADD') { const set = store.get(key) ?? new Set(); store.set(key, set.add(value)); return 1; }
+      if (cmd === 'SMEMBERS') return [...(store.get(key) ?? [])];
+      return null;
+    },
   };
 }
 async function user(role, phone) {
@@ -116,6 +122,38 @@ test('rider cancelled: bidders hear "rider_cancelled"; the booked driver away fr
   await handleRideEvent({ eventType: 'RIDE_CANCELLED', rideId: r2.id, riderId, driverId: booked.id, cancelledBy: 'rider', timestamp: now() }, w2.deps, new Map());
   assert.ok(w2.toApp.some((m) => m.userId === booked.userId && m.type === 'ride:cancelled'));
   assert.deepEqual(w2.pushes.map((p) => [p.userId, p.title]), [[booked.userId, 'Rider cancelled']]);
+});
+
+test('rider cancelled: a driver who was sent the request but never bid is told too, so it leaves their screen; a bidder is told once', async () => {
+  const riderId = await user('RIDER');
+  const r = await ride(riderId);
+  const bidder = await driver();
+  const looker = await driver();
+  await bid(r, bidder);
+  const w = world();
+  const offer = (d) => ({
+    eventType: 'RIDE_OFFER_SENT', rideId: r.id, riderId, driverId: d.id, driverUserId: d.userId, pickup: { address: 'Akoka' }, destination: { address: 'Yaba' },
+    stops: [], riderOfferNgn: 3000, expiresAt: new Date(Date.now() + 60_000).toISOString(), timestamp: now(),
+  });
+  await handleRideEvent(offer(bidder), w.deps, new Map());
+  await handleRideEvent(offer(looker), w.deps, new Map());
+  await handleRideEvent({ eventType: 'RIDE_CANCELLED', rideId: r.id, riderId, cancelledBy: 'rider', timestamp: now() }, w.deps, new Map());
+  const ended = w.toApp.filter((m) => m.type === 'ride:bid_timeout').map((m) => [m.userId, m.payload.reason]).sort();
+  assert.deepEqual(ended, [[bidder.userId, 'rider_cancelled'], [looker.userId, 'rider_cancelled']].sort());
+});
+
+test('a driver bailing does not end the request for drivers who never bid: the search goes on', async () => {
+  const riderId = await user('RIDER');
+  const r = await ride(riderId);
+  const looker = await driver();
+  const w = world();
+  await handleRideEvent({
+    eventType: 'RIDE_OFFER_SENT', rideId: r.id, riderId, driverId: looker.id, driverUserId: looker.userId, pickup: { address: 'Akoka' }, destination: { address: 'Yaba' },
+    stops: [], riderOfferNgn: 3000, expiresAt: new Date(Date.now() + 60_000).toISOString(), timestamp: now(),
+  }, w.deps, new Map());
+  const bailer = await driver();
+  await handleRideEvent({ eventType: 'RIDE_CANCELLED', rideId: r.id, riderId, driverId: bailer.id, driverUserId: bailer.userId, cancelledBy: 'driver', timestamp: now() }, w.deps, new Map());
+  assert.equal(w.toApp.filter((m) => m.userId === looker.userId && m.type === 'ride:bid_timeout').length, 0);
 });
 
 test('booked: the winner away from the app gets "You\'re booked"; the losing bidders hear "booked_other", and "Not chosen" when away', async () => {

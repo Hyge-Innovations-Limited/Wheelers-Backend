@@ -8,6 +8,7 @@ import type { RedisClient } from '../redis/client';
  *
  *   ride:{rideId}:notified        SET    the drivers the request reached (a re-sent offer adds nobody)
  *   ride:{rideId}:bids-close-at   STRING when the search closes (ISO), the ride service's own clock
+ *   ride:{rideId}:offered-users   SET    the driver accounts the request reached, told when the rider cancels
  *
  * A Kafka event delivered twice adds the same driver twice to a set: the count stays right.
  */
@@ -15,6 +16,7 @@ import type { RedisClient } from '../redis/client';
 const KEEP_SECONDS = 2 * 60 * 60;
 const notifiedKey = (rideId: string) => `ride:${rideId}:notified`;
 const closeKey = (rideId: string) => `ride:${rideId}:bids-close-at`;
+const offeredUsersKey = (rideId: string) => `ride:${rideId}:offered-users`;
 
 export interface SearchStatus {
   /** Drivers the request was sent to; null when none is known yet. */
@@ -48,6 +50,18 @@ export async function noteOfferSent(
   const count = await countOf(redis, rideId);
   const closes = bidsCloseAt ?? (await redis.get(closeKey(rideId)).catch(() => null));
   return { driversNotified: count > 0 ? count : null, bidsCloseAt: closes, changed: Number(added) === 1 || closeChanged };
+}
+
+/** The driver account the request reached, so a cancelled search can be cleared from every screen it is on. */
+export async function noteOfferedDriverUser(redis: RedisClient, rideId: string, driverUserId: string): Promise<void> {
+  await redis.send('SADD', offeredUsersKey(rideId), driverUserId).catch(() => undefined);
+  await redis.send('EXPIRE', offeredUsersKey(rideId), String(KEEP_SECONDS)).catch(() => undefined);
+}
+
+/** Every driver account the request reached (bidders or not). */
+export async function offeredDriverUsers(redis: RedisClient, rideId: string): Promise<string[]> {
+  const members = await redis.send('SMEMBERS', offeredUsersKey(rideId)).catch(() => null);
+  return Array.isArray(members) ? members.filter((m): m is string => typeof m === 'string' && m.length > 0) : [];
 }
 
 /** The search's clock (re)started now: set when it is published or its price changes, until the ride service says otherwise. */
