@@ -99,7 +99,8 @@ test('switch off, form id set: still the old prompt, and typed Continue agrees a
   const { deps, sent, who } = await newcomer('off');
   await say(deps, who, 'Continue');
   assert.equal((await find(who)).privacyConsent, 'AGREED');
-  assert.match(textOf(sent.find((m) => /all set/.test(textOf(m)))), /You're all set/);
+  assert.ok(!sent.some((m) => /all set/.test(textOf(m))), 'no separate "You\'re all set."');
+  assert.match(textOf(sent.find((m) => /where are you headed/.test(textOf(m)))), /^Hi Welcome, where are you headed\?/, 'one greeting, by name, with the menu');
 });
 
 test('test mode: only listed phones get the form', async () => {
@@ -148,8 +149,8 @@ test('the form screens: bad email stays, good email goes on with the news tick, 
   assert.equal(row.contactEmail, 'ada@example.com');
   assert.equal(row.email, null, 'never the sign-in email');
   const after = sent.slice(before).map(textOf);
-  assert.equal(after.filter((t) => /all set/.test(t)).length, 1, 'one follow-up');
-  assert.equal(after.filter((t) => /paused/i.test(t)).length, 1, 'their first message, under 2 hours old, is answered once');
+  assert.equal(after.filter((t) => /all set/.test(t)).length, 0, 'no separate "You\'re all set."');
+  assert.equal(after.filter((t) => /paused/i.test(t)).length, 1, 'their first message, under 2 hours old, is answered once: that is the one message');
 
   // Submitted again later: closes, nothing said, nothing saved.
   const count = sent.length;
@@ -180,9 +181,11 @@ test('a first message over 2 hours old is not replayed: the menu comes instead',
   await handleFlowAction(body(token, 'TERMS', { email: 'a@b.co', agree: true }), flowDeps(deps));
   await wait(300);
   const after = sent.slice(before);
-  assert.ok(after.some((m) => /all set/.test(textOf(m))));
+  assert.ok(!after.some((m) => /all set/.test(textOf(m))), 'no separate "You\'re all set."');
   assert.ok(!after.some((m) => /paused/i.test(textOf(m))));
-  assert.ok(after.some((m) => m.interactive?.type === 'list'), 'the menu');
+  assert.equal(after.length, 1, 'one message');
+  assert.equal(after[0].interactive?.type, 'list', 'with the menu under it');
+  assert.match(textOf(after[0]), /^Hi Welcome, where are you headed\?/);
 });
 
 test('a forged or other-user token is refused; the user comes only from the token', async () => {

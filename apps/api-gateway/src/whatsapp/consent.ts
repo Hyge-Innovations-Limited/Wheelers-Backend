@@ -50,8 +50,10 @@ export function welcomeFormOn(phone: string): boolean {
 }
 
 /**
- * Agreed (by the form or by typing): log, open the deposit account, "You're all set.",
- * then their first message if it is under two hours old, else the menu.
+ * Agreed (by the form or by typing): log, open the deposit account, then ONE
+ * message: the answer to their first message if it is under two hours old
+ * (a "hi" gets "Hi Timmy, where are you headed?"), else that greeting with
+ * the Quick Actions button. No separate "You're all set." (Timi, 4 Nov 2026).
  * Call it only from the one that won agreePrivacyOnce.
  */
 export async function finishConsent(
@@ -87,13 +89,12 @@ export async function finishConsent(
   } catch {
     first = null;
   }
-  await sendMetaReply(deps, phone, "You're all set.");
   if (first) {
     await replay({ ...first, messageId: '' });
     return;
   }
-  // The menu that follows asks where they are going: one ask, not two.
-  await sendQuickActions(deps, user, phone, null, said);
+  // "Hi <name>, where are you headed?" with the Quick Actions button: one message.
+  await sendQuickActions(deps, user, phone, null, said, true);
 }
 
 /** The question: the Welcome form when it is on for this phone, else (or if it cannot be sent) the text prompt. */
@@ -162,7 +163,7 @@ export async function requirePrivacyConsent(
       await askConsent(deps, user, phone, consent === 'DECLINED');
       return true;
     }
-    // One winner: a form agreed a moment ago has already said "You're all set."
+    // One winner: a form agreed a moment ago has already greeted them.
     if (await userClient.agreePrivacyOnce(user.id)) await finishConsent(deps, user, phone, 'text', replay, msgInfo.messageBody);
     return true;
   }
