@@ -33,6 +33,8 @@ export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';
 export { tripCodeClient }       from './clients/trip-code.client';
 export { tripRecordingClient, TRIP_RECORDING_KEEP_DAYS } from './clients/trip-recording.client';
+export { adminChatClient } from './clients/admin-chat.client';
+export type { ChatItem, ChatWho, ChatSource } from './clients/admin-chat.client';
 export { stellarClient }        from './clients/stellar.client';
 export { tripActivityClient }   from './clients/trip-activity.client';
 export type { TripActivity }     from './clients/trip-activity.client';

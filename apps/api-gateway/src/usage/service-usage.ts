@@ -67,7 +67,11 @@ const key = (service: string, day: string) => `usage:${service}:${day}`;
  * Wrap the global fetch once. Returns the un-wrapped one so a test can put it
  * back. Idempotent: wrapping twice would double-count.
  */
-export function meterOutboundCalls(redis: RedisClient): typeof fetch {
+export function meterOutboundCalls(
+  redis: RedisClient,
+  /** A WhatsApp message Meta took: its JSON body, for the rider's transcript (whatsapp/transcript.ts). */
+  options: { onWhatsappSent?: (body: string) => void } = {},
+): typeof fetch {
   const current = globalThis.fetch as typeof fetch & { __wheelersOriginal?: typeof fetch };
   if (current.__wheelersOriginal) return current.__wheelersOriginal;
   const original = current;
@@ -89,6 +93,9 @@ export function meterOutboundCalls(redis: RedisClient): typeof fetch {
     try {
       const response = await original(input, init);
       failed = !response.ok;
+      if (response.ok && service.key === 'meta_whatsapp' && options.onWhatsappSent && isMessagePost(url, init)) {
+        try { options.onWhatsappSent(init!.body as string); } catch { /* the transcript never breaks a send */ }
+      }
       return response;
     } catch (error) {
       failed = true;
@@ -102,6 +109,12 @@ export function meterOutboundCalls(redis: RedisClient): typeof fetch {
   (metered as typeof fetch & { __wheelersOriginal?: typeof fetch }).__wheelersOriginal = original;
   globalThis.fetch = metered;
   return original;
+}
+
+/** A POST of one message to Meta's /messages, with its body as text. */
+function isMessagePost(url: string, init: RequestInit | undefined): boolean {
+  if (!init || (init.method ?? 'GET').toUpperCase() !== 'POST' || typeof init.body !== 'string') return false;
+  try { return new URL(url).pathname.endsWith('/messages'); } catch { return false; }
 }
 
 export async function record(redis: RedisClient, service: string, failed: boolean, ms: number, at = new Date()): Promise<void> {

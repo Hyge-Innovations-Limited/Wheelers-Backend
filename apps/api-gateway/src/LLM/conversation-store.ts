@@ -1,4 +1,4 @@
-import { memoryClient, userClient } from '@wheleers/db';
+import { userClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
 import type { WhatsappConversationMessage } from './types';
 
@@ -6,12 +6,13 @@ const CONVERSATION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const MAX_MESSAGES = 10;
 
 /**
- * phone → userId, so the durable transcript can be keyed by user without a
- * database round-trip per turn. A WhatsApp user's id never changes.
+ * phone → userId, so the durable transcript (whatsapp/transcript.ts, which
+ * writes both sides as they happen) is keyed by user without a database
+ * round-trip per message. A WhatsApp user's id never changes.
  */
 const userIdByPhone = new Map<string, string>();
 
-async function resolveUserId(phone: string): Promise<string | null> {
+export async function resolveUserId(phone: string): Promise<string | null> {
   const cached = userIdByPhone.get(phone);
   if (cached) return cached;
   const user = await userClient.findByPrivyDid(`whatsapp:${phone}`).catch(() => null);
@@ -19,23 +20,6 @@ async function resolveUserId(phone: string): Promise<string | null> {
   if (userIdByPhone.size > 5_000) userIdByPhone.clear();
   userIdByPhone.set(phone, user.id);
   return user.id;
-}
-
-/** Durable copy of the turn, so memory outlives the Redis window. Never blocks. */
-function persistTurns(
-  phone: string,
-  messages: Array<Pick<WhatsappConversationMessage, 'role' | 'content'>>,
-): void {
-  void (async () => {
-    const userId = await resolveUserId(phone);
-    if (!userId) return;
-    await memoryClient.appendMessages(userId, messages).catch((error) => {
-      console.warn('[whatsapp] transcript persist failed', {
-        phone,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  })();
 }
 
 function getConversationKey(phone: string): string {
@@ -82,8 +66,6 @@ export async function appendWhatsappConversation(
   phone: string,
   messages: Array<Pick<WhatsappConversationMessage, 'role' | 'content'>>,
 ): Promise<void> {
-  persistTurns(phone, messages);
-
   const existing = await getWhatsappConversation(redisClient, phone);
   const timestamp = new Date().toISOString();
   const next = [

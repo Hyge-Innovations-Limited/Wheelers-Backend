@@ -13,9 +13,9 @@ export interface MemoryFactInput {
  * it. Everything here is per user; nothing crosses accounts.
  */
 export const memoryClient = {
-  appendMessages: (userId: string, messages: Array<{ role: MemoryRole; content: string }>) =>
+  appendMessages: (userId: string, messages: Array<{ role: MemoryRole; content: string; kind?: string }>) =>
     prisma.whatsappMessage.createMany({
-      data: messages.map((m) => ({ userId, role: m.role, content: m.content.slice(0, 2_000) })),
+      data: messages.map((m) => ({ userId, role: m.role, content: m.content.slice(0, 4_000), kind: m.kind ?? 'text' })),
     }),
 
   /** Newest `limit` turns, returned oldest-first so they read as a conversation. */

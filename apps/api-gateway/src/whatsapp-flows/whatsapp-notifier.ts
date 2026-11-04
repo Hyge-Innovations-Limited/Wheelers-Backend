@@ -17,6 +17,8 @@ export interface WhatsappNotifierDeps {
   riderIdFor?: (phone: string) => Promise<string | null>;
   /** The original "Driver Offers" flow (offersFlowId). Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
   legacyFlowsEnabled?: boolean;
+  /** Live call on (LIVE_CALL_ENABLED): the trip page where the rider chats with or calls the driver. No number is shown then. */
+  liveCallPageUrl?: (riderId: string, rideId: string) => string | null;
 }
 
 /* ── offers, in the chat, as things to TAP ─────────────────────────────── */
@@ -581,6 +583,9 @@ export async function sendDriverArrivedNotification(
     carPhotoUrl?: string | null;
     /** The 4 digits the rider gives the driver to start the trip — right here, when they need them. */
     tripCode?: string | null;
+    /** With Live call on: whose trip, so the card's button opens its Chat or call page. */
+    riderId?: string;
+    rideId?: string;
   },
 ): Promise<void> {
   // Chat messages can't be edited, so each one stands alone: the rider must
@@ -589,11 +594,24 @@ export async function sendDriverArrivedNotification(
     ? ` Look for the *${details.vehicleModel}*${details.vehiclePlate ? `, plate *${details.vehiclePlate}*` : ''}.`
     : '';
   const call = formatTappablePhone(details?.driverPhone);
-  const text = [
+  const head = [
     `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
     ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
-    ...(call ? [``, `Can't find them? Call ${call}`] : []),
-  ].join('\n');
+  ];
+  const text = [...head, ...(call ? [``, `Can't find them? Call ${call}`] : [])].join('\n');
+
+  // Live call on: no number — the card's one button is Chat or call (the trip page, where the call is).
+  // If WhatsApp refuses that card, the one below (with the number) goes instead: the driver is always reachable.
+  const chatOrCall = details?.riderId && details.rideId ? deps.liveCallPageUrl?.(details.riderId, details.rideId) ?? null : null;
+  if (chatOrCall) {
+    const liveText = [...head, ``, `Can't find them? Tap *Chat or call*.`].join('\n');
+    if (await postInteractiveCard(deps, phone, {
+      type: 'cta_url',
+      ...(details?.carPhotoUrl ? { header: { type: 'image', image: { link: details.carPhotoUrl } } } : {}),
+      body: { text: liveText.slice(0, 1024) },
+      action: { name: 'cta_url', parameters: { display_text: 'Chat or call', url: chatOrCall } },
+    })) return;
+  }
 
   // ONE message: the car on top, all of that under it, and the Quick Actions
   // button. WhatsApp refuses that shape → the car with the words as its caption
@@ -602,6 +620,23 @@ export async function sendDriverArrivedNotification(
   if (details?.carPhotoUrl && await postImageWithQuickActions(deps, phone, details.carPhotoUrl, text)) return;
   if (details?.carPhotoUrl && await postImage(deps, phone, details.carPhotoUrl, text)) return;
   await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** One interactive message. False when Meta refuses it, so the caller can fall back. */
+async function postInteractiveCard(deps: WhatsappNotifierDeps, phone: string, interactive: Record<string, unknown>): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: phone.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] arrived card with Chat or call refused — sending the card with the number', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 /** A picture on top, the words, and the Quick Actions form button. False when it cannot go that way. */

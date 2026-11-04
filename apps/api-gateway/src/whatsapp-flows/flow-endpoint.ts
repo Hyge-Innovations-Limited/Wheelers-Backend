@@ -12,6 +12,7 @@ import { handleEditTripFlow } from './edit-trip-flow';
 import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
 import { handleWelcomeFlow } from './welcome-flow';
+import { recordFormStep } from '../whatsapp/transcript';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
 import type { DecryptedFlowRequest } from './encryption';
@@ -209,6 +210,8 @@ export async function handleFlowAction(
   }
 
   const { rideId, userId } = tokenData;
+  // The rider's transcript: every step in a form, as it happens (admin reads it with the chat).
+  void recordFormStep(userId, rideId, body);
 
   // ── The Edit-trip form (token `edit:<userId>`) is its own small flow ───
   if (rideId === 'edit') {

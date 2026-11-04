@@ -33,6 +33,7 @@ import { addingStop } from '../whatsapp/stages/adding-stop';
 import { awaitingTripConfirm } from '../whatsapp/stages/awaiting-trip-confirm';
 import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
 import { rememberLastInbound } from '../whatsapp-flows/ride-reactions';
+import { recordInboundWhatsapp } from '../whatsapp/transcript';
 import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
 import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
@@ -166,6 +167,8 @@ export async function handleIncomingMetaMessage(
     await markWhatsappInbound(deps.redisClient, user.id).catch(() => {});
     // The message the bot's next ride reaction goes on (ride-reactions.ts).
     await rememberLastInbound(deps.redisClient, phone, msgInfo.messageId);
+    // The rider's transcript: this message as they sent it (admin reads the chat).
+    void recordInboundWhatsapp(user.id, msgInfo);
 
     const activeRideId = await getActiveRide(deps.redisClient, user.id);
     const bookingStage = await getBookingStage(deps.redisClient, user.id);

@@ -143,7 +143,7 @@ import { createStellarService, startStellarJob } from "./stellar/service";
 import { startHoldSweeper } from "./payments/hold-sweeper";
 import { createRateProvider } from "./stellar/rates";
 import { handleStellarRoute } from "./stellar/routes";
-import { createTripWhatsapp } from "./trip-chat/whatsapp";
+import { createTripWhatsapp, tripPageUrl } from "./trip-chat/whatsapp";
 import { createLlm, describeLlm } from "./LLM/llm";
 import {
   handleLiveDriversRoute,
@@ -251,6 +251,7 @@ import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
 // same guarded handlers as the chat bot. main keeps these unmounted.
 import { handleWhatsappFlowEndpoint } from "./whatsapp-flows/flow-endpoint";
 import { meterOutboundCalls } from "./usage/service-usage";
+import { recordOutboundWhatsapp } from "./whatsapp/transcript";
 import { handleRideSearchFlowEndpoint } from "./whatsapp-flows/ride-search-flow-endpoint";
 import { RedisClient } from "./redis/client";
 import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
@@ -264,6 +265,7 @@ import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
 import { TripRecordingStorage } from "./storage/trip-recording-storage";
 import { handleTripRecordingRoute, sweepTripRecordings } from "./http/trip-recording.route";
+import { handleAdminChatRoute } from "./http/admin-chat.route";
 import { startReferralJobs } from "./referrals/jobs";
 import { clientIp } from "./utils/client-ip";
 import { handlePasskeyRoute } from "./http/passkey.route";
@@ -459,7 +461,8 @@ async function bootstrap(): Promise<void> {
   // Driver heartbeats and "who is near this pickup" live in Redis (see driver-presence).
   driverPresence.configure((...args) => redisCommandClient.send(...args));
   // Every outbound call to Google, Gemini, Groq, Paystack, Meta… is counted for /admin/usage/services.
-  meterOutboundCalls(redisCommandClient);
+  // Every outgoing call is counted; every WhatsApp message the bot sends is also written to the rider's transcript.
+  meterOutboundCalls(redisCommandClient, { onWhatsappSent: (body) => { void recordOutboundWhatsapp(body); } });
   await redisSubscriberClient.connect();
 
   const publisher = new GatewayPublisher(producer);
@@ -1161,8 +1164,14 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    if (url.pathname === "/drivers/me/trip-recording" || url.pathname.startsWith("/drivers/me/trip-recordings/") || /^\/admin\/rides\/[^/]+\/recordings$/.test(url.pathname)) {
+    if (url.pathname === "/drivers/me/trip-recording" || url.pathname.startsWith("/drivers/me/trip-recordings/") || url.pathname === "/admin/trip-recordings" || /^\/admin\/rides\/[^/]+\/recordings$/.test(url.pathname)) {
       const handled = await handleTripRecordingRoute(req, res, tripRecordingDeps, url);
+      if (handled) return;
+    }
+
+    // Admin chat history: a rider's whole chat with Wheelers, and a trip's.
+    if (url.pathname.startsWith("/admin/chats/")) {
+      const handled = await handleAdminChatRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, adminApiKey: process.env.ADMIN_API_KEY ?? "" }, url);
       if (handled) return;
     }
 
@@ -2753,6 +2762,10 @@ async function bootstrap(): Promise<void> {
             offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
             quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
             riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+            // Live call on: "driver is here" carries Chat or call (the trip page) instead of the driver's number.
+            liveCallPageUrl: gatewayEnv.LIVE_CALL_ENABLED && gatewayEnv.APP_BASE_URL
+              ? (riderId: string, rideId: string) => tripPageUrl(gatewayEnv.APP_BASE_URL!, gatewayEnv.JWT_SECRET, riderId, rideId)
+              : undefined,
           }
         : undefined,
     kycStorage: driverKycStorage ?? undefined,

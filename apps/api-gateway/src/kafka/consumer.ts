@@ -415,7 +415,7 @@ async function reactInChat(deps: StartGatewayConsumerDeps, riderId: string, phon
 }
 
 /** "Your driver is outside": the car, the plate, the trip code. */
-async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, rideId: string, driverId: string | undefined): Promise<void> {
+async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, rideId: string, driverId: string | undefined, riderId?: string): Promise<void> {
   if (!deps.whatsappNotifier) return;
   const arrivedBid = await getAcceptedBid(deps.redisClient, rideId).catch(() => null);
   // The car as the rider will see it at the kerb: the driver's profile wins
@@ -431,6 +431,8 @@ async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, 
     tripCode: await getGroupSeat(deps.redisClient, rideId).catch(() => null)
       ? null
       : await tripCodeClient.ensure(rideId).catch(() => null),
+    // With Live call on, the card's button opens this trip's Chat or call page instead of showing the number.
+    ...(riderId ? { riderId, rideId } : {}),
   }).catch(() => {});
 }
 
@@ -511,7 +513,7 @@ export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId:
     if (ride.status !== 'ARRIVED') return false;
     const phone = await whatsappRiderPhone(deps, userId, item.rideId);
     if (!phone) return false;
-    await tellArrivedInChat(deps, phone, item.rideId, item.driverId);
+    await tellArrivedInChat(deps, phone, item.rideId, item.driverId, userId);
     return true;
   }
   if (item.kind === 'cancelled') {
@@ -1708,7 +1710,7 @@ export async function handleRideEvent(
       if (await isRidePageOpen(deps.redisClient, event.riderId)) {
         await deferUntilPageLeft(deps.redisClient, event.riderId, { kind: 'arrived', rideId: event.rideId, driverId: event.driverId }).catch(() => undefined);
       } else {
-        await tellArrivedInChat(deps, phone, event.rideId, event.driverId);
+        await tellArrivedInChat(deps, phone, event.rideId, event.driverId, event.riderId);
         // 📍 the driver is outside.
         await reactInChat(deps, event.riderId, phone, event.rideId, 'arrived').catch(() => undefined);
       }

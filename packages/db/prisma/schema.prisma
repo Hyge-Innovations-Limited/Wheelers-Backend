@@ -1156,14 +1156,18 @@ model RiderKycAttempt {
 // Kafka sink (analytics-worker) plus synchronous logActivity calls in the
 // api-gateway for actions that never touch Kafka. dedupKey makes at-least-once
 // Kafka delivery safe to replay.
-/// Durable WhatsApp transcript. The Redis conversation window keeps the last
-/// ten turns for a week; this keeps every turn, so the bot can be reminded of
-/// what a rider said last month.
+/// Durable WhatsApp transcript, kept for good. The Redis conversation window
+/// keeps the last ten turns for a week; this keeps every turn, so the bot can
+/// be reminded of what a rider said last month, and admin can read the chat.
+/// From 4 Nov 2026 every message the bot sends is written here word for word
+/// (role "assistant"), and the rider's turns as they sent them (role "user").
 model WhatsappMessage {
   id        String   @id @default(uuid())
   userId    String
   role      String
   content   String
+  /// What it was: text, buttons, list, form, link, image, reaction, template, location.
+  kind      String   @default("text")
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt])

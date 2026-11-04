@@ -30,6 +30,8 @@ const ALLOWED: Array<[string, RegExp]> = [
   // A trip's voice recording, for a complaint: every listen is logged and flagged.
   ['GET', /^\/admin\/rides\/[^/]+\/recordings$/],
   ['GET', /^\/admin\/trip-recordings$/],
+  // Chat history: a person's whole chat with Wheelers, and a trip's.
+  ['GET', /^\/admin\/chats\/(people|trips)(\/[^/]+)?$/],
 ];
 
 export function supportDeskAllows(method: string | undefined, path: string): boolean {
