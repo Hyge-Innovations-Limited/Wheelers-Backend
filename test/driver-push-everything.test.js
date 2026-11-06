@@ -154,3 +154,20 @@ test('the WhatsApp rider\'s deposit covers the fare: the driver gets "Rider paid
   await handleWalletEvent({ ...credit, referenceId: `ref-${randomUUID()}` }, w.deps, participants);
   assert.deepEqual(pushed(w).filter((p) => p[0] === DRIVER), [[DRIVER, 'Rider paid', '₦3,000', 'ride:rider_paid']]);
 });
+
+test('rider paid reaches the driver even when this gateway process never saw the ride (wallet and ride events reach different processes)', async () => {
+  const riderId = await user('RIDER');
+  const d = await driver();
+  const ride = await prisma.ride.create({ data: { riderId, driverId: d.id, status: 'DRIVER_ASSIGNED', pickupLat: 6.52, pickupLng: 3.38, pickupAddress: 'Akoka', destLat: 6.5, destLng: 3.37, destAddress: 'Yaba', riderOfferNgn: 3000, fareEstimateNgn: 3000 } });
+  made.rides.push(ride.id);
+  const w = world();
+  w.deps.whatsappNotifier = { metaAccessToken: 't', metaPhoneNumberId: '1' };
+  await bidState.storeWhatsappRide(w.deps.redisClient, ride.id, { riderId, phone: '+2348030000001', pickupAddress: 'Akoka', destinationAddress: 'Yaba', offerNgn: 3000, suggestedFareNgn: 3000, paymentMethod: 'WALLET', createdAt: now() });
+  await bidState.setActiveRide(w.deps.redisClient, riderId, ride.id);
+  const credit = (newBalanceNgn) => ({ eventType: 'WALLET_CREDITED', userId: riderId, walletId: randomUUID(), amountNgn: 1000, newBalanceNgn, creditType: 'refund', referenceId: `ref-${randomUUID()}`, timestamp: now() });
+
+  await handleWalletEvent(credit(2500), w.deps, new Map());
+  assert.deepEqual(pushed(w).filter((p) => p[0] === d.userId), [], 'not enough for the fare yet');
+  await handleWalletEvent(credit(3200), w.deps, new Map());
+  assert.deepEqual(pushed(w).filter((p) => p[0] === d.userId), [[d.userId, 'Rider paid', '₦3,000', 'ride:rider_paid']], 'found from Redis and the database, not this process memory');
+});

@@ -2090,22 +2090,23 @@ export async function handleWalletEvent(
     let handledByRide = false;
 
     if (waRider && deps.whatsappNotifier) {
-      // Find the active ride and its driver
-      for (const [rideId, participants] of rideParticipants) {
-        if (participants.riderId === event.userId && participants.driverUserId) {
-          const meta = await getRideMeta(deps.redisClient, rideId);
-          if (meta && event.newBalanceNgn >= meta.offerNgn) {
-            // Rider has enough funds — notify driver via app
-            await registry.sendToUser(participants.driverUserId, 'ride:rider_paid', {
-              rideId,
-              riderFunded: true,
-              message: 'Rider has funded their wallet. You can start heading to pickup!',
-            });
-            await pushDriver(deps, participants.driverUserId, { title: 'Rider paid', body: `₦${Math.round(meta.offerNgn).toLocaleString('en-NG')}`, type: 'ride:rider_paid', rideId, generation: 'paid' });
-            // The rider hears of a deposit from the plain confirmation below; any
-            // other credit (a refund, a cashback) is not a "payment received".
-          }
-          break;
+      // The rider's ride (Redis) and its driver (the database when this process has not
+      // seen the ride's events): wallet events and ride events reach different gateway
+      // processes, so looking only in this one's memory almost never found the driver.
+      const rideId = await getActiveRide(deps.redisClient, event.userId).catch(() => null);
+      const participants = rideId ? await participantsFor(rideId, rideParticipants) : undefined;
+      if (rideId && participants?.riderId === event.userId && participants.driverUserId) {
+        const meta = await getRideMeta(deps.redisClient, rideId);
+        if (meta && event.newBalanceNgn >= meta.offerNgn) {
+          // Rider has enough funds — notify driver via app
+          await registry.sendToUser(participants.driverUserId, 'ride:rider_paid', {
+            rideId,
+            riderFunded: true,
+            message: 'Rider has funded their wallet. You can start heading to pickup!',
+          });
+          await pushDriver(deps, participants.driverUserId, { title: 'Rider paid', body: `₦${Math.round(meta.offerNgn).toLocaleString('en-NG')}`, type: 'ride:rider_paid', rideId, generation: 'paid' });
+          // The rider hears of a deposit from the plain confirmation below; any
+          // other credit (a refund, a cashback) is not a "payment received".
         }
       }
     }
