@@ -324,6 +324,12 @@ export function lincPeriodLifts(settings: PricingSettings = pricingSettings): { 
 /** What Linc would charge for a trip, on its fitted (daytime) figures. */
 export const lincFareNgn = (km: number, minutes: number, f: MarketFormula) => f.baseNgn + f.perKmNgn * km + f.perMinuteNgn * minutes;
 
+/** Linc's price before its ride bonus, from the price it shows (lincBonusPercent; the shown price when 0). */
+export function lincFullPriceNgn(shownNgn: number, settings: Pick<PricingSettings, 'lincBonusPercent' | 'lincBonusCapNgn'> = pricingSettings): number {
+  if (!(settings.lincBonusPercent > 0)) return shownNgn;
+  return Math.min(shownNgn / (1 - settings.lincBonusPercent / 100), shownNgn + settings.lincBonusCapNgn);
+}
+
 /** Which list of the curve a day reads: Saturdays are busy into the evening, Sundays and holidays quiet. */
 export type DayKind = 'weekday' | 'saturday' | 'sunday';
 
@@ -532,6 +538,14 @@ export type PricingSettings = {
    * Linc ×(1 + this), so the aim above stands on long trips. Null: the ₦ ceiling alone.
    */
   lincMaxAbovePercent: number | null;
+  /**
+   * Linc's ride bonus, in percent of its full price, at most lincBonusCapNgn (6 Nov: 10%, ₦1,000;
+   * "₦3,420 · ₦380 bonus" is ₦3,800 before the bonus). Its prices are saved as shown, after the
+   * bonus; with this set, Linc's price for a trip (the guide and the ceiling) is its full price.
+   * 0: the price as shown.
+   */
+  lincBonusPercent: number;
+  lincBonusCapNgn: number;
   /** How much more Linc charges at night (22:00–05:00): ₦7,950 at 23:03 where its daytime figures said ₦6,758. */
   lincNightLift: number;
   /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
@@ -596,6 +610,8 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   lincAboveNgn: 0,
   lincAbovePercent: 0,
   lincMaxAbovePercent: null,
+  lincBonusPercent: 0,
+  lincBonusCapNgn: 1000,
   lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],
   ceilingAboveNgn: CEILING_ABOVE_NGN,
@@ -809,6 +825,8 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     lincMaxAbovePercent: v.lincMaxAbovePercent === null || (v.lincMaxAbovePercent === undefined && d.lincMaxAbovePercent === null)
       ? null
       : Math.round(finite(v.lincMaxAbovePercent, d.lincMaxAbovePercent ?? 12, 0, 50) * 10) / 10,
+    lincBonusPercent: Math.round(finite(v.lincBonusPercent, d.lincBonusPercent, 0, 50) * 10) / 10,
+    lincBonusCapNgn: Math.round(finite(v.lincBonusCapNgn, d.lincBonusCapNgn, 0, 10_000) / 50) * 50,
     lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
     lincZonesOn: typeof v.lincZonesOn === 'boolean' ? v.lincZonesOn : d.lincZonesOn,
     lincSamples: Array.isArray(v.lincSamples)
@@ -1316,7 +1334,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   // What Linc would charge for the trip: the guide when it is on, and half of the ceiling either way.
   const lincZone = lincZoneOf(distanceKm, factors.origin, factors.destination);
   const lincTripNgn = distanceKm > 0 && tripMinutes !== null
-    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * (settings.lincZonesOn ? lincZoneLifts(settings).lifts[lincZone] : 1) * surgeFactor * rainFactor)
+    ? Math.round(lincFullPriceNgn(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * (settings.lincZonesOn ? lincZoneLifts(settings).lifts[lincZone] : 1), settings) * surgeFactor * rainFactor)
     : null;
   const lincNgn = settings.lincOn ? lincTripNgn : null;
   if (lincNgn !== null) {

@@ -120,6 +120,25 @@ test('a percentage over Linc: off unless set; on, Linc ×(1 + %); the band keeps
   assert.ok(kept.suggestedFareNgn > cut.suggestedFareNgn && kept.suggestedFareNgn <= Math.ceil(kept.lincNgn * 1.12 / 50) * 50 + 50, `${kept.suggestedFareNgn} for Linc ₦${kept.lincNgn}`);
 });
 
+test('Linc\'s bonus: its prices saved as shown, priced against its full price (10%, at most ₦1,000); off by default', () => {
+  assert.equal(config.normalizePricingSettings({}).lincBonusPercent, 0, 'settings saved before it: the price as shown');
+  // Read off Linc on 6 Nov: "₦3,420 · ₦380 bonus", "₦8,820 · ₦980 bonus", "₦13,100 · ₦1,000 bonus".
+  const bonus = { lincBonusPercent: 10, lincBonusCapNgn: 1000 };
+  assert.equal(Math.round(config.lincFullPriceNgn(3420, bonus)), 3800);
+  assert.equal(Math.round(config.lincFullPriceNgn(8820, bonus)), 9800);
+  assert.equal(config.lincFullPriceNgn(13100, bonus), 14100, 'the bonus stops at ₦1,000');
+  assert.equal(config.lincFullPriceNgn(13100, { lincBonusPercent: 0, lincBonusCapNgn: 1000 }), 13100);
+  const s = config.normalizePricingSettings({ lincBonusPercent: 99, lincBonusCapNgn: 1234 });
+  assert.deepEqual([s.lincBonusPercent, s.lincBonusCapNgn], [50, 1250]);
+
+  const on = { ...live, lincOn: true };
+  const shown = price(on, 20.2, 37);
+  const full = price({ ...on, ...bonus }, 20.2, 37);
+  assert.equal(full.lincNgn, Math.round(config.lincFullPriceNgn(shown.lincNgn, bonus)), 'Linc\'s price for the trip is its full price');
+  assert.ok(full.suggestedFareNgn >= full.lincNgn, `${full.suggestedFareNgn} for Linc's full ₦${full.lincNgn}`);
+  assert.ok(full.ceilingNgn >= full.lincNgn + 1000 - 50, 'the ceiling stands on the full price');
+});
+
 test('Linc by zone: short under 8 km, then an outer end, then an Island end, else central; each zone learns its own lift; off by default', () => {
   const YABA = { lat: 6.5095, lng: 3.3711 }, VI = { lat: 6.4264, lng: 3.4296 }, IDIMU = { lat: 6.5887, lng: 3.2430 }, IKEJA = { lat: 6.5940, lng: 3.3364 };
   assert.equal(config.lincZoneOf(6.4, YABA, VI), 'short');
