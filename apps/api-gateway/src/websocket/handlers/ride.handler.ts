@@ -124,8 +124,11 @@ async function assertDriverAtNextStop(rideId: string): Promise<void> {
   if (haversineKm(at.lat, at.lng, next.lat, next.lng) * 1000 > 150) throw new RouteChangeRefused('You are not at the stop yet.');
 }
 
-async function assertRideOpenForBids(rideId: string) {
-  const ride = await rideClient.findById(rideId).catch(() => null);
+/** The ride the caller already read is used as it is (a bid reads it once); otherwise it is read here. */
+type RideRow = Awaited<ReturnType<typeof rideClient.findById>>;
+
+async function assertRideOpenForBids(rideId: string, preloaded?: RideRow) {
+  const ride = preloaded ?? await rideClient.findById(rideId).catch(() => null);
   if (!ride) throw new Error('This request no longer exists.');
   if (ride.status !== 'REQUESTED' && ride.status !== 'MATCHING') {
     throw new Error('This request is no longer open.');
@@ -137,8 +140,9 @@ export async function assertOfferWithinBand(
   rideId: string,
   offerNgn: number,
   who: 'rider' | 'driver',
+  preloaded?: RideRow,
 ): Promise<void> {
-  const context = await resolveFareContext(rideId);
+  const context = await resolveFareContext(rideId, preloaded);
 
   // Unknown ride: bidding must not be blocked by a lookup we could not resolve.
   if (context === null) {
@@ -183,10 +187,10 @@ export async function assertOfferWithinBand(
  * here from the ride's own distance, never trusted from the phone. An older
  * app that sends only a total keeps working. Returns the fare to use.
  */
-async function resolveDriverBidFareNgn(rideId: string, payload: Record<string, unknown>, fareKey: string): Promise<number> {
+async function resolveDriverBidFareNgn(rideId: string, payload: Record<string, unknown>, fareKey: string, preloaded?: RideRow): Promise<number> {
   const rate = getNumber(payload, 'ratePerKmNgn');
   if (rate !== undefined && Number.isFinite(rate) && rate > 0) {
-    const context = await resolveFareContext(rideId);
+    const context = await resolveFareContext(rideId, preloaded);
     if (context?.distanceKm && context.distanceKm > 0) {
       const fare = fareFromRatePerKmNgn(rate, context.distanceKm);
       payload[fareKey] = fare;
@@ -203,8 +207,9 @@ async function resolveDriverBidFareNgn(rideId: string, payload: Record<string, u
  */
 async function resolveFareContext(
   rideId: string,
+  preloaded?: RideRow,
 ): Promise<{ suggestedFareNgn: number; distanceKm?: number; riderOfferNgn?: number } | null> {
-  const ride = await rideClient.findById(rideId).catch(() => null);
+  const ride = preloaded ?? await rideClient.findById(rideId).catch(() => null);
   if (ride) {
     return {
       riderOfferNgn: ride.riderOfferNgn !== null && ride.riderOfferNgn !== undefined ? Number(ride.riderOfferNgn) : undefined,
@@ -254,12 +259,12 @@ async function computeBidProximity(
   driverUserId: string,
   rideId: string,
   fallbackEtaSeconds: number,
+  preloaded?: { driver: Awaited<ReturnType<typeof driverClient.findByUserId>>; ride: RideRow },
 ): Promise<{ etaSeconds: number; distanceKm?: number }> {
   try {
-    const [driver, ride] = await Promise.all([
-      driverClient.findByUserId(driverUserId),
-      rideClient.findById(rideId),
-    ]);
+    const [driver, ride] = preloaded
+      ? [preloaded.driver, preloaded.ride]
+      : await Promise.all([driverClient.findByUserId(driverUserId), rideClient.findById(rideId)]);
     if (driver && driver.lat != null && driver.lng != null && ride) {
       const distanceKm =
         Math.round(haversineKm(driver.lat, driver.lng, ride.pickupLat, ride.pickupLng) * 100) / 100;
@@ -1001,11 +1006,19 @@ export async function handleRideMessage(
   }
 
   if (type === 'driver:accept') {
-    // Only an approved driver may bid on or take a request.
-    await assertDriverApproved(auth.userId);
-    // The driver is whoever is signed in. Identity, name, rating and car come from the
-    // database only, never the payload.
-    const driver = await driverClient.findByUserId(auth.userId).catch(() => null);
+    const sentRideId = getString(payload, 'rideId');
+    // Everything a bid reads, read once and at the same time (it was 9 reads one after
+    // another: the same driver three times, the same ride four). The checks below still
+    // run in their old order, so a refused bid says what it always said.
+    const [, driver, bidRide, busyNow] = await Promise.all([
+      // Only an approved driver may bid on or take a request.
+      assertDriverApproved(auth.userId),
+      // The driver is whoever is signed in. Identity, name, rating and car come from the
+      // database only, never the payload.
+      driverClient.findByUserId(auth.userId).catch(() => null),
+      sentRideId ? rideClient.findById(sentRideId).catch(() => null) : Promise.resolve(null),
+      auth.driverId ? rideClient.findActiveByDriver(auth.driverId).catch(() => null) : Promise.resolve(undefined),
+    ]);
     if (!driver) throw new Error('Only a driver can do that.');
     const driverId = driver.id;
     const driverRowId: string = driver.id;
@@ -1017,7 +1030,6 @@ export async function handleRideMessage(
 
     const acceptRideId = requireString(payload, 'rideId');
     // The rider is the ride's own, never the payload's.
-    const bidRide = await rideClient.findById(acceptRideId).catch(() => null);
     const bidRiderId = bidRide?.riderId;
     if (!bidRiderId) {
       throw new Error('This request no longer exists.');
@@ -1029,18 +1041,21 @@ export async function handleRideMessage(
     // The request must still be taking bids, and the bid must sit inside
     // the fare band (₦500/km ceiling, rider floor). The app's +100/+500
     // chips and "change bid" never checked the cap; the server must.
-    await assertRideOpenForBids(acceptRideId);
-    await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn'), 'driver');
+    await assertRideOpenForBids(acceptRideId, bidRide);
+    await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn', bidRide), 'driver', bidRide);
 
     const proximity = await computeBidProximity(
       auth.userId,
       acceptRideId,
       requireNumber(payload, 'etaSeconds'),
+      { driver, ride: bidRide },
     );
 
     // A driver already on a trip is not in the market.
     {
-      const busy = await rideClient.findActiveByDriver(driverRowId).catch(() => null);
+      const busy = auth.driverId === driverRowId && busyNow !== undefined
+        ? busyNow
+        : await rideClient.findActiveByDriver(driverRowId).catch(() => null);
       if (busy) {
         throw new Error('Finish your current trip before bidding on new requests.');
       }
