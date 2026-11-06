@@ -5,6 +5,8 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # Back after a crash or a server reboot (none of the four came back on its own before).
+    restart: unless-stopped
     # pg_stat_statements: Postgres's own record of each query shape and its time (admin Health → Slowest SQL).
     # track_io_timing: how much of that time was reading from disk.
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top", "-c", "track_io_timing=on"]
@@ -24,6 +26,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     # A password when REDIS_PASSWORD is set (.env.compose); none when it is not, so a
     # laptop needs no setup. The services reach it with the same password in REDIS_URL:
     # redis://:<password>@localhost:6379. Letters and digits only (openssl rand -hex 32):
@@ -43,14 +46,18 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # Java's default took 512 MB on a 2 GB server; Zookeeper here holds a few kilobytes.
+      KAFKA_HEAP_OPTS: "-Xms64M -Xmx128M"
     ports:
       - "127.0.0.1:2181:2181"
 
   kafka:
     image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
     depends_on:
       - zookeeper
     environment:
@@ -63,11 +70,15 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Java's default took 1 GB on a 2 GB server and pushed ~1 GB into swap (6 Nov 2026).
+      # Hundreds of messages a day need a fraction of this.
+      KAFKA_HEAP_OPTS: "-Xms128M -Xmx384M"
     ports:
       - "127.0.0.1:9092:9092"
       - "127.0.0.1:29092:29092"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      # The check starts its own Java every 10 s: kept small, not the broker's heap.
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx64M kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 12
