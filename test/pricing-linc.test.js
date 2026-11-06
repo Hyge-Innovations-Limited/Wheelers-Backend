@@ -85,18 +85,23 @@ test('Linc\'s figures are fitted from its prices, none below zero; distance coun
   assert.equal(s.lincSamples.length, 1);
 });
 
-test('Linc by the time of day, weekdays apart from weekends: two Tuesday-morning prices lift weekday mornings; one is not enough', () => {
-  const morning = (minute) => ({ km: 15.5, minutes: 30, priceNgn: 11100, at: `2026-10-27T07:${minute}:00Z` }); // 08:xx Lagos
+test('Linc by the time of day, weekdays apart from weekends: two Tuesday-morning trips lift weekday mornings; one is not enough, however often it is priced', () => {
   const base = { ...live, lincOn: true };
-  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10')] });
+  const figures = config.normalizePricingSettings(base).linc;
+  // Two trips, both 1.48× Linc's figures, as Linc's ₦11,100 for 15.5 km on a Tuesday morning was.
+  const morning = (minute, km, minutes) => ({ km, minutes, priceNgn: Math.round(config.lincFareNgn(km, minutes, figures) * 11100 / config.lincFareNgn(15.5, 30, figures)), at: `2026-10-27T07:${minute}:00Z` }); // 08:xx Lagos
+  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10', 15.5, 30)] });
   assert.equal(config.lincPeriodLifts().lifts['weekday-morning'], 1, 'one price is not enough');
-  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10'), morning('20')] });
+  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10', 15.5, 30), morning('12', 15.5, 30)] });
+  assert.equal(config.lincPeriodLifts().lifts['weekday-morning'], 1, 'one trip priced twice is one trip');
+  config.setPricingSettings({ ...base, lincSamples: [...config.LINC_SAMPLES_SEEN, morning('10', 15.5, 30), morning('20', 9.8, 24)] });
   const { lifts, counts } = config.lincPeriodLifts();
   assert.equal(counts['weekday-morning'], 2);
   assert.equal(counts['weekend-morning'], 2, 'Saturday 11:40 and Sunday 09:50');
   assert.ok(lifts['weekday-morning'] > 1.35, JSON.stringify(lifts));
   assert.ok(Math.abs(lifts['weekend-morning'] - 1) < 0.06, 'weekend mornings stay at its figures');
   assert.equal(lifts['weekday-afternoon'], 1, 'the afternoon is untouched');
+  assert.equal(lifts['weekend-evening'], 1, 'the Sunday-evening Alagbado trip, priced twice, is one trip');
   const at = new Date(Date.UTC(2026, 9, 28, 7, 15)); // Wednesday 08:15 Lagos
   const p = config.calculateSuggestedFare(15.5, { durationSeconds: 30 * 60, at, trafficRatio: 1 });
   assert.equal(p.setBy, 'linc');

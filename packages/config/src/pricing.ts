@@ -245,8 +245,14 @@ function lagosHourOf(iso: string): number {
   return Number.isFinite(t) ? new Date(t + 3_600_000).getUTCHours() : 12;
 }
 
-/** Prices in a part of the day before its own Linc lift is learned (fewer: the night lift, or 1). */
+/**
+ * Different trips priced in a part of the day before its own Linc lift is learned (fewer: the night
+ * lift, or 1). Trips, not prices: two quotes of one Sunday-evening Alagbado trip, 9 minutes apart,
+ * lifted every Sunday evening ×1.46 (a 33 km Ikorodu trip ₦23,100, 6 Nov).
+ */
 export const LINC_PERIOD_MIN_PRICES = 2;
+/** Prices of one trip (the same km to the half km) count as one. */
+const lincTripsIn = (samples: readonly LincSample[]) => new Set(samples.map((s) => Math.round(s.km * 2))).size;
 
 /** A part of the day on a weekday, or on a weekend or holiday: Linc's mornings differ (a Tuesday's +43%, a Saturday's none). */
 export type LincSlot = `${'weekday' | 'weekend'}-${DayPeriod}`;
@@ -301,11 +307,13 @@ export function lincPeriodLifts(settings: PricingSettings = pricingSettings): { 
   const cached = lincLiftCache.get(settings);
   if (cached) return cached;
   const ratios = Object.fromEntries(LINC_SLOTS.map((slot) => [slot, [] as number[]])) as Record<LincSlot, number[]>;
+  const seen = Object.fromEntries(LINC_SLOTS.map((slot) => [slot, [] as LincSample[]])) as Record<LincSlot, LincSample[]>;
   for (const s of settings.lincSamples) {
     const at = new Date(s.at);
     const guess = lincFareNgn(s.km, s.minutes, settings.linc);
     if (Number.isNaN(at.getTime()) || guess <= 0) continue;
     ratios[lincSlotOf(at)].push(s.priceNgn / guess);
+    seen[lincSlotOf(at)].push(s);
   }
   const lifts = {} as Record<LincSlot, number>;
   const counts = {} as Record<LincSlot, number>;
@@ -314,7 +322,7 @@ export function lincPeriodLifts(settings: PricingSettings = pricingSettings): { 
     counts[slot] = list.length;
     const fallback = slot.endsWith('night') ? settings.lincNightLift : 1;
     const middle = list.length % 2 ? list[(list.length - 1) / 2]! : ((list[list.length / 2 - 1] ?? fallback) + (list[list.length / 2] ?? fallback)) / 2;
-    lifts[slot] = list.length >= LINC_PERIOD_MIN_PRICES ? Math.round(Math.min(1.6, Math.max(0.8, middle)) * 100) / 100 : fallback;
+    lifts[slot] = lincTripsIn(seen[slot]) >= LINC_PERIOD_MIN_PRICES ? Math.round(Math.min(1.6, Math.max(0.8, middle)) * 100) / 100 : fallback;
   }
   const out = { lifts, counts };
   lincLiftCache.set(settings, out);

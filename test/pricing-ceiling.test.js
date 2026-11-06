@@ -40,11 +40,11 @@ test('30 km from Ikorodu at night: ₦15,250, not ₦17,850; once Linc\'s night 
   assert.equal(learned.suggestedFareNgn, 13700);
 });
 
-test('33.1 km from Ikorodu in the evening (1 Nov): ₦16,550, not ₦20,800 (₦16,150 before Linc\'s figures were refitted on 6 Nov)', () => {
+test('33.1 km from Ikorodu in the evening (1 Nov): ₦15,850, not ₦20,800 (₦16,550 while one Sunday-evening Alagbado trip, priced twice, counted as two and lifted Sunday evenings)', () => {
   const sunday = new Date('2026-11-01T19:11:00Z');
   const fare = price({ ...live, hourCurve: flat(1.2161) }, 33.1, 61, { origin: IKORODU, destination: OPEBI }, sunday);
   assert.equal(fare.setBy, 'ceiling');
-  assert.equal(fare.suggestedFareNgn, 16550);
+  assert.equal(fare.suggestedFareNgn, 15850);
 });
 
 test('a slow city trip Linc prices is left alone: the ceiling sits above it', () => {

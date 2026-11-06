@@ -747,7 +747,7 @@ async function linc() {
   console.log(`Aim over Linc: ${settings.lincAbovePercent}%${settings.lincMaxAbovePercent !== null ? `, at most ${settings.lincMaxAbovePercent}% (the ceiling is never under it)` : ''}  (npm run pricing linc percent 8 12)`);
   console.log(`Linc's bonus: ${settings.lincBonusPercent > 0 ? `${settings.lincBonusPercent}%, at most ${naira(settings.lincBonusCapNgn)}: we price against Linc before its bonus` : 'off: we price against the price Linc shows'}  (npm run pricing linc bonus 10 1000 | off)`);
   const { lifts, counts } = config.lincPeriodLifts(settings);
-  console.log(`By the time of day, learned from its prices (${config.LINC_PERIOD_MIN_PRICES} needed in a part of the day; until then ×1, ×${settings.lincNightLift} at night):`);
+  console.log(`By the time of day, learned from its prices (${config.LINC_PERIOD_MIN_PRICES} different trips needed in a part of the day; until then ×1, ×${settings.lincNightLift} at night):`);
   console.table(['weekday', 'weekend'].map((day) => Object.fromEntries([['day', day], ...config.DAY_PERIODS.map((p) => [p, `×${lifts[`${day}-${p}`]} (${counts[`${day}-${p}`]})`])])));
   const zones = config.lincZoneLifts(settings);
   console.log(`Zones: ${settings.lincZonesOn ? 'ON' : 'off'}  (npm run pricing linc zones on|off)`);
