@@ -3160,3 +3160,42 @@ test('"take me home" still gets the rider\'s trips and places (that is what memo
   assert.ok(read.some((m) => m.role === 'system' && /What we know about this rider/.test(m.content)), 'memory is given');
   assert.ok(mentionsMonday(read), 'past trips are there to resolve "home"');
 });
+
+/* ── a whole new trip typed while an old one waits (6 Nov 2026) ───────── */
+
+const BARIGA = { lat: 6.5395, lng: 3.3852, address: '17 Jogunomi St, Bariga, Lagos 102216, Lagos, Nigeria' };
+const EKO_HOTEL = { lat: 6.4264, lng: 3.4296, address: 'Eko Hotel And Suites, Adetokunbo Ademola Street, Victoria Island, Lagos' };
+const newTripWorld = {
+  geocode: (q) => (/jogunomi|bariga/i.test(q) ? BARIGA : /eko/i.test(q) ? EKO_HOTEL : YABA),
+  places: () => null,
+  // The real model, 6 Nov: at the trip card, "From Bariga to Eko Hotel" came back as "change the pickup to Eko Hotel".
+  intent: (message, system) => (/part-way through booking/.test(system)
+    ? { intent: 'change_pickup', address: 'Eko Hotel and Suites Victoria Island' }
+    : /jogunomi/i.test(message)
+      ? { intent: 'ride_request', pickup: { address: '17 Jogunomi Street, Bariga', area: 'Bariga', specific: true }, destination: { address: 'Eko Hotel and Suites, Victoria Island', area: 'Victoria Island', specific: true }, offerNgn: null, paymentMethod: null, outsideNigeria: false }
+      : { intent: 'other' }),
+};
+
+test('a whole new trip typed at the trip card is a new trip: both new ends, nothing of the old one (it was "Pickup changed" to the new destination, with the old destination kept)', async () => {
+  const { redis, sent, deps, who, user } = await riderAtTripCard(newTripWorld);
+  assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm', 'an Akoka → Yaba trip waits on a yes');
+  await say(deps, who, 'From 17 Jogunomi Street Bariga to Eko Hotel and Suites Victoria Island');
+  const reply = textOf(last(sent));
+  assert.doesNotMatch(reply, /Pickup changed/);
+  assert.match(reply, /Pickup: \*17 Jogunomi/);
+  assert.match(reply, /Destination: \*Eko Hotel/);
+  assert.doesNotMatch(reply, /Osaro Isokpan|Emily Akinola/, 'nothing of the old trip');
+  const trip = await bidState.getPendingRoute(redis, user.id);
+  assert.match(trip.pickupAddress, /Jogunomi/);
+  assert.match(trip.destAddress, /Eko Hotel/);
+});
+
+test('a change is still a change: "change pickup from Akoka to Bariga" is not taken for a new trip; "bus stop" in an address is no change word', () => {
+  const { isWholeNewTrip } = require('../apps/api-gateway/dist/whatsapp/parse.js');
+  for (const text of ['From 17 Jogunomi Street Bariga to Eko Hotel', 'from Ikeja along bus stop to Maryland mall', 'I want to go from Yaba to Lekki phase 1', 'abeg from unilag gate to sabo.']) {
+    assert.equal(isWholeNewTrip(text), true, text);
+  }
+  for (const text of ['change pickup from Akoka to Bariga', 'edit trip from yaba to lekki', 'from Yaba', 'to Lekki', 'yes', 'from ab to cd', 'wrong, it should be from Yaba to Ikeja instead']) {
+    assert.equal(isWholeNewTrip(text), false, text);
+  }
+});

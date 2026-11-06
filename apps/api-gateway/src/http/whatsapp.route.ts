@@ -36,9 +36,9 @@ import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
 import { rememberLastInbound } from '../whatsapp-flows/ride-reactions';
 import { recordInboundWhatsapp } from '../whatsapp/transcript';
 import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
-import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
+import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isWholeNewTrip, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
-import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
+import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, forgetBookingInProgress, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
 import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
 import { handleQuickAction, sendQuickActions } from '../whatsapp/menu';
 import { sendWalletPageButton } from '../whatsapp/wallet';
@@ -131,6 +131,9 @@ export async function handleMetaWhatsappWebhookRoute(
     console.error('[whatsapp] webhook handling failed', error);
   }
 }
+
+/** The steps of a booking not yet searching: a whole new trip typed in any of them starts afresh. */
+const HALF_MADE_BOOKING = new Set(['awaiting_pickup', 'awaiting_destination', 'awaiting_trip_confirm', 'awaiting_price', 'adding_stop', 'awaiting_route_confirmation', 'editing_pickup', 'editing_destination']);
 
 export async function handleIncomingMetaMessage(
   deps: MetaWhatsappRouteDeps,
@@ -539,6 +542,17 @@ export async function handleIncomingMetaMessage(
 
     if (activeRideId && !isLocation && bookingStage !== 'editing_pickup' && bookingStage !== 'editing_destination') {
       if (await inRide(ctx)) return;
+    }
+
+    // ── A WHOLE NEW TRIP while a booking is half made ──
+    // "From Bariga to Eko Hotel", typed while an older trip waited on a yes, was read as a change to
+    // that trip: the model took Eko Hotel as the new pickup and kept the old destination (the rider
+    // saw an old address). Both ends in one message are a new booking: the half-made one goes, and
+    // the message is read from the start, as if nothing were pending.
+    if (!activeRideId && !isLocation && bookingStage && HALF_MADE_BOOKING.has(bookingStage) && isWholeNewTrip(incomingMessage)) {
+      await forgetBookingInProgress(deps, user.id);
+      await ctx.replay({ ...msgInfo, messageId: '', replyId: undefined });
+      return;
     }
 
     // ══════════════════════════════════════════════════════════════════════

@@ -323,6 +323,18 @@ export function isMoreCommand(message: string): boolean {
  * whole country. Anything matching here is left for the intent parser and the
  * chatbot instead.
  */
+/**
+ * Both ends of a trip in one message ("from Bariga to Eko Hotel"): a new trip, not a change to the
+ * one on screen. "Change the pickup from X to Y" and the like are changes, so they are not this.
+ */
+export function isWholeNewTrip(message: string): boolean {
+  const text = message.trim().replace(/[.!?]+$/, '');
+  // ("bus stop" is part of half the addresses in Lagos, so "stop" alone says nothing.)
+  if (/\b(change|edit|update|switch|instead|correct|wrong)\b/i.test(text)) return false;
+  const both = /\bfrom\s+(.+)\s+to\s+(.+)$/i.exec(text);
+  return Boolean(both && both[1]!.trim().length >= 3 && both[2]!.trim().length >= 3);
+}
+
 export function looksLikeConversation(message: string): boolean {
   const trimmed = message.trim();
 

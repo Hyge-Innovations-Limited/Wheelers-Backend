@@ -194,6 +194,19 @@ export const TIMED_OUT_REPLY = `That booking timed out.\n\n${BOOKING_START_PROMP
 /** Starting a booking while a ride is live: one message, not six. */
 export const BUSY_REPLY = 'You already have a ride in progress. To book a new one, reply *cancel* first.';
 
+/** Forget the half-made booking, all of it, without a word to the rider. */
+export async function forgetBookingInProgress(deps: Pick<MetaWhatsappRouteDeps, 'redisClient'>, userId: string): Promise<void> {
+  await Promise.all([
+    clearPendingRoute(deps.redisClient, userId),
+    clearPendingLocation(deps.redisClient, userId),
+    clearPendingAreaHint(deps.redisClient, userId),
+    clearPendingGeoChoices(deps.redisClient, userId),
+    clearPendingFarPlace(deps.redisClient, userId),
+    clearBookingMisses(deps.redisClient, userId),
+    clearBookingStage(deps.redisClient, userId),
+  ].map((step) => step.catch(() => undefined)));
+}
+
 /** Throw the half-made booking away and begin again. */
 export async function startBookingOver(
   deps: MetaWhatsappRouteDeps,
@@ -201,15 +214,7 @@ export async function startBookingOver(
   phone: string,
   incomingMessage: string,
 ): Promise<void> {
-  await Promise.all([
-    clearPendingRoute(deps.redisClient, user.id),
-    clearPendingLocation(deps.redisClient, user.id),
-    clearPendingAreaHint(deps.redisClient, user.id),
-    clearPendingGeoChoices(deps.redisClient, user.id),
-    clearPendingFarPlace(deps.redisClient, user.id),
-    clearBookingMisses(deps.redisClient, user.id),
-    clearBookingStage(deps.redisClient, user.id),
-  ].map((step) => step.catch(() => undefined)));
+  await forgetBookingInProgress(deps, user.id);
   await replyAndLog(deps, phone, incomingMessage, `No wahala, let's start again.\n\n${BOOKING_START_PROMPT}`);
 }
 
