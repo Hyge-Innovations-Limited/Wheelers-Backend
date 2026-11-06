@@ -3109,3 +3109,54 @@ test('GROUP SEAT · the last seat books the car once: a repeat of the last accep
   assert.equal(accepted().filter((e) => e.rideId === anchorRideId).length, 1, 'booked once');
   assert.match(textOf(last(sent)), /already booked/);
 });
+
+/* ── an old trip never stands in for the one typed (6 Nov 2026) ─────────── */
+
+/** A rider who booked Akoka → Yaba four days ago, in the trips table and in the kept chat. */
+async function riderFromMonday() {
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const asked = [];
+  const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+  const world = global.fetch;
+  // What the model is shown, for every call (installWorld answers only from the last line).
+  global.fetch = async (url, init) => {
+    if (String(url).includes('api.groq.com')) asked.push(JSON.parse(init.body).messages);
+    return world(url, init);
+  };
+  const who = rider();
+  await say(deps, who, 'hi');
+  const user = await agree(redis, await findRider(who));
+  const monday = new Date(Date.now() - 4 * 86400e3);
+  await prisma.ride.create({ data: { riderId: user.id, status: 'COMPLETED', completedAt: monday, createdAt: monday, pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address, agreedFareNgn: 2400 } });
+  await prisma.whatsappMessage.createMany({ data: [
+    { userId: user.id, role: 'user', content: 'from akoka to yaba', createdAt: monday },
+    { userId: user.id, role: 'assistant', content: `Pickup: *${AKOKA.address}*\nDestination: *${YABA.address}*`, createdAt: monday },
+  ] });
+  // The bot's short-term chat memory says the same (kept 7 days).
+  await redis.set(`whatsapp:conversation:${who.phone}`, JSON.stringify([
+    { role: 'user', content: 'from akoka to yaba', timestamp: monday.toISOString() },
+    { role: 'assistant', content: `Pickup: *${AKOKA.address}*`, timestamp: monday.toISOString() },
+  ]));
+  const tripReads = () => asked.filter((messages) => /You extract ride request details/.test(messages[0].content));
+  return { redis, deps, sent, who, user, tripReads };
+}
+const mentionsMonday = (messages) => messages.some((m) => /Emily Akinola|Osaro Isokpan/.test(m.content));
+
+test('a new trip typed on Friday: the model is not shown Monday\'s trip or Monday\'s chat, so it cannot put the old address back', async () => {
+  const { deps, who, tripReads } = await riderFromMonday();
+  await say(deps, who, 'from Ikeja City Mall to Eko Hotel VI');
+  const reads = tripReads();
+  assert.ok(reads.length >= 1, 'the trip was read by the model');
+  const read = reads.at(-1);
+  assert.equal(read.at(-1).content, 'from Ikeja City Mall to Eko Hotel VI');
+  assert.equal(mentionsMonday(read), false, 'no Monday addresses in what the model saw');
+});
+
+test('"take me home" still gets the rider\'s trips and places (that is what memory is for)', async () => {
+  const { deps, who, tripReads } = await riderFromMonday();
+  await say(deps, who, 'take me home');
+  const read = tripReads().at(-1);
+  assert.ok(read.some((m) => m.role === 'system' && /What we know about this rider/.test(m.content)), 'memory is given');
+  assert.ok(mentionsMonday(read), 'past trips are there to resolve "home"');
+});

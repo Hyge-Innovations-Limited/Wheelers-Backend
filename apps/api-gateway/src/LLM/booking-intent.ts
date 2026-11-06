@@ -1,5 +1,6 @@
 import type { LlmClient } from './llm';
 import type { WhatsappConversationMessage } from './types';
+import { currentConversation } from './conversation-window';
 
 /**
  * What a rider wants, mid-booking.
@@ -181,7 +182,7 @@ export async function classifyBookingIntent(
     { role: 'system', content: buildPrompt(step, message, context) },
     // Two short turns is enough to read "not that one" or "ok". Kept short on
     // purpose: the trip is already in the prompt, and tokens are the budget.
-    ...recentMessages.slice(-2).map((entry) => ({ role: entry.role, content: entry.content.slice(0, 160) })),
+    ...currentConversation(recentMessages).slice(-2).map((entry) => ({ role: entry.role, content: entry.content.slice(0, 160) })),
     { role: 'user', content: message.slice(0, 500) },
   ];
 

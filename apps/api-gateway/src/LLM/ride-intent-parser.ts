@@ -1,5 +1,6 @@
 import type { LlmClient } from './llm';
 import type { WhatsappConversationMessage } from './types';
+import { currentConversation } from './conversation-window';
 
 export interface RideLocation {
   address: string;
@@ -221,8 +222,9 @@ export async function parseRideIntent(
     messages.push({ role: 'system', content: riderMemoryContext });
   }
 
-  // Recent turns, so a pickup named two messages ago still counts.
-  const contextMessages = recentMessages.slice(-8);
+  // Recent turns, so a pickup named two messages ago still counts: this conversation's
+  // only (the last hour), never a trip from days ago (LLM/conversation-window).
+  const contextMessages = currentConversation(recentMessages).slice(-8);
   for (const msg of contextMessages) {
     messages.push({ role: msg.role, content: msg.content });
   }

@@ -12,6 +12,7 @@ import { parseRideIntent } from '../LLM/ride-intent-parser';
 import { classifyWalletIntent, mightConcernMoney } from '../LLM/wallet-intent';
 import { classifyBookingIntent, mightNotBeAnAddress } from '../LLM/booking-intent';
 import { loadRiderMemory, rememberExchange, renderRiderMemoryForIntent } from '../LLM/rider-memory';
+import { asksForRiderMemory } from '../LLM/conversation-window';
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
@@ -773,7 +774,9 @@ export async function handleIncomingMetaMessage(
       groq,
       incomingMessage,
       riderMemory?.transcript?.length ? riderMemory.transcript : recentMessages,
-      riderMemory ? renderRiderMemoryForIntent(riderMemory) : undefined,
+      // Their past trips and places only when the message asks for one ("home", "the usual"):
+      // otherwise the model swapped in an old address for the one they typed.
+      riderMemory && asksForRiderMemory(incomingMessage) ? renderRiderMemoryForIntent(riderMemory) : undefined,
     );
 
     if (rideIntent && (rideIntent.intent === 'ride_request' || rideIntent.intent === 'group_ride_request') && rideIntent.outsideNigeria) {
