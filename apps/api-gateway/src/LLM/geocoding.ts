@@ -815,6 +815,22 @@ function normalisePlaceName(text: string): string {
   return text.toLowerCase().split(',')[0]!.replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+const ORDINALS: Record<string, string> = { '1st': 'first', '2nd': 'second', '3rd': 'third', '4th': 'fourth', '5th': 'fifth' };
+const placeWords = (text: string) => new Set(normalisePlaceName(text).split(' ').filter(Boolean).map((word) => ORDINALS[word] ?? word));
+
+/** Options in order of how many of the rider's words their name carries; a stable sort. */
+export function rankByWordsSaid<T extends { name?: string; formattedAddress: string }>(options: T[], said: string): T[] {
+  const words = [...placeWords(said)];
+  if (words.length < 2) return options;
+  const score = (option: T) => {
+    const named = placeWords(option.name ?? option.formattedAddress);
+    return words.filter((word) => named.has(word)).length;
+  };
+  return options.map((option, index) => ({ option, index, score: score(option) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(({ option }) => option);
+}
+
 const STREET_WORD = /\b(street|str|st|road|rd|avenue|ave|close|crescent|lane|drive|way|estate)\b/i;
 const ADDRESS_LIKE = /^\s*(?:no\.?\s*)?\d+[a-z]?\b|\b(street|str|road|rd|avenue|ave|close|crescent|lane|drive|estate|way)\b/i;
 
@@ -881,6 +897,11 @@ export async function findPlaceOptions(
       normalisePlaceName(option.name ?? option.formattedAddress).includes(said) &&
       kmBetween(exact, option) > SAME_PLACE_KM);
     found = [exact, ...alternatives];
+  } else {
+    // "Festac Town 1st gate": Places listed "1st Avenue" and its closes above "Festac First Gate
+    // Bus Stop" (seen live 6 Nov). The option whose name carries more of the rider's words comes
+    // first; ties keep Google's order.
+    found = rankByWordsSaid(found, said);
   }
 
   // Several matches a short walk apart are one destination.

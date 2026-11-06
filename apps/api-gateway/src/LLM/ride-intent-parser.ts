@@ -207,7 +207,54 @@ export function tripFromGrammar(message: string): RideIntent | null {
   return null;
 }
 
+/**
+ * A message that opens with "from X to Y" is a trip by its grammar. Seen live 6 Nov, with the
+ * models out of quota or rate-limited: "From Ojota bus stop to Admiralty Way" came back with no
+ * pickup ("Going to Admiralty Way. Where should your driver pick you up?"), and "From University
+ * of Lagos Akoka to Ikeja City Mall" as chat ("share your pickup pin"). Then an end the model left
+ * out is taken from the rider's words; an end it did read (and its "specific") is kept.
+ */
+const TRIP_OPENING = /^(?:(?:hi|hello|hey|pls|please|abeg|good\s+(?:morning|afternoon|evening))[,!.\s]+)*(?:(?:i\s+)?(?:want|wanna|need|would\s+like)\s+(?:to\s+)?(?:go|move|travel|book(?:\s+a\s+ride)?|a\s+ride|ride)\s+|(?:take|carry|drive)\s+me\s+|book\s+(?:me\s+)?(?:a\s+)?(?:ride|car)\s+|(?:a\s+)?ride\s+)?from\s/i;
+const CHANGE_WORDS = /\b(change|edit|update|switch|instead|correct|wrong)\b/i;
+const PRICE_AT_END = /\s+(?:for|@|at)\s+(?:₦|n|ngn)?\s*\d[\d,.]*\s*k?\s*$/i;
+
+export function fillFromGrammar(intent: RideIntent | null, message: string): RideIntent | null {
+  if (intent && intent.intent !== 'other' && intent.intent !== 'ride_request') return intent;
+  if (intent?.intent === 'ride_request' && intent.pickup && intent.destination) return intent;
+  if (!TRIP_OPENING.test(message.trim()) || CHANGE_WORDS.test(message)) return intent;
+  const grammar = tripFromGrammar(message);
+  if (!grammar?.pickup || !grammar.destination) return intent;
+  grammar.destination.address = grammar.destination.address.replace(PRICE_AT_END, '').trim();
+  if (grammar.destination.address.length < 3) return intent;
+
+  const read = intent?.intent === 'ride_request' ? intent : null;
+  // The model may have put the one place it kept on the wrong end: keep its reading only on the
+  // end the rider's words put it.
+  const keep = (end: 'pickup' | 'destination') => {
+    const place = read?.pickup ?? read?.destination;
+    return place && saidInMessage(place.address, grammar[end]!.address) && !saidInMessage(place.address, grammar[end === 'pickup' ? 'destination' : 'pickup']!.address) ? place : null;
+  };
+  console.info('[ride-intent] trip read from the words', { model: intent?.intent ?? null, message: message.slice(0, 80) });
+  return {
+    intent: 'ride_request',
+    pickup: keep('pickup') ?? grammar.pickup,
+    destination: keep('destination') ?? grammar.destination,
+    offerNgn: read?.offerNgn ?? null,
+    paymentMethod: read?.paymentMethod ?? null,
+    outsideNigeria: read?.outsideNigeria === true,
+  };
+}
+
 export async function parseRideIntent(
+  groq: LlmClient,
+  message: string,
+  recentMessages: WhatsappConversationMessage[],
+  riderMemoryContext?: string,
+): Promise<RideIntent | null> {
+  return fillFromGrammar(await readRideIntent(groq, message, recentMessages, riderMemoryContext), message);
+}
+
+async function readRideIntent(
   groq: LlmClient,
   message: string,
   recentMessages: WhatsappConversationMessage[],

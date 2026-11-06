@@ -685,6 +685,64 @@ test('with no model answering at all, a clearly stated trip is still understood'
   assert.match(textOf(last(sent)), /places called "Caleb University"/);
 });
 
+test('"from X to Y" is a trip even when the model drops an end or calls it chat (seen live 6 Nov, models out of quota)', async () => {
+  const { fillFromGrammar, parseRideIntent } = require('../apps/api-gateway/dist/LLM/ride-intent-parser.js');
+  const ends = (intent) => [intent?.intent ?? null, intent?.pickup?.address ?? null, intent?.destination?.address ?? null];
+  const ride = (pickup, destination, extra = {}) => ({ intent: 'ride_request', pickup, destination, offerNgn: null, paymentMethod: null, outsideNigeria: false, ...extra });
+  const place = (address, specific = true) => ({ address, area: '', specific });
+
+  // Read as chat, or no answer at all: the rider's words give both ends.
+  assert.deepEqual(ends(fillFromGrammar({ intent: 'other', pickup: null, destination: null }, 'From University of Lagos Akoka to Ikeja City Mall')), ['ride_request', 'University of Lagos Akoka', 'Ikeja City Mall']);
+  assert.deepEqual(ends(fillFromGrammar(null, 'pls from Gbagada Phase 2 to Ikeja Along bus stop')), ['ride_request', 'Gbagada Phase 2', 'Ikeja Along bus stop']);
+  // The pickup dropped: filled; the end the model did read keeps its wording and its "specific".
+  const dropped = fillFromGrammar(ride(null, place('Admiralty Way, Lekki Phase 1, Lagos', false)), 'From Ojota bus stop to Admiralty Way Lekki Phase 1');
+  assert.deepEqual(ends(dropped), ['ride_request', 'Ojota bus stop', 'Admiralty Way, Lekki Phase 1, Lagos']);
+  assert.equal(dropped.destination.specific, false);
+  // The one place kept, on the wrong end: put back where the rider's words say.
+  assert.deepEqual(ends(fillFromGrammar(ride(null, place('Ojota Bus Stop, Lagos')), 'From Ojota bus stop to Admiralty Way')), ['ride_request', 'Ojota Bus Stop, Lagos', 'Admiralty Way']);
+  // A price on the end is the price, not the place.
+  const priced = fillFromGrammar(ride(place('Yaba'), null, { offerNgn: 3000 }), 'from Yaba to Surulere for 3,000');
+  assert.deepEqual([...ends(priced), priced.offerNgn], ['ride_request', 'Yaba', 'Surulere', 3000]);
+
+  // Not touched: a full reading, other intents, changes, and sentences that are not a trip.
+  const full = ride(place('Ojota Bus Stop, Lagos'), place('Admiralty Way, Lagos'));
+  assert.equal(fillFromGrammar(full, 'From Ojota bus stop to Admiralty Way'), full);
+  const edit = { intent: 'edit_pickup', pickup: place('Yaba'), destination: null };
+  assert.equal(fillFromGrammar(edit, 'from Yaba to Lekki'), edit);
+  for (const notATrip of ['change the pickup from Yaba to Lekki', 'I moved from Lagos to Abuja last year', 'group ride from Yaba to Lekki', 'how much from yaba to lekki?', 'hello']) {
+    assert.deepEqual(ends(fillFromGrammar({ intent: 'other', pickup: null, destination: null }, notATrip)), ['other', null, null], notATrip);
+  }
+
+  // Through the parser, with a model that answers "other".
+  const chatty = { configured: true, completeJson: async () => ({ intent: 'other', pickup: null, destination: null, offerNgn: null, paymentMethod: null }) };
+  assert.deepEqual(ends(await parseRideIntent(chatty, 'From National Stadium Surulere to Yaba bus stop', [])), ['ride_request', 'National Stadium Surulere', 'Yaba bus stop']);
+
+  // End to end: the model calls the trip chat, the rider still gets the trip.
+  const redis = memoryRedis();
+  const { deps } = makeDeps(redis);
+  const { sent } = installWorld(calebWorld({ intent: () => ({ intent: 'other', pickup: null, destination: null, offerNgn: null, paymentMethod: null }) }));
+  const who = rider();
+  await say(deps, who, 'hi');
+  await agree(redis, await findRider(who));
+  await say(deps, who, 'From ikorodu garage to Caleb University');
+  assert.equal(last(sent).interactive?.type, 'list');
+  assert.match(textOf(last(sent)), /Pickup: \*Ikorodu Garage/);
+  assert.match(textOf(last(sent)), /places called "Caleb University"/);
+});
+
+test('the place whose name carries the rider\'s words comes first ("1st" is "first"); ties keep Google\'s order', () => {
+  const { rankByWordsSaid } = require('../apps/api-gateway/dist/LLM/geocoding.js');
+  // What Places answered for "Festac Town 1st gate", live 6 Nov.
+  const festac = [
+    { name: '1st Avenue', formattedAddress: '1st Avenue, Amuwo Odofin, Lagos' },
+    { name: '1st Avenue, R Close', formattedAddress: '1st Avenue, R Close, Festac Town, Lagos' },
+    { name: 'Festac First Gate Bus Stop', formattedAddress: 'Festac First Gate Bus Stop, Lagos - Badagry Expressway, Festac Town, Lagos' },
+  ];
+  assert.deepEqual(rankByWordsSaid(festac, 'festac town 1st gate').map((o) => o.name), ['Festac First Gate Bus Stop', '1st Avenue', '1st Avenue, R Close']);
+  assert.deepEqual(rankByWordsSaid(CALEB.map((c) => ({ ...c, formattedAddress: c.address })), 'caleb university').map((o) => o.name), CALEB.map((c) => c.name), 'all carry both words: Google\'s order');
+  assert.equal(rankByWordsSaid(festac, 'festac'), festac, 'one word says nothing about order');
+});
+
 test('THE CHAT, part 4 — "I want to go from Caleb University" gets the picker even when the model misreads it', async () => {
   const redis = memoryRedis();
   const { deps } = makeDeps(redis);
