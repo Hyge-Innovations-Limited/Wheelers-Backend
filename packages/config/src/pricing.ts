@@ -139,25 +139,48 @@ export type HourCurve = { weekday: number[]; weekend: number[]; sunday?: number[
 /** How far over the higher of Linc and inDrive a price may go, unless an owner sets it (npm run pricing ceiling). */
 export const CEILING_ABOVE_NGN = 1_000;
 
-/** One price read off Linc: the trip, what it cost, and when (ISO). */
-export type LincSample = { km: number; minutes: number; priceNgn: number; at: string };
+/**
+ * Where a trip sits for Linc's price (6 Nov: one formula was ±20% per trip). Short trips carry
+ * Linc's high base; outer areas are cheap per km; the Island costs more; central is the rest.
+ */
+export type LincZone = 'short' | 'central' | 'island' | 'outer';
+export const LINC_ZONES: readonly LincZone[] = ['short', 'central', 'island', 'outer'];
+/** Under this many km a trip is short, wherever it is. */
+export const LINC_SHORT_KM = 8;
+const LINC_OUTER_AREAS: ReadonlySet<string> = new Set(['alimosho', 'ikorodu', 'ajah', 'epe', 'ibeju-lekki', 'badagry']);
+const LINC_ISLAND_AREAS: ReadonlySet<string> = new Set(['eti-osa', 'lekki', 'lagos-island']);
+
+/** The trip's Linc zone: short first, then an outer end, then an Island end, else central. */
+export function lincZoneOf(km: number, origin?: { lat: number; lng: number }, destination?: { lat: number; lng: number }): LincZone {
+  if (km < LINC_SHORT_KM) return 'short';
+  const keys = [origin, destination].map((point) => (point ? pricingAreaOf(point.lat, point.lng)?.key : undefined));
+  if (keys.some((key) => key !== undefined && LINC_OUTER_AREAS.has(key))) return 'outer';
+  if (keys.some((key) => key !== undefined && LINC_ISLAND_AREAS.has(key))) return 'island';
+  return 'central';
+}
+
+/** One price read off Linc: the trip, what it cost, when (ISO), and its zone (by its km alone when not said). */
+export type LincSample = { km: number; minutes: number; priceNgn: number; at: string; zone?: LincZone };
+export const lincSampleZone = (sample: LincSample): LincZone => sample.zone ?? (sample.km < LINC_SHORT_KM ? 'short' : 'central');
 
 /** The Linc prices seen while building the guide (24–26 Oct 2026, Lagos). */
 export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
-  { km: 20.2, minutes: 37, priceNgn: 9000, at: '2026-10-24T10:40:00Z' },
-  { km: 20.2, minutes: 37, priceNgn: 9200, at: '2026-10-24T11:14:00Z' },
-  { km: 20.2, minutes: 37, priceNgn: 9750, at: '2026-10-24T11:20:00Z' },
-  { km: 20.2, minutes: 37, priceNgn: 9350, at: '2026-10-24T11:23:00Z' },
-  { km: 19.2, minutes: 31, priceNgn: 8100, at: '2026-10-25T08:50:00Z' },
-  { km: 16.6, minutes: 48, priceNgn: 11450, at: '2026-10-25T17:46:00Z' },
-  { km: 16.6, minutes: 52, priceNgn: 13050, at: '2026-10-25T17:55:00Z' },
+  // Opebi to Ijeshatedo, Saturday midday.
+  { km: 20.2, minutes: 37, priceNgn: 9000, at: '2026-10-24T10:40:00Z', zone: 'central' },
+  { km: 20.2, minutes: 37, priceNgn: 9200, at: '2026-10-24T11:14:00Z', zone: 'central' },
+  { km: 20.2, minutes: 37, priceNgn: 9750, at: '2026-10-24T11:20:00Z', zone: 'central' },
+  { km: 20.2, minutes: 37, priceNgn: 9350, at: '2026-10-24T11:23:00Z', zone: 'central' },
+  { km: 19.2, minutes: 31, priceNgn: 8100, at: '2026-10-25T08:50:00Z', zone: 'central' },
+  // Into Alagbado, Sunday evening.
+  { km: 16.6, minutes: 48, priceNgn: 11450, at: '2026-10-25T17:46:00Z', zone: 'outer' },
+  { km: 16.6, minutes: 52, priceNgn: 13050, at: '2026-10-25T17:55:00Z', zone: 'outer' },
   // Ikorodu (Orupodi) to Opebi, a weekday night, before its ₦1,000 ride bonus.
-  { km: 30, minutes: 54, priceNgn: 12950, at: '2026-11-04T02:30:00Z' },
+  { km: 30, minutes: 54, priceNgn: 12950, at: '2026-11-04T02:30:00Z', zone: 'outer' },
   // Friday evening, read off Linc's WhatsApp (the price the rider pays, after Linc's bonus).
   // Our Linc copy priced these 30% over: it weighed minutes in traffic far too heavily.
-  { km: 16.9, minutes: 44, priceNgn: 8145, at: '2026-11-06T18:11:00Z' },   // Idimu → Ikeja Along
-  { km: 19.2, minutes: 63, priceNgn: 11100, at: '2026-11-06T18:14:00Z' },  // Lekki Phase 1 → Unilag
-  { km: 29.8, minutes: 64, priceNgn: 15450, at: '2026-11-06T18:15:00Z' },  // Ikeja City Mall → Eko Hotel, VI
+  { km: 16.9, minutes: 44, priceNgn: 8145, at: '2026-11-06T18:11:00Z', zone: 'outer' },    // Idimu → Ikeja Along
+  { km: 19.2, minutes: 63, priceNgn: 11100, at: '2026-11-06T18:14:00Z', zone: 'island' },  // Lekki Phase 1 → Unilag
+  { km: 29.8, minutes: 64, priceNgn: 15450, at: '2026-11-06T18:15:00Z', zone: 'island' },  // Ikeja City Mall → Eko Hotel, VI
 ];
 
 /**
@@ -167,9 +190,15 @@ export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
  * price first (÷ nightLift), so the figures are the daytime ones. Null with
  * fewer than 3 prices.
  */
-export function fitLincFigures(samples: readonly LincSample[], nightLift = 1): MarketFormula | null {
+/**
+ * opts.minutes false: base + per km only. Linc seems to price on distance and barely on time in
+ * traffic (6 Nov: Lekki to Unilag, 63 minutes in traffic, was under a per-minute copy by 11%).
+ */
+export function fitLincFigures(samples: readonly LincSample[], nightLift = 1, opts: { minutes?: boolean } = {}): MarketFormula | null {
+  // Short trips carry Linc's high base and have their own zone lift: fitted with the rest they
+  // pulled the base up for every trip (a 6.4 km price put Idimu back from ₦9,200 to ₦10,150).
   const rows = samples
-    .filter((s) => s.km > 0 && s.minutes > 0 && s.priceNgn > 0)
+    .filter((s) => s.km > 0 && s.minutes > 0 && s.priceNgn > 0 && lincSampleZone(s) !== 'short')
     .map((s) => (isNightHour(lagosHourOf(s.at)) ? { ...s, priceNgn: s.priceNgn / nightLift } : s));
   if (rows.length < 3) return null;
   const solve = (use: [boolean, boolean, boolean]): number[] | null => {
@@ -199,7 +228,7 @@ export function fitLincFigures(samples: readonly LincSample[], nightLift = 1): M
     cols.forEach((col, i) => { out[col] = a[i]![n]! / a[i]![i]!; });
     return out;
   };
-  let use: [boolean, boolean, boolean] = [true, true, true];
+  let use: [boolean, boolean, boolean] = [true, true, opts.minutes !== false];
   for (let tries = 0; tries < 3; tries++) {
     const fit = solve(use);
     if (!fit) return null;
@@ -228,6 +257,36 @@ export function lincSlotOf(at: Date): LincSlot {
 }
 
 const lincLiftCache = new WeakMap<object, { lifts: Record<LincSlot, number>; counts: Record<LincSlot, number> }>();
+const lincZoneCache = new WeakMap<object, { lifts: Record<LincZone, number>; counts: Record<LincZone, number> }>();
+/** A zone's lift is learned from this many of its prices; until then ×1. */
+export const LINC_ZONE_MIN_PRICES = 2;
+
+/**
+ * Linc's price by zone: for each zone, the middle of how far its prices sat from Linc's figures
+ * (after the time of day), from LINC_ZONE_MIN_PRICES of them; until then 1. Between ×0.7 and ×1.5.
+ */
+export function lincZoneLifts(settings: PricingSettings = pricingSettings): { lifts: Record<LincZone, number>; counts: Record<LincZone, number> } {
+  const cached = lincZoneCache.get(settings);
+  if (cached) return cached;
+  const periods = lincPeriodLifts(settings).lifts;
+  const ratios = Object.fromEntries(LINC_ZONES.map((zone) => [zone, [] as number[]])) as Record<LincZone, number[]>;
+  for (const sample of settings.lincSamples) {
+    const at = new Date(sample.at);
+    const guess = lincFareNgn(sample.km, sample.minutes, settings.linc) * (Number.isNaN(at.getTime()) ? 1 : periods[lincSlotOf(at)]);
+    if (guess > 0) ratios[lincSampleZone(sample)].push(sample.priceNgn / guess);
+  }
+  const lifts = {} as Record<LincZone, number>;
+  const counts = {} as Record<LincZone, number>;
+  for (const zone of LINC_ZONES) {
+    const list = ratios[zone].sort((a, b) => a - b);
+    counts[zone] = list.length;
+    const middle = list.length % 2 ? list[(list.length - 1) / 2]! : ((list[list.length / 2 - 1] ?? 1) + (list[list.length / 2] ?? 1)) / 2;
+    lifts[zone] = list.length >= LINC_ZONE_MIN_PRICES ? Math.round(Math.min(1.5, Math.max(0.7, middle)) * 100) / 100 : 1;
+  }
+  const out = { lifts, counts };
+  lincZoneCache.set(settings, out);
+  return out;
+}
 
 /**
  * Linc's price moves with the time of day and the day (Opebi to Ijeshatedo:
@@ -459,6 +518,11 @@ export type PricingSettings = {
   /** Where we sit against Linc's price for the trip: 0 the same, 500 ₦500 above, -300 under. */
   lincAboveNgn: number;
   /**
+   * Linc's price by zone (short, central, island, outer), each zone's lift learned from its own
+   * prices (lincZoneLifts). Off until enough prices are tagged with their zone (npm run pricing linc zones on).
+   */
+  lincZonesOn: boolean;
+  /**
    * How far above Linc's price we aim, in percent (8: Linc ×1.08), before lincAboveNgn.
    * A percentage, not a flat sum: ₦500 is 10% on a short trip and 4% on a long one.
    */
@@ -528,6 +592,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   // Fitted from LINC_SAMPLES_SEEN (npm run pricing linc fit), 6 Nov: was ₦1,150 + ₦36/km + ₦202/min,
   // nearly all minutes, which priced slow trips 30% over Linc.
   linc: { baseNgn: 2088, perKmNgn: 81, perMinuteNgn: 147 },
+  lincZonesOn: false,
   lincAboveNgn: 0,
   lincAbovePercent: 0,
   lincMaxAbovePercent: null,
@@ -745,12 +810,13 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
       ? null
       : Math.round(finite(v.lincMaxAbovePercent, d.lincMaxAbovePercent ?? 12, 0, 50) * 10) / 10,
     lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
+    lincZonesOn: typeof v.lincZonesOn === 'boolean' ? v.lincZonesOn : d.lincZonesOn,
     lincSamples: Array.isArray(v.lincSamples)
       ? (v.lincSamples as unknown[]).flatMap((x) => {
         const s = x as Partial<LincSample>;
         const km = Number(s.km); const minutes = Number(s.minutes); const priceNgn = Number(s.priceNgn);
         return km > 0 && km < 300 && minutes > 0 && minutes < 600 && priceNgn > 0 && priceNgn < 500_000 && typeof s.at === 'string'
-          ? [{ km, minutes, priceNgn: Math.round(priceNgn), at: s.at.slice(0, 40) }]
+          ? [{ km, minutes, priceNgn: Math.round(priceNgn), at: s.at.slice(0, 40), ...(LINC_ZONES.includes(s.zone as LincZone) ? { zone: s.zone } : {}) }]
           : [];
       }).slice(-300)
       : [...d.lincSamples],
@@ -1076,6 +1142,8 @@ export type SuggestedFare = {
   /** The other app's high end for this trip: never suggested under it. Null with the floor off. */
   /** What Linc would charge for the trip (with our surge and rain), when the Linc guide is on; else null. */
   lincNgn: number | null;
+  /** The trip's Linc zone (short, central, island, outer), whose lift is in lincNgn. */
+  lincZone: LincZone;
   highEndNgn: number | null;
   /** The most this trip may cost: the higher of Linc and inDrive for it, + ceilingAboveNgn. Null when off or the minutes are unknown. */
   ceilingNgn: number | null;
@@ -1246,8 +1314,9 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     ? factors.durationSeconds / 60
     : null;
   // What Linc would charge for the trip: the guide when it is on, and half of the ceiling either way.
+  const lincZone = lincZoneOf(distanceKm, factors.origin, factors.destination);
   const lincTripNgn = distanceKm > 0 && tripMinutes !== null
-    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * surgeFactor * rainFactor)
+    ? Math.round(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * (settings.lincZonesOn ? lincZoneLifts(settings).lifts[lincZone] : 1) * surgeFactor * rainFactor)
     : null;
   const lincNgn = settings.lincOn ? lincTripNgn : null;
   if (lincNgn !== null) {
@@ -1303,6 +1372,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     marginFactor: marketFare === null ? 1 : Math.round(marginFactor * 1000) / 1000,
     highEndNgn,
     lincNgn,
+    lincZone,
     ceilingNgn,
     premium: marketFare === null ? null : premium,
   };

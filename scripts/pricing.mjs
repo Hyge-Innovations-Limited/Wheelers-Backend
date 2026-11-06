@@ -62,6 +62,10 @@
 //   npm run pricing linc night 1.15          how much more Linc charges at night (22:00–05:00)
 //   npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]   a price read off Linc (km, minutes, price)
 //   npm run pricing linc percent 8 12        aim 8% over Linc's price; the ceiling never under 12% over it
+//   npm run pricing linc sample 6.4 26 7290 short [at=…]   with its zone: short, central, island or outer
+//   npm run pricing linc fit km [save]       Linc's figures from base + per km only (no minutes)
+//   npm run pricing linc samples builtin     the Linc prices in the code, with their zones, in place of the saved ones
+//   npm run pricing linc zones on|off        Linc's price by zone (off until enough prices carry their zone)
 //   npm run pricing linc fit [save]          Linc's figures from its prices (saves with "save")
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
 //   npm run pricing sample 9.5 28 5200 ikeja      ...a trip from or to an area inside Lagos (maryland, ikeja,
@@ -704,17 +708,28 @@ async function linc() {
     if (!(km > 0) || !(minutes > 0) || !(price > 0)) throw new Error('Say the trip and the price: npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]');
     const atWord = args.find((w) => w.startsWith('at='));
     const at = atWord ? seenAt(atWord.slice(3)) : new Date();
-    const row = { km, minutes, priceNgn: price, at: at.toISOString() };
-    await save((s) => ({ lincSamples: [...s.lincSamples, row] }), () => `Saved: Linc charged ${naira(price)} for ${km} km in ${minutes} minutes.`);
+    // Its zone: short, central, island or outer (by its km alone when not said: under 8 km short, else central).
+    const zone = args.slice(3).find((w) => config.LINC_ZONES.includes(w));
+    const row = { km, minutes, priceNgn: price, at: at.toISOString(), ...(zone ? { zone } : {}) };
+    await save((s) => ({ lincSamples: [...s.lincSamples, row] }), () => `Saved: Linc charged ${naira(price)} for ${km} km in ${minutes} minutes (${config.lincSampleZone(row)}).`);
     console.log(`Its figures would have said ${naira(guess(row))}. "npm run pricing linc fit" shows what all ${settings.lincSamples.length + 1} prices give.`);
     return;
   }
+  if (word === 'zones' && (args[0] === 'on' || args[0] === 'off')) {
+    return save(() => ({ lincZonesOn: args[0] === 'on' }), (s) => (s.lincZonesOn ? 'Linc\'s price now follows its zone lifts (short, central, island, outer).' : 'Linc\'s price no longer looks at the zone.'));
+  }
+  if (word === 'samples' && args[0] === 'builtin') {
+    // The prices in the code, each with its zone, in place of the saved ones (saved before zones existed).
+    return save(() => ({ lincSamples: [...config.LINC_SAMPLES_SEEN] }), (s) => `Linc's prices are now the ${s.lincSamples.length} built in, each with its zone. "npm run pricing linc fit km" next.`);
+  }
   if (word === 'fit') {
-    const fitted = config.fitLincFigures(settings.lincSamples, settings.lincNightLift);
+    // "linc fit km": base + per km only (Linc barely charges for time in traffic).
+    const byKm = args.includes('km');
+    const fitted = config.fitLincFigures(settings.lincSamples, settings.lincNightLift, { minutes: !byKm });
     if (!fitted) { console.log(`Not enough to fit from: ${settings.lincSamples.length} Linc prices (3 at least, of different trips).`); return; }
     console.log(`From ${settings.lincSamples.length} Linc prices: ${naira(fitted.baseNgn)} + ${naira(fitted.perKmNgn)} a km + ${naira(fitted.perMinuteNgn)} a minute (now ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} + ${naira(f.perMinuteNgn)}).`);
     console.table(settings.lincSamples.slice(-15).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'figures now': naira(guess(s)), 'these figures': naira(guess(s, fitted)) })));
-    if (args[0] !== 'save') { console.log('Nothing saved. "npm run pricing linc fit save" to use them.'); return; }
+    if (!args.includes('save')) { console.log(`Nothing saved. "npm run pricing linc fit${byKm ? ' km' : ''} save" to use them.`); return; }
     return save(() => ({ linc: fitted }), () => 'Saved Linc\'s figures.');
   }
   console.log(`Linc as the guide: ${settings.lincOn ? 'ON' : 'off'}  (npm run pricing linc on|off)`);
@@ -723,6 +738,10 @@ async function linc() {
   const { lifts, counts } = config.lincPeriodLifts(settings);
   console.log(`By the time of day, learned from its prices (${config.LINC_PERIOD_MIN_PRICES} needed in a part of the day; until then ×1, ×${settings.lincNightLift} at night):`);
   console.table(['weekday', 'weekend'].map((day) => Object.fromEntries([['day', day], ...config.DAY_PERIODS.map((p) => [p, `×${lifts[`${day}-${p}`]} (${counts[`${day}-${p}`]})`])])));
+  const zones = config.lincZoneLifts(settings);
+  console.log(`Zones: ${settings.lincZonesOn ? 'ON' : 'off'}  (npm run pricing linc zones on|off)`);
+  console.log(`By zone, learned from its prices (${config.LINC_ZONE_MIN_PRICES} needed in a zone; until then ×1; short = under ${config.LINC_SHORT_KM} km):`);
+  console.table([Object.fromEntries(config.LINC_ZONES.map((z) => [z, `×${zones.lifts[z]} (${zones.counts[z]})`]))]);
   console.log(`Never under inDrive's high end (×${settings.marketHigh} our inDrive guess); our own live surge and rain move it too.`);
   console.table(settings.lincSamples.slice(-10).map((s) => ({ seen: lagosTime(new Date(s.at)), km: s.km, min: s.minutes, linc: naira(s.priceNgn), 'its figures say': naira(guess(s)) })));
 }

@@ -119,3 +119,44 @@ test('a percentage over Linc: off unless set; on, Linc ×(1 + %); the band keeps
   const kept = price({ ...long, lincMaxAbovePercent: 12 }, 45, 90);
   assert.ok(kept.suggestedFareNgn > cut.suggestedFareNgn && kept.suggestedFareNgn <= Math.ceil(kept.lincNgn * 1.12 / 50) * 50 + 50, `${kept.suggestedFareNgn} for Linc ₦${kept.lincNgn}`);
 });
+
+test('Linc by zone: short under 8 km, then an outer end, then an Island end, else central; each zone learns its own lift; off by default', () => {
+  const YABA = { lat: 6.5095, lng: 3.3711 }, VI = { lat: 6.4264, lng: 3.4296 }, IDIMU = { lat: 6.5887, lng: 3.2430 }, IKEJA = { lat: 6.5940, lng: 3.3364 };
+  assert.equal(config.lincZoneOf(6.4, YABA, VI), 'short');
+  assert.equal(config.lincZoneOf(16.9, IDIMU, IKEJA), 'outer');
+  assert.equal(config.lincZoneOf(22.1, YABA, VI), 'island');
+  assert.equal(config.lincZoneOf(15, YABA, IKEJA), 'central');
+  assert.equal(config.lincSampleZone({ km: 5, minutes: 20, priceNgn: 6000, at: 'x' }), 'short', 'untagged: by its km');
+  assert.equal(config.lincSampleZone({ km: 15, minutes: 30, priceNgn: 9000, at: 'x' }), 'central');
+  assert.equal(config.normalizePricingSettings({}).lincZonesOn, false);
+  // Linc charges the Island 20% over its figures and central at them (two prices each, the same
+  // hour). The hour's lift takes the middle of all four; each zone's lift is learned against it,
+  // so together an Island trip comes out ×1.2 and a central one ×1.0 of the figures.
+  const figures = { baseNgn: 2000, perKmNgn: 300, perMinuteNgn: 0 };
+  const at = '2026-11-05T13:00:00Z';
+  const price = (km, lift) => Math.round(config.lincFareNgn(km, 40, figures) * lift);
+  const settings = config.normalizePricingSettings({ linc: figures, lincSamples: [
+    { km: 20, minutes: 40, priceNgn: price(20, 1.2), at, zone: 'island' },
+    { km: 25, minutes: 40, priceNgn: price(25, 1.2), at, zone: 'island' },
+    { km: 18, minutes: 40, priceNgn: price(18, 1), at, zone: 'central' },
+    { km: 22, minutes: 40, priceNgn: price(22, 1), at, zone: 'central' },
+  ] });
+  assert.equal(config.lincZoneLifts(settings).lifts.outer, 1, 'no prices: ×1');
+  const trip = (origin, destination) => ({ durationSeconds: 40 * 60, trafficRatio: 1, at: new Date(at), origin, destination });
+  config.setPricingSettings({ ...settings, lincOn: true, lincZonesOn: true });
+  const island = config.calculateSuggestedFare(22, trip(YABA, VI));
+  const central = config.calculateSuggestedFare(22, trip(YABA, IKEJA));
+  assert.equal(island.lincZone, 'island');
+  assert.ok(Math.abs(island.lincNgn / config.lincFareNgn(22, 40, figures) - 1.2) < 0.03, `island ${island.lincNgn}`);
+  assert.ok(Math.abs(central.lincNgn / config.lincFareNgn(22, 40, figures) - 1) < 0.03, `central ${central.lincNgn}`);
+  // Off: the zone is not looked at.
+  config.setPricingSettings({ ...settings, lincOn: true, lincZonesOn: false });
+  assert.equal(config.calculateSuggestedFare(22, trip(YABA, VI)).lincNgn, config.calculateSuggestedFare(22, trip(YABA, IKEJA)).lincNgn);
+});
+
+test('a short trip does not move the figures for the rest (its base is its own zone); by km only, no minutes', () => {
+  const rest = config.LINC_SAMPLES_SEEN.filter((s) => config.lincSampleZone(s) !== 'short');
+  const withShort = [...rest, { km: 6.4, minutes: 26, priceNgn: 7290, at: '2026-11-06T18:50:00Z', zone: 'short' }];
+  assert.deepEqual(config.fitLincFigures(withShort), config.fitLincFigures(rest));
+  assert.equal(config.fitLincFigures(rest, 1, { minutes: false }).perMinuteNgn, 0);
+});
