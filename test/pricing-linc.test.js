@@ -33,19 +33,20 @@ test('off by default: nothing changes', () => {
 
 test('on: the trip is priced at Linc\'s price, fast and slow trips alike, never under inDrive\'s high end', () => {
   const on = { ...live, lincOn: true };
-  // Saturday's Opebi to Ijeshatedo: Linc ₦9,350.
+  // Saturday's Opebi to Ijeshatedo: Linc ₦9,350. (Figures refitted 6 Nov with Friday evening's
+  // prices: ₦2,088 + ₦81/km + ₦147/min, was ₦1,150 + ₦36/km + ₦202/min.)
   const sat = price(on, 20.2, 37);
   assert.equal(sat.setBy, 'linc');
-  assert.equal(sat.suggestedFareNgn, 9400);
-  assert.equal(sat.minOfferNgn, 8500);
-  // Sunday evening into Alagbado, slow: Linc ₦11,450, where inDrive + our extras said ₦8,550.
-  assert.equal(price(on, 16.6, 48).suggestedFareNgn, 11450);
+  assert.equal(sat.suggestedFareNgn, 9200);
+  assert.equal(sat.minOfferNgn, 8300);
+  // Sunday evening into Alagbado, slow: Linc ₦11,450 then; a like trip (16.9 km, 44 min) was ₦8,145 on a Friday evening.
+  assert.equal(price(on, 16.6, 48).suggestedFareNgn, 10500);
   // Monday's Allen Avenue to Ijeshatedo, fast: Linc ₦7,400.
   const fast = price(on, 14, 27);
   assert.ok(fast.suggestedFareNgn >= 7000 && fast.suggestedFareNgn <= 7400, String(fast.suggestedFareNgn));
   // Sitting above or under Linc.
-  assert.equal(price({ ...on, lincAboveNgn: 300 }, 20.2, 37).suggestedFareNgn, 9700);
-  assert.equal(price({ ...on, lincAboveNgn: -300 }, 20.2, 37).suggestedFareNgn, 9100);
+  assert.equal(price({ ...on, lincAboveNgn: 300 }, 20.2, 37).suggestedFareNgn, 9500);
+  assert.equal(price({ ...on, lincAboveNgn: -300 }, 20.2, 37).suggestedFareNgn, 8950);
   // A short, quick trip where Linc's figures fall under inDrive's high end: the floor holds.
   const quick = price({ ...on, lincAboveNgn: -3000 }, 20.2, 37);
   assert.equal(quick.setBy, 'floor');

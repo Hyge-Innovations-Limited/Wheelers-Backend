@@ -515,7 +515,9 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   marketHigh: 1,
   marketHighFittedAt: null,
   lincOn: false,
-  linc: { baseNgn: 1150, perKmNgn: 36, perMinuteNgn: 202 },
+  // Fitted from LINC_SAMPLES_SEEN (npm run pricing linc fit), 6 Nov: was ₦1,150 + ₦36/km + ₦202/min,
+  // nearly all minutes, which priced slow trips 30% over Linc.
+  linc: { baseNgn: 2088, perKmNgn: 81, perMinuteNgn: 147 },
   lincAboveNgn: 0,
   lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],

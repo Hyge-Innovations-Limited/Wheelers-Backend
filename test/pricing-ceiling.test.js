@@ -31,7 +31,7 @@ test('30 km from Ikorodu at night: ₦15,250, not ₦17,850; once Linc\'s night 
   assert.equal(Math.round(now.marketFareNgn), 15238, 'the other app, as the server showed it');
   assert.equal(now.highEndNgn, 15250, 'the area lift and the high end: the larger, not both (×1.2, not ×1.2×1.17)');
   assert.equal(now.suggestedFareNgn, 15250);
-  assert.equal(now.ceilingNgn, 16150);
+  assert.equal(now.ceilingNgn, 15350, 'Linc\'s figures refitted 6 Nov: the ceiling over them is lower');
 
   // Two night prices read off Linc (₦12,950 for this very trip): its night lift is learned, under 1.15.
   const lincSamples = [...config.LINC_SAMPLES_SEEN, { km: 20, minutes: 35, priceNgn: 8200, at: '2026-11-03T22:30:00Z' }];
@@ -40,11 +40,11 @@ test('30 km from Ikorodu at night: ₦15,250, not ₦17,850; once Linc\'s night 
   assert.equal(learned.suggestedFareNgn, 13700);
 });
 
-test('33.1 km from Ikorodu in the evening (1 Nov): ₦16,150, not ₦20,800', () => {
+test('33.1 km from Ikorodu in the evening (1 Nov): ₦16,550, not ₦20,800 (₦16,150 before Linc\'s figures were refitted on 6 Nov)', () => {
   const sunday = new Date('2026-11-01T19:11:00Z');
   const fare = price({ ...live, hourCurve: flat(1.2161) }, 33.1, 61, { origin: IKORODU, destination: OPEBI }, sunday);
   assert.equal(fare.setBy, 'ceiling');
-  assert.equal(fare.suggestedFareNgn, 16150);
+  assert.equal(fare.suggestedFareNgn, 16550);
 });
 
 test('a slow city trip Linc prices is left alone: the ceiling sits above it', () => {
