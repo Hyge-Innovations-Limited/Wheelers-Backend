@@ -58,18 +58,24 @@ test('at night Linc charges more: ×1.15 by default (Opebi to Ijeshatedo at 23:0
   assert.equal(night.setBy, 'linc');
   assert.ok(Math.abs(night.suggestedFareNgn - 7950) <= 250, String(night.suggestedFareNgn));
   // A night price is taken back to daytime before fitting: it does not bend the daytime figures.
+  // (Linc's own prices are not one formula: the same trip was ₦8,145 on a Friday evening and
+  // ₦11,450 on a Saturday evening. So the fit is compared with itself, not with each price.)
   const samples = [...config.LINC_SAMPLES_SEEN, { km: 15.5, minutes: 25, priceNgn: 7950, at: '2026-10-26T22:03:00Z' }];
   const withNight = config.fitLincFigures(samples, 1.15);
-  for (const s of samples) {
-    const night = new Date(Date.parse(s.at) + 3_600_000).getUTCHours() >= 22;
-    const said = config.lincFareNgn(s.km, s.minutes, withNight) * (night ? 1.15 : 1);
-    assert.ok(Math.abs(said / s.priceNgn - 1) < 0.1, `${s.km} km ${s.minutes} min: ${Math.round(said)} for ${s.priceNgn}`);
+  const without = config.fitLincFigures(config.LINC_SAMPLES_SEEN, 1.15);
+  for (const [km, minutes] of [[5, 15], [16.9, 44], [20.2, 37], [29.8, 64]]) {
+    const a = config.lincFareNgn(km, minutes, withNight);
+    const b = config.lincFareNgn(km, minutes, without);
+    assert.ok(Math.abs(a / b - 1) < 0.05, `${km} km ${minutes} min: ${Math.round(a)} with the night price, ${Math.round(b)} without`);
   }
 });
 
-test('Linc\'s figures are fitted from its prices, none below zero; it is a price by the minute', () => {
+test('Linc\'s figures are fitted from its prices, none below zero; distance counts, not only the minutes', () => {
   const fitted = config.fitLincFigures(config.LINC_SAMPLES_SEEN);
-  assert.ok(fitted.perMinuteNgn > 150, JSON.stringify(fitted));
+  // Until 6 Nov the fit was nearly all minutes (₦0/km, ₦220/min) and priced a slow 17 km trip 30%
+  // over Linc; Linc's own prices that evening showed distance matters.
+  assert.ok(fitted.perKmNgn > 50, JSON.stringify(fitted));
+  assert.ok(fitted.perMinuteNgn < 200, JSON.stringify(fitted));
   assert.ok(fitted.perKmNgn >= 0 && fitted.baseNgn >= 0);
   assert.equal(config.fitLincFigures(config.LINC_SAMPLES_SEEN.slice(0, 2)), null, 'two are not enough');
   // Saved settings keep their shape; bad samples are dropped.

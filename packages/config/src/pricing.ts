@@ -153,6 +153,11 @@ export const LINC_SAMPLES_SEEN: readonly LincSample[] = [
   { km: 16.6, minutes: 52, priceNgn: 13050, at: '2026-10-25T17:55:00Z' },
   // Ikorodu (Orupodi) to Opebi, a weekday night, before its ₦1,000 ride bonus.
   { km: 30, minutes: 54, priceNgn: 12950, at: '2026-11-04T02:30:00Z' },
+  // Friday evening, read off Linc's WhatsApp (the price the rider pays, after Linc's bonus).
+  // Our Linc copy priced these 30% over: it weighed minutes in traffic far too heavily.
+  { km: 16.9, minutes: 44, priceNgn: 8145, at: '2026-11-06T18:11:00Z' },   // Idimu → Ikeja Along
+  { km: 19.2, minutes: 63, priceNgn: 11100, at: '2026-11-06T18:14:00Z' },  // Lekki Phase 1 → Unilag
+  { km: 29.8, minutes: 64, priceNgn: 15450, at: '2026-11-06T18:15:00Z' },  // Ikeja City Mall → Eko Hotel, VI
 ];
 
 /**

@@ -113,7 +113,8 @@ test('lift 1: traffic, a busy area and our own rate never take a price past the 
 
 test('extra: a flat amount on top of the final price, after everything else; the rest is untouched', () => {
   const range = { minNgn: 800, maxNgn: 1500 };
-  const settings = { marketFloorOn: true, trafficOn: true, demandOn: true, liftCap: 1, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
+  // No ceiling here: this is about the extra alone (the ceiling has its own tests).
+  const settings = { marketFloorOn: true, trafficOn: true, demandOn: true, liftCap: 1, ceilingAboveNgn: null, periodPremiums: { morning: range, afternoon: range, evening: range, night: range } };
   for (const [km, minutes, hour] of [[3.2, 12, 19], [15.5, 47, 18], [15.5, 47, 14], [28, 60, 8]]) {
     const trip = { durationSeconds: minutes * 60, trafficRatio: 1.4, at: lagos(hour), trialKey: `x${km}` };
     config.setPricingSettings({ ...settings, extraNgn: 0 });
