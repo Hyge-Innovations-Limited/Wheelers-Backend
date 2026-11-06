@@ -230,8 +230,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
  */
 const pendingBidFlushTimers = new Map<string, NodeJS.Timeout>();
 
-/** Just past the 15s notification debounce, so shouldNotify passes at fire time. */
-const BID_FLUSH_DELAY_MS = 16_000;
+/** Just past the 3 s notification debounce (DEBOUNCE_TTL), so shouldNotify passes at fire time. */
+const BID_FLUSH_DELAY_MS = 4_000;
 
 /** "Timilehin now ₦4,300 (was ₦5,000)" — the delta, not a re-announcement. */
 function describeBidChanges(previous: WhatsappBid[], current: WhatsappBid[]): string[] {

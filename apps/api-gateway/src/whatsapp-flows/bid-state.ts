@@ -92,7 +92,7 @@ function touch(redis: RedisClient, key: string, ttlSeconds: number): void {
     .catch(() => undefined);
 }
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
-const DEBOUNCE_TTL = 15;             // offers that are not urgent are bundled this long
+const DEBOUNCE_TTL = 3;              // offers that are not urgent are bundled this long (was 15: riders waited too long)
 const BID_BATCH_TTL = 7200;          // 2 hours — stores last batch sent to rider
 
 function rideMetaKey(rideId: string): string {
