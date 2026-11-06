@@ -103,3 +103,19 @@ test('Linc by the time of day, weekdays apart from weekends: two Tuesday-morning
   assert.ok(Math.abs(p.suggestedFareNgn - 11100) <= 300, `a weekday morning: about Linc's ₦11,100 (${p.suggestedFareNgn})`);
 });
 
+
+test('a percentage over Linc: off unless set; on, Linc ×(1 + %); the band keeps the ceiling from cutting it on a long trip', () => {
+  assert.equal(config.normalizePricingSettings({}).lincAbovePercent, 0);
+  assert.equal(config.normalizePricingSettings({}).lincMaxAbovePercent, null, 'settings saved before it keep the ₦ ceiling alone');
+  const on = { ...live, lincOn: true };
+  const plain = price(on, 20.2, 37);
+  const five = price({ ...on, lincAbovePercent: 5 }, 20.2, 37);
+  assert.equal(five.lincNgn, plain.lincNgn, 'Linc\'s own price is the same');
+  assert.ok(Math.abs(five.suggestedFareNgn - plain.lincNgn * 1.05) <= 50, `${five.suggestedFareNgn} for ${plain.lincNgn} ×1.05`);
+  // A long trip: +12% over Linc is more than the ₦1,000 ceiling; with the band at 12% it stands.
+  const long = { ...on, lincAbovePercent: 12, ceilingAboveNgn: 1000 };
+  const cut = price(long, 45, 90);
+  assert.equal(cut.setBy, 'ceiling', 'without the band, the ₦1,000 ceiling cuts +12%');
+  const kept = price({ ...long, lincMaxAbovePercent: 12 }, 45, 90);
+  assert.ok(kept.suggestedFareNgn > cut.suggestedFareNgn && kept.suggestedFareNgn <= Math.ceil(kept.lincNgn * 1.12 / 50) * 50 + 50, `${kept.suggestedFareNgn} for Linc ₦${kept.lincNgn}`);
+});

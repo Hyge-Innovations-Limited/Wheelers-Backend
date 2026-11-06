@@ -61,6 +61,7 @@
 //   npm run pricing linc above 300           sit ₦300 above Linc (0 the same; -200 under)
 //   npm run pricing linc night 1.15          how much more Linc charges at night (22:00–05:00)
 //   npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]   a price read off Linc (km, minutes, price)
+//   npm run pricing linc percent 8 12        aim 8% over Linc's price; the ceiling never under 12% over it
 //   npm run pricing linc fit [save]          Linc's figures from its prices (saves with "save")
 //   npm run pricing sample 25 55 16000 ikorodu   ...a trip picked up in an outer area (any order after the price)
 //   npm run pricing sample 9.5 28 5200 ikeja      ...a trip from or to an area inside Lagos (maryland, ikeja,
@@ -692,6 +693,12 @@ async function linc() {
       ? 'We now sit at Linc\'s price.'
       : `We now sit ${naira(Math.abs(s.lincAboveNgn))} ${s.lincAboveNgn > 0 ? 'above' : 'under'} Linc's price.`));
   }
+  if (word === 'percent') {
+    // npm run pricing linc percent 8 12   aim 8% over Linc, the ceiling never under 12% over it
+    const [aim, most] = args.map(Number);
+    if (!Number.isFinite(aim)) throw new Error('Say how far over Linc to aim, and the most: npm run pricing linc percent 8 12');
+    return save(() => ({ lincAbovePercent: aim, ...(Number.isFinite(most) ? { lincMaxAbovePercent: most } : {}) }), (s) => `We now aim ${s.lincAbovePercent}% over Linc's price${s.lincMaxAbovePercent !== null ? `, and the ceiling is never under ${s.lincMaxAbovePercent}% over it` : ''}. Never under inDrive's high end.`);
+  }
   if (word === 'sample') {
     const [km, minutes, price] = args.slice(0, 3).map(Number);
     if (!(km > 0) || !(minutes > 0) || !(price > 0)) throw new Error('Say the trip and the price: npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]');
@@ -712,6 +719,7 @@ async function linc() {
   }
   console.log(`Linc as the guide: ${settings.lincOn ? 'ON' : 'off'}  (npm run pricing linc on|off)`);
   console.log(`Linc's figures: ${naira(f.baseNgn)} + ${naira(f.perKmNgn)} a km + ${naira(f.perMinuteNgn)} a minute; we sit ${settings.lincAboveNgn === 0 ? 'at its price' : `${naira(Math.abs(settings.lincAboveNgn))} ${settings.lincAboveNgn > 0 ? 'above' : 'under'} it`} (linc above N).`);
+  console.log(`Aim over Linc: ${settings.lincAbovePercent}%${settings.lincMaxAbovePercent !== null ? `, at most ${settings.lincMaxAbovePercent}% (the ceiling is never under it)` : ''}  (npm run pricing linc percent 8 12)`);
   const { lifts, counts } = config.lincPeriodLifts(settings);
   console.log(`By the time of day, learned from its prices (${config.LINC_PERIOD_MIN_PRICES} needed in a part of the day; until then ×1, ×${settings.lincNightLift} at night):`);
   console.table(['weekday', 'weekend'].map((day) => Object.fromEntries([['day', day], ...config.DAY_PERIODS.map((p) => [p, `×${lifts[`${day}-${p}`]} (${counts[`${day}-${p}`]})`])])));

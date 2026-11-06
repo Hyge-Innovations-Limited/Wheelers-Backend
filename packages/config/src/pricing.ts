@@ -458,6 +458,16 @@ export type PricingSettings = {
   linc: MarketFormula;
   /** Where we sit against Linc's price for the trip: 0 the same, 500 ₦500 above, -300 under. */
   lincAboveNgn: number;
+  /**
+   * How far above Linc's price we aim, in percent (8: Linc ×1.08), before lincAboveNgn.
+   * A percentage, not a flat sum: ₦500 is 10% on a short trip and 4% on a long one.
+   */
+  lincAbovePercent: number;
+  /**
+   * The most over Linc's price a fare may be, in percent (12): the ceiling is never under
+   * Linc ×(1 + this), so the aim above stands on long trips. Null: the ₦ ceiling alone.
+   */
+  lincMaxAbovePercent: number | null;
   /** How much more Linc charges at night (22:00–05:00): ₦7,950 at 23:03 where its daytime figures said ₦6,758. */
   lincNightLift: number;
   /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
@@ -519,6 +529,8 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   // nearly all minutes, which priced slow trips 30% over Linc.
   linc: { baseNgn: 2088, perKmNgn: 81, perMinuteNgn: 147 },
   lincAboveNgn: 0,
+  lincAbovePercent: 0,
+  lincMaxAbovePercent: null,
   lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],
   ceilingAboveNgn: CEILING_ABOVE_NGN,
@@ -728,6 +740,10 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
       perMinuteNgn: finite((v.linc as Partial<MarketFormula> | undefined)?.perMinuteNgn, d.linc.perMinuteNgn, 0, 2_000),
     },
     lincAboveNgn: Math.round(finite(v.lincAboveNgn, d.lincAboveNgn, -3_000, 5_000) / 50) * 50,
+    lincAbovePercent: Math.round(finite(v.lincAbovePercent, d.lincAbovePercent, -20, 30) * 10) / 10,
+    lincMaxAbovePercent: v.lincMaxAbovePercent === null || (v.lincMaxAbovePercent === undefined && d.lincMaxAbovePercent === null)
+      ? null
+      : Math.round(finite(v.lincMaxAbovePercent, d.lincMaxAbovePercent ?? 12, 0, 50) * 10) / 10,
     lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
     lincSamples: Array.isArray(v.lincSamples)
       ? (v.lincSamples as unknown[]).flatMap((x) => {
@@ -1235,7 +1251,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     : null;
   const lincNgn = settings.lincOn ? lincTripNgn : null;
   if (lincNgn !== null) {
-    suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
+    suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn * (1 + settings.lincAbovePercent / 100) + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
     setBy = 'linc';
   } else {
     // Last of all: the flat extra, on top of whatever the above came to.
@@ -1254,8 +1270,13 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   }
   // Last of all, the ceiling: never more than ceilingAboveNgn over the higher of Linc and inDrive for this trip.
   const marketTop = Math.max(lincTripNgn ?? 0, tripMinutes !== null ? marketPlainNgn ?? 0 : 0);
+  // With Linc's band on (lincMaxAbovePercent), the ceiling is never under Linc ×(1 + that): the aim
+  // over Linc (lincAbovePercent) stands on long trips, where ₦1,000 is a small share.
+  const lincBandTopNgn = settings.lincMaxAbovePercent !== null && lincTripNgn !== null && lincTripNgn > 0
+    ? roundUpToIncrement(lincTripNgn * (1 + settings.lincMaxAbovePercent / 100), FARE_ROUNDING_INCREMENT)
+    : 0;
   const ceilingNgn = settings.ceilingAboveNgn !== null && marketTop > 0
-    ? Math.max(MIN_FARE_NGN, roundUpToIncrement(marketTop + settings.ceilingAboveNgn, FARE_ROUNDING_INCREMENT))
+    ? Math.max(MIN_FARE_NGN, roundUpToIncrement(marketTop + settings.ceilingAboveNgn, FARE_ROUNDING_INCREMENT), lincBandTopNgn)
     : null;
   if (ceilingNgn !== null && suggestedFareNgn > ceilingNgn) {
     suggestedFareNgn = ceilingNgn;
