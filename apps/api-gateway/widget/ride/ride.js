@@ -1482,6 +1482,8 @@
       keepTripThroughChange = plan.over === 'price';
       navHome();
       apply(next);
+      // Used by that one draw (or not needed): never carried on to a later trip.
+      keepTripThroughChange = false;
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       track('trip_save_failed', { code: error.code || String(error.status) });

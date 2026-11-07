@@ -36,7 +36,8 @@ function makeElement(id) {
     removeChild() {}, insertBefore(child) { node.children.push(child); return child; },
     setAttribute(k, v) { node.attrs[k] = v; }, getAttribute(k) { return node.attrs[k] === undefined ? null : node.attrs[k]; },
     removeAttribute() {}, focus() {}, blur() {}, select() {}, scrollIntoView() {}, remove() {},
-    querySelector() { return null; }, querySelectorAll() { return []; },
+    get lastChild() { return node.children[node.children.length - 1] || (node._last = node._last || makeElement('last')); }, get firstChild() { return node.children[0] || null; },
+    querySelector() { return makeElement('q'); }, querySelectorAll() { return []; }, closest() { return null; }, contains() { return false; },
     getBoundingClientRect() { return { top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }; },
     click() { (listeners.click || []).forEach((fn) => fn.call(node, { preventDefault() {}, stopPropagation() {}, target: node })); if (node.onclick) node.onclick(); },
     fire(type, event) { (listeners[type] || []).forEach((fn) => fn.call(node, event || {})); },
@@ -307,4 +308,55 @@ test('a different trip to price, with nothing said for it, starts at 1 person, n
   await page.poll();
   assert.equal(a.parts.count.textContent, '1');
   assert.deepEqual(a.pressed('pet'), ['no']);
+});
+
+/** Set your price for a trip the page can change (Plan your trip over it), and the page's answers. */
+function editableServer(boxes) {
+  const s = priceServer(boxes);
+  const YABA = { lat: 6.5095, lng: 3.3711, address: 'Yaba' };
+  const MALL = { lat: 6.6018, lng: 3.3515, address: 'Ikeja City Mall' };
+  s.state.canEditTrip = true;
+  s.state.places = { pickup: YABA, destination: MALL, stops: [] };
+  s.routeAnswer = null;
+  const base = s.answer;
+  s.answer = async (method, url, body) => {
+    if (url === '/ride-page/route') return { status: 200, json: s.routeAnswer(body) };
+    return base(method, url, body);
+  };
+  return s;
+}
+
+test('changing this trip from Set your price keeps what the rider set; re-saving it unchanged never carries it to another trip', async () => {
+  const a = tripBox();
+  const server = editableServer([a.box]);
+  const page = await loadPage(server);
+  a.plus();
+  a.yes('pet');
+  // Edit (the destination), then Go: the server answers the changed trip.
+  server.routeAnswer = () => (server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Ikeja City Mall, Gate 2', suggestedFareNgn: 5400 } });
+  await page.tap(page.el('route-edit'));
+  await page.tap(page.el('plan-go'));
+  assert.ok(page.calls.some((c) => c.url === '/ride-page/route'), 'the trip was changed through the page');
+  assert.equal(a.parts.count.textContent, '2', 'the same booking: kept');
+  assert.deepEqual(a.pressed('pet'), ['yes']);
+
+  // Saved again unchanged, then another trip arrives from the chat: it starts fresh.
+  server.routeAnswer = () => server.state;
+  await page.tap(page.el('route-edit'));
+  await page.tap(page.el('plan-go'));
+  server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki Phase 1' } };
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '1');
+  assert.deepEqual(a.pressed('pet'), ['no']);
+});
+
+test('search again sends no trip details: the server sends the last search\'s', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  server.state = { phase: 'idle', balanceNgn: 0, tripDetailsBox: true, lastSearch: { offerNgn: 5000, route: { pickupAddress: 'Yaba', destAddress: 'Ikeja City Mall' }, tripDetails: { passengers: 2, luggage: false, pet: true } } };
+  const page = await loadPage(server);
+  await page.tap(page.el('nd-again'));
+  const again = page.calls.find((c) => c.url === '/ride-page/search-again');
+  assert.ok(again, 'searched again');
+  assert.equal('tripDetails' in again.body, false);
 });
