@@ -38,3 +38,8 @@ test('"and loads/cat" inside an address is not luggage or a pet', () => {
     assert.ok(untouched(m), `"${m}" was read as ${JSON.stringify(readSaidTripDetails(m))}`);
   }
 });
+
+test('"with my dog close to the gate" is a pet; a place word after the noun is not', () => {
+  assert.deepEqual(readSaidTripDetails('with my dog close to the gate').said, { pet: true });
+  for (const m of ['I have a pet shop in Lekki', 'with the cat food', 'Pick me at With Bags Plaza', 'we are 2.5km away']) assert.ok(untouched(m), m);
+});

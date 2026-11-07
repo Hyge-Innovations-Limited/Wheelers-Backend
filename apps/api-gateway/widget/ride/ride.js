@@ -1478,6 +1478,8 @@
       if (next.route) rememberPlaces(next.route, { pickup: pickup, destination: destination, stops: stops });
       // Set your price's Back now comes back here (the trip was planned on this page).
       setPlanned(true);
+      // Changed from Set your price: the same booking, so the trip details box keeps what was set.
+      keepTripThroughChange = plan.over === 'price';
       navHome();
       apply(next);
     }).catch(function (error) {
@@ -2459,7 +2461,8 @@
     if (busy) return;
     busy = true;
     track('find_tapped', { amountNgn: amount, again: true, autoAccept: autoAccept });
-    api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept, tripDetails: tripDetailsOut() }).then(function (next) {
+    // No box here: the server sends the last search's details, with what was said in the chat since.
+    api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept }).then(function (next) {
       if (fromSheet) closeSheets();
       resetTripBox();
       seenOffers = null;
@@ -2490,26 +2493,13 @@
   var tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
   var TRIP_PEOPLE_MAX = 4;
   var tripTouched = false;   // the rider changed the box here: the server's details no longer replace it
+  var keepTripThroughChange = false;   // the rider changed this trip from Set your price: the box stays
   /**
-   * The details the server has for this trip: what the rider said in the chat ("3 of us, with my dog"),
-   * or what the last search went out with (search again). Taken until the rider changes the box.
+   * On Set your price, an untouched box takes what the server has for the trip being priced: what the
+   * rider said in the chat ("3 of us, with my dog"), or the trip's own (a trip searched before).
    */
-  var tripKey = null;        // the trip the box is for: another trip starts it at 1 person, no, no
-  function tripKeyOf(s) {
-    if (!s) return null;
-    var r = s.phase === 'price' || s.phase === 'offers' ? s.route : s.lastSearch && s.lastSearch.route;
-    if (!r) return s.phase;
-    return [r.pickupAddress, r.destAddress, (r.stopAddresses || []).join('|')].join('>');
-  }
   function adoptServerTrip(s) {
-    var key = tripKeyOf(s);
-    if (key !== tripKey) {
-      // Another trip (or none): never the last trip's people, pet or note, touched or not.
-      tripKey = key;
-      tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
-      tripTouched = false;
-    }
-    var said = s && (s.tripDetails || (s.lastSearch && s.lastSearch.tripDetails));
+    var said = s && s.phase === 'price' ? s.tripDetails : null;
     if (tripTouched || !said || typeof said.passengers !== 'number') return drawTripBoxes();
     tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, Math.round(said.passengers)));
     tripInfo.luggage = said.luggage === true;
@@ -2609,6 +2599,10 @@
     W.show(W.$('price-reason'), Boolean(reason));
     var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + (s.route.stopAddresses || []).join('|') + '|' + s.route.suggestedFareNgn;
     if (priceDrawnFor !== signature) {           // a fresh quote — not every poll, or typing would be wiped
+      // Another trip to price (from the chat, or planned again from Home): the trip details box starts
+      // again; the same trip changed here (a stop, the pickup) keeps what the rider set.
+      if (!keepTripThroughChange) resetTripBox();
+      keepTripThroughChange = false;
       // The trip changed while they were here: the box starts again from the new suggested price.
       var changed = priceDrawnFor !== null;
       priceDrawnFor = signature;
@@ -2619,6 +2613,8 @@
         W.$('price-input').value = Number(start).toLocaleString('en-NG');
       }
     }
+    // After any fresh start above: an untouched box shows what the server has for this trip.
+    adoptServerTrip(s);
     syncPrice();
   }
 
@@ -3906,7 +3902,7 @@
     if (shownView === 'expired' || shownView === 'fatal') return;
     var before = state && state.phase;
     state = next;
-    adoptServerTrip(next);
+    drawTripBoxes();
     if (routeAdd) watchRouteAdd(next);
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;

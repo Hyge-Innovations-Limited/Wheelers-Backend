@@ -459,5 +459,9 @@ test('a ride for later keeps its trip details (box switched on) and its search g
     assert.equal((await prisma.scheduledRide.findUnique({ where: { id: off.body.item.id } })).tripDetails, null);
   } finally {
     if (before === undefined) delete process.env.TRIP_DETAILS_BOX; else process.env.TRIP_DETAILS_BOX = before;
+    const rows = await prisma.scheduledRide.findMany({ where: { riderId: { in: made.users } }, select: { requestedRideId: true } });
+    const rideIds = rows.map((r) => r.requestedRideId).filter(Boolean);
+    await prisma.outboxEvent.deleteMany({ where: { key: { in: rideIds } } }).catch(() => {});
+    await prisma.ride.deleteMany({ where: { id: { in: rideIds } } }).catch(() => {});
   }
 });

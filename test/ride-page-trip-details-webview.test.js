@@ -242,7 +242,7 @@ test('what the rider said in the chat ("3 of us, with my dog") fills the box; on
   assert.deepEqual(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails, { passengers: 2, luggage: false, pet: true });
 });
 
-test('after a search goes out the box starts again for the next trip; search again shows what the last search had', async () => {
+test('after a search goes out the box starts again; Later after a search nobody took stays at 1 person, no, no', async () => {
   const a = tripBox();
   const server = priceServer([a.box]);
   const page = await loadPage(server);
@@ -252,12 +252,29 @@ test('after a search goes out the box starts again for the next trip; search aga
   assert.equal(a.parts.count.textContent, '1', 'the next trip does not carry this one\'s details');
   assert.deepEqual(a.pressed('pet'), ['no']);
 
-  // Nobody took it: the page is told what that search had, and the box shows it for search again.
-  server.state = { phase: 'idle', balanceNgn: 0, tripDetailsBox: true, lastSearch: { offerNgn: 5000, route: null, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
+  // Nobody took it: Home with the last search (and its details). Later is a trip of its own.
+  server.state = { phase: 'idle', balanceNgn: 50000, tripDetailsBox: true, canSchedule: true, lastSearch: { offerNgn: 5000, route: { pickupAddress: 'Yaba', destAddress: 'Ikeja City Mall' }, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
   await page.poll();
-  assert.equal(a.parts.count.textContent, '2');
-  assert.deepEqual(a.pressed('pet'), ['yes']);
-  assert.equal(a.parts.note.value, 'Small dog');
+  await page.tap(page.el('home-later'));
+  await page.poll();
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '1', 'polls never put the last search\'s details back');
+  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.equal(a.parts.note.value, '');
+});
+
+test('the rider changed the box, then another trip comes to price (from the chat): it starts at 1 person, no, no', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  const page = await loadPage(server);
+  a.plus();
+  a.yes('luggage');
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '2', 'the same trip polled: theirs stays');
+  server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki Phase 1' } };
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '1');
+  assert.deepEqual(a.pressed('luggage'), ['no']);
 });
 
 test('the note is cut at 60 characters without breaking an emoji', async () => {
