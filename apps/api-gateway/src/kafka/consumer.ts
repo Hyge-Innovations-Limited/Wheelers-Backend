@@ -102,6 +102,7 @@ import { noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rid
 import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { clearSaidTripDetails } from '../whatsapp/trip-details-said';
+import { tripDetailsForOffer } from '@wheleers/config';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -992,8 +993,8 @@ export async function handleRideEvent(
       riderCount: event.riderCount ?? 1,
       stopKinds: event.stopKinds ?? [],
       groupMembers: event.groupMembers ?? [],
-      // People, luggage, pet, the rider's note. Absent: booked without them.
-      ...(event.tripDetails ? { tripDetails: event.tripDetails } : {}),
+      // People, luggage, pet. Never the note before the match, whatever the event carries.
+      ...(event.tripDetails ? { tripDetails: tripDetailsForOffer(event.tripDetails) } : {}),
     });
     // The rider's waiting screen: drivers who saw the price, and the search's clock.
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);

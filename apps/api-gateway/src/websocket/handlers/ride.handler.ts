@@ -8,7 +8,7 @@ import {
   validateDriverOffer, fareFromRatePerKmNgn,
   validateRiderOffer,
   depositNeededFor,
-  readTripDetails,
+  tripDetailsFromRequest,
 } from '@wheleers/config';
 import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
 import {
@@ -453,7 +453,7 @@ export async function handleRideMessage(
         referralCashbackAppliedNgn > 0 ? referralCashbackAppliedNgn : undefined,
       route: plannedRoute.geometry,
       channel: auth.client === 'mcp' ? 'MCP' : 'APP',
-      tripDetails: readTripDetails(payload['tripDetails']),
+      tripDetails: tripDetailsFromRequest(payload['tripDetails']),
       timestamp,
     });
 

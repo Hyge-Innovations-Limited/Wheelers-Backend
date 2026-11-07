@@ -6,6 +6,8 @@
 //
 //   node scripts/run-with-env.cjs node --test --test-force-exit --test-concurrency=1 test/trip-details.test.js
 
+// The box is switched on for these tests (TRIP_DETAILS_BOX=on); the switched-off test turns it off.
+process.env.TRIP_DETAILS_BOX = 'on';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
@@ -79,30 +81,30 @@ async function offerFor(rideRequested, d) {
   return sent.map((m) => m.value).find((v) => v.eventType === 'RIDE_OFFER_SENT');
 }
 
-test('the note drivers see: one line, no phone numbers or links, at most 60 characters', () => {
-  assert.equal(cleanTripNote('Call me on 0803 123 4567 at the gate'), 'Call me on at the gate');
-  assert.equal(cleanTripNote('+234-803-123-4567'), undefined);
-  assert.equal(cleanTripNote('see wa.me/2348031234567 or https://x.co/a'), 'see or');
+test('the note the driver sees: one line, no links or hidden characters, at most 60, never half an emoji', () => {
+  // Only the driver who gets the ride sees it (they have the rider's phone anyway): a number to call at pickup stays.
+  assert.equal(cleanTripNote('Call my brother on 0803 123 4567 at the gate'), 'Call my brother on 0803 123 4567 at the gate');
+  assert.equal(cleanTripNote('Gate 12, House 34, Flat 567'), 'Gate 12, House 34, Flat 567');
+  // Ordinary sentences are never cut as if they were links (re-audit 7 Nov).
+  for (const plain of ['Wait at the gate. To the left of the bank', 'Mega Plaza. Shop 12', 'I am at the mall. Me and my friend', 'near Facebook office']) {
+    assert.equal(cleanTripNote(plain), plain, plain);
+  }
+  for (const link of ['see https://x.co/a', 'www.example.com', 'mysite.xyz', 'linktr.ee/john', 'wa.me/2348031234567']) {
+    assert.ok(!(cleanTripNote(`${link} now`) ?? '').includes('.'), link);
+  }
+  assert.equal(cleanTripNote('see wa.me/2348031234567 now'), 'see now');
   assert.equal(cleanTripNote('Gate 2,\nblock 15'), 'Gate 2, block 15');
   assert.equal(cleanTripNote('x'.repeat(80)).length, 60);
   assert.equal(cleanTripNote('   '), undefined);
   assert.equal(cleanTripNote(42), undefined);
-  // However a phone number, handle or link is written, it does not reach drivers (audit 7 Nov).
-  const U = (n) => String.fromCodePoint(n);
-  const digitsIn = (start) => Array.from('08031234567').map((d) => U(start + Number(d))).join('');
-  for (const sneaky of ['080/3123/4567', '080_312_345_67', '0803*123*4567', `0803${U(0xad)}1234${U(0xad)}567`, `0803${U(0x2060)}1234567`, digitsIn(0xff10), digitsIn(0x660),
-    'zero eight zero three one two three four five six seven', 'mysite.xyz', 'bit .ly/abc', 'wa . me / 234803', 'example(dot)com', 'ig @john_doe', 'insta: johndoe']) {
-    assert.equal(cleanTripNote(sneaky), undefined, sneaky);
-  }
-  assert.equal(cleanTripNote('House 12 - 14, blue gate'), 'House 12 - 14, blue gate', 'an address with a few numbers stays');
-  // Never half an emoji at the 60th character (the booking would be refused): within the event's limit.
-  const emojiAt60 = cleanTripNote('a'.repeat(59) + U(0x1f600));
-  assert.equal(emojiAt60, 'a'.repeat(59));
-  assert.equal(cleanTripNote(U(0xd800) + 'abc'), 'abc');
-  assert.equal(RideRequestedEvent.shape.tripDetails.unwrap().shape.note.safeParse(cleanTripNote('b'.repeat(40) + U(0x1f600).repeat(20))).success, true);
   const started = Date.now();
   cleanTripNote('a'.repeat(200_000) + '.c');
   assert.ok(Date.now() - started < 200, 'a long note is cut before the filters run');
+  const U = (n) => String.fromCodePoint(n);
+  assert.equal(cleanTripNote('a'.repeat(59) + U(0x1f600)), 'a'.repeat(59));
+  assert.equal(cleanTripNote(U(0xd800) + 'abc'), 'abc');
+  assert.equal(cleanTripNote(`0803${U(0xad)}123${U(0x2060)}4567`), '0803 123 4567', 'hidden characters out');
+  assert.equal(RideRequestedEvent.shape.tripDetails.unwrap().shape.note.safeParse(cleanTripNote('b'.repeat(40) + U(0x1f600).repeat(20))).success, true);
 
   assert.deepEqual(readTripDetails({ passengers: 9, luggage: true, pet: 'yes', note: 'Small dog' }), { passengers: 4, luggage: true, pet: false, note: 'Small dog' });
   assert.deepEqual(readTripDetails({ passengers: 0 }), { passengers: 1, luggage: false, pet: false });
@@ -118,29 +120,34 @@ test('app booking with people, luggage, pet and a note: saved on the ride, on th
   const d = await driver();
 
   const sent = await handleRideMessage('ride:request', {
-    ...trip, tripDetails: { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier, call 08031234567' },
+    ...trip, tripDetails: { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier, see wa.me/2348031234567' },
   }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
   assert.equal(sent.type, 'ride:request:accepted', JSON.stringify(sent.payload));
   const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
-  const details = { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier, call' };
+  const details = { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier, see' };
+  // Drivers bidding see people, luggage, pet; the note is for the driver who gets the ride.
+  const forBids = { passengers: 3, luggage: true, pet: true };
   assert.deepEqual(requested.tripDetails, details);
 
   // The ride service books it (through Kafka: the event as JSON).
   made.rides.push(requested.rideId);
   await rideService()(RideRequestedEvent.parse(JSON.parse(JSON.stringify(requested))));
   const row = await prisma.ride.findUnique({ where: { id: requested.rideId } });
-  assert.deepEqual([row.passengers, row.hasLuggage, row.hasPet, row.riderNote], [3, true, true, 'Small dog in a carrier, call']);
+  assert.deepEqual([row.passengers, row.hasLuggage, row.hasPet, row.riderNote], [3, true, true, 'Small dog in a carrier, see']);
 
   // Its offer to a driver, then the gateway's ride:offer to the driver's app.
   const offer = await offerFor(requested, d);
-  assert.deepEqual(offer.tripDetails, details);
+  assert.deepEqual(offer.tripDetails, forBids, 'no note on the offer');
   const repriced = [];
   await createRideEventsProducer({ send: async (_topic, value) => { repriced.push(value); }, sendBatch: async (batch) => { repriced.push(...batch.map((m) => m.value)); } })
     .sendUpdatedOfferToDriver({ driver: { driverId: d.id, userId: d.userId, lat: 6.6, lng: 3.35 }, rideRequested: requested, updatedOfferNgn: 5600, expiresAt: new Date(Date.now() + 60_000) });
-  assert.deepEqual(repriced.find((v) => v.eventType === 'RIDE_OFFER_SENT').tripDetails, details, 'a new price keeps them');
+  assert.deepEqual(repriced.find((v) => v.eventType === 'RIDE_OFFER_SENT').tripDetails, forBids, 'a new price keeps them, still no note');
   await handleRideEvent(offer, w.deps, new Map());
   const card = w.toApp.find((m) => m.type === 'ride:offer' && m.userId === d.userId);
-  assert.deepEqual(card.payload.tripDetails, details);
+  assert.deepEqual(card.payload.tripDetails, forBids);
+  // Even an offer event that carries a note (an older ride service) reaches no bidding driver with it.
+  await handleRideEvent({ ...offer, tripDetails: details }, w.deps, new Map());
+  assert.equal(w.toApp.filter((m) => m.type === 'ride:offer').at(-1).payload.tripDetails.note, undefined);
 
   // Through the trip: the driver's snapshot of the ride.
   const snapshot = await loadDriverRideSnapshot(requested.rideId);
@@ -243,5 +250,30 @@ test('the ride page: search again after nobody took it goes out with the same de
     assert.deepEqual(again.tripDetails, details);
   } finally {
     await prisma.wallet.deleteMany({ where: { userId: riderId } });
+  }
+});
+
+test('switched off (TRIP_DETAILS_BOX not on): no box on Set your price, and details sent anyway are not taken', async () => {
+  const { handleRideEstimateRoute } = require('../apps/api-gateway/dist/http/ride.route.js');
+  const estimate = async () => {
+    const riderId = await user('RIDER');
+    const bearer = local.createLocalAccessToken(riderId, JWT_SECRET);
+    const body = JSON.stringify({ pickup: trip.pickup, destination: trip.destination, stops: [] });
+    const req = { method: 'POST', headers: { authorization: `Bearer ${bearer}` }, async *[Symbol.asyncIterator]() { yield Buffer.from(body); } };
+    const res = { statusCode: 0, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+    await handleRideEstimateRoute(req, res, { jwtSecret: JWT_SECRET, routePlanner: planner });
+    return res.body;
+  };
+  assert.equal((await estimate()).tripDetailsBox, true, 'on: the app shows the box');
+  delete process.env.TRIP_DETAILS_BOX;
+  try {
+    assert.equal((await estimate()).tripDetailsBox, false, 'off: no box');
+    const w = world();
+    const riderId = await user('RIDER');
+    await handleRideMessage('ride:request', { ...trip, tripDetails: { passengers: 3, luggage: true, pet: true } }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
+    const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
+    assert.equal(requested.tripDetails, undefined);
+  } finally {
+    process.env.TRIP_DETAILS_BOX = 'on';
   }
 });

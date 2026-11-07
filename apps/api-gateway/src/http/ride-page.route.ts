@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverBidClient, driverClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, readTripDetails } from '@wheleers/config';
+import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
 import { createWalletPageToken, PageLinkExpiredError, RIDE_PAGE_TOKEN_TTL_SECONDS, verifyWalletPageToken } from '../auth/local';
@@ -285,6 +285,11 @@ async function liveTripFor(userId: string) {
 
 /** Every answer the page gets: where the rider is, and the key for its map. Also sent down an open page's socket (rides/ride-page-live). */
 export async function buildRidePageState(deps: RidePageRouteDeps, userId: string) {
+  // The trip details box shows on the page only while TRIP_DETAILS_BOX=on.
+  return { ...(await ridePageStateOf(deps, userId)), tripDetailsBox: tripDetailsBoxOn() };
+}
+
+async function ridePageStateOf(deps: RidePageRouteDeps, userId: string) {
   return { ...(await buildPhaseState(deps, userId)), mapsKey: deps.googleMapsBrowserKey ?? null };
 }
 
@@ -586,7 +591,7 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   const amountNgn = amountIn(body);
   // Auto-accept only with the rider's yes (asked once, at Find): autoAccept: true. Anything else: off.
   const autoAccept = isRecord(body) && body.autoAccept === true;
-  const tripDetails = isRecord(body) ? readTripDetails(body.tripDetails) : undefined;
+  const tripDetails = isRecord(body) ? tripDetailsFromRequest(body.tripDetails) : undefined;
 
   const quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
@@ -655,7 +660,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
   const amountNgn = amountIn(body);
   // The rider's yes to auto-booking, asked again at this Find (absent: off).
   const autoAccept = isRecord(body) && body.autoAccept === true;
-  const tripDetails = isRecord(body) ? readTripDetails(body.tripDetails) : undefined;
+  const tripDetails = isRecord(body) ? tripDetailsFromRequest(body.tripDetails) : undefined;
   // Already searching (a double tap): show that.
   if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildRidePageState(deps, userId));
 
@@ -1246,7 +1251,7 @@ async function handleSchedule(req: IncomingMessage, res: ServerResponse, deps: R
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
   const scheduledFor = readScheduledFor(body);
   const { pickup, destination, stops } = readTrip(body);
-  const tripDetails = readTripDetails(body.tripDetails);
+  const tripDetails = tripDetailsFromRequest(body.tripDetails);
   const requestId = typeof body.requestId === 'string' && REQUEST_ID.test(body.requestId) ? body.requestId : null;
   const onceKey = requestId ? `ride-page:schedule:${userId}:${requestId}` : null;
   if (onceKey && await deps.redisClient.get(onceKey).catch(() => null)) {

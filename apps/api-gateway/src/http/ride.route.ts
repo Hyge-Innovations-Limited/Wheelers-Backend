@@ -6,7 +6,7 @@ import {
   rideClient,
   tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, readTripDetails, tripDetailsFromRow } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, tripDetailsBoxOn, tripDetailsFromRequest, tripDetailsFromRow } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -249,6 +249,8 @@ export async function handleRideEstimateRoute(
       fareEstimateNgn: plannedRoute.suggestedFareNgn,
       pricingCurrency: "NGN",
       pricingBreakdown: plannedRoute.ridePrice,
+      // Set your price shows the trip details box (TRIP_DETAILS_BOX=on). Older servers: absent, no box.
+      tripDetailsBox: tripDetailsBoxOn(),
     });
   } catch (error) {
     sendJson(res, 400, {
@@ -373,7 +375,7 @@ export async function handleCreateScheduledRideRoute(
             plannedDistanceKm: plannedRoute.distanceKm,
             plannedDurationSeconds: plannedRoute.durationSeconds,
             fareEstimateNgn,
-            tripDetails: readTripDetails(rawBody["tripDetails"]),
+            tripDetails: tripDetailsFromRequest(rawBody["tripDetails"]),
           })
           .catch(async (error) => {
             if (referralCashbackAppliedNgn > 0) {

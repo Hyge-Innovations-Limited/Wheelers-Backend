@@ -17,9 +17,6 @@ import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_K
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
 import { chatTripDetailsOn, clearSaidTripDetails, readSaidTripDetails, rememberSaidTripDetails, saidLine, searchTripDetails } from '../whatsapp/trip-details-said';
-
-/** Where trip-detail words are never read: the bot is waiting on something else. */
-const TRIP_DETAILS_QUIET_STAGES = new Set(['awaiting_cancel_reason', 'awaiting_payment', 'awaiting_withdrawal_amount', 'awaiting_withdrawal_bank', 'awaiting_withdrawal_account', 'awaiting_withdrawal_confirmation']);
 import { storeWhatsappRide, storeLastRoute, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { SCHEDULED_TEMPLATE_REPLY_ID } from '../whatsapp/scheduled-template';
@@ -49,6 +46,8 @@ import { sendWalletPageButton } from '../whatsapp/wallet';
 import { requirePrivacyConsent } from '../whatsapp/consent';
 import { cancelGroupRide, convertGroupToNormalRide, handleGroupSelfie, handleGroupStageText, sendGroupStatus, startGroupRideFlow } from '../whatsapp/group';
 import { priceCheckLines } from '../whatsapp-flows/trip-text';
+/** Where trip-detail words are never read: the bot is waiting on something else. */
+const TRIP_DETAILS_QUIET_STAGES = new Set(['awaiting_cancel_reason', 'awaiting_payment', 'awaiting_withdrawal_amount', 'awaiting_withdrawal_bank', 'awaiting_withdrawal_account', 'awaiting_withdrawal_confirmation']);
 export { placeChoiceRows } from '../whatsapp/places';
 export { createRidePageChatNotifier, sayRidePageEventInChat, createOffersFormChatHooks, createWhatsappDepositFinisher } from '../whatsapp/ride-card';
 export { createQuickActionsChatHooks } from '../whatsapp/menu';
@@ -307,6 +306,7 @@ export async function handleIncomingMetaMessage(
           const trip = await getPendingRoute(deps.redisClient, user.id).catch(() => null);
           const next = stageNow === 'awaiting_pickup' || stageNow === 'editing_pickup' ? 'Where should your driver pick you up?'
             : stageNow === 'awaiting_destination' || stageNow === 'editing_destination' ? 'Where are you going?'
+            : stageNow === 'awaiting_price' ? "What's your price for this ride?"
             : trip ? 'Drivers see it when you book.'
             : 'Where are you going?';
           await replyAndLog(deps, phone, incomingMessage, `Got it: ${saidLine(kept)}. ${next}`);

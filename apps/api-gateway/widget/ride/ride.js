@@ -2494,7 +2494,12 @@
    */
   function adoptServerTrip(s) {
     var said = s && (s.tripDetails || (s.lastSearch && s.lastSearch.tripDetails));
-    if (tripTouched || !said || typeof said.passengers !== 'number') return;
+    if (tripTouched) return drawTripBoxes();
+    if (!said || typeof said.passengers !== 'number') {
+      // A trip to price with nothing said for it: 1 person, no, no (never the last trip's details).
+      if (s && s.phase === 'price') tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+      return drawTripBoxes();
+    }
     tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, Math.round(said.passengers)));
     tripInfo.luggage = said.luggage === true;
     tripInfo.pet = said.pet === true;
@@ -2514,12 +2519,16 @@
     for (var i = 0; i < chars.length && out.length + chars[i].length <= 60; i++) out += chars[i];
     return out;
   }
+  /** The server shows the box (TRIP_DETAILS_BOX=on); an older or switched-off server: no box, nothing sent. */
+  function tripBoxOn() { return Boolean(state && state.tripDetailsBox === true); }
   function tripDetailsOut() {
+    if (!tripBoxOn()) return undefined;
     var note = tripInfo.note.replace(/\s+/g, ' ').trim();
     return { passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet, note: note || undefined };
   }
   function drawTripBoxes() {
     Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) {
+      box.hidden = !tripBoxOn();
       box.querySelector('[data-trip="count"]').textContent = String(tripInfo.passengers);
       box.querySelector('[data-trip="minus"]').disabled = tripInfo.passengers <= 1;
       box.querySelector('[data-trip="plus"]').disabled = tripInfo.passengers >= TRIP_PEOPLE_MAX;

@@ -27,7 +27,9 @@ const BAGS = '(?:luggage|luggages|suitcases?|bags|boxes|loads?)';
 const PETS = '(?:pets?|dogs?|cats?|puppy|puppies|kittens?)';
 const SOME = '(?:(?:my|our|some|a|an|the|two|2|three|3|big|small|little|heavy)\\s+){0,2}';
 /** "we are 3" ends there, or goes on with people / of us: "we are two minutes away" is not a head count. */
-const COUNT_ENDS = '(?:\\s+(?:people|persons|passengers|of\\s+us)\\b|(?=\\s*(?:[,.!?]|$|\\s+(?:and|with|from|to|going|pls|please|abeg)\\b)))';
+const COUNT_ENDS = '(?:\\s+(?:people|persons|passengers|of\\s+us)\\b|(?=\\s*(?:[,!?]|\\.(?!\\d)|$|\\s+(?:and|with|from|to|going|pls|please|abeg)\\b)))';
+/** "a pet shop", "cat food", "With Bags Plaza": a thing or a place, not what the rider has with them. */
+const NOT_CARRIED = '(?!\\s+(?:shop|store|food|walker|clinic|plaza|ltd|limited|market|street|road|close|avenue)\\b)';
 
 type Rule = { re: RegExp; read: (m: RegExpMatchArray) => SaidTripDetails };
 // Applied in this order: a "no bags" anywhere wins over a "with bags".
@@ -38,8 +40,8 @@ const RULES: Rule[] = [
   { re: new RegExp(`\\bme\\s+and\\s+my\\s+${FRIEND}\\b(?!['\u2019])`, 'gi'), read: () => ({ passengers: 2 }) },
   { re: new RegExp(`\\b(?:no|without)\\s+${BAGS}\\b`, 'gi'), read: () => ({ luggage: false }) },
   { re: new RegExp(`\\b(?:no|without)\\s+${PETS}\\b`, 'gi'), read: () => ({ pet: false }) },
-  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${BAGS}\\b(?!\\s+of\\b)`, 'gi'), read: () => ({ luggage: true }) },
-  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${PETS}\\b`, 'gi'), read: () => ({ pet: true }) },
+  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${BAGS}\\b(?!\\s+of\\b)${NOT_CARRIED}`, 'gi'), read: () => ({ luggage: true }) },
+  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${PETS}\\b${NOT_CARRIED}`, 'gi'), read: () => ({ pet: true }) },
 ];
 
 /** Words that are left when a message was only about the details. */
@@ -122,11 +124,22 @@ export async function clearSaidTripDetails(redis: RedisClient, userId: string): 
 }
 
 /**
- * For a search: the details given (the ride page's box), else what was said
- * in the chat since the last search, else the trip's own (search again: the
- * last search's). None: {}.
+ * For a search: the details given (the ride page's box), else the trip's own
+ * (search again: the last search's) with what the rider has said in the chat
+ * since put over it ("search again with my dog" adds the dog, keeps the rest).
+ * Nothing at all: {}.
  */
 export async function searchTripDetails(redis: RedisClient, userId: string, given?: TripDetails, trips?: TripDetails): Promise<{ tripDetails?: TripDetails }> {
-  const details = given ?? (await saidTripDetails(redis, userId).catch(() => undefined)) ?? trips;
-  return details ? { tripDetails: details } : {};
+  if (given) return { tripDetails: given };
+  const said = await readStored(redis, userId).catch(() => null);
+  if (!said && !trips) return {};
+  const passengers = typeof said?.passengers === 'number' && said.passengers >= 1 && said.passengers <= 4 ? Math.round(said.passengers) : trips?.passengers ?? 1;
+  return {
+    tripDetails: {
+      passengers,
+      luggage: typeof said?.luggage === 'boolean' ? said.luggage : trips?.luggage ?? false,
+      pet: typeof said?.pet === 'boolean' ? said.pet : trips?.pet ?? false,
+      ...(trips?.note ? { note: trips.note } : {}),
+    },
+  };
 }

@@ -176,7 +176,7 @@ function priceServer(boxes) {
   const s = {
     boxes,
     state: {
-      phase: 'price', balanceNgn: 0, minOfferNgn: 4100,
+      phase: 'price', balanceNgn: 0, minOfferNgn: 4100, tripDetailsBox: true,
       route: { pickupAddress: 'Yaba', destAddress: 'Ikeja City Mall', stopAddresses: [], suggestedFareNgn: 5000, distanceKm: 14.2, durationMin: 38 },
     },
     async answer(method, url) {
@@ -253,7 +253,7 @@ test('after a search goes out the box starts again for the next trip; search aga
   assert.deepEqual(a.pressed('pet'), ['no']);
 
   // Nobody took it: the page is told what that search had, and the box shows it for search again.
-  server.state = { phase: 'idle', balanceNgn: 0, lastSearch: { offerNgn: 5000, route: null, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
+  server.state = { phase: 'idle', balanceNgn: 0, tripDetailsBox: true, lastSearch: { offerNgn: 5000, route: null, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
   await page.poll();
   assert.equal(a.parts.count.textContent, '2');
   assert.deepEqual(a.pressed('pet'), ['yes']);
@@ -266,4 +266,28 @@ test('the note is cut at 60 characters without breaking an emoji', async () => {
   a.type('a'.repeat(59) + String.fromCodePoint(0x1f600));
   await page.tap(page.el('find'));
   assert.equal(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails.note, 'a'.repeat(59));
+});
+
+test('a server that does not take them (older, or switched off): no box, and Find sends none', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  delete server.state.tripDetailsBox;
+  const page = await loadPage(server);
+  assert.equal(a.box.hidden, true);
+  await page.tap(page.el('find'));
+  assert.equal('tripDetails' in page.calls.find((c) => c.url === '/ride-page/find').body, false);
+});
+
+test('a different trip to price, with nothing said for it, starts at 1 person, no, no', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  server.state.tripDetails = { passengers: 3, luggage: true, pet: true };
+  const page = await loadPage(server);
+  assert.equal(a.parts.count.textContent, '3');
+  // The rider cancels and plans another trip: its price state says nothing about details.
+  server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki' } };
+  delete server.state.tripDetails;
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '1');
+  assert.deepEqual(a.pressed('pet'), ['no']);
 });

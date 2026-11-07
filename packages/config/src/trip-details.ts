@@ -16,13 +16,31 @@ export type TripDetails = {
 export const TRIP_PASSENGERS_MAX = 4;
 export const TRIP_NOTE_MAX = 60;
 
-// A link, a handle or a phone number in the note would take the trip off the app.
-const LINK = /\b(?:https?:\/\/|www\.)\S+|\b[\w-]+\s*(?:\.|\(\s*dot\s*\)|\bdot\b)\s*(?:com|ng|net|org|io|me|co|app|link|ly|xyz|info|biz|online|site|shop|store|tv|gg|to|cc|uk|us)\b(?:\s*\/\s*\S*)?/giu;
-const HANDLE = /@\s*[\w.]{2,}|\b(?:ig|insta(?:gram)?|snap(?:chat)?|tiktok|telegram|whatsapp|facebook|fb|twitter)\b\s*[:\-]?\s*[\w.]*/giu;
-/** Five or more numbers in words in a row ("zero eight zero three one"). */
-const SPOKEN_DIGITS = /\b(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine)(?:[\s,.\-]+(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine)){4,}\b/giu;
-/** Seven digits in a note, however they are split up, is a phone number: its digits go. */
-const PHONE_DIGITS = 7;
+/**
+ * The box is shown (app and ride page) and its details taken only with
+ * TRIP_DETAILS_BOX=on: off, it is gone everywhere at once, no app update.
+ */
+export function tripDetailsBoxOn(): boolean {
+  return process.env.TRIP_DETAILS_BOX?.trim() === 'on';
+}
+
+/** The details from a booking request: none while the box is switched off. */
+export function tripDetailsFromRequest(value: unknown): TripDetails | undefined {
+  return tripDetailsBoxOn() ? readTripDetails(value) : undefined;
+}
+
+/**
+ * What drivers bidding on the request see: people, luggage, pet. The note is
+ * only for the driver who gets the ride (it can hold a gate code or a flat
+ * number, and that driver already has the rider's phone).
+ */
+export function tripDetailsForOffer(details: TripDetails | undefined): TripDetails | undefined {
+  if (!details) return undefined;
+  return { passengers: details.passengers, luggage: details.luggage, pet: details.pet };
+}
+
+// A link in the note is spam or a trap for the driver: written without spaces, as links are.
+const LINK = /\b(?:https?:\/\/|www\.)\S+|\b[\w-]+\.(?:com|ng|net|org|io|me|co|app|link|ly|xyz|info|biz|online|site|shop|store|tv|gg|dev|ai|ee)\b(?:\/\S*)?/giu;
 
 /** At most `max` UTF-16 units, never half an emoji (the event's limit counts units). */
 function cutTo(text: string, max: number): string {
@@ -34,27 +52,22 @@ function cutTo(text: string, max: number): string {
   return out;
 }
 
-/** The note as drivers may see it: one line, no links, handles or phone numbers, at most 60 characters. */
+/** The note as the driver sees it: one line, no links or hidden characters, at most 60 characters. */
 export function cleanTripNote(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   // Cut first: the filters below must never run over a long string sent to slow the server.
-  let note = cutTo(value, TRIP_NOTE_MAX * 4)
-    // Fullwidth and other look-alike digits and letters become plain ones.
+  const note = cutTo(value, TRIP_NOTE_MAX * 4)
     .normalize('NFKC')
-    // Half an emoji, control and invisible characters (soft hyphens, joiners between digits): gone.
-    // The joiner inside an emoji (U+200D) stays.
+    // Half an emoji, control and invisible characters: gone. The joiner inside an emoji (U+200D) stays.
     .replace(/\p{Cs}/gu, '')
     .replace(/(?!\u200d)[\p{Cc}\p{Cf}\u2028\u2029]/gu, ' ')
     // Marks piled on one letter draw over the driver's screen: two at most.
     .replace(/(\p{M}{2})\p{M}+/gu, '$1')
     .replace(LINK, ' ')
-    .replace(HANDLE, ' ')
-    .replace(SPOKEN_DIGITS, ' ');
-  if ((note.match(/\p{Nd}/gu) ?? []).length >= PHONE_DIGITS) {
-    note = note.replace(/\p{Nd}/gu, '').replace(/(?:\s*[\/_*,.()+\-]\s*){2,}/g, ' ');
-  }
-  note = cutTo(note.replace(/\s+/g, ' ').trim(), TRIP_NOTE_MAX).trim();
-  return note || undefined;
+    .replace(/\s+/g, ' ')
+    .trim();
+  const cut = cutTo(note, TRIP_NOTE_MAX).trim();
+  return cut || undefined;
 }
 
 /** The rider's trip details from a request body, cleaned; undefined when none were sent. */

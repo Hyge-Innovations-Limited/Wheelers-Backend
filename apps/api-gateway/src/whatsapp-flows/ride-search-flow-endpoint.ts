@@ -218,7 +218,7 @@ async function handleFlowAction(
       });
 
       await deps.publisher.publishRideEvent(event);
-  await clearSaidTripDetails(deps.redisClient, userId);
+      await clearSaidTripDetails(deps.redisClient, userId);
 
       await storeWhatsappRide(deps.redisClient, rideId, {
         riderId: userId,

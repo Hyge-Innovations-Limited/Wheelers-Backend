@@ -3269,7 +3269,7 @@ test('"3 of us", "with my dog", "with luggage" typed in the chat: kept for the s
   assert.deepEqual(said('I have two suitcases'), { luggage: true });
   assert.deepEqual(said('no luggage, no pet'), { luggage: false, pet: false });
   // Not details: plain trips, more than a car holds, place names, other sentences.
-  for (const m of ['From Yaba to Ikeja City Mall', '5 of us', 'Dog Street, Surulere', 'Pet Zone Lekki', 'Luggage Road Ikeja', 'we were 2 minutes late', 'we are two minutes from Yaba', 'from yaba and loads street', "Me and my friend's house in Yaba", 'I have 2 bags of rice to Ikeja', 'group ride for 3 people']) {
+  for (const m of ['From Yaba to Ikeja City Mall', '5 of us', 'Dog Street, Surulere', 'Pet Zone Lekki', 'Luggage Road Ikeja', 'we were 2 minutes late', 'we are two minutes from Yaba', 'from yaba and loads street', "Me and my friend's house in Yaba", 'I have 2 bags of rice to Ikeja', 'group ride for 3 people', 'we are 2.5km away', 'I have a pet shop in Lekki', 'with the cat food', 'Pick me at With Bags Plaza']) {
     assert.equal(said(m), null, m);
   }
   assert.equal(rest('From Yaba to Ikeja City Mall with my dog'), 'From Yaba to Ikeja City Mall');
@@ -3279,6 +3279,17 @@ test('"3 of us", "with my dog", "with luggage" typed in the chat: kept for the s
   assert.equal(readSaidTripDetails('we are 3 with a dog pls').onlyDetails, true);
   // A "yes" with the details is still the rider's yes.
   assert.deepEqual([readSaidTripDetails('yes, we are 3').rest, readSaidTripDetails('yes, we are 3').onlyDetails], ['yes', false]);
+
+  // Search again with one thing added keeps the rest of the last search's details.
+  {
+    const { searchTripDetails, rememberSaidTripDetails } = require('../apps/api-gateway/dist/whatsapp/trip-details-said.js');
+    const redis = memoryRedis();
+    const last = { passengers: 3, luggage: true, pet: false, note: 'blue gate' };
+    await rememberSaidTripDetails(redis, 'u-1', { pet: true });
+    assert.deepEqual(await searchTripDetails(redis, 'u-1', undefined, last), { tripDetails: { passengers: 3, luggage: true, pet: true, note: 'blue gate' } });
+    assert.deepEqual(await searchTripDetails(redis, 'u-2', undefined, last), { tripDetails: last }, 'nothing new said: the last search\'s');
+    assert.deepEqual(await searchTripDetails(redis, 'u-2'), {}, 'a new trip, nothing said: none');
+  }
 
   // Switched off (the default): the chat is as before.
   delete process.env.WHATSAPP_TRIP_DETAILS_CHAT;
