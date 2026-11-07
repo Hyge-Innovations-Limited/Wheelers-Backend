@@ -459,6 +459,11 @@ model Ride {
   firstRiderOfferNgn     Decimal?          @db.Decimal(18, 2)
   /// How many times the rider changed their price during the search.
   riderOfferChanges      Int               @default(0)
+  /// What the rider told drivers before they bid: people (1-4), luggage, a pet, a short note (no links or numbers). All null: booked without them (older apps, chat).
+  passengers             Int?
+  hasLuggage             Boolean?
+  hasPet                 Boolean?
+  riderNote              String?
   penaltyNgn             Decimal?          @db.Decimal(18, 2)
   recordingId            String?
   /// When the driver's phone started recording this trip. Recordings are accepted only after it.
@@ -591,6 +596,8 @@ model ScheduledRide {
   fareEstimateNgn        Decimal?                   @db.Decimal(18, 2)
   /// Where it was booked: "WHATSAPP" (the ride page); null for the app. Its search goes to the same place.
   channel                String?
+  /// The rider's trip details ({ passengers, luggage, pet, note? }), sent with its search. Null: none given.
+  tripDetails            Json?
   cancellationReason     String?
   cancelledAt            DateTime?
   dispatchedAt           DateTime?

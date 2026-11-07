@@ -5,6 +5,7 @@ import {
   ScheduledRideStatus,
 } from '@prisma/client';
 import { prisma } from '../prisma';
+import type { TripDetails } from '@wheleers/config';
 
 type ScheduledStopInput = {
   lat: number;
@@ -56,6 +57,8 @@ export const scheduledRideClient = {
     fareEstimateNgn?: number;
     /** "WHATSAPP" for a ride booked on the ride page: its search is a WhatsApp search. Absent: the app. */
     channel?: 'WHATSAPP';
+    /** People, luggage, pet and a note, for its search. Absent: none given. */
+    tripDetails?: TripDetails;
   }) =>
     prisma.scheduledRide.create({
       data: {
@@ -74,6 +77,7 @@ export const scheduledRideClient = {
         plannedDurationSeconds: data.plannedDurationSeconds,
         fareEstimateNgn: data.fareEstimateNgn,
         ...(data.channel ? { channel: data.channel } : {}),
+        ...(data.tripDetails ? { tripDetails: data.tripDetails as unknown as Prisma.InputJsonValue } : {}),
       },
     }),
 

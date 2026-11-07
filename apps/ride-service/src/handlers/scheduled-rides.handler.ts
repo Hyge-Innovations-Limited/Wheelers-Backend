@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import IORedis from 'ioredis';
 import { ScheduledRideStatus, referralClient, rideClient, scheduledRideClient } from '@wheleers/db';
 import { TOPICS } from '@wheleers/kafka-schemas';
-import { calculateSuggestedFare, type RideEnv } from '@wheleers/config';
+import { calculateSuggestedFare, readTripDetails, type RideEnv } from '@wheleers/config';
 import type { RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { RideEventsProducer } from '../producers/ride-events.producer';
 import {
@@ -290,6 +290,7 @@ async function doDispatch(
     // WhatsApp search (offers on the page and in the chat); everything else is the app's.
     channel: claimed.channel === 'WHATSAPP' ? 'WHATSAPP' : 'APP',
     scheduled: true,
+    ...(readTripDetails(claimed.tripDetails) ? { tripDetails: readTripDetails(claimed.tripDetails) } : {}),
     timestamp: new Date().toISOString(),
   };
 

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverBidClient, driverClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId } from '@wheleers/config';
+import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, readTripDetails } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
 import { createWalletPageToken, PageLinkExpiredError, RIDE_PAGE_TOKEN_TTL_SECONDS, verifyWalletPageToken } from '../auth/local';
@@ -24,7 +24,7 @@ import { RouteChangeRefused, quoteTripRoute, stopFixedPriceEnabled } from '../ri
 import { cancelPendingRoute, readPendingRoute, walletShortfall } from '../rides/trip-route-pending';
 import { takeRidePageOpenCode } from '../whatsapp/scheduled-template';
 import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
-import type { GoogleMapsRoutePlanner } from '@wheleers/config';
+import type { GoogleMapsRoutePlanner, TripDetails } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { overLimit } from '../trip-chat/limits';
@@ -579,6 +579,7 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
   const amountNgn = amountIn(body);
   // Auto-accept only with the rider's yes (asked once, at Find): autoAccept: true. Anything else: off.
   const autoAccept = isRecord(body) && body.autoAccept === true;
+  const tripDetails = isRecord(body) ? readTripDetails(body.tripDetails) : undefined;
 
   const quote = await getPendingRoute(deps.redisClient, userId);
   if (!quote) {
@@ -586,15 +587,15 @@ async function handleFind(req: IncomingMessage, res: ServerResponse, deps: RideP
     if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildRidePageState(deps, userId));
     throw new PageError('This quote has expired. Send your trip to the Wheelers bot again for a fresh one.', 409, 'QUOTE_EXPIRED');
   }
-  await startSearch(deps, userId, quote, amountNgn, autoAccept);
+  await startSearch(deps, userId, quote, amountNgn, autoAccept, tripDetails);
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
 /** Drivers are asked: the search goes out at the rider's price (auto-accept only when they said yes). */
-async function startSearch(deps: RidePageRouteDeps, userId: string, quote: PendingRouteData, amountNgn: number, autoAccept = false): Promise<void> {
+async function startSearch(deps: RidePageRouteDeps, userId: string, quote: PendingRouteData, amountNgn: number, autoAccept = false, tripDetails?: TripDetails): Promise<void> {
   const user = await userClient.findById(userId);
   const phone = user?.phone ?? '';
-  const result = await publishWhatsappRide(deps, { id: userId, phone }, quote, amountNgn);
+  const result = await publishWhatsappRide(deps, { id: userId, phone }, quote, amountNgn, tripDetails);
   if (!result.ok) {
     if (result.code === 'BELOW_MINIMUM') {
       throw new PageError(`The lowest price for this trip is ₦${result.minOfferNgn.toLocaleString()}.`, 400, 'BELOW_MINIMUM', { minOfferNgn: result.minOfferNgn });
@@ -647,6 +648,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
   const amountNgn = amountIn(body);
   // The rider's yes to auto-booking, asked again at this Find (absent: off).
   const autoAccept = isRecord(body) && body.autoAccept === true;
+  const tripDetails = isRecord(body) ? readTripDetails(body.tripDetails) : undefined;
   // Already searching (a double tap): show that.
   if (await getActiveRide(deps.redisClient, userId)) return sendJson(res, 200, await buildRidePageState(deps, userId));
 
@@ -677,7 +679,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
     };
     await storePendingRoute(deps.redisClient, userId, quote);
   }
-  await startSearch(deps, userId, quote, amountNgn, autoAccept);
+  await startSearch(deps, userId, quote, amountNgn, autoAccept, tripDetails);
   logActivity({ userId, eventType: 'ride_search_again', source: 'ride_page', metadata: { offerNgn: amountNgn } });
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
@@ -1236,6 +1238,7 @@ async function handleSchedule(req: IncomingMessage, res: ServerResponse, deps: R
   if (!isRecord(body)) throw new PageError('Pick the pickup and the destination.', 400, 'BAD_REQUEST');
   const scheduledFor = readScheduledFor(body);
   const { pickup, destination, stops } = readTrip(body);
+  const tripDetails = readTripDetails(body.tripDetails);
   const requestId = typeof body.requestId === 'string' && REQUEST_ID.test(body.requestId) ? body.requestId : null;
   const onceKey = requestId ? `ride-page:schedule:${userId}:${requestId}` : null;
   if (onceKey && await deps.redisClient.get(onceKey).catch(() => null)) {
@@ -1286,6 +1289,7 @@ async function handleSchedule(req: IncomingMessage, res: ServerResponse, deps: R
       plannedDurationSeconds: planned.durationSeconds,
       fareEstimateNgn: planned.suggestedFareNgn,
       channel: 'WHATSAPP',
+      tripDetails,
     }).catch(async (error) => {
       if (onceKey) await deps.redisClient.del(onceKey).catch(() => undefined);
       throw error;
@@ -1578,7 +1582,7 @@ async function handleEditTrip(req: IncomingMessage, res: ServerResponse, deps: R
  */
 export const RIDE_PAGE_EVENTS = [
   'page_opened', 'phase_shown', 'page_hidden', 'page_visible', 'page_left',
-  'price_changed', 'find_tapped', 'find_failed',
+  'price_changed', 'find_tapped', 'find_failed', 'trip_details_changed',
   'trip_edit_opened', 'place_searched', 'place_picked', 'stop_removed', 'trip_saved', 'trip_save_failed',
   'offer_received', 'raise_tapped', 'price_sheet_opened', 'price_updated', 'price_update_failed',
   'offer_declined', 'decline_all',

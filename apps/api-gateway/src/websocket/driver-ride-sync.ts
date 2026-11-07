@@ -1,4 +1,5 @@
-import { formatTripId } from '@wheleers/config';
+import { formatTripId, tripDetailsFromRow } from '@wheleers/config';
+import type { TripDetails } from '@wheleers/config';
 import { tripCodeStillNeeded } from '../rides/trip-code';
 import type WebSocket from 'ws';
 import { rideClient, userClient } from '@wheleers/db';
@@ -39,6 +40,8 @@ export type DriverRideSnapshot = {
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
+  /** People, luggage, pet and the rider's note. Absent: booked without them. */
+  tripDetails?: TripDetails;
 };
 
 function decimalToNumber(value: unknown): number | null {
@@ -89,6 +92,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     matchedAt: ride.matchedAt?.toISOString() ?? null,
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,
+    ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
   };
 }
 

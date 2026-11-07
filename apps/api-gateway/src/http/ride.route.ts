@@ -6,7 +6,7 @@ import {
   rideClient,
   tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, readTripDetails } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -373,6 +373,7 @@ export async function handleCreateScheduledRideRoute(
             plannedDistanceKm: plannedRoute.distanceKm,
             plannedDurationSeconds: plannedRoute.durationSeconds,
             fareEstimateNgn,
+            tripDetails: readTripDetails(rawBody["tripDetails"]),
           })
           .catch(async (error) => {
             if (referralCashbackAppliedNgn > 0) {

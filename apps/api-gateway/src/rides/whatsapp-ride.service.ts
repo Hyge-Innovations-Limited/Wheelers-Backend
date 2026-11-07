@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { openPaying, payingStatusEnabled, withinPayingRate } from './paying-status';
 import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
+import type { TripDetails } from '@wheleers/config';
 import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
@@ -65,6 +66,8 @@ export async function publishWhatsappRide(
   rider: { id: string; phone: string },
   pendingRoute: PendingRouteData,
   offerNgn: number,
+  /** People, luggage, pet and a note, from the ride page. Absent: not asked (chat). */
+  tripDetails?: TripDetails,
 ): Promise<PublishResult> {
   if (!(offerNgn >= pendingRoute.minOfferNgn)) {
     return { ok: false, code: 'BELOW_MINIMUM', minOfferNgn: pendingRoute.minOfferNgn };
@@ -93,6 +96,7 @@ export async function publishWhatsappRide(
     minOfferNgn: pendingRoute.minOfferNgn,
     ratePerKmNgn: pendingRoute.ratePerKmNgn,
     route: pendingRoute.route,
+    ...(tripDetails ? { tripDetails } : {}),
     timestamp: new Date().toISOString(),
   });
 

@@ -325,6 +325,11 @@ export const rideClient = {
     channel?:         'APP' | 'WHATSAPP' | 'MCP' | 'UNKNOWN';
     pickupZone?:      string | null;
     destZone?:        string | null;
+    /** The rider's trip details, as columns (tripDetailsColumns). */
+    passengers?:      number | null;
+    hasLuggage?:      boolean | null;
+    hasPet?:          boolean | null;
+    riderNote?:       string | null;
   }) =>
     prisma.$transaction(async (tx) => {
       const { stops, ...rideData } = data;

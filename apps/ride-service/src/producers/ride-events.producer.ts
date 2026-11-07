@@ -157,6 +157,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           // clock now. Sent under its own name so clients state intent.
           bidsCloseAt: expiresAt.toISOString(),
           route: rideRequested.route,
+          ...(rideRequested.tripDetails ? { tripDetails: rideRequested.tripDetails } : {}),
           timestamp,
           ...(group
             ? {
@@ -250,6 +251,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
         // (it knows who is connected; this service does not). It used to push to every driver here.
         repriced: true,
         route: rideRequested.route,
+        ...(rideRequested.tripDetails ? { tripDetails: rideRequested.tripDetails } : {}),
         timestamp,
         // A re-price replaces the offer card in the driver app. Omitting these
         // stripped the group badge and the pickup/dropoff labels off a shared

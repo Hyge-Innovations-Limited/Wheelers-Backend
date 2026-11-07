@@ -2070,7 +2070,7 @@
     button.className = 'btn primary busy';
     W.show(W.$('sr-err'), false);
     api('POST', '/ride-page/schedule', {
-      scheduledFor: when.toISOString(), pickup: quote.trip.pickup, destination: quote.trip.destination, stops: quote.trip.stops, requestId: sched.requestId
+      scheduledFor: when.toISOString(), pickup: quote.trip.pickup, destination: quote.trip.destination, stops: quote.trip.stops, requestId: sched.requestId, tripDetails: tripDetailsOut()
     }).then(function (answer) {
       track('schedule_saved', { stops: quote.trip.stops.length, daysAhead: dayOffset(when, new Date()) });
       if (answer && Array.isArray(answer.scheduled)) scheduledRides = answer.scheduled;
@@ -2456,7 +2456,7 @@
     if (busy) return;
     busy = true;
     track('find_tapped', { amountNgn: amount, again: true, autoAccept: autoAccept });
-    api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept }).then(function (next) {
+    api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept, tripDetails: tripDetailsOut() }).then(function (next) {
       if (fromSheet) closeSheets();
       seenOffers = null;
       apply(next);
@@ -2480,6 +2480,51 @@
   });
 
   /* ── 1 · name your price ──────────────────────────────────────────────── */
+
+  /* People, luggage, pet and a note: drivers see them before they bid. One trip, so both
+     boxes (Set your price, and the ride for later's confirm) show the same answers. */
+  var tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+  var TRIP_PEOPLE_MAX = 4;
+  function tripDetailsOut() {
+    var note = tripInfo.note.replace(/\s+/g, ' ').trim();
+    return { passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet, note: note || undefined };
+  }
+  function drawTripBoxes() {
+    Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) {
+      box.querySelector('[data-trip="count"]').textContent = String(tripInfo.passengers);
+      box.querySelector('[data-trip="minus"]').disabled = tripInfo.passengers <= 1;
+      box.querySelector('[data-trip="plus"]').disabled = tripInfo.passengers >= TRIP_PEOPLE_MAX;
+      Array.prototype.forEach.call(box.querySelectorAll('[data-val]'), function (button) {
+        var on = tripInfo[button.getAttribute('data-trip')] === (button.getAttribute('data-val') === 'yes');
+        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      var note = box.querySelector('[data-trip="note"]');
+      if (document.activeElement !== note) note.value = tripInfo.note;
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) {
+    box.addEventListener('click', function (event) {
+      var button = event.target.closest('button[data-trip]');
+      if (!button || button.disabled) return;
+      var what = button.getAttribute('data-trip');
+      if (what === 'minus' || what === 'plus') {
+        tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, tripInfo.passengers + (what === 'plus' ? 1 : -1)));
+      } else {
+        tripInfo[what] = button.getAttribute('data-val') === 'yes';
+      }
+      drawTripBoxes();
+      track('trip_details_changed', { what: what, passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet });
+    });
+    box.querySelector('[data-trip="note"]').addEventListener('input', function () {
+      tripInfo.note = this.value.slice(0, 60);
+      drawTripBoxes();
+    });
+    box.querySelector('[data-trip="note"]').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); this.blur(); }
+    });
+  });
+  drawTripBoxes();
+
 
   var priceDrawnFor = null;
 
@@ -2612,7 +2657,7 @@
     button.className = 'btn primary busy';
     button.textContent = 'Asking drivers…';
     track('find_tapped', { amountNgn: amount, suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0, autoAccept: autoAccept });
-    api('POST', '/ride-page/find', { amountNgn: amount, autoAccept: autoAccept }).then(function (next) {
+    api('POST', '/ride-page/find', { amountNgn: amount, autoAccept: autoAccept, tripDetails: tripDetailsOut() }).then(function (next) {
       seenOffers = null;
       apply(next);
     }).catch(function (error) {

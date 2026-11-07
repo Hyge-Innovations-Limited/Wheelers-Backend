@@ -34,6 +34,14 @@ const RideStopSnapshot = LatLng.extend({
   completedAt: z.string().datetime().optional(),
 });
 
+// What the rider told drivers about the trip (people, luggage, pet, a note). Absent: not asked.
+const TripDetails = z.object({
+  passengers: z.number().int().min(1).max(4),
+  luggage:    z.boolean(),
+  pet:        z.boolean(),
+  note:       z.string().max(60).optional(),
+});
+
 // XLM: paid from the rider's Stellar (testnet) balance — no naira moves, the driver is paid in XLM.
 const PaymentMethod = z.enum(['CASH', 'WALLET', 'XLM']);
 
@@ -61,6 +69,7 @@ export const RideRequestedEvent = BaseRideEvent.extend({
   // Started by the scheduler for a ride booked for later, not by the rider
   // just now: the rider is not looking at the app and has to be told.
   scheduled:        z.boolean().optional(),
+  tripDetails:      TripDetails.optional(),
 });
 
 export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
@@ -151,6 +160,8 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
     dropoff: LatLng,
     offerNgn: z.number().nonnegative(),
   })).max(5).optional(),
+  // People, luggage, pet and the rider's note: seen before the driver bids.
+  tripDetails:           TripDetails.optional(),
 });
 
 // Fired by api-gateway when driver sends a counter-offer via WebSocket.

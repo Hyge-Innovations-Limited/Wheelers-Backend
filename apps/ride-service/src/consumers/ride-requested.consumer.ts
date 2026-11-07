@@ -1,5 +1,5 @@
 import { driverClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
-import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor } from '@wheleers/config';
+import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor, tripDetailsColumns, tripDetailsFromRow } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
 import {
@@ -264,6 +264,7 @@ export function createRideRequestedConsumer(params: {
         channel: event.channel ?? 'UNKNOWN',
         pickupZone: zoneFor(event.pickup.lat, event.pickup.lng),
         destZone: zoneFor(event.destination.lat, event.destination.lng),
+        ...tripDetailsColumns(event.tripDetails),
       });
     } catch (err) {
       console.warn(`[ride-service] ride create skipped:`, (err as any)?.message ?? err);
@@ -757,6 +758,7 @@ export function createRideRequestedConsumer(params: {
       ratePerKmNgn: pricing.ratePerKmNgn,
       plannedDistanceKm: ride.distanceKm ?? undefined,
       plannedDurationSeconds: ride.durationSeconds ?? undefined,
+      ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
       timestamp: new Date().toISOString(),
     };
   }

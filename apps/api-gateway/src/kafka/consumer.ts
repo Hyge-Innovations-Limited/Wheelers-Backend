@@ -991,6 +991,8 @@ export async function handleRideEvent(
       riderCount: event.riderCount ?? 1,
       stopKinds: event.stopKinds ?? [],
       groupMembers: event.groupMembers ?? [],
+      // People, luggage, pet, the rider's note. Absent: booked without them.
+      ...(event.tripDetails ? { tripDetails: event.tripDetails } : {}),
     });
     // The rider's waiting screen: drivers who saw the price, and the search's clock.
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
