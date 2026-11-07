@@ -1868,6 +1868,8 @@
   }
 
   function openSchedule() {
+    // A ride for later is a trip of its own: the box starts fresh.
+    resetTripBox();
     sched.day = null;
     sched.minutes = null;
     sched.at = null;
@@ -2492,14 +2494,23 @@
    * The details the server has for this trip: what the rider said in the chat ("3 of us, with my dog"),
    * or what the last search went out with (search again). Taken until the rider changes the box.
    */
+  var tripKey = null;        // the trip the box is for: another trip starts it at 1 person, no, no
+  function tripKeyOf(s) {
+    if (!s) return null;
+    var r = s.phase === 'price' || s.phase === 'offers' ? s.route : s.lastSearch && s.lastSearch.route;
+    if (!r) return s.phase;
+    return [r.pickupAddress, r.destAddress, (r.stopAddresses || []).join('|')].join('>');
+  }
   function adoptServerTrip(s) {
-    var said = s && (s.tripDetails || (s.lastSearch && s.lastSearch.tripDetails));
-    if (tripTouched) return drawTripBoxes();
-    if (!said || typeof said.passengers !== 'number') {
-      // A trip to price with nothing said for it: 1 person, no, no (never the last trip's details).
-      if (s && s.phase === 'price') tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
-      return drawTripBoxes();
+    var key = tripKeyOf(s);
+    if (key !== tripKey) {
+      // Another trip (or none): never the last trip's people, pet or note, touched or not.
+      tripKey = key;
+      tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+      tripTouched = false;
     }
+    var said = s && (s.tripDetails || (s.lastSearch && s.lastSearch.tripDetails));
+    if (tripTouched || !said || typeof said.passengers !== 'number') return drawTripBoxes();
     tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, Math.round(said.passengers)));
     tripInfo.luggage = said.luggage === true;
     tripInfo.pet = said.pet === true;

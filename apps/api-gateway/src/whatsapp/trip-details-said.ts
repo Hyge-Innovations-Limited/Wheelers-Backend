@@ -29,7 +29,7 @@ const SOME = '(?:(?:my|our|some|a|an|the|two|2|three|3|big|small|little|heavy)\\
 /** "we are 3" ends there, or goes on with people / of us: "we are two minutes away" is not a head count. */
 const COUNT_ENDS = '(?:\\s+(?:people|persons|passengers|of\\s+us)\\b|(?=\\s*(?:[,!?]|\\.(?!\\d)|$|\\s+(?:and|with|from|to|going|pls|please|abeg)\\b)))';
 /** "a pet shop", "cat food", "With Bags Plaza": a thing or a place, not what the rider has with them. */
-const NOT_CARRIED = '(?!\\s+(?:shop|store|food|walker|clinic|plaza|ltd|limited|market|street|road|close|avenue)\\b)';
+const NOT_CARRIED = '(?!\\s+(?:shop|store|food|walker|clinic|plaza|ltd|limited|market|street|road|avenue)\\b)';
 
 type Rule = { re: RegExp; read: (m: RegExpMatchArray) => SaidTripDetails };
 // Applied in this order: a "no bags" anywhere wins over a "with bags".

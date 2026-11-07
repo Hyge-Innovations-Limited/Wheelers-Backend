@@ -571,8 +571,8 @@ async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
       durationMin: Math.ceil((last.durationSeconds ?? 0) / 60),
       suggestedFareNgn: last.suggestedFareNgn,
     } : null,
-    // Search again goes out with the same people, luggage, pet and note.
-    ...(last?.tripDetails ? { tripDetails: last.tripDetails } : {}),
+    // Search again goes out with the same people, luggage, pet and note, and what was said in the chat since.
+    ...(last ? await searchTripDetails(deps.redisClient, userId, undefined, last.tripDetails) : {}),
   };
 }
 

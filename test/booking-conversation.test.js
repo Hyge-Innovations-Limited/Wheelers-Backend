@@ -3322,13 +3322,20 @@ test('"3 of us", "with my dog", "with luggage" typed in the chat: kept for the s
     await say(deps, who, 'Osaro Isokpan street with luggage');
     assert.ok(heard.every((m) => !/luggage/i.test(m)), 'the model never sees "with luggage" as part of a place');
     assert.deepEqual(await saidTripDetails(redis, user.id), { passengers: 3, luggage: true, pet: true });
+    // At the trip's confirmation, then at the price: a details-only message asks that question again.
+    assert.equal(await bidState.getBookingStage(redis, user.id), 'awaiting_trip_confirm');
+    await say(deps, who, 'we are 2');
+    assert.equal(textOf(last(sent)), 'Got it: 2 people · luggage · a pet. Reply *yes* to confirm the trip.');
+    await bidState.setBookingStage(redis, user.id, 'awaiting_price');
+    await say(deps, who, 'no pets');
+    assert.equal(textOf(last(sent)), "Got it: 2 people · luggage · no pet. What's your price for this ride?");
     await say(deps, who, '2,000');
     const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED')?.event;
     assert.ok(request, 'the ride was published');
-    assert.deepEqual(request.tripDetails, { passengers: 3, luggage: true, pet: true });
+    assert.deepEqual(request.tripDetails, { passengers: 2, luggage: true, pet: false });
     // They went with that search: the next trip starts fresh, and search again keeps them.
     assert.equal(await saidTripDetails(redis, user.id), undefined);
-    assert.deepEqual((await bidState.getLastRoute(redis, user.id)).tripDetails, { passengers: 3, luggage: true, pet: true });
+    assert.deepEqual((await bidState.getLastRoute(redis, user.id)).tripDetails, { passengers: 2, luggage: true, pet: false });
   } finally {
     delete process.env.WHATSAPP_TRIP_DETAILS_CHAT;
   }

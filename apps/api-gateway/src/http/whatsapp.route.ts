@@ -307,6 +307,7 @@ export async function handleIncomingMetaMessage(
           const next = stageNow === 'awaiting_pickup' || stageNow === 'editing_pickup' ? 'Where should your driver pick you up?'
             : stageNow === 'awaiting_destination' || stageNow === 'editing_destination' ? 'Where are you going?'
             : stageNow === 'awaiting_price' ? "What's your price for this ride?"
+            : stageNow === 'awaiting_trip_confirm' || stageNow === 'awaiting_route_confirmation' ? 'Reply *yes* to confirm the trip.'
             : trip ? 'Drivers see it when you book.'
             : 'Where are you going?';
           await replyAndLog(deps, phone, incomingMessage, `Got it: ${saidLine(kept)}. ${next}`);

@@ -254,7 +254,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
         repriced: true,
         route: rideRequested.route,
         // People, luggage, pet only: the note is for the driver who gets the ride.
-          ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
+        ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
         timestamp,
         // A re-price replaces the offer card in the driver app. Omitting these
         // stripped the group badge and the pickup/dropoff labels off a shared

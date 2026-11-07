@@ -59,6 +59,15 @@ async function driver() {
 const planner = { planRoute: async () => ({ distanceKm: 10, durationSeconds: 1500, suggestedFareNgn: 5000, minOfferNgn: 4100, ratePerKmNgn: 400, geometry: { coordinates: [{ lat: 6.6, lng: 3.35 }, { lat: 6.5, lng: 3.36 }], bounds: { northEast: { lat: 6.6, lng: 3.4 }, southWest: { lat: 6.5, lng: 3.3 } } } }) };
 const trip = { pickup: { lat: 6.6018, lng: 3.3515, address: 'Opebi' }, destination: { lat: 6.4969, lng: 3.3556, address: 'Surulere' }, offerNgn: 5200 };
 
+/** memoryRedis with SET NX, as the idempotent routes use it. */
+function lockingRedis() {
+  const r = memoryRedis();
+  r.send = async (cmd, key, value, nx) => {
+    if (cmd === 'SET' && nx === 'NX') { if (r.store.has(key)) return null; r.store.set(key, value); return 'OK'; }
+    return null;
+  };
+  return r;
+}
 function world() {
   const redis = memoryRedis();
   const published = [];
@@ -242,6 +251,11 @@ test('the ride page: search again after nobody took it goes out with the same de
     const state = await call('GET', '/ride-page/state');
     assert.equal(state.body.phase, 'idle', JSON.stringify(state.body).slice(0, 200));
     assert.deepEqual(state.body.lastSearch.tripDetails, details, 'the page shows them again');
+    // A pet said in the chat after the search ended is added for search again.
+    const { rememberSaidTripDetails } = require('../apps/api-gateway/dist/whatsapp/trip-details-said.js');
+    await rememberSaidTripDetails(w.redis, riderId, { pet: true });
+    assert.deepEqual((await call('GET', '/ride-page/state')).body.lastSearch.tripDetails, { ...details, pet: true });
+    await w.redis.del(`whatsapp:user:${riderId}:trip-details`);
     // Search again from an older page that sends nothing: still the same details.
     await call('POST', '/ride-page/search-again', { amountNgn: 8200 });
     const again = w.published.filter((e) => e.eventType === 'RIDE_REQUESTED')[1];
@@ -273,6 +287,40 @@ test('switched off (TRIP_DETAILS_BOX not on): no box on Set your price, and deta
     await handleRideMessage('ride:request', { ...trip, tripDetails: { passengers: 3, luggage: true, pet: true } }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
     const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
     assert.equal(requested.tripDetails, undefined);
+
+    // The ride page's Find: dropped too.
+    const pageRider = await user('RIDER');
+    await prisma.wallet.create({ data: { userId: pageRider, balanceNgn: 0 } });
+    const pw = world();
+    const bearer = local.createWalletPageToken(pageRider, 'ride', JWT_SECRET, local.RIDE_PAGE_TOKEN_TTL_SECONDS);
+    const pageCall = async (path, body) => {
+      const raw = [Buffer.from(JSON.stringify(body))];
+      const req = { method: 'POST', headers: { authorization: `Bearer ${bearer}` }, async *[Symbol.asyncIterator]() { for (const c of raw) yield c; } };
+      const res = { statusCode: 200, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+      await handleRidePageRoute(req, res, { jwtSecret: JWT_SECRET, redisClient: pw.redis, publisher: pw.publisher, paymentsClient: {}, notifyChat: async () => {} }, new URL(`http://x${path}`));
+      return res;
+    };
+    await bidState.storePendingRoute(pw.redis, pageRider, {
+      pickupLat: 6.6018, pickupLng: 3.3515, pickupAddress: 'Opebi', destLat: 6.4969, destLng: 3.3556, destAddress: 'Surulere',
+      distanceKm: 12, durationSeconds: 1800, suggestedFareNgn: 7900, minOfferNgn: 7000, ratePerKmNgn: 400,
+    });
+    await pageCall('/ride-page/find', { amountNgn: 7900, tripDetails: { passengers: 3, luggage: true, pet: true } });
+    const fromPage = pw.published.find((e) => e.eventType === 'RIDE_REQUESTED');
+    made.rides.push(fromPage.rideId);
+    assert.equal(fromPage.tripDetails, undefined);
+    await prisma.wallet.deleteMany({ where: { userId: pageRider } });
+
+    // The app's ride for later (POST /scheduled-rides): not kept.
+    const { handleCreateScheduledRideRoute } = require('../apps/api-gateway/dist/http/ride.route.js');
+    const appRider = await user('RIDER');
+    const body = JSON.stringify({ scheduledFor: new Date(Date.now() + 3 * 3600_000).toISOString(), pickup: trip.pickup, destination: trip.destination, stops: [], tripDetails: { passengers: 3, luggage: true, pet: true } });
+    const req = { method: 'POST', headers: { authorization: `Bearer ${local.createLocalAccessToken(appRider, JWT_SECRET)}`, 'idempotency-key': `trip-details-${appRider}` }, async *[Symbol.asyncIterator]() { yield Buffer.from(body); } };
+    const res = { statusCode: 0, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+    await handleCreateScheduledRideRoute(req, res, { jwtSecret: JWT_SECRET, routePlanner: planner, dispatcherQueue: { add: async () => ({}) }, leadTimeMs: 600_000, redisClient: lockingRedis() });
+    assert.ok(res.statusCode < 300, JSON.stringify(res.body));
+    const scheduled = await prisma.scheduledRide.findFirst({ where: { riderId: appRider } });
+    assert.equal(scheduled.tripDetails, null);
+    await prisma.scheduledRide.deleteMany({ where: { riderId: appRider } });
   } finally {
     process.env.TRIP_DETAILS_BOX = 'on';
   }

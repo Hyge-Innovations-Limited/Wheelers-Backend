@@ -423,3 +423,41 @@ test('a ride booked in the app is unchanged: the app\'s push, its offers stay in
   assert.equal(await redis.get(`ride:${event.rideId}:app-only`), '1');
   assert.deepEqual(pushes.map((p) => p.eventType), ['PUSH_SEND', 'IN_APP_SEND']);
 });
+
+/* ── trip details on a ride for later ─────────────────────────────────── */
+
+test('a ride for later keeps its trip details (box switched on) and its search goes out with them; switched off, none are kept', async () => {
+  const { dispatchSingleRide } = require('../apps/ride-service/dist/handlers/scheduled-rides.handler.js');
+  const details = { passengers: 2, luggage: true, pet: false, note: 'Blue gate' };
+  const before = process.env.TRIP_DETAILS_BOX;
+  try {
+    process.env.TRIP_DETAILS_BOX = 'on';
+    const { deps } = world();
+    const rider = await makeRider();
+    await bidState.markWhatsappInbound(deps.redisClient, rider);
+    assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.tripDetailsBox, true, 'the page shows the box');
+    const booked = await call(deps, rider, 'POST', '/ride-page/schedule', { pickup: YABA, destination: VI, scheduledFor: inMinutes(180), tripDetails: details });
+    assert.equal(booked.status, 201, JSON.stringify(booked.body));
+    const row = await prisma.scheduledRide.findUnique({ where: { id: booked.body.item.id } });
+    assert.deepEqual(row.tripDetails, details);
+
+    // Its search starts (an app ride for later, so no chat checks): the event carries them.
+    const app = await prisma.scheduledRide.create({ data: { riderId: rider, scheduledFor: new Date(Date.now() + 5 * 60_000),
+      pickupLat: YABA.lat, pickupLng: YABA.lng, pickupAddress: YABA.address, destLat: VI.lat, destLng: VI.lng, destAddress: VI.address,
+      plannedDistanceKm: 11.4, plannedDurationSeconds: 1680, fareEstimateNgn: 5200, tripDetails: details } });
+    await dispatchSingleRide(app.id, { rideEventsProducer: new Proxy({}, { get: () => async () => {} }), redis: null });
+    const after = await prisma.scheduledRide.findUnique({ where: { id: app.id } });
+    assert.equal(after.status, 'DISPATCHED');
+    const outbox = await prisma.outboxEvent.findFirst({ where: { key: after.requestedRideId } });
+    assert.deepEqual(outbox.payload.tripDetails, details);
+    await prisma.outboxEvent.deleteMany({ where: { key: after.requestedRideId } });
+
+    delete process.env.TRIP_DETAILS_BOX;
+    assert.equal((await call(deps, rider, 'GET', '/ride-page/state')).body.tripDetailsBox, false, 'switched off: no box');
+    const off = await call(deps, rider, 'POST', '/ride-page/schedule', { pickup: YABA, destination: IKEJA, scheduledFor: inMinutes(300), tripDetails: details });
+    assert.equal(off.status, 201, JSON.stringify(off.body));
+    assert.equal((await prisma.scheduledRide.findUnique({ where: { id: off.body.item.id } })).tripDetails, null);
+  } finally {
+    if (before === undefined) delete process.env.TRIP_DETAILS_BOX; else process.env.TRIP_DETAILS_BOX = before;
+  }
+});
