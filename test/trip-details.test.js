@@ -87,6 +87,19 @@ test('the note drivers see: one line, no phone numbers or links, at most 60 char
   assert.equal(cleanTripNote('x'.repeat(80)).length, 60);
   assert.equal(cleanTripNote('   '), undefined);
   assert.equal(cleanTripNote(42), undefined);
+  // However a phone number, handle or link is written, it does not reach drivers (audit 7 Nov).
+  const U = (n) => String.fromCodePoint(n);
+  const digitsIn = (start) => Array.from('08031234567').map((d) => U(start + Number(d))).join('');
+  for (const sneaky of ['080/3123/4567', '080_312_345_67', '0803*123*4567', `0803${U(0xad)}1234${U(0xad)}567`, `0803${U(0x2060)}1234567`, digitsIn(0xff10), digitsIn(0x660),
+    'zero eight zero three one two three four five six seven', 'mysite.xyz', 'bit .ly/abc', 'wa . me / 234803', 'example(dot)com', 'ig @john_doe', 'insta: johndoe']) {
+    assert.equal(cleanTripNote(sneaky), undefined, sneaky);
+  }
+  assert.equal(cleanTripNote('House 12 - 14, blue gate'), 'House 12 - 14, blue gate', 'an address with a few numbers stays');
+  // Never half an emoji at the 60th character (the booking would be refused): within the event's limit.
+  const emojiAt60 = cleanTripNote('a'.repeat(59) + U(0x1f600));
+  assert.equal(emojiAt60, 'a'.repeat(59));
+  assert.equal(cleanTripNote(U(0xd800) + 'abc'), 'abc');
+  assert.equal(RideRequestedEvent.shape.tripDetails.unwrap().shape.note.safeParse(cleanTripNote('b'.repeat(40) + U(0x1f600).repeat(20))).success, true);
   const started = Date.now();
   cleanTripNote('a'.repeat(200_000) + '.c');
   assert.ok(Date.now() - started < 200, 'a long note is cut before the filters run');
@@ -121,6 +134,10 @@ test('app booking with people, luggage, pet and a note: saved on the ride, on th
   // Its offer to a driver, then the gateway's ride:offer to the driver's app.
   const offer = await offerFor(requested, d);
   assert.deepEqual(offer.tripDetails, details);
+  const repriced = [];
+  await createRideEventsProducer({ send: async (_topic, value) => { repriced.push(value); }, sendBatch: async (batch) => { repriced.push(...batch.map((m) => m.value)); } })
+    .sendUpdatedOfferToDriver({ driver: { driverId: d.id, userId: d.userId, lat: 6.6, lng: 3.35 }, rideRequested: requested, updatedOfferNgn: 5600, expiresAt: new Date(Date.now() + 60_000) });
+  assert.deepEqual(repriced.find((v) => v.eventType === 'RIDE_OFFER_SENT').tripDetails, details, 'a new price keeps them');
   await handleRideEvent(offer, w.deps, new Map());
   const card = w.toApp.find((m) => m.type === 'ride:offer' && m.userId === d.userId);
   assert.deepEqual(card.payload.tripDetails, details);
@@ -128,6 +145,13 @@ test('app booking with people, luggage, pet and a note: saved on the ride, on th
   // Through the trip: the driver's snapshot of the ride.
   const snapshot = await loadDriverRideSnapshot(requested.rideId);
   assert.deepEqual(snapshot.tripDetails, details);
+
+  // The match, live: the app may have lost the bid card, so ride:matched carries them too.
+  await prisma.ride.update({ where: { id: requested.rideId }, data: { driverId: d.id, status: 'DRIVER_ASSIGNED' } });
+  await handleRideEvent({ eventType: 'RIDE_DRIVER_ASSIGNED', rideId: requested.rideId, riderId, driverId: d.id, driverUserId: d.userId, driverName: 'Ada', driverRating: 5, vehiclePlate: 'KJA7', vehicleModel: 'Corolla', etaSeconds: 300, agreedFareNgn: 5200, lockedFareNgn: 5200, paymentMethod: 'WALLET', offeredDriverUserIds: [], timestamp: new Date().toISOString() }, w.deps, new Map()).catch(() => undefined);
+  const matched = w.toApp.find((m) => m.type === 'ride:matched' && m.userId === d.userId);
+  assert.ok(matched, 'ride:matched sent');
+  assert.deepEqual(matched.payload.tripDetails, details);
 });
 
 test('a booking without them (older app, chat) is as before: nothing saved, nothing new on the driver\'s card', async () => {
@@ -181,4 +205,43 @@ test('the WhatsApp ride page: Find drivers sends the rider\'s trip details with 
   assert.equal(requested.channel, 'WHATSAPP');
   assert.deepEqual(requested.tripDetails, { passengers: 2, luggage: true, pet: false, note: 'Two big boxes' });
   await prisma.wallet.deleteMany({ where: { userId: riderId } });
+});
+
+test('the ride page: search again after nobody took it goes out with the same details, and the page is told them', async () => {
+  const w = world();
+  const riderId = await user('RIDER');
+  await prisma.wallet.create({ data: { userId: riderId, balanceNgn: 0 } });
+  try {
+    const deps = { jwtSecret: JWT_SECRET, redisClient: w.redis, publisher: w.publisher, paymentsClient: {}, notifyChat: async () => {} };
+    const call = async (method, path, body) => {
+      const bearer = local.createWalletPageToken(riderId, 'ride', JWT_SECRET, local.RIDE_PAGE_TOKEN_TTL_SECONDS);
+      const raw = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+      const req = { method, headers: { authorization: `Bearer ${bearer}` }, async *[Symbol.asyncIterator]() { for (const c of raw) yield c; } };
+      const res = { statusCode: 200, body: null, setHeader() {}, writeHead(code) { this.statusCode = code; return this; }, end(text) { this.body = text ? JSON.parse(text) : null; } };
+      await handleRidePageRoute(req, res, deps, new URL(`http://x${path}`));
+      return res;
+    };
+    await bidState.storePendingRoute(w.redis, riderId, {
+      pickupLat: 6.6018, pickupLng: 3.3515, pickupAddress: 'Opebi', destLat: 6.4969, destLng: 3.3556, destAddress: 'Surulere',
+      distanceKm: 12, durationSeconds: 1800, suggestedFareNgn: 7900, minOfferNgn: 7000, ratePerKmNgn: 400,
+    });
+    const details = { passengers: 3, luggage: true, pet: false, note: 'Two big boxes' };
+    await call('POST', '/ride-page/find', { amountNgn: 7900, tripDetails: details });
+    const first = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
+    made.rides.push(first.rideId);
+    // Nobody took it: the search is over, the last route stays.
+    await bidState.clearActiveRide(w.redis, riderId);
+    await bidState.markSearchTimedOut(w.redis, riderId, { rideId: first.rideId, offerNgn: 7900, at: new Date().toISOString() });
+    const state = await call('GET', '/ride-page/state');
+    assert.equal(state.body.phase, 'idle', JSON.stringify(state.body).slice(0, 200));
+    assert.deepEqual(state.body.lastSearch.tripDetails, details, 'the page shows them again');
+    // Search again from an older page that sends nothing: still the same details.
+    await call('POST', '/ride-page/search-again', { amountNgn: 8200 });
+    const again = w.published.filter((e) => e.eventType === 'RIDE_REQUESTED')[1];
+    assert.ok(again, 'searched again');
+    made.rides.push(again.rideId);
+    assert.deepEqual(again.tripDetails, details);
+  } finally {
+    await prisma.wallet.deleteMany({ where: { userId: riderId } });
+  }
 });

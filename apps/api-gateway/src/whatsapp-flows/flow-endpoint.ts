@@ -56,7 +56,7 @@ import {
 } from './flow-screens';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
-import { searchTripDetails } from '../whatsapp/trip-details-said';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 
 export interface WhatsappFlowEndpointDeps {
   redisClient: RedisClient;
@@ -1105,6 +1105,7 @@ async function handleFindDrivers(
   });
 
   await deps.publisher.publishRideEvent(event);
+  await clearSaidTripDetails(deps.redisClient, userId);
 
   await storeWhatsappRide(deps.redisClient, rideId, {
     riderId: userId,

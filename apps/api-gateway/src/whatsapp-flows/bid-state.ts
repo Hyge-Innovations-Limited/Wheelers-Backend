@@ -1,4 +1,4 @@
-import { zoneFor, type PriceReason } from '@wheleers/config';
+import { zoneFor, type PriceReason, type TripDetails } from '@wheleers/config';
 import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
@@ -661,6 +661,8 @@ export interface PendingRouteData {
   offerNgn?: number;
   /** Why the suggested price is up (busy area, rain, rush hour) and by how much; null or absent: nothing notable. */
   priceReason?: PriceReason | null;
+  /** People, luggage, pet and a note the trip was searched with (search again keeps them). */
+  tripDetails?: TripDetails;
 }
 
 const PENDING_ROUTE_TTL = BOOKING_TTL;
@@ -785,6 +787,8 @@ export interface LastRouteData {
   stops?: RouteStop[];
   offerNgn: number;
   priceReason?: PriceReason | null;
+  /** People, luggage, pet and a note it was searched with: search again sends them again. */
+  tripDetails?: TripDetails;
 }
 
 const lastRouteKey = (userId: string) => `wa:lastroute:${userId}`;

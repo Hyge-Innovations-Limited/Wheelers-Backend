@@ -7,7 +7,7 @@ import { TIMED_OUT_REPLY, planRouteSafe } from '../../whatsapp/trip';
 import { randomUUID } from 'crypto';
 import { RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { StageContext } from '../stage-context';
-import { searchTripDetails } from '../trip-details-said';
+import { clearSaidTripDetails, searchTripDetails } from '../trip-details-said';
 
 /** The awaitingRouteConfirmation stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function awaitingRouteConfirmation(ctx: StageContext): Promise<boolean> {
@@ -165,7 +165,7 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
       minOfferNgn: pendingRoute.minOfferNgn,
       ratePerKmNgn: pendingRoute.ratePerKmNgn,
       route: pendingRoute.route,
-      ...(await searchTripDetails(deps.redisClient, user.id)),
+      ...(await searchTripDetails(deps.redisClient, user.id, undefined, pendingRoute.tripDetails)),
       timestamp: new Date().toISOString(),
     });
 
@@ -220,7 +220,9 @@ export async function awaitingRouteConfirmation(ctx: StageContext): Promise<bool
       ratePerKmNgn: pendingRoute.ratePerKmNgn,
       route: pendingRoute.route,
       offerNgn,
+      ...(event.tripDetails ? { tripDetails: event.tripDetails } : {}),
     });
+    await clearSaidTripDetails(deps.redisClient, user.id);
 
     const reply = [
       `*Finding you a driver*`,

@@ -9,7 +9,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import type { FlowRequestBody } from './encryption';
 import { geocodeAddress } from '../LLM/geocoding';
 import { storeWhatsappRide, setActiveRide, getActiveRide } from './bid-state';
-import { searchTripDetails } from '../whatsapp/trip-details-said';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 
 export interface RideSearchFlowDeps {
   redisClient: RedisClient;
@@ -218,6 +218,7 @@ async function handleFlowAction(
       });
 
       await deps.publisher.publishRideEvent(event);
+  await clearSaidTripDetails(deps.redisClient, userId);
 
       await storeWhatsappRide(deps.redisClient, rideId, {
         riderId: userId,

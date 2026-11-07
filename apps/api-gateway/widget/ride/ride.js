@@ -2073,6 +2073,7 @@
       scheduledFor: when.toISOString(), pickup: quote.trip.pickup, destination: quote.trip.destination, stops: quote.trip.stops, requestId: sched.requestId, tripDetails: tripDetailsOut()
     }).then(function (answer) {
       track('schedule_saved', { stops: quote.trip.stops.length, daysAhead: dayOffset(when, new Date()) });
+      resetTripBox();
       if (answer && Array.isArray(answer.scheduled)) scheduledRides = answer.scheduled;
       navHome();
       render();
@@ -2458,6 +2459,7 @@
     track('find_tapped', { amountNgn: amount, again: true, autoAccept: autoAccept });
     api('POST', '/ride-page/search-again', { amountNgn: amount, autoAccept: autoAccept, tripDetails: tripDetailsOut() }).then(function (next) {
       if (fromSheet) closeSheets();
+      resetTripBox();
       seenOffers = null;
       apply(next);
     }).catch(function (error) {
@@ -2485,15 +2487,32 @@
      boxes (Set your price, and the ride for later's confirm) show the same answers. */
   var tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
   var TRIP_PEOPLE_MAX = 4;
-  var tripTouched = false;   // the rider changed the box here: what the chat said no longer replaces it
-  /** What the rider said in the chat ("3 of us, with my dog"), until they change the box. */
-  function adoptChatTrip(s) {
-    var said = s && s.tripDetails;
+  var tripTouched = false;   // the rider changed the box here: the server's details no longer replace it
+  /**
+   * The details the server has for this trip: what the rider said in the chat ("3 of us, with my dog"),
+   * or what the last search went out with (search again). Taken until the rider changes the box.
+   */
+  function adoptServerTrip(s) {
+    var said = s && (s.tripDetails || (s.lastSearch && s.lastSearch.tripDetails));
     if (tripTouched || !said || typeof said.passengers !== 'number') return;
     tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, Math.round(said.passengers)));
     tripInfo.luggage = said.luggage === true;
     tripInfo.pet = said.pet === true;
+    tripInfo.note = typeof said.note === 'string' ? said.note : '';
     drawTripBoxes();
+  }
+  /** A search went out with the box: the next trip starts at 1 person, no, no (or what the server says). */
+  function resetTripBox() {
+    tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+    tripTouched = false;
+    drawTripBoxes();
+  }
+  /** At most 60 characters, never half an emoji. */
+  function cutNote(text) {
+    var out = '';
+    var chars = Array.from(text);
+    for (var i = 0; i < chars.length && out.length + chars[i].length <= 60; i++) out += chars[i];
+    return out;
   }
   function tripDetailsOut() {
     var note = tripInfo.note.replace(/\s+/g, ' ').trim();
@@ -2527,7 +2546,8 @@
       track('trip_details_changed', { what: what, passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet });
     });
     box.querySelector('[data-trip="note"]').addEventListener('input', function () {
-      tripInfo.note = this.value.slice(0, 60);
+      tripInfo.note = cutNote(this.value);
+      tripTouched = true;
       drawTripBoxes();
     });
     box.querySelector('[data-trip="note"]').addEventListener('keydown', function (event) {
@@ -2548,7 +2568,6 @@
 
   function drawPrice(s) {
     drawRoute(s.route);
-    adoptChatTrip(s);
     rememberPlaces(s.route, s.places);
     var editable = Boolean(priceTrip(s));
     W.show(W.$('route-edit'), editable);
@@ -2671,6 +2690,7 @@
     track('find_tapped', { amountNgn: amount, suggestedNgn: state && state.route ? state.route.suggestedFareNgn : 0, minNgn: state ? state.minOfferNgn : 0, autoAccept: autoAccept });
     api('POST', '/ride-page/find', { amountNgn: amount, autoAccept: autoAccept, tripDetails: tripDetailsOut() }).then(function (next) {
       seenOffers = null;
+      resetTripBox();
       apply(next);
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
@@ -3866,6 +3886,7 @@
     if (shownView === 'expired' || shownView === 'fatal') return;
     var before = state && state.phase;
     state = next;
+    adoptServerTrip(next);
     if (routeAdd) watchRouteAdd(next);
     // Each answer carries the map key (null: no maps on this server).
     mapsKey = typeof next.mapsKey === 'string' && next.mapsKey ? next.mapsKey : null;

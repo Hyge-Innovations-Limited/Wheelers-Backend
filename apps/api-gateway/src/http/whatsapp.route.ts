@@ -16,8 +16,11 @@ import { asksForRiderMemory } from '../LLM/conversation-window';
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
-import { readSaidTripDetails, rememberSaidTripDetails, saidLine, searchTripDetails } from '../whatsapp/trip-details-said';
-import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
+import { chatTripDetailsOn, clearSaidTripDetails, readSaidTripDetails, rememberSaidTripDetails, saidLine, searchTripDetails } from '../whatsapp/trip-details-said';
+
+/** Where trip-detail words are never read: the bot is waiting on something else. */
+const TRIP_DETAILS_QUIET_STAGES = new Set(['awaiting_cancel_reason', 'awaiting_payment', 'awaiting_withdrawal_amount', 'awaiting_withdrawal_bank', 'awaiting_withdrawal_account', 'awaiting_withdrawal_confirmation']);
+import { storeWhatsappRide, storeLastRoute, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { SCHEDULED_TEMPLATE_REPLY_ID } from '../whatsapp/scheduled-template';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
@@ -291,16 +294,22 @@ export async function handleIncomingMetaMessage(
 
     // ── People, luggage, pet typed in the chat ("3 of us", "with my dog") ──
     // Kept for the rider's next search (drivers see them before they bid) and
-    // taken out of the message, so the trip in it reads as before. Not in a
-    // live ride, not on a tap, not in a group booking (each seat is one rider).
-    if (!activeRideId && !isLocation && !msgInfo.replyId && !String(bookingStage ?? '').startsWith('group_')) {
+    // taken out of the message, so the trip in it reads as before. Only with
+    // WHATSAPP_TRIP_DETAILS_CHAT=on; not in a live ride, on a tap, in a group
+    // booking, or while the bot waits for a cancel reason, a withdrawal or a payment.
+    const stageNow = String(bookingStage ?? '');
+    if (chatTripDetailsOn() && !activeRideId && !isLocation && !msgInfo.replyId && !stageNow.startsWith('group_') && !TRIP_DETAILS_QUIET_STAGES.has(stageNow)) {
       const details = readSaidTripDetails(incomingMessage);
       if (details) {
         const kept = await rememberSaidTripDetails(deps.redisClient, user.id, details.said);
         if (details.onlyDetails) {
+          // The question the booking is waiting on, again.
           const trip = await getPendingRoute(deps.redisClient, user.id).catch(() => null);
-          await replyAndLog(deps, phone, incomingMessage,
-            trip ? `Noted: ${saidLine(kept)}. Drivers will see it.` : `Noted: ${saidLine(kept)}. Where are you going?`);
+          const next = stageNow === 'awaiting_pickup' || stageNow === 'editing_pickup' ? 'Where should your driver pick you up?'
+            : stageNow === 'awaiting_destination' || stageNow === 'editing_destination' ? 'Where are you going?'
+            : trip ? 'Drivers see it when you book.'
+            : 'Where are you going?';
+          await replyAndLog(deps, phone, incomingMessage, `Got it: ${saidLine(kept)}. ${next}`);
           return;
         }
         incomingMessage = details.rest;
@@ -758,10 +767,14 @@ export async function handleIncomingMetaMessage(
         minOfferNgn: lastRoute.minOfferNgn,
         ratePerKmNgn: lastRoute.ratePerKmNgn,
         route: lastRoute.route as never,
-        ...(await searchTripDetails(deps.redisClient, user.id)),
+        ...(await searchTripDetails(deps.redisClient, user.id, undefined, lastRoute.tripDetails)),
         timestamp: new Date().toISOString(),
       });
       await deps.publisher.publishRideEvent(searchEvent);
+      if (searchEvent.tripDetails) {
+        await storeLastRoute(deps.redisClient, user.id, { ...lastRoute, tripDetails: searchEvent.tripDetails });
+        await clearSaidTripDetails(deps.redisClient, user.id);
+      }
 
       await storeWhatsappRide(deps.redisClient, rideId, {
         riderId: user.id,

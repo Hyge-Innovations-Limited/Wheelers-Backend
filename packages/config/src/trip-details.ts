@@ -16,23 +16,44 @@ export type TripDetails = {
 export const TRIP_PASSENGERS_MAX = 4;
 export const TRIP_NOTE_MAX = 60;
 
-// A link or a phone number in the note would take the trip off the app.
-const LINK = /\b(?:https?:\/\/|www\.)\S+|\b\S+\.(?:com|ng|net|org|io|me|co|app|link|ly)(?:\/\S*)?\b/gi;
-const PHONE = /\+?\d[\d\s().-]{5,}\d/g;
+// A link, a handle or a phone number in the note would take the trip off the app.
+const LINK = /\b(?:https?:\/\/|www\.)\S+|\b[\w-]+\s*(?:\.|\(\s*dot\s*\)|\bdot\b)\s*(?:com|ng|net|org|io|me|co|app|link|ly|xyz|info|biz|online|site|shop|store|tv|gg|to|cc|uk|us)\b(?:\s*\/\s*\S*)?/giu;
+const HANDLE = /@\s*[\w.]{2,}|\b(?:ig|insta(?:gram)?|snap(?:chat)?|tiktok|telegram|whatsapp|facebook|fb|twitter)\b\s*[:\-]?\s*[\w.]*/giu;
+/** Five or more numbers in words in a row ("zero eight zero three one"). */
+const SPOKEN_DIGITS = /\b(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine)(?:[\s,.\-]+(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine)){4,}\b/giu;
+/** Seven digits in a note, however they are split up, is a phone number: its digits go. */
+const PHONE_DIGITS = 7;
 
-/** The note as drivers may see it: one line, no links or phone numbers, at most 60 characters. */
+/** At most `max` UTF-16 units, never half an emoji (the event's limit counts units). */
+function cutTo(text: string, max: number): string {
+  let out = '';
+  for (const char of text) {
+    if (out.length + char.length > max) break;
+    out += char;
+  }
+  return out;
+}
+
+/** The note as drivers may see it: one line, no links, handles or phone numbers, at most 60 characters. */
 export function cleanTripNote(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   // Cut first: the filters below must never run over a long string sent to slow the server.
-  const note = value
-    .slice(0, TRIP_NOTE_MAX * 4)
-    .replace(/[\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g, ' ')
+  let note = cutTo(value, TRIP_NOTE_MAX * 4)
+    // Fullwidth and other look-alike digits and letters become plain ones.
+    .normalize('NFKC')
+    // Half an emoji, control and invisible characters (soft hyphens, joiners between digits): gone.
+    // The joiner inside an emoji (U+200D) stays.
+    .replace(/\p{Cs}/gu, '')
+    .replace(/(?!\u200d)[\p{Cc}\p{Cf}\u2028\u2029]/gu, ' ')
+    // Marks piled on one letter draw over the driver's screen: two at most.
+    .replace(/(\p{M}{2})\p{M}+/gu, '$1')
     .replace(LINK, ' ')
-    .replace(PHONE, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, TRIP_NOTE_MAX)
-    .trim();
+    .replace(HANDLE, ' ')
+    .replace(SPOKEN_DIGITS, ' ');
+  if ((note.match(/\p{Nd}/gu) ?? []).length >= PHONE_DIGITS) {
+    note = note.replace(/\p{Nd}/gu, '').replace(/(?:\s*[\/_*,.()+\-]\s*){2,}/g, ' ');
+  }
+  note = cutTo(note.replace(/\s+/g, ' ').trim(), TRIP_NOTE_MAX).trim();
   return note || undefined;
 }
 

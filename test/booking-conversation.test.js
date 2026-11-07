@@ -3265,47 +3265,60 @@ test('"3 of us", "with my dog", "with luggage" typed in the chat: kept for the s
   assert.deepEqual(said('we are 3'), { passengers: 3 });
   assert.deepEqual(said("we're two, with my dog"), { passengers: 2, pet: true });
   assert.deepEqual(said('Me and my wife from Yaba to Lekki'), { passengers: 2 });
-  assert.deepEqual(said('for 4 people and some bags'), { passengers: 4, luggage: true });
+  assert.deepEqual(said('for 4 people with some bags'), { passengers: 4, luggage: true });
   assert.deepEqual(said('I have two suitcases'), { luggage: true });
   assert.deepEqual(said('no luggage, no pet'), { luggage: false, pet: false });
-  assert.equal(said('From Yaba to Ikeja City Mall'), null);
-  assert.equal(said('5 of us'), null, 'more than a car holds: not read');
-  assert.equal(said('Dog Street, Surulere'), null, 'a place name is not a pet');
+  // Not details: plain trips, more than a car holds, place names, other sentences.
+  for (const m of ['From Yaba to Ikeja City Mall', '5 of us', 'Dog Street, Surulere', 'Pet Zone Lekki', 'Luggage Road Ikeja', 'we were 2 minutes late', 'we are two minutes from Yaba', 'from yaba and loads street', "Me and my friend's house in Yaba", 'I have 2 bags of rice to Ikeja', 'group ride for 3 people']) {
+    assert.equal(said(m), null, m);
+  }
   assert.equal(rest('From Yaba to Ikeja City Mall with my dog'), 'From Yaba to Ikeja City Mall');
+  assert.equal(rest('From Yaba, with my dog, to Lekki'), 'From Yaba, to Lekki');
   assert.equal(rest('Me and my wife from Yaba to Lekki'), 'from Yaba to Lekki');
   assert.equal(rest('From Yaba to Lekki, 3 of us with luggage'), 'From Yaba to Lekki');
   assert.equal(readSaidTripDetails('we are 3 with a dog pls').onlyDetails, true);
-  assert.equal(readSaidTripDetails('From Yaba to Lekki, we are 3').onlyDetails, false);
+  // A "yes" with the details is still the rider's yes.
+  assert.deepEqual([readSaidTripDetails('yes, we are 3').rest, readSaidTripDetails('yes, we are 3').onlyDetails], ['yes', false]);
 
-  const redis = memoryRedis();
-  const { deps } = makeDeps(redis);
-  const heard = [];
-  const { sent } = installWorld(calebWorld({ intent: (message, system) => { heard.push(message); return calebWorld().intent(message, system); } }));
-  const who = rider();
-  await say(deps, who, 'hi');
-  const user = await findRider(who);
-  await agree(redis, user);
+  // Switched off (the default): the chat is as before.
+  delete process.env.WHATSAPP_TRIP_DETAILS_CHAT;
+  {
+    const redis = memoryRedis();
+    const { deps } = makeDeps(redis);
+    const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: () => ({ intent: 'other' }) });
+    const who = rider();
+    await riderWithPickup(deps, redis, who);
+    await say(deps, who, 'we are 3 with my dog');
+    assert.doesNotMatch(textOf(last(sent)), /Got it/);
+    assert.equal(await saidTripDetails(redis, (await findRider(who)).id), undefined);
+  }
 
-  // Only the details: noted, and the trip is asked for.
-  await say(deps, who, 'we are 3 with my dog');
-  assert.equal(textOf(last(sent)), 'Noted: 3 people · a pet. Where are you going?');
-  // Then a trip that carries more: the place is read without those words.
-  await say(deps, who, 'From ikorodu garage to Caleb University with luggage');
-  assert.ok(heard.length > 0 && heard.every((m) => !/luggage/i.test(m)), 'the model never sees "with luggage" as part of a place');
-  assert.deepEqual(await saidTripDetails(redis, user.id), { passengers: 3, luggage: true, pet: true });
+  // Switched on: through the webhook, from the pickup to the published search.
+  process.env.WHATSAPP_TRIP_DETAILS_CHAT = 'on';
+  try {
+    const redis = memoryRedis();
+    const { deps, published } = makeDeps(redis);
+    const heard = [];
+    const { sent } = installWorld({ geocode: () => YABA, places: () => null, intent: (message) => { heard.push(message); return { intent: 'other' }; } });
+    const who = rider();
+    await riderWithPickup(deps, redis, who);
+    const user = await findRider(who);
 
-  // The chat's search carries them.
-  const { publishWhatsappRide } = require('../apps/api-gateway/dist/rides/whatsapp-ride.service.js');
-  const events = [];
-  const result = await publishWhatsappRide({ redisClient: redis, publisher: { publishRideEvent: async (e) => { events.push(e); } } }, { id: user.id, phone: who }, {
-    pickupLat: 6.6194, pickupLng: 3.5105, pickupAddress: 'Ikorodu Garage', destLat: 6.6583, destLng: 3.742, destAddress: 'Caleb University',
-    distanceKm: 20, durationSeconds: 2400, suggestedFareNgn: 9000, minOfferNgn: 8000, ratePerKmNgn: 450, confirmed: true,
-  }, 9000);
-  assert.equal(result.ok, true);
-  assert.deepEqual(events[0].tripDetails, { passengers: 3, luggage: true, pet: true });
-
-  // The trip done: the next one starts fresh.
-  const { handleRideEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
-  await handleRideEvent({ eventType: 'RIDE_COMPLETED', rideId: events[0].rideId, riderId: user.id, driverId: require('node:crypto').randomUUID(), fareNgn: 9000, paymentMethod: 'WALLET', timestamp: new Date().toISOString() }, { ...deps, registry: { sendToUser: async () => {}, hasUser: () => false, isUserConnected: async () => false } }, new Map()).catch(() => undefined);
-  assert.equal(await saidTripDetails(redis, user.id), undefined);
+    // Only the details: the question the booking waits on, again.
+    await say(deps, who, 'we are 3 with my dog');
+    assert.equal(textOf(last(sent)), 'Got it: 3 people · a pet. Where are you going?');
+    // The destination with more details: read without them.
+    await say(deps, who, 'Osaro Isokpan street with luggage');
+    assert.ok(heard.every((m) => !/luggage/i.test(m)), 'the model never sees "with luggage" as part of a place');
+    assert.deepEqual(await saidTripDetails(redis, user.id), { passengers: 3, luggage: true, pet: true });
+    await say(deps, who, '2,000');
+    const request = published.find((p) => p.event?.eventType === 'RIDE_REQUESTED')?.event;
+    assert.ok(request, 'the ride was published');
+    assert.deepEqual(request.tripDetails, { passengers: 3, luggage: true, pet: true });
+    // They went with that search: the next trip starts fresh, and search again keeps them.
+    assert.equal(await saidTripDetails(redis, user.id), undefined);
+    assert.deepEqual((await bidState.getLastRoute(redis, user.id)).tripDetails, { passengers: 3, luggage: true, pet: true });
+  } finally {
+    delete process.env.WHATSAPP_TRIP_DETAILS_CHAT;
+  }
 });

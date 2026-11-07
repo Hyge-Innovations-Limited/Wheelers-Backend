@@ -28,7 +28,7 @@ import {
   clearSearchTimedOut,
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
-import { searchTripDetails } from '../whatsapp/trip-details-said';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 import { startSearchClock } from './search-status';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
@@ -80,8 +80,9 @@ export async function publishWhatsappRide(
   if (!claimed) return { ok: false, code: 'ALREADY_PUBLISHING' };
 
   const rideId = randomUUID();
-  // The ride page's box, else what the rider said in the chat ("3 of us", "with my dog").
-  const details = await searchTripDetails(deps.redisClient, rider.id, tripDetails);
+  // The ride page's box, else what the rider said in the chat ("3 of us", "with my dog"),
+  // else the trip's own (searching a last trip again).
+  const details = await searchTripDetails(deps.redisClient, rider.id, tripDetails, pendingRoute.tripDetails);
   const event = RideRequestedEvent.parse({
     eventType: 'RIDE_REQUESTED',
     channel: 'WHATSAPP',
@@ -138,7 +139,9 @@ export async function publishWhatsappRide(
   await setActiveRide(deps.redisClient, rider.id, rideId);
   // The waiting screen's countdown, until the ride service sends its own clock with the first offer.
   await startSearchClock(deps.redisClient, rideId);
-  await storeLastRoute(deps.redisClient, rider.id, { ...pendingRoute, offerNgn });
+  await storeLastRoute(deps.redisClient, rider.id, { ...pendingRoute, offerNgn, ...details });
+  // What the chat said went with this search: a different trip next starts fresh.
+  await clearSaidTripDetails(deps.redisClient, rider.id);
   await clearSearchTimedOut(deps.redisClient, rider.id);
   // The claim only had to cover the moment of publishing. Left to expire on its
   // own it blocked a rider who cancelled and searched again within 30 seconds;

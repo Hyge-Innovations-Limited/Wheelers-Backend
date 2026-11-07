@@ -1607,6 +1607,8 @@ export async function handleRideEvent(
       pickup: rideSnapshot?.pickup,
       destination: rideSnapshot?.destination,
       stops: rideSnapshot?.stops ?? [],
+      // People, luggage, pet and the rider's note: the app may no longer have the bid card.
+      ...(rideSnapshot?.tripDetails ? { tripDetails: rideSnapshot.tripDetails } : {}),
       driverId: event.driverId,
       driverName: event.driverName,
       driverRating: event.driverRating,

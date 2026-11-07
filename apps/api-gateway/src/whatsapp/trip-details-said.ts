@@ -13,48 +13,59 @@ import type { RedisClient } from '../redis/client';
  */
 export type SaidTripDetails = { passengers?: number; luggage?: boolean; pet?: boolean };
 
+/** Off unless WHATSAPP_TRIP_DETAILS_CHAT=on: the chat reads these phrases only once it is switched on. */
+export function chatTripDetailsOn(): boolean {
+  return process.env.WHATSAPP_TRIP_DETAILS_CHAT?.trim() === 'on';
+}
+
 const COUNT: Record<string, number> = { 1: 1, 2: 2, 3: 3, 4: 4, one: 1, two: 2, three: 3, four: 4 };
 const N = '(1|2|3|4|one|two|three|four)';
-const FRIEND = '(?:wife|husband|friend|sister|brother|mum|mom|mother|dad|father|son|daughter|child|kid|baby|colleague|partner|girlfriend|boyfriend|cousin|aunty|auntie|uncle|babe|guy)';
-const LEAD = '(?:with|and|plus|carrying|i\\s+have|we\\s+have|i\\s+get|got)';
+const FRIEND = '(?:wife|husband|friend|sister|brother|mum|mom|mother|dad|father|son|daughter|child|kid|baby|colleague|partner|girlfriend|boyfriend|cousin|aunty|auntie|uncle|babe)';
+/** Only words that say the rider has it with them: never "and" (an address can say "Lekki and Loads Street"). */
+const LEAD = '(?:with|carrying|i\\s+have|we\\s+have|i\\s+get|we\\s+get|i\\s+dey\\s+with)';
 const BAGS = '(?:luggage|luggages|suitcases?|bags|boxes|loads?)';
 const PETS = '(?:pets?|dogs?|cats?|puppy|puppies|kittens?)';
 const SOME = '(?:(?:my|our|some|a|an|the|two|2|three|3|big|small|little|heavy)\\s+){0,2}';
+/** "we are 3" ends there, or goes on with people / of us: "we are two minutes away" is not a head count. */
+const COUNT_ENDS = '(?:\\s+(?:people|persons|passengers|of\\s+us)\\b|(?=\\s*(?:[,.!?]|$|\\s+(?:and|with|from|to|going|pls|please|abeg)\\b)))';
 
 type Rule = { re: RegExp; read: (m: RegExpMatchArray) => SaidTripDetails };
+// Applied in this order: a "no bags" anywhere wins over a "with bags".
 const RULES: Rule[] = [
-  { re: new RegExp(`\\bwe\\s*(?:are|[’']re|re|be)\\s+${N}\\b(?:\\s+(?:people|persons|passengers|of\\s+us))?`, 'gi'), read: (m) => ({ passengers: COUNT[m[1]!.toLowerCase()] }) },
+  { re: new RegExp(`\\bwe(?:\\s+are|\\s*['\u2019]re|\\s+be)\\s+${N}${COUNT_ENDS}`, 'gi'), read: (m) => ({ passengers: COUNT[m[1]!.toLowerCase()] }) },
   { re: new RegExp(`\\b${N}\\s+of\\s+us\\b`, 'gi'), read: (m) => ({ passengers: COUNT[m[1]!.toLowerCase()] }) },
   { re: new RegExp(`\\b(?:for\\s+)?${N}\\s+(?:people|persons|passengers|pple)\\b`, 'gi'), read: (m) => ({ passengers: COUNT[m[1]!.toLowerCase()] }) },
-  { re: new RegExp(`\\bme\\s+and\\s+my\\s+${FRIEND}\\b`, 'gi'), read: () => ({ passengers: 2 }) },
+  { re: new RegExp(`\\bme\\s+and\\s+my\\s+${FRIEND}\\b(?!['\u2019])`, 'gi'), read: () => ({ passengers: 2 }) },
   { re: new RegExp(`\\b(?:no|without)\\s+${BAGS}\\b`, 'gi'), read: () => ({ luggage: false }) },
   { re: new RegExp(`\\b(?:no|without)\\s+${PETS}\\b`, 'gi'), read: () => ({ pet: false }) },
-  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${BAGS}\\b`, 'gi'), read: () => ({ luggage: true }) },
+  { re: new RegExp(`\\b${LEAD}\\s+${SOME}${BAGS}\\b(?!\\s+of\\b)`, 'gi'), read: () => ({ luggage: true }) },
   { re: new RegExp(`\\b${LEAD}\\s+${SOME}${PETS}\\b`, 'gi'), read: () => ({ pet: true }) },
-  { re: /\b(?:luggage|luggages|suitcases?)\b/gi, read: () => ({ luggage: true }) },
-  { re: /\b(?:pets?|puppy|puppies|kittens?)\b/gi, read: () => ({ pet: true }) },
 ];
 
 /** Words that are left when a message was only about the details. */
-const FILLER = /^(?:and|also|pls|please|ok|okay|yes|yeah|we|i|have|got|abeg|oh|o|sir|ma|too|as well|then|so|just|[,.!?&+-])*$/i;
+const FILLER = /^(?:and|also|pls|please|abeg|oh|o|sir|ma|too|then|so|just|[,.!?&+-])*$/i;
 
-/** The details a message gives, and the message without those words. Nothing said: null. */
+/**
+ * The details a message gives, and the message without those words. Nothing
+ * said: null. A group ride is left alone (each seat is one rider), and so is
+ * a very long message.
+ */
 export function readSaidTripDetails(message: string): { said: SaidTripDetails; rest: string; onlyDetails: boolean } | null {
-  const text = message.slice(0, 500);
+  if (message.length > 1000 || /\bgroup\b/i.test(message)) return null;
   let said: SaidTripDetails = {};
-  let rest = text;
+  let rest = message;
   for (const rule of RULES) {
     rest = rest.replace(rule.re, (...args) => {
       const match = args.slice(0, -2) as unknown as RegExpMatchArray;
-      const read = rule.read(match);
-      // The first word of each kind wins ("no bags" before a later bare "luggage").
-      said = { ...read, ...said };
+      // An earlier rule wins for the same kind.
+      said = { ...rule.read(match), ...said };
       return ' ';
     });
   }
   if (Object.keys(said).length === 0) return null;
   rest = rest
     .replace(/\s+([,.!?])/g, '$1')
+    .replace(/([,.!?])(?:\s*[,.!?])+/g, '$1')
     .replace(/\s+/g, ' ')
     .replace(/(?:^|\s)(?:and|with|plus)\s*[,.!?]*\s*$/i, '')
     .replace(/^[\s,.&+-]+|[\s,&+-]+$/g, '')
@@ -110,8 +121,12 @@ export async function clearSaidTripDetails(redis: RedisClient, userId: string): 
   await redis.del(KEY(userId)).catch(() => undefined);
 }
 
-/** For a chat search: the details given (the ride page's box), else what was said in the chat; none: {}. */
-export async function searchTripDetails(redis: RedisClient, userId: string, given?: TripDetails): Promise<{ tripDetails?: TripDetails }> {
-  const details = given ?? (await saidTripDetails(redis, userId).catch(() => undefined));
+/**
+ * For a search: the details given (the ride page's box), else what was said
+ * in the chat since the last search, else the trip's own (search again: the
+ * last search's). None: {}.
+ */
+export async function searchTripDetails(redis: RedisClient, userId: string, given?: TripDetails, trips?: TripDetails): Promise<{ tripDetails?: TripDetails }> {
+  const details = given ?? (await saidTripDetails(redis, userId).catch(() => undefined)) ?? trips;
   return details ? { tripDetails: details } : {};
 }

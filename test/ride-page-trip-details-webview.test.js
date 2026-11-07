@@ -241,3 +241,29 @@ test('what the rider said in the chat ("3 of us, with my dog") fills the box; on
   await page.tap(page.el('find'));
   assert.deepEqual(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails, { passengers: 2, luggage: false, pet: true });
 });
+
+test('after a search goes out the box starts again for the next trip; search again shows what the last search had', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  const page = await loadPage(server);
+  a.plus();
+  a.yes('pet');
+  await page.tap(page.el('find'));
+  assert.equal(a.parts.count.textContent, '1', 'the next trip does not carry this one\'s details');
+  assert.deepEqual(a.pressed('pet'), ['no']);
+
+  // Nobody took it: the page is told what that search had, and the box shows it for search again.
+  server.state = { phase: 'idle', balanceNgn: 0, lastSearch: { offerNgn: 5000, route: null, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '2');
+  assert.deepEqual(a.pressed('pet'), ['yes']);
+  assert.equal(a.parts.note.value, 'Small dog');
+});
+
+test('the note is cut at 60 characters without breaking an emoji', async () => {
+  const a = tripBox();
+  const page = await loadPage(priceServer([a.box]));
+  a.type('a'.repeat(59) + String.fromCodePoint(0x1f600));
+  await page.tap(page.el('find'));
+  assert.equal(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails.note, 'a'.repeat(59));
+});

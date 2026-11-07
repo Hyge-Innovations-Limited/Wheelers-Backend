@@ -6,7 +6,7 @@ import {
   rideClient,
   tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, readTripDetails } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, readTripDetails, tripDetailsFromRow } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -570,6 +570,8 @@ function serializeRideDetail(ride: RideWithDriver) {
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),
+    // People, luggage, pet and a note: search again from a restored search sends them again.
+    ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
     driver: ride.driver
       ? {
           id: ride.driver.id,

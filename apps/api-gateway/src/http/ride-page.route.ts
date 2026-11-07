@@ -429,6 +429,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         autoAcceptPriceNgn: autoBook.priceNgn,
         places,
         line,
+        // What the search went out with: the box shows it again for a new price or search again.
+        ...(sameTrip && planned.tripDetails ? { tripDetails: planned.tripDetails } : {}),
         // Paying with XLM, when the rider has a Stellar account and there is a price.
         xlm: await xlmFor(deps, userId),
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
@@ -471,8 +473,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       minOfferNgn: quote.minOfferNgn,
       // Back from a search to change the trip: the price they had named, to start from.
       ...(quote.offerNgn ? { lastOfferNgn: quote.offerNgn } : {}),
-      // "3 of us, with my dog" said in the chat: the box starts with it.
-      ...(await searchTripDetails(deps.redisClient, userId)),
+      // "3 of us, with my dog" said in the chat, else the trip's own (search again): the box starts with it.
+      ...(await searchTripDetails(deps.redisClient, userId, undefined, quote.tripDetails)),
       // The page can change the trip (place search and route planning are set up), starting from these places.
       canEditTrip: Boolean(deps.googleMapsApiKey && deps.routePlanner),
       places: {
@@ -564,6 +566,8 @@ async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
       durationMin: Math.ceil((last.durationSeconds ?? 0) / 60),
       suggestedFareNgn: last.suggestedFareNgn,
     } : null,
+    // Search again goes out with the same people, luggage, pet and note.
+    ...(last?.tripDetails ? { tripDetails: last.tripDetails } : {}),
   };
 }
 
@@ -679,6 +683,7 @@ async function handleSearchAgain(req: IncomingMessage, res: ServerResponse, deps
       priceReason: planned ? planned.priceReason ?? null : last.priceReason ?? null,
       route: planned?.geometry ?? last.route,
       confirmed: true,
+      ...(last.tripDetails ? { tripDetails: last.tripDetails } : {}),
     };
     await storePendingRoute(deps.redisClient, userId, quote);
   }
