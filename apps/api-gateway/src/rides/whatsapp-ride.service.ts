@@ -28,6 +28,7 @@ import {
   clearSearchTimedOut,
 } from '../whatsapp-flows/bid-state';
 import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
+import { searchTripDetails } from '../whatsapp/trip-details-said';
 import { startSearchClock } from './search-status';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
 
@@ -79,6 +80,8 @@ export async function publishWhatsappRide(
   if (!claimed) return { ok: false, code: 'ALREADY_PUBLISHING' };
 
   const rideId = randomUUID();
+  // The ride page's box, else what the rider said in the chat ("3 of us", "with my dog").
+  const details = await searchTripDetails(deps.redisClient, rider.id, tripDetails);
   const event = RideRequestedEvent.parse({
     eventType: 'RIDE_REQUESTED',
     channel: 'WHATSAPP',
@@ -96,7 +99,7 @@ export async function publishWhatsappRide(
     minOfferNgn: pendingRoute.minOfferNgn,
     ratePerKmNgn: pendingRoute.ratePerKmNgn,
     route: pendingRoute.route,
-    ...(tripDetails ? { tripDetails } : {}),
+    ...details,
     timestamp: new Date().toISOString(),
   });
 

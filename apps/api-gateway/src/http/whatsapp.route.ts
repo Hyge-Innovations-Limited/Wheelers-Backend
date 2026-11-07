@@ -16,6 +16,7 @@ import { asksForRiderMemory } from '../LLM/conversation-window';
 import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_KM } from '../LLM/geocoding';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
+import { readSaidTripDetails, rememberSaidTripDetails, saidLine, searchTripDetails } from '../whatsapp/trip-details-said';
 import { storeWhatsappRide, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { SCHEDULED_TEMPLATE_REPLY_ID } from '../whatsapp/scheduled-template';
@@ -150,7 +151,9 @@ export async function handleIncomingMetaMessage(
       if (!fresh) return;
     }
 
-    const { phone, profileName, messageBody: incomingMessage, isLocation, locationLat, locationLng } = msgInfo;
+    const { phone, profileName, isLocation, locationLat, locationLng } = msgInfo;
+    // People, luggage and pet words come out of it below (kept for the search, not read as places).
+    let incomingMessage = msgInfo.messageBody;
 
     // Blue-tick the message and show "typing…" while we think.
     sendTypingIndicator(deps, msgInfo.messageId);
@@ -284,6 +287,24 @@ export async function handleIncomingMetaMessage(
     // FREEZE — someone locking a stolen phone's wallet must not meet a form.
     if (!activeRideId && !/^freeze$/i.test(incomingMessage.trim())) {
       if (await requirePrivacyConsent(deps, user, phone, msgInfo, (first) => handleIncomingMetaMessage(deps, first))) return;
+    }
+
+    // ── People, luggage, pet typed in the chat ("3 of us", "with my dog") ──
+    // Kept for the rider's next search (drivers see them before they bid) and
+    // taken out of the message, so the trip in it reads as before. Not in a
+    // live ride, not on a tap, not in a group booking (each seat is one rider).
+    if (!activeRideId && !isLocation && !msgInfo.replyId && !String(bookingStage ?? '').startsWith('group_')) {
+      const details = readSaidTripDetails(incomingMessage);
+      if (details) {
+        const kept = await rememberSaidTripDetails(deps.redisClient, user.id, details.said);
+        if (details.onlyDetails) {
+          const trip = await getPendingRoute(deps.redisClient, user.id).catch(() => null);
+          await replyAndLog(deps, phone, incomingMessage,
+            trip ? `Noted: ${saidLine(kept)}. Drivers will see it.` : `Noted: ${saidLine(kept)}. Where are you going?`);
+          return;
+        }
+        incomingMessage = details.rest;
+      }
     }
 
     // ── Booking opener → the tappable FLOW form (meta-flows) ──────────────
@@ -737,6 +758,7 @@ export async function handleIncomingMetaMessage(
         minOfferNgn: lastRoute.minOfferNgn,
         ratePerKmNgn: lastRoute.ratePerKmNgn,
         route: lastRoute.route as never,
+        ...(await searchTripDetails(deps.redisClient, user.id)),
         timestamp: new Date().toISOString(),
       });
       await deps.publisher.publishRideEvent(searchEvent);

@@ -2485,6 +2485,16 @@
      boxes (Set your price, and the ride for later's confirm) show the same answers. */
   var tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
   var TRIP_PEOPLE_MAX = 4;
+  var tripTouched = false;   // the rider changed the box here: what the chat said no longer replaces it
+  /** What the rider said in the chat ("3 of us, with my dog"), until they change the box. */
+  function adoptChatTrip(s) {
+    var said = s && s.tripDetails;
+    if (tripTouched || !said || typeof said.passengers !== 'number') return;
+    tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, Math.round(said.passengers)));
+    tripInfo.luggage = said.luggage === true;
+    tripInfo.pet = said.pet === true;
+    drawTripBoxes();
+  }
   function tripDetailsOut() {
     var note = tripInfo.note.replace(/\s+/g, ' ').trim();
     return { passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet, note: note || undefined };
@@ -2512,6 +2522,7 @@
       } else {
         tripInfo[what] = button.getAttribute('data-val') === 'yes';
       }
+      tripTouched = true;
       drawTripBoxes();
       track('trip_details_changed', { what: what, passengers: tripInfo.passengers, luggage: tripInfo.luggage, pet: tripInfo.pet });
     });
@@ -2537,6 +2548,7 @@
 
   function drawPrice(s) {
     drawRoute(s.route);
+    adoptChatTrip(s);
     rememberPlaces(s.route, s.places);
     var editable = Boolean(priceTrip(s));
     W.show(W.$('route-edit'), editable);

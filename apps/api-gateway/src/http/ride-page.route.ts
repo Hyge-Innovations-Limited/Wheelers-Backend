@@ -19,6 +19,7 @@ import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { clearActiveRideIfMatches, clearBookingStage, clearPendingRoute, clearPendingAccept, getPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS, getPageNotice, clearPageNotice, getTripLine, storeTripLine } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
 import { isSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
+import { searchTripDetails } from '../whatsapp/trip-details-said';
 import { autoAcceptOnAtStart, autoAcceptStatus, switchAutoAccept } from '../rides/auto-accept';
 import { RouteChangeRefused, quoteTripRoute, stopFixedPriceEnabled } from '../rides/trip-route-quote';
 import { cancelPendingRoute, readPendingRoute, walletShortfall } from '../rides/trip-route-pending';
@@ -470,6 +471,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       minOfferNgn: quote.minOfferNgn,
       // Back from a search to change the trip: the price they had named, to start from.
       ...(quote.offerNgn ? { lastOfferNgn: quote.offerNgn } : {}),
+      // "3 of us, with my dog" said in the chat: the box starts with it.
+      ...(await searchTripDetails(deps.redisClient, userId)),
       // The page can change the trip (place search and route planning are set up), starting from these places.
       canEditTrip: Boolean(deps.googleMapsApiKey && deps.routePlanner),
       places: {

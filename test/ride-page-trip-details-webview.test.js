@@ -227,3 +227,17 @@ test('Find drivers without touching the box sends the defaults, no note', async 
   const find = page.calls.find((c) => c.url === '/ride-page/find');
   assert.deepEqual(find.body.tripDetails, { passengers: 1, luggage: false, pet: false });
 });
+
+test('what the rider said in the chat ("3 of us, with my dog") fills the box; once they change it, theirs stays', async () => {
+  const a = tripBox();
+  const server = priceServer([a.box]);
+  server.state.tripDetails = { passengers: 3, luggage: false, pet: true };
+  const page = await loadPage(server);
+  assert.equal(a.parts.count.textContent, '3');
+  assert.deepEqual(a.pressed('pet'), ['yes']);
+  a.minus();
+  await page.poll();
+  assert.equal(a.parts.count.textContent, '2', 'a poll does not undo the rider');
+  await page.tap(page.el('find'));
+  assert.deepEqual(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails, { passengers: 2, luggage: false, pet: true });
+});

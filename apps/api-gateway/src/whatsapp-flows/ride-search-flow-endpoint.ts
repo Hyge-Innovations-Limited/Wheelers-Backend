@@ -9,6 +9,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import type { FlowRequestBody } from './encryption';
 import { geocodeAddress } from '../LLM/geocoding';
 import { storeWhatsappRide, setActiveRide, getActiveRide } from './bid-state';
+import { searchTripDetails } from '../whatsapp/trip-details-said';
 
 export interface RideSearchFlowDeps {
   redisClient: RedisClient;
@@ -212,6 +213,7 @@ async function handleFlowAction(
         minOfferNgn: plannedRoute.minOfferNgn,
         ratePerKmNgn: plannedRoute.ratePerKmNgn,
         route: plannedRoute.geometry,
+        ...(await searchTripDetails(deps.redisClient, userId)),
         timestamp: new Date().toISOString(),
       });
 

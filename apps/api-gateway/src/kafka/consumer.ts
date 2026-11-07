@@ -101,6 +101,7 @@ import type { GatewayPublisher } from '../websocket/publisher';
 import { noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rides/search-status';
 import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
+import { clearSaidTripDetails } from '../whatsapp/trip-details-said';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -1746,6 +1747,8 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_COMPLETED') {
+    // "3 of us, with my dog" was for this trip: the next one starts fresh.
+    await clearSaidTripDetails(deps.redisClient, event.riderId);
     const settledReferralUsages = await referralClient.settleRideCashback(event.rideId);
     // An XLM ride: the XLM and the rate it was accepted at, for the receipt and the payment on Stellar.
     const xlmRide = event.paymentMethod === 'XLM' ? await rideClient.findById(event.rideId).catch(() => null) : null;
