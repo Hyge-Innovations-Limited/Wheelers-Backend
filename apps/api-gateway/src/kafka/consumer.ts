@@ -347,16 +347,30 @@ const HELD_TIMEOUT_SWEEP_MS = 30_000;
 
 /** A held search the rider left for a newer one: its drivers told, its bids, hold and cashback settled, nothing said to the rider. */
 async function endMovedOnSearch(deps: StartGatewayConsumerDeps, rideId: string, riderId: string, rideParticipants: Map<string, RideParticipantState>, timestamp: string): Promise<void> {
-  // Booked after all (a late acceptance revived it): it stands.
-  const ride = await rideClient.findById(rideId).catch(() => null);
-  if (ride && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(ride.status)) return;
-  if (await acceptSentFor(deps.redisClient, rideId).catch(() => null)) return;
-  const openBids = await driverBidClient.findByRide(rideId).catch(() => []);
-  for (const bid of openBids) {
-    if (!isOpenBid(bid.status)) continue;
-    void deps.registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', { rideId, reason: 'timed_out' });
+  // The same guard as the clock's own end of search: an acceptance between its hold and its "sent"
+  // mark holds this lock, so a hold a booking is about to stand on is never released here.
+  const lock = await takeBookingLock(deps.redisClient, rideId, BOOKING_LOCK_WAIT_MS);
+  // Busy: a booking is in flight; if it falls through, its RIDE_ASSIGNMENT_FAILED ends the search.
+  if (!lock) return;
+  try {
+    // Booked after all (a late acceptance revived it), or one is going through: it stands.
+    const ride = await rideClient.findById(rideId).catch(() => null);
+    if (ride && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(ride.status)) return;
+    const [sent, publishing, state] = await Promise.all([
+      acceptSentFor(deps.redisClient, rideId),
+      acceptPublishingFor(deps.redisClient, rideId),
+      getRideState(deps.redisClient, rideId).catch(() => null),
+    ]);
+    if (sent || publishing || state === 'confirmed' || state === 'in_progress') return;
+    const openBids = await driverBidClient.findByRide(rideId).catch(() => []);
+    for (const bid of openBids) {
+      if (!isOpenBid(bid.status)) continue;
+      void deps.registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', { rideId, reason: 'timed_out' });
+    }
+    await endTimedOutSearch(deps, rideId, riderId, timestamp, openBids, rideParticipants, { quietForRider: true });
+  } finally {
+    await releaseBookingLock(deps.redisClient, lock);
   }
-  await endTimedOutSearch(deps, rideId, riderId, timestamp, openBids, rideParticipants, { quietForRider: true });
 }
 
 /**

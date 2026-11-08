@@ -27,6 +27,8 @@ test.beforeEach(() => { console.log = console.info = console.warn = console.erro
 test.afterEach(() => { Object.assign(console, realConsole); global.fetch = realFetch; });
 test.after(async () => {
   for (const c of clients) await c.send('DEL', 'wheelers:held-bid-timeouts').catch(() => {});
+  await prisma.rideHold.deleteMany({ where: { rideId: { in: made.rides } } }).catch(() => {});
+  await prisma.wallet.deleteMany({ where: { userId: { in: made.users } } }).catch(() => {});
   for (const c of clients) await c.disconnect().catch(() => {});
   await prisma.driverBid.deleteMany({ where: { rideId: { in: made.rides } } });
   await prisma.rideStop.deleteMany({ where: { rideId: { in: made.rides } } });
@@ -173,5 +175,49 @@ test('cancelled during the hold: nothing more; moved on to a new search: the old
     assert.ok(bids.every((b) => b.status !== 'PENDING'), 'its bids are closed');
     assert.equal((await bidState.getPendingAccept(r, riderId))?.rideId, newRide, 'the new search\'s choice is kept');
     assert.equal(await bidState.getActiveRide(r, riderId), newRide);
+  }
+});
+
+test('moved on: the old ride\'s hold goes back; an acceptance in flight on it keeps its hold and its bids', async () => {
+  const holdFor = async (ride, riderId) => {
+    const wallet = await prisma.wallet.upsert({ where: { userId: riderId }, update: {}, create: { userId: riderId, balanceNgn: 6_800, lockedNgn: 3_200 } });
+    await prisma.rideHold.create({ data: { rideId: ride.id, walletId: wallet.id, riderId, amountNgn: 3200 } });
+  };
+  const movedOn = async (r, riderId) => {
+    const newRide = randomUUID();
+    await bidState.setActiveRide(r, riderId, newRide);
+    await bidState.storePendingAccept(r, riderId, { rideId: newRide, driverId: randomUUID(), driverUserId: randomUUID(), driverName: 'Bayo', driverPhone: '', driverRating: 5, totalRides: 0, vehicleModel: 'Camry', vehiclePlate: 'KJA4', etaSeconds: 200, fareNgn: 3500 });
+  };
+
+  // Nothing in flight: released.
+  {
+    const r = await redis();
+    const riderId = await user('RIDER');
+    const { ride } = await searchWithTwoBids(r, riderId);
+    await holdFor(ride, riderId);
+    const w = deps(r);
+    await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
+    await movedOn(r, riderId);
+    await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
+    assert.notEqual((await prisma.rideHold.findUnique({ where: { rideId: ride.id } })).status, 'ACTIVE', 'the old ride\'s hold goes back');
+  }
+  // An acceptance on the old ride holds the booking lock: nothing is released, no bid closed.
+  {
+    const r = await redis();
+    const riderId = await user('RIDER');
+    const { ride } = await searchWithTwoBids(r, riderId);
+    await holdFor(ride, riderId);
+    const w = deps(r);
+    await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
+    await movedOn(r, riderId);
+    const inFlight = await lockLib.takeBookingLock(r, ride.id);
+    try {
+      await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
+    } finally {
+      await lockLib.releaseBookingLock(r, inFlight);
+    }
+    assert.equal((await prisma.rideHold.findUnique({ where: { rideId: ride.id } })).status, 'ACTIVE', 'the booking keeps its hold');
+    const bids = await prisma.driverBid.findMany({ where: { rideId: ride.id } });
+    assert.ok(bids.every((b) => b.status === 'PENDING'), 'no bid closed under a booking');
   }
 });
