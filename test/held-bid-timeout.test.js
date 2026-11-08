@@ -126,3 +126,48 @@ test('the rider paid meanwhile and the driver is booked: the second look ends no
   assert.equal(w.toApp.filter((m) => m.type === 'ride:bid_timeout').length, 0, 'no "search ended" over a booked ride');
   assert.equal(await bidState.getSearchTimedOut(r, riderId), null);
 });
+
+const lockLib = require('../apps/api-gateway/dist/rides/booking-lock.js');
+
+test('still paying at the second look: held again, nothing said', async () => {
+  const r = await redis();
+  const riderId = await user('RIDER');
+  const { ride } = await searchWithTwoBids(r, riderId);
+  const w = deps(r);
+  await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
+  // The choice is still live (chosen again just now): the sweep holds it once more.
+  await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
+  assert.equal(w.toApp.filter((m) => m.type === 'ride:bid_timeout').length, 0);
+  assert.equal(await r.send('ZCARD', 'wheelers:held-bid-timeouts'), 1, 'noted again for later');
+});
+
+test('cancelled during the hold, or moved on to a new search: nothing is said about the old one, and the new choice is kept', async () => {
+  // Cancelled.
+  {
+    const r = await redis();
+    const riderId = await user('RIDER');
+    const { ride } = await searchWithTwoBids(r, riderId);
+    const w = deps(r);
+    await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
+    await lockLib.markSearchEnded(r, ride.id);
+    await bidState.clearPendingAccept(r, riderId);
+    await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
+    assert.equal(w.toApp.filter((m) => m.type === 'ride:bid_timeout').length, 0, 'no late "search ended"');
+    assert.equal(await bidState.getSearchTimedOut(r, riderId), null, 'no late "no driver took it"');
+  }
+  // A new search, a driver chosen on it and being paid for.
+  {
+    const r = await redis();
+    const riderId = await user('RIDER');
+    const { ride } = await searchWithTwoBids(r, riderId);
+    const w = deps(r);
+    await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
+    const newRide = randomUUID();
+    await bidState.setActiveRide(r, riderId, newRide);
+    await bidState.storePendingAccept(r, riderId, { rideId: newRide, driverId: randomUUID(), driverUserId: randomUUID(), driverName: 'Bayo', driverPhone: '', driverRating: 5, totalRides: 0, vehicleModel: 'Camry', vehiclePlate: 'KJA4', etaSeconds: 200, fareNgn: 3500 });
+    await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
+    assert.equal(w.toApp.filter((m) => m.type === 'ride:bid_timeout').length, 0, 'the old search says nothing');
+    assert.equal((await bidState.getPendingAccept(r, riderId))?.rideId, newRide, 'the new search\'s choice is kept');
+    assert.equal(await bidState.getActiveRide(r, riderId), newRide);
+  }
+});

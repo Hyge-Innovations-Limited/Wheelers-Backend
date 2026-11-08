@@ -354,6 +354,14 @@ const HELD_TIMEOUT_SWEEP_MS = 30_000;
 export async function sweepHeldTimeouts(deps: StartGatewayConsumerDeps, rideParticipants: Map<string, RideParticipantState>, now = Date.now()): Promise<void> {
   const due = await takeDueHeldTimeouts(deps.redisClient, now).catch(() => []);
   for (const { rideId, riderId } of due) {
+    // The rider ended this search (cancelled it) or has moved on to another one meanwhile:
+    // nothing is said about it, and the newer search is left alone.
+    if (await isSearchEnded(deps.redisClient, rideId)) continue;
+    const [active, choice] = await Promise.all([
+      getActiveRide(deps.redisClient, riderId).catch(() => null),
+      getPendingAccept(deps.redisClient, riderId).catch(() => null),
+    ]);
+    if ((active && active !== rideId) || (choice && choice.rideId !== rideId)) continue;
     await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId, riderId, timestamp: new Date(now).toISOString() }, deps, rideParticipants)
       .catch((error) => console.warn('[gateway] held bid timeout not ended', { rideId, error: error instanceof Error ? error.message : String(error) }));
   }
@@ -685,7 +693,9 @@ async function endTimedOutSearch(
       }
     }
     await clearActiveRideIfMatches(deps.redisClient, riderId, rideId);
-    await clearPendingAccept(deps.redisClient, riderId).catch(() => {});
+    // Only this search's choice: a rider paying for a driver on a newer search keeps that choice.
+    const choice = await getPendingAccept(deps.redisClient, riderId).catch(() => null);
+    if (!choice || choice.rideId === rideId) await clearPendingAccept(deps.redisClient, riderId).catch(() => {});
     await endOfferCount(deps, rideId);
     await cleanupRideKeys(deps.redisClient, rideId);
     // An app open on the same search (begun on WhatsApp) ends it too.

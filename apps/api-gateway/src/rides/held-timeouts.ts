@@ -21,8 +21,14 @@ export async function takeDueHeldTimeouts(redis: RedisClient, now = Date.now()):
   const taken: Array<{ rideId: string; riderId: string }> = [];
   for (const member of due) {
     if (typeof member !== 'string') continue;
-    // Another gateway took it first: not ours.
-    if ((await redis.send('ZREM', KEY, member)) !== 1) continue;
+    // Another gateway took it first: not ours. Redis failing now: what was taken so far is still ended.
+    let removed: unknown;
+    try {
+      removed = await redis.send('ZREM', KEY, member);
+    } catch {
+      break;
+    }
+    if (removed !== 1) continue;
     const [rideId, riderId] = member.split('|');
     if (rideId && riderId) taken.push({ rideId, riderId });
   }
