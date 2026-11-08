@@ -878,15 +878,16 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
     indriveGuideOn: v.indriveGuideOn === true,
     indriveOffsetNgn: Math.round(finite(v.indriveOffsetNgn, d.indriveOffsetNgn, -1_000, 1_000) / 50) * 50,
-    lincBelowPercent: v.lincBelowPercent === null || v.lincBelowPercent === undefined
+    // A saved value that is not a number leaves the rule off (never switched on at a guess).
+    lincBelowPercent: typeof v.lincBelowPercent !== 'number' || !Number.isFinite(v.lincBelowPercent)
       ? null
       : Math.round(finite(v.lincBelowPercent, 3, 0, 30) * 10) / 10,
-    outerCapNgn: v.outerCapNgn === null || v.outerCapNgn === undefined
+    outerCapNgn: typeof v.outerCapNgn !== 'number' || !Number.isFinite(v.outerCapNgn)
       ? null
       : Math.round(finite(v.outerCapNgn, 17_000, 2_000, 200_000) / 50) * 50,
     outerCapAreas: areaKeysFrom(v.outerCapAreas, d.outerCapAreas),
     outerCapExceptAreas: areaKeysFrom(v.outerCapExceptAreas, d.outerCapExceptAreas),
-    minOfferShare: v.minOfferShare === null || v.minOfferShare === undefined
+    minOfferShare: typeof v.minOfferShare !== 'number' || !Number.isFinite(v.minOfferShare)
       ? null
       : Math.round(finite(v.minOfferShare, 0.9, 0.5, 1) * 100) / 100,
     lincZonesOn: typeof v.lincZonesOn === 'boolean' ? v.lincZonesOn : d.lincZonesOn,
@@ -1397,9 +1398,10 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const lincTripNgn = distanceKm > 0 && tripMinutes !== null
     ? Math.round(lincFullPriceNgn(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * (settings.lincZonesOn ? lincZoneLifts(settings).lifts[lincZone] : 1), settings) * surgeFactor * rainFactor)
     : null;
-  const lincNgn = settings.lincOn && !settings.indriveGuideOn ? lincTripNgn : null;
   // inDrive's one-click price as the guide (in place of Linc, the extra and the high-end floor below).
+  // Without inDrive's price (the floor off) the guide cannot run, and Linc guides as before.
   const indriveGuide = settings.indriveGuideOn && marketFare !== null;
+  const lincNgn = settings.lincOn && !indriveGuide ? lincTripNgn : null;
   if (indriveGuide) {
     suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + settings.indriveOffsetNgn, FARE_ROUNDING_INCREMENT));
     setBy = 'indrive';

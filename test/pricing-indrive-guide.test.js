@@ -27,17 +27,29 @@ const price = (settings, km, minutes, places = {}) => {
 };
 test.after(() => config.setPricingSettings({}));
 
-test('all off (the default): every price is exactly as before', () => {
+test('all off (the default): every price is exactly as before (recorded from the commit before this one)', () => {
   config.setPricingSettings({});
   const s = config.getPricingSettings();
   assert.deepEqual([s.indriveGuideOn, s.indriveOffsetNgn, s.lincBelowPercent, s.outerCapNgn, s.minOfferShare], [false, 0, null, null, null]);
   assert.deepEqual(s.outerCapAreas, ['alimosho', 'ikorodu', 'ajah', 'ibeju-lekki', 'badagry']);
   assert.deepEqual(s.outerCapExceptAreas, ['epe']);
-  for (const [km, min, places] of [[5, 14, {}], [20.2, 37, {}], [45, 95, { origin: area('ikorodu'), destination: YABA }]]) {
-    const before = price(live, km, min, places);
-    const withKeys = price({ ...live, indriveGuideOn: false, lincBelowPercent: null, outerCapNgn: null, minOfferShare: null }, km, min, places);
-    assert.deepEqual([withKeys.suggestedFareNgn, withKeys.minOfferNgn, withKeys.setBy], [before.suggestedFareNgn, before.minOfferNgn, before.setBy], `${km} km`);
+  // suggested, minimum, setBy for each trip, priced by 6f8541d^ (before these settings existed).
+  const before = {
+    live: [[5, 3600, 3300, 'linc'], [20.2, 10050, 9150, 'linc'], [45, 24550, 23650, 'ceiling']],
+    baseline: [[5, 4600, 3700, 'linc'], [20.2, 9200, 8300, 'linc'], [45, 20050, 19150, 'floor']],
+  };
+  const trips = { 5: [14, {}], 20.2: [37, {}], 45: [95, { origin: area('ikorodu'), destination: YABA }] };
+  for (const [name, settings] of [['live', live], ['baseline', config.LIVE_PRICING_BASELINE]]) {
+    for (const [km, suggested, minimum, setBy] of before[name]) {
+      const [min, places] = trips[km];
+      const p = price(settings, km, min, places);
+      assert.deepEqual([p.suggestedFareNgn, p.minOfferNgn, p.setBy], [suggested, minimum, setBy], `${name} ${km} km`);
+    }
   }
+  // A saved value that is not a number leaves a rule off.
+  config.setPricingSettings({ lincBelowPercent: 'x', outerCapNgn: 'x', minOfferShare: 'x' });
+  const bad = config.getPricingSettings();
+  assert.deepEqual([bad.lincBelowPercent, bad.outerCapNgn, bad.minOfferShare], [null, null, null]);
 });
 
 test('inDrive as the guide: its one-click price for the trip ± the offset, never lifted to its high end, no extra on top', () => {
@@ -63,9 +75,17 @@ test('never above Linc: at most (100 − N)% of Linc\'s price for the trip, roun
     assert.ok(capped.suggestedFareNgn <= Math.floor(linc * 0.97 / 50) * 50, `${km} km: ${capped.suggestedFareNgn} vs Linc ${linc}`);
     assert.equal(capped.setBy, 'under-linc');
   }
-  // With inDrive as the guide, a trip where inDrive is already under it is left alone.
+  // With inDrive as the guide, a trip where inDrive is already well under Linc is left alone.
+  const lincFor = price(live, 20.2, 37).lincNgn;
   const cheap = price({ ...live, indriveGuideOn: true, lincBelowPercent: 3 }, 20.2, 37);
-  if (cheap.marketFareNgn < cheap.lincNgn * 0.97) assert.equal(cheap.setBy, 'indrive');
+  assert.ok(cheap.marketFareNgn < lincFor * 0.97, 'this trip: inDrive under 97% of Linc');
+  assert.equal(cheap.setBy, 'indrive');
+  // inDrive's price cannot be had (the floor off): the guide stands aside and Linc guides as before.
+  const noMarket = { ...live, marketFloorOn: false };
+  assert.deepEqual(
+    [price({ ...noMarket, indriveGuideOn: true }, 20.2, 37).suggestedFareNgn, price({ ...noMarket, indriveGuideOn: true }, 20.2, 37).setBy],
+    [price(noMarket, 20.2, 37).suggestedFareNgn, price(noMarket, 20.2, 37).setBy],
+  );
 });
 
 test('outer areas (not Epe): never suggested above the cap; other areas and Epe untouched', () => {

@@ -323,7 +323,8 @@ async function indrive() {
     // npm run pricing indrive guide off
     const turnOn = rest[1] === 'on';
     if (!turnOn && rest[1] !== 'off') throw new Error('Say on or off: npm run pricing indrive guide on 0 (or: indrive guide off)');
-    const offset = rest[2] === undefined ? undefined : number(rest[2], 'the amount over or under inDrive');
+    const offset = rest[2] === undefined ? undefined : Number(rest[2]);
+    if (offset !== undefined && !(Number.isFinite(offset) && Math.abs(offset) <= 1000)) throw new Error('Say the amount over (or under, with a minus) inDrive, at most ₦1,000: npm run pricing indrive guide on -200');
     return save(() => ({ indriveGuideOn: turnOn, ...(offset !== undefined ? { indriveOffsetNgn: offset } : {}) }), (s) => (s.indriveGuideOn
       ? `Prices now follow inDrive's one-click price for the trip${s.indriveOffsetNgn ? ` ${s.indriveOffsetNgn > 0 ? '+' : '−'} ${naira(Math.abs(s.indriveOffsetNgn))}` : ''} (its figures: npm run pricing indrive quiet|rush). Linc as the guide, the extra and the high-end floor are not used while this is on.`
       : 'inDrive is no longer the guide: prices are worked out as before.'));
@@ -719,6 +720,7 @@ async function linc() {
   if (word === 'below') {
     // npm run pricing linc below 3   never more than 97% of Linc's price for the trip; linc below off
     const pct = args[0] === 'off' ? null : number(args[0], 'how far under Linc, in %');
+    if (pct !== null && pct > 30) throw new Error('At most 30% under Linc: npm run pricing linc below 3');
     return save(() => ({ lincBelowPercent: pct }), (s) => (s.lincBelowPercent === null
       ? 'No price is held under Linc any more.'
       : `No price is now more than ${100 - s.lincBelowPercent}% of Linc's price for the trip (${s.lincBelowPercent}% under it${s.lincBonusPercent > 0 ? ', against Linc before its bonus' : ', against the price Linc shows'}).`));
@@ -827,6 +829,7 @@ const commands = {
     const [word, value] = rest;
     if (word === 'cap') {
       const cap = value === 'off' ? null : number(value, 'the cap');
+      if (cap !== null && !(cap >= 2000 && cap <= 200000)) throw new Error('Say the cap in naira, ₦2,000 to ₦200,000: npm run pricing outer cap 17000');
       return save(() => ({ outerCapNgn: cap }), (s) => (s.outerCapNgn === null
         ? 'No cap on outer-area trips any more.'
         : `A trip touching ${s.outerCapAreas.join(', ')} (not ${s.outerCapExceptAreas.join(', ') || 'none'}) is now never suggested above ${naira(s.outerCapNgn)}.`));
@@ -836,6 +839,9 @@ const commands = {
       const known = new Set(config.PRICING_AREAS.map((a) => a.key));
       const unknown = keys.filter((k) => !known.has(k));
       if (!keys.length || unknown.length) throw new Error(`Say the areas, comma-separated, from: ${[...known].join(', ')}${unknown.length ? ` (not known: ${unknown.join(', ')})` : ''}`);
+      const { settings: current } = await pricingClient.loadSettings();
+      const kept = keys.filter((k) => current.outerCapExceptAreas.includes(k));
+      if (kept.length) console.log(`Note: ${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} kept out of the cap (a trip touching it is never capped), so listing it changes nothing.`);
       return save(() => ({ outerCapAreas: keys }), (s) => `The outer cap is now for: ${s.outerCapAreas.join(', ')}.`);
     }
     throw new Error('npm run pricing outer cap 17000 | outer cap off | outer areas ikorodu,alimosho,ajah,ibeju-lekki,badagry');
@@ -844,6 +850,7 @@ const commands = {
     const [word, value] = rest;
     if (word !== 'share') throw new Error('npm run pricing minimum share 0.85 | minimum share off');
     const share = value === 'off' ? null : number(value, 'the share (0.85 = 85% of the suggested price)');
+    if (share !== null && !(share >= 0.5 && share <= 1)) throw new Error('Say the share between 0.5 and 1 (0.85 = 85% of the suggested price): npm run pricing minimum share 0.85');
     return save(() => ({ minOfferShare: share }), (s) => (s.minOfferShare === null
       ? `The lowest offer is back to the suggested price less ${naira(s.minOfferGapNgn)}.`
       : `The lowest offer is now ${Math.round(s.minOfferShare * 100)}% of the suggested price: ₦10,000 suggested, ${naira(Math.ceil(10000 * s.minOfferShare / 50) * 50)} lowest.`));
