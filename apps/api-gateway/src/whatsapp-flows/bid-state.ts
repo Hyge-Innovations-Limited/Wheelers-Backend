@@ -69,7 +69,7 @@ export interface WhatsappBid {
 const RIDE_META_TTL = 7200;          // 2 hours
 const BIDS_TTL = 7200;               // 2 hours
 const RIDE_STATE_TTL = 7200;         // 2 hours
-const ACTIVE_RIDE_TTL = 7200;        // 2 hours — outlives the hour-long search (and a price change restarting it)
+const ACTIVE_RIDE_TTL = 7200;        // 2 hours — outlives the search (and a price change restarting it)
 /**
  * Once a driver is assigned the pointer must outlive the trip. It used to
  * expire 30 minutes after booking, so on a long ride "cancel" fell into the
@@ -735,6 +735,8 @@ export interface PendingAcceptData {
 // Long enough for a bank transfer to land: the chosen driver is confirmed by
 // the deposit itself, so the choice has to outlive the trip to the bank app.
 const PENDING_ACCEPT_TTL = 15 * 60;
+/** How long a rider's choice of a driver waits on their payment (seconds). */
+export const PENDING_ACCEPT_TTL_SECONDS = PENDING_ACCEPT_TTL;
 
 function pendingAcceptKey(userId: string): string {
   return `whatsapp:user:${userId}:pending_accept`;

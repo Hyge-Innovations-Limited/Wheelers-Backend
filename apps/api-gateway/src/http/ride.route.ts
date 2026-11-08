@@ -642,7 +642,7 @@ export async function handleActiveRideRoute(
     const code = await tripCodeClient.state(active.id).catch(() => null);
     const tripCode = code?.tripCode && !code.tripCodeVerifiedAt && !code.tripCodeUnlockedAt && ride.status !== "IN_PROGRESS" ? code.tripCode : null;
     // A search still open comes back with its offers, so a rider who closed
-    // the app finds the drivers who answered still there. It closes 30 minutes
+    // the app finds the drivers who answered still there. It closes 5 minutes
     // after the rider last set a price (ride-service restarts the clock then).
     const searching = ride.status === "REQUESTED" || ride.status === "MATCHING";
     // Whether the rider said yes to auto-booking for this search (and at what price), so a restored search shows it.

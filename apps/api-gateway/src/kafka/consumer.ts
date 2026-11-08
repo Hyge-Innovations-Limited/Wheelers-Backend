@@ -36,6 +36,7 @@ import {
   clearActiveRideIfMatches,
   clearPendingAccept,
   getPendingAccept,
+  PENDING_ACCEPT_TTL_SECONDS,
   getActiveRide,
   removeBid,
   IN_TRIP_ACTIVE_RIDE_TTL,
@@ -102,6 +103,7 @@ import { noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rid
 import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { clearSaidTripDetails } from '../whatsapp/trip-details-said';
+import { noteHeldTimeout, takeDueHeldTimeouts } from '../rides/held-timeouts';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -150,6 +152,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   // The receipt's Repeat / Reverse buttons must not be offered for a group seat.
   setGroupRideChecker(async (rideId) => Boolean(await getGroupSeat(deps.redisClient, rideId).catch(() => null)));
   const rideParticipants = new Map<string, RideParticipantState>();
+  // Searches held for a rider who was paying: ended once that choice lapses unpaid.
+  setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
   if (deps.ridePageChat) {
     createPageCatchup({ redis: deps.redisClient, deliver: (userId, item) => deliverPageCatchup(deps, userId, item) }).start();
@@ -339,6 +343,22 @@ function scheduleBidFlush(
  *                    confirmed only when every rider picks the same driver)
  *   WhatsApp refuses the tappable message → the numbered text list
  */
+const HELD_TIMEOUT_SWEEP_MS = 30_000;
+
+/**
+ * A search held at its timeout because the rider was paying for a chosen
+ * driver, looked at again when that choice has lapsed: the same end of search
+ * as the clock's (paid meanwhile: the booking stands and nothing happens;
+ * still paying: held again).
+ */
+export async function sweepHeldTimeouts(deps: StartGatewayConsumerDeps, rideParticipants: Map<string, RideParticipantState>, now = Date.now()): Promise<void> {
+  const due = await takeDueHeldTimeouts(deps.redisClient, now).catch(() => []);
+  for (const { rideId, riderId } of due) {
+    await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId, riderId, timestamp: new Date(now).toISOString() }, deps, rideParticipants)
+      .catch((error) => console.warn('[gateway] held bid timeout not ended', { rideId, error: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
 export async function announceOffers(
   deps: Pick<StartGatewayConsumerDeps, 'redisClient' | 'whatsappNotifier'> & Partial<StartGatewayConsumerDeps>,
   phone: string,
@@ -1226,6 +1246,9 @@ export async function handleRideEvent(
     const pendingAccept = await getPendingAccept(deps.redisClient, event.riderId).catch(() => null);
     if (pendingAccept?.rideId === event.rideId) {
       console.info('[gateway] bid timeout held — rider is paying for a chosen driver', { rideId: event.rideId, driverId: pendingAccept.driverId });
+      // Looked at again when that choice lapses: never paid, the search is ended then (the sweep below).
+      await noteHeldTimeout(deps.redisClient, event.rideId, event.riderId, Date.now() + PENDING_ACCEPT_TTL_SECONDS * 1000 + 5_000)
+        .catch((error) => console.warn('[gateway] held bid timeout not noted', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) }));
       return;
     }
     // One booking step at a time on this ride: an accept between its hold and its "sent" mark holds
