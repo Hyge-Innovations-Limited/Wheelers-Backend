@@ -209,17 +209,16 @@ test('untouched: 1 person, luggage and pet Yes (the default), no note; what the 
   assert.equal(a.parts.count.textContent, '4', 'at most 4');
   assert.equal(a.parts.plus.disabled, true);
   a.minus();
-  a.yes('luggage');
-  a.yes('pet');
+  a.no('luggage');
   a.no('pet');
   a.yes('pet');
   a.type('  Small dog   in a carrier ');
   assert.equal(b.parts.count.textContent, '3', 'one trip: the other box shows the same answers');
-  assert.deepEqual(b.pressed('luggage'), ['yes']);
+  assert.deepEqual(b.pressed('luggage'), ['no'], 'the No tapped in one box shows in the other');
 
   await page.tap(page.el('find'));
   const find = page.calls.find((c) => c.url === '/ride-page/find');
-  assert.deepEqual(find.body.tripDetails, { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier' });
+  assert.deepEqual(find.body.tripDetails, { passengers: 3, luggage: false, pet: true, note: 'Small dog in a carrier' });
 });
 
 test('Find drivers without touching the box sends the defaults, no note', async () => {
