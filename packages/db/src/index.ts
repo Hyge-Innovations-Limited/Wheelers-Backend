@@ -4,6 +4,7 @@ export { prisma } from './prisma';
 // Scoped clients — import only the one your service owns
 export { userClient }           from './clients/user.client';
 export { driverClient }         from './clients/driver.client';
+export { pinnedPosition }       from './clients/driver-test-pin';
 export { driverPresence, PRESENCE_FRESH_MS, DB_FLUSH_SECONDS } from './clients/driver-presence';
 export type { RedisSend, PresenceRecord, NearbyDriver } from './clients/driver-presence';
 export { rideClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from './clients/rider.client';

@@ -1,4 +1,4 @@
-import { driverClient, driverLocationClient } from '@wheleers/db';
+import { driverClient, driverLocationClient, pinnedPosition } from '@wheleers/db';
 import {
   DriverOfflineEvent,
   DriverOnlineEvent,
@@ -59,8 +59,8 @@ export async function handleDriverMessage(
       eventType: 'DRIVER_ONLINE',
       driverId: resolveDriverId(payload, auth),
       userId: auth.userId,
-      lat: requireNumber(payload, 'lat'),
-      lng: requireNumber(payload, 'lng'),
+      // A test driver held at a spot (DRIVER_TEST_PINS) goes online there.
+      ...pinnedPosition(resolveDriverId(payload, auth), requireNumber(payload, 'lat'), requireNumber(payload, 'lng')),
       vehiclePlate: sentPlate ?? profile?.vehiclePlate ?? '',
       vehicleModel: sentModel ?? profile?.vehicleModel ?? '',
       timestamp,

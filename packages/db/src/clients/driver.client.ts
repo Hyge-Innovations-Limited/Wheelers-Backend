@@ -1,3 +1,4 @@
+import { pinnedPosition } from './driver-test-pin';
 import { prisma }   from '../prisma';
 import { driverLocationClient } from './driver-location.client';
 import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
@@ -305,7 +306,9 @@ export const driverClient = {
 
   // Going on shift is a change of status, so the row is always written; the
   // position also goes to Redis so matching can see the driver at once.
-  markOnline: async (driverId: string, lat: number, lng: number) => {
+  markOnline: async (driverId: string, phoneLat: number, phoneLng: number) => {
+    // A test driver held at a spot (DRIVER_TEST_PINS) is there, whatever the phone says.
+    const { lat, lng } = pinnedPosition(driverId, phoneLat, phoneLng);
     const before = await stateBefore(driverId);
     const driver = await prisma.driver.update({
       where: { id: driverId },
@@ -362,7 +365,8 @@ export const driverClient = {
   // Both callers (socket ping, HTTP heartbeat) come through here. Redis hears
   // every one; the row is written at most once per flush window, and the admin
   // map's trail is fed from here by its own rules. recordPoint never throws.
-  updateLocation: async (driverId: string, lat: number, lng: number): Promise<void> => {
+  updateLocation: async (driverId: string, phoneLat: number, phoneLng: number): Promise<void> => {
+    const { lat, lng } = pinnedPosition(driverId, phoneLat, phoneLng);
     const { flushDb } = await driverPresence.noteLocation(driverId, lat, lng);
     if (flushDb) {
       await prisma.driver.update({
