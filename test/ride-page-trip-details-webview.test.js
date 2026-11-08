@@ -196,14 +196,14 @@ test('the box is on Set your price and on the ride for later\'s confirm, before 
   assert.match(price, /placeholder="Note for driver \(optional\)"/);
 });
 
-test('untouched: 1 person, no luggage, no pet, no note; what the rider sets goes with Find drivers', async () => {
+test('untouched: 1 person, luggage and pet Yes (the default), no note; what the rider sets goes with Find drivers', async () => {
   const a = tripBox();
   const b = tripBox();
   const page = await loadPage(priceServer([a.box, b.box]));
   assert.equal(a.parts.count.textContent, '1');
   assert.equal(a.parts.minus.disabled, true);
-  assert.deepEqual(a.pressed('luggage'), ['no']);
-  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.deepEqual(a.pressed('luggage'), ['yes']);
+  assert.deepEqual(a.pressed('pet'), ['yes']);
 
   for (let i = 0; i < 6; i++) a.plus();
   assert.equal(a.parts.count.textContent, '4', 'at most 4');
@@ -226,7 +226,7 @@ test('Find drivers without touching the box sends the defaults, no note', async 
   const page = await loadPage(priceServer([tripBox().box]));
   await page.tap(page.el('find'));
   const find = page.calls.find((c) => c.url === '/ride-page/find');
-  assert.deepEqual(find.body.tripDetails, { passengers: 1, luggage: false, pet: false });
+  assert.deepEqual(find.body.tripDetails, { passengers: 1, luggage: true, pet: true });
 });
 
 test('what the rider said in the chat ("3 of us, with my dog") fills the box; once they change it, theirs stays', async () => {
@@ -243,15 +243,15 @@ test('what the rider said in the chat ("3 of us, with my dog") fills the box; on
   assert.deepEqual(page.calls.find((c) => c.url === '/ride-page/find').body.tripDetails, { passengers: 2, luggage: false, pet: true });
 });
 
-test('after a search goes out the box starts again; Later after a search nobody took stays at 1 person, no, no', async () => {
+test('after a search goes out the box starts again; Later after a search nobody took stays at the defaults', async () => {
   const a = tripBox();
   const server = priceServer([a.box]);
   const page = await loadPage(server);
   a.plus();
-  a.yes('pet');
+  a.no('pet');
   await page.tap(page.el('find'));
   assert.equal(a.parts.count.textContent, '1', 'the next trip does not carry this one\'s details');
-  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.deepEqual(a.pressed('pet'), ['yes']);
 
   // Nobody took it: Home with the last search (and its details). Later is a trip of its own.
   server.state = { phase: 'idle', balanceNgn: 50000, tripDetailsBox: true, canSchedule: true, lastSearch: { offerNgn: 5000, route: { pickupAddress: 'Yaba', destAddress: 'Ikeja City Mall' }, tripDetails: { passengers: 2, luggage: false, pet: true, note: 'Small dog' } } };
@@ -260,22 +260,22 @@ test('after a search goes out the box starts again; Later after a search nobody 
   await page.poll();
   await page.poll();
   assert.equal(a.parts.count.textContent, '1', 'polls never put the last search\'s details back');
-  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.deepEqual(a.pressed('pet'), ['yes']);
   assert.equal(a.parts.note.value, '');
 });
 
-test('the rider changed the box, then another trip comes to price (from the chat): it starts at 1 person, no, no', async () => {
+test('the rider changed the box, then another trip comes to price (from the chat): it starts at the defaults', async () => {
   const a = tripBox();
   const server = priceServer([a.box]);
   const page = await loadPage(server);
   a.plus();
-  a.yes('luggage');
+  a.no('luggage');
   await page.poll();
   assert.equal(a.parts.count.textContent, '2', 'the same trip polled: theirs stays');
   server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki Phase 1' } };
   await page.poll();
   assert.equal(a.parts.count.textContent, '1');
-  assert.deepEqual(a.pressed('luggage'), ['no']);
+  assert.deepEqual(a.pressed('luggage'), ['yes']);
 });
 
 test('the note is cut at 60 characters without breaking an emoji', async () => {
@@ -296,10 +296,10 @@ test('a server that does not take them (older, or switched off): no box, and Fin
   assert.equal('tripDetails' in page.calls.find((c) => c.url === '/ride-page/find').body, false);
 });
 
-test('a different trip to price, with nothing said for it, starts at 1 person, no, no', async () => {
+test('a different trip to price, with nothing said for it, starts at the defaults', async () => {
   const a = tripBox();
   const server = priceServer([a.box]);
-  server.state.tripDetails = { passengers: 3, luggage: true, pet: true };
+  server.state.tripDetails = { passengers: 3, luggage: false, pet: false };
   const page = await loadPage(server);
   assert.equal(a.parts.count.textContent, '3');
   // The rider cancels and plans another trip: its price state says nothing about details.
@@ -307,7 +307,7 @@ test('a different trip to price, with nothing said for it, starts at 1 person, n
   delete server.state.tripDetails;
   await page.poll();
   assert.equal(a.parts.count.textContent, '1');
-  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.deepEqual(a.pressed('pet'), ['yes']);
 });
 
 /** Set your price for a trip the page can change (Plan your trip over it), and the page's answers. */
@@ -331,14 +331,14 @@ test('changing this trip from Set your price keeps what the rider set; re-saving
   const server = editableServer([a.box]);
   const page = await loadPage(server);
   a.plus();
-  a.yes('pet');
+  a.no('pet');
   // Edit (the destination), then Go: the server answers the changed trip.
   server.routeAnswer = () => (server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Ikeja City Mall, Gate 2', suggestedFareNgn: 5400 } });
   await page.tap(page.el('route-edit'));
   await page.tap(page.el('plan-go'));
   assert.ok(page.calls.some((c) => c.url === '/ride-page/route'), 'the trip was changed through the page');
   assert.equal(a.parts.count.textContent, '2', 'the same booking: kept');
-  assert.deepEqual(a.pressed('pet'), ['yes']);
+  assert.deepEqual(a.pressed('pet'), ['no']);
 
   // Saved again unchanged, then another trip arrives from the chat: it starts fresh.
   server.routeAnswer = () => server.state;
@@ -347,7 +347,7 @@ test('changing this trip from Set your price keeps what the rider set; re-saving
   server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki Phase 1' } };
   await page.poll();
   assert.equal(a.parts.count.textContent, '1');
-  assert.deepEqual(a.pressed('pet'), ['no']);
+  assert.deepEqual(a.pressed('pet'), ['yes']);
 });
 
 test('search again sends no trip details: the server sends the last search\'s', async () => {

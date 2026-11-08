@@ -2492,7 +2492,7 @@
 
   /* People, luggage, pet and a note: drivers see them before they bid. One trip, so both
      boxes (Set your price, and the ride for later's confirm) show the same answers. */
-  var tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+  var tripInfo = { passengers: 1, luggage: true, pet: true, note: '' };
   var TRIP_PEOPLE_MAX = 4;
   var tripTouched = false;   // the rider changed the box here: the server's details no longer replace it
   var keepTripThroughChange = false;   // the rider changed this trip from Set your price: the box stays
@@ -2509,9 +2509,9 @@
     tripInfo.note = typeof said.note === 'string' ? said.note : '';
     drawTripBoxes();
   }
-  /** A search went out with the box: the next trip starts at 1 person, no, no (or what the server says). */
+  /** A search went out with the box: the next trip starts at 1 person, luggage and pet Yes (Timi, 8 Nov), or what the server says. */
   function resetTripBox() {
-    tripInfo = { passengers: 1, luggage: false, pet: false, note: '' };
+    tripInfo = { passengers: 1, luggage: true, pet: true, note: '' };
     tripTouched = false;
     drawTripBoxes();
   }
