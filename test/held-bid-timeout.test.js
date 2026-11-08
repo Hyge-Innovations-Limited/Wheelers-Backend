@@ -141,7 +141,7 @@ test('still paying at the second look: held again, nothing said', async () => {
   assert.equal(await r.send('ZCARD', 'wheelers:held-bid-timeouts'), 1, 'noted again for later');
 });
 
-test('cancelled during the hold, or moved on to a new search: nothing is said about the old one, and the new choice is kept', async () => {
+test('cancelled during the hold: nothing more; moved on to a new search: the old one ends quietly (its drivers told, bids expired), the rider hears nothing, the new choice is kept', async () => {
   // Cancelled.
   {
     const r = await redis();
@@ -159,14 +159,18 @@ test('cancelled during the hold, or moved on to a new search: nothing is said ab
   {
     const r = await redis();
     const riderId = await user('RIDER');
-    const { ride } = await searchWithTwoBids(r, riderId);
+    const { ride, other } = await searchWithTwoBids(r, riderId);
     const w = deps(r);
     await handleRideEvent(timeoutOf(ride, riderId), w.deps, new Map());
     const newRide = randomUUID();
     await bidState.setActiveRide(r, riderId, newRide);
     await bidState.storePendingAccept(r, riderId, { rideId: newRide, driverId: randomUUID(), driverUserId: randomUUID(), driverName: 'Bayo', driverPhone: '', driverRating: 5, totalRides: 0, vehicleModel: 'Camry', vehiclePlate: 'KJA4', etaSeconds: 200, fareNgn: 3500 });
     await sweepHeldTimeouts(w.deps, new Map(), Date.now() + 16 * 60_000);
-    assert.equal(w.toApp.filter((m) => m.type === 'ride:bid_timeout').length, 0, 'the old search says nothing');
+    assert.ok(w.toApp.some((m) => m.type === 'ride:bid_timeout' && m.userId === other.userId && m.payload.rideId === ride.id), 'the old search\'s drivers are told it ended');
+    assert.equal(w.toApp.filter((m) => m.userId === riderId).length, 0, 'the rider hears nothing about the old search');
+    assert.equal(await bidState.getSearchTimedOut(r, riderId), null, 'no "no driver took it" for the old search');
+    const bids = await prisma.driverBid.findMany({ where: { rideId: ride.id } });
+    assert.ok(bids.every((b) => b.status !== 'PENDING'), 'its bids are closed');
     assert.equal((await bidState.getPendingAccept(r, riderId))?.rideId, newRide, 'the new search\'s choice is kept');
     assert.equal(await bidState.getActiveRide(r, riderId), newRide);
   }

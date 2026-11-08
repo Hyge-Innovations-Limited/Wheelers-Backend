@@ -345,6 +345,20 @@ function scheduleBidFlush(
  */
 const HELD_TIMEOUT_SWEEP_MS = 30_000;
 
+/** A held search the rider left for a newer one: its drivers told, its bids, hold and cashback settled, nothing said to the rider. */
+async function endMovedOnSearch(deps: StartGatewayConsumerDeps, rideId: string, riderId: string, rideParticipants: Map<string, RideParticipantState>, timestamp: string): Promise<void> {
+  // Booked after all (a late acceptance revived it): it stands.
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  if (ride && !['REQUESTED', 'MATCHING', 'CANCELLED'].includes(ride.status)) return;
+  if (await acceptSentFor(deps.redisClient, rideId).catch(() => null)) return;
+  const openBids = await driverBidClient.findByRide(rideId).catch(() => []);
+  for (const bid of openBids) {
+    if (!isOpenBid(bid.status)) continue;
+    void deps.registry.sendToUser(bid.driverUserId, 'ride:bid_timeout', { rideId, reason: 'timed_out' });
+  }
+  await endTimedOutSearch(deps, rideId, riderId, timestamp, openBids, rideParticipants, { quietForRider: true });
+}
+
 /**
  * A search held at its timeout because the rider was paying for a chosen
  * driver, looked at again when that choice has lapsed: the same end of search
@@ -361,7 +375,13 @@ export async function sweepHeldTimeouts(deps: StartGatewayConsumerDeps, ridePart
       getActiveRide(deps.redisClient, riderId).catch(() => null),
       getPendingAccept(deps.redisClient, riderId).catch(() => null),
     ]);
-    if ((active && active !== rideId) || (choice && choice.rideId !== rideId)) continue;
+    if ((active && active !== rideId) || (choice && choice.rideId !== rideId)) {
+      // Moved on: nobody else ends this one (the ride is already closed in the database), so it is
+      // ended here without a word to the rider — its drivers are told and its money goes back.
+      await endMovedOnSearch(deps, rideId, riderId, rideParticipants, new Date(now).toISOString())
+        .catch((error) => console.warn('[gateway] held bid timeout not ended (rider moved on)', { rideId, error: error instanceof Error ? error.message : String(error) }));
+      continue;
+    }
     await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId, riderId, timestamp: new Date(now).toISOString() }, deps, rideParticipants)
       .catch((error) => console.warn('[gateway] held bid timeout not ended', { rideId, error: error instanceof Error ? error.message : String(error) }));
   }
@@ -643,9 +663,11 @@ async function endTimedOutSearch(
   timestamp: string,
   openBids: Array<{ status: string; driverUserId: string }>,
   rideParticipants: Map<string, RideParticipantState>,
-  options: { toldBooked?: boolean; cardInChat?: boolean; alreadyTold?: boolean } = {},
+  options: { toldBooked?: boolean; cardInChat?: boolean; alreadyTold?: boolean; quietForRider?: boolean } = {},
 ): Promise<void> {
   const { registry } = deps;
+  // The rider has moved on to a newer search: the drivers and the money are dealt with, the rider hears nothing.
+  const quiet = options.quietForRider === true;
   // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
   await markSearchEnded(deps.redisClient, rideId);
   if (payingStatusEnabled()) await closePaying(deps, rideId, 'search_ended').catch(() => false);
@@ -667,7 +689,13 @@ async function endTimedOutSearch(
   });
 
   const waRider = await isWhatsappRider(deps.redisClient, riderId);
-  if (waRider && deps.whatsappNotifier) {
+  if (quiet) {
+    await clearActiveRideIfMatches(deps.redisClient, riderId, rideId);
+    const choice = await getPendingAccept(deps.redisClient, riderId).catch(() => null);
+    if (choice?.rideId === rideId) await clearPendingAccept(deps.redisClient, riderId).catch(() => {});
+    await endOfferCount(deps, rideId);
+    await cleanupRideKeys(deps.redisClient, rideId);
+  } else if (waRider && deps.whatsappNotifier) {
     const phone = await lookupPhoneByUserId(deps.redisClient, riderId);
     if (phone) {
       const timedOutMeta = await getRideMeta(deps.redisClient, rideId).catch(() => null);
