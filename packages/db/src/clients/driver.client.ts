@@ -1,4 +1,4 @@
-import { pinnedPosition } from './driver-test-pin';
+import { hasTestPin, pinnedPosition } from './driver-test-pin';
 import { prisma }   from '../prisma';
 import { driverLocationClient } from './driver-location.client';
 import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
@@ -366,7 +366,11 @@ export const driverClient = {
   // every one; the row is written at most once per flush window, and the admin
   // map's trail is fed from here by its own rules. recordPoint never throws.
   updateLocation: async (driverId: string, phoneLat: number, phoneLng: number): Promise<void> => {
-    const { lat, lng } = pinnedPosition(driverId, phoneLat, phoneLng);
+    // A test driver's pin holds only while they wait for a ride: the phone's background ping keeps
+    // coming during a trip, and the trip must follow the real car.
+    const onTrip = hasTestPin(driverId)
+      && (await prisma.driver.findUnique({ where: { id: driverId }, select: { status: true } }).catch(() => null))?.status === 'ON_RIDE';
+    const { lat, lng } = onTrip ? { lat: phoneLat, lng: phoneLng } : pinnedPosition(driverId, phoneLat, phoneLng);
     const { flushDb } = await driverPresence.noteLocation(driverId, lat, lng);
     if (flushDb) {
       await prisma.driver.update({

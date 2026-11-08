@@ -11,7 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
-const { driverClient, pinnedPosition } = require('../packages/db/dist/index.js');
+const { driverClient, driverPresence, pinnedPosition } = require('../packages/db/dist/index.js');
 const { handleDriverMessage } = require('../apps/api-gateway/dist/websocket/handlers/driver.handler.js');
 
 const prisma = new PrismaClient();
@@ -22,6 +22,7 @@ const realConsole = { ...console };
 test.beforeEach(() => { console.log = console.info = console.warn = console.error = () => {}; });
 test.afterEach(() => { Object.assign(console, realConsole); delete process.env.DRIVER_TEST_PINS; });
 test.after(async () => {
+  for (const id of made.drivers) await driverPresence.remove(id).catch(() => {});
   await prisma.driverShift.deleteMany({ where: { driverId: { in: made.drivers } } }).catch(() => {});
   await prisma.driverLocationPoint?.deleteMany({ where: { driverId: { in: made.drivers } } }).catch(() => {});
   await prisma.driver.deleteMany({ where: { id: { in: made.drivers } } });
@@ -74,6 +75,14 @@ test('a pinned driver goes online and pings at the pin, so a request at Unilag f
   const found = (await driverClient.findNearby(UNILAG.lat, UNILAG.lng, 2, 50)).map((d) => d.id);
   assert.ok(found.includes(pinned.id), 'the pinned driver is found at Unilag');
   assert.ok(!found.includes(other.id));
+
+  // On a trip the background ping follows the real car, not the pin.
+  await prisma.driver.update({ where: { id: pinned.id }, data: { status: 'ON_RIDE' } });
+  await driverClient.updateLocation(pinned.id, IKEJA.lat, IKEJA.lng);
+  assert.ok(near(await prisma.driver.findUnique({ where: { id: pinned.id } }), IKEJA), 'on a trip: the real car');
+  await prisma.driver.update({ where: { id: pinned.id }, data: { status: 'ONLINE' } });
+  await driverClient.updateLocation(pinned.id, IKEJA.lat, IKEJA.lng);
+  assert.ok(near(await prisma.driver.findUnique({ where: { id: pinned.id } }), UNILAG), 'waiting again: the pin');
 
   // Unset: their phone again.
   delete process.env.DRIVER_TEST_PINS;

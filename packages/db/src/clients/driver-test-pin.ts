@@ -15,11 +15,16 @@ function readPins(): Map<string, Pin> {
   parsedFrom = raw;
   pins = new Map();
   for (const entry of raw.split(';')) {
+    if (!entry.trim()) continue;
     const match = /^\s*([0-9a-f-]{36})\s*@\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/i.exec(entry);
-    if (!match) continue;
-    const lat = Number(match[2]);
-    const lng = Number(match[3]);
-    if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) pins.set(match[1]!.toLowerCase(), { lat, lng });
+    const lat = Number(match?.[2]);
+    const lng = Number(match?.[3]);
+    if (!match || !(Math.abs(lat) <= 90) || !(Math.abs(lng) <= 180)) {
+      // Once per change of the setting: a pin that does nothing must not be silent.
+      console.warn('[driver-test-pin] ignored, not "<driverId>@<lat>,<lng>":', entry.trim());
+      continue;
+    }
+    pins.set(match[1]!.toLowerCase(), { lat, lng });
   }
   return pins;
 }
@@ -27,4 +32,9 @@ function readPins(): Map<string, Pin> {
 /** Where this driver is for matching: their pin when they have one, else where their phone says. */
 export function pinnedPosition(driverId: string, lat: number, lng: number): Pin {
   return readPins().get(driverId.toLowerCase()) ?? { lat, lng };
+}
+
+/** This driver has a pin (only then is their status worth reading on a ping). */
+export function hasTestPin(driverId: string): boolean {
+  return readPins().has(driverId.toLowerCase());
 }
