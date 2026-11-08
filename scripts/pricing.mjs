@@ -62,6 +62,11 @@
 //   npm run pricing linc night 1.15          how much more Linc charges at night (22:00–05:00)
 //   npm run pricing linc sample 14 27 7400 [at=2026-10-26T13:10]   a price read off Linc (km, minutes, price)
 //   npm run pricing linc percent 8 12        aim 8% over Linc's price; the ceiling never under 12% over it
+//   npm run pricing linc below 3 | off       never more than 97% of Linc's price for the trip (3% under it)
+//   npm run pricing indrive guide on [-200..200] | off   suggest inDrive's one-click price (its figures), ± that
+//   npm run pricing outer cap 17000 | off    a trip touching an outer area (not Epe) is never suggested above it
+//   npm run pricing outer areas ikorodu,alimosho,ajah,ibeju-lekki,badagry   which areas the cap is for
+//   npm run pricing minimum share 0.85 | off the lowest offer is that share of the suggested price (off: the fixed gap)
 //   npm run pricing linc bonus 10 1000|off   price against Linc before its bonus (10%, at most ₦1,000); prices are saved as shown
 //   npm run pricing linc sample 6.4 26 7290 short [at=…]   with its zone: short, central, island or outer
 //   npm run pricing linc fit km [save]       Linc's figures from base + per km only (no minutes)
@@ -116,7 +121,10 @@ async function status() {
   console.log(`Flat extra on top of every price: ${settings.extraNgn > 0 ? naira(settings.extraNgn) : 'none'}`);
   console.log(`Margin that grows with the fare: ${settings.marginPercent > 0 ? `${settings.marginPercent}% of the other app's fare` : 'none'}  (npm run pricing margin N)`);
   console.log(`Never under inDrive's high end: ×${settings.marketHigh} our guess${settings.marketHighFittedAt ? `, learned ${lagosTime(new Date(settings.marketHighFittedAt))}` : ' (until 5 of its prices teach it)'}`);
-  console.log(`Minimum offer: ${settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
+  console.log(`inDrive as the guide: ${on(settings.indriveGuideOn)}${settings.indriveOffsetNgn ? `, ${settings.indriveOffsetNgn > 0 ? '+' : '−'}${naira(Math.abs(settings.indriveOffsetNgn))}` : ''}  (npm run pricing indrive guide on [N] | off)`);
+  console.log(`Under Linc: ${settings.lincBelowPercent === null ? 'off' : `never more than ${100 - settings.lincBelowPercent}% of Linc's price`}  (npm run pricing linc below 3 | off)`);
+  console.log(`Outer-area cap: ${settings.outerCapNgn === null ? 'off' : `${naira(settings.outerCapNgn)} for ${settings.outerCapAreas.join(', ')} (not ${settings.outerCapExceptAreas.join(', ') || 'none'})`}  (npm run pricing outer cap 17000 | off)`);
+  console.log(`Minimum offer: ${settings.minOfferShare !== null ? `${Math.round(settings.minOfferShare * 100)}% of the suggested price (npm run pricing minimum share N | off)` : settings.minOfferGapNgn > 0 ? `the suggested price less ${naira(settings.minOfferGapNgn)}` : 'a tenth off (older rule)'}`);
   console.log(`  other app, quiet hours: ${f(settings.quiet)}`);
   console.log(`  other app, rush hours:  ${f(settings.rush)}`);
   console.log(`Price by the clock (curve): ${on(settings.hourCurveOn)}${settings.hourCurve ? `  now ×${config.curveValueAt(settings.hourCurve, new Date())}` : ''}${settings.hourCurveFittedAt ? `, learned ${lagosTime(new Date(settings.hourCurveFittedAt))}` : ''}`);
@@ -310,6 +318,16 @@ async function model(turnOn) {
 
 async function indrive() {
   const [which, base, perKm, perMinute] = rest;
+  if (which === 'guide') {
+    // npm run pricing indrive guide on [OFFSET]   suggest inDrive's one-click price for the trip, ± OFFSET (₦)
+    // npm run pricing indrive guide off
+    const turnOn = rest[1] === 'on';
+    if (!turnOn && rest[1] !== 'off') throw new Error('Say on or off: npm run pricing indrive guide on 0 (or: indrive guide off)');
+    const offset = rest[2] === undefined ? undefined : number(rest[2], 'the amount over or under inDrive');
+    return save(() => ({ indriveGuideOn: turnOn, ...(offset !== undefined ? { indriveOffsetNgn: offset } : {}) }), (s) => (s.indriveGuideOn
+      ? `Prices now follow inDrive's one-click price for the trip${s.indriveOffsetNgn ? ` ${s.indriveOffsetNgn > 0 ? '+' : '−'} ${naira(Math.abs(s.indriveOffsetNgn))}` : ''} (its figures: npm run pricing indrive quiet|rush). Linc as the guide, the extra and the high-end floor are not used while this is on.`
+      : 'inDrive is no longer the guide: prices are worked out as before.'));
+  }
   if (which !== 'quiet' && which !== 'rush') throw new Error('Say which hours: npm run pricing indrive quiet 500 268 50');
   const figures = { baseNgn: number(base, 'base'), perKmNgn: number(perKm, 'per km'), perMinuteNgn: number(perMinute, 'per minute') };
   await save(() => ({ [which]: figures }), () => `The other app, ${which} hours: base ${naira(figures.baseNgn)}, ${naira(figures.perKmNgn)} a km, ${naira(figures.perMinuteNgn)} a minute.`);
@@ -698,6 +716,13 @@ async function linc() {
       ? 'We now sit at Linc\'s price.'
       : `We now sit ${naira(Math.abs(s.lincAboveNgn))} ${s.lincAboveNgn > 0 ? 'above' : 'under'} Linc's price.`));
   }
+  if (word === 'below') {
+    // npm run pricing linc below 3   never more than 97% of Linc's price for the trip; linc below off
+    const pct = args[0] === 'off' ? null : number(args[0], 'how far under Linc, in %');
+    return save(() => ({ lincBelowPercent: pct }), (s) => (s.lincBelowPercent === null
+      ? 'No price is held under Linc any more.'
+      : `No price is now more than ${100 - s.lincBelowPercent}% of Linc's price for the trip (${s.lincBelowPercent}% under it${s.lincBonusPercent > 0 ? ', against Linc before its bonus' : ', against the price Linc shows'}).`));
+  }
   if (word === 'percent') {
     // npm run pricing linc percent 8 12   aim 8% over Linc, the ceiling never under 12% over it
     const [aim, most] = args.map(Number);
@@ -798,6 +823,31 @@ const commands = {
   indrive,
   try: tryTrip,
   linc,
+  outer: async () => {
+    const [word, value] = rest;
+    if (word === 'cap') {
+      const cap = value === 'off' ? null : number(value, 'the cap');
+      return save(() => ({ outerCapNgn: cap }), (s) => (s.outerCapNgn === null
+        ? 'No cap on outer-area trips any more.'
+        : `A trip touching ${s.outerCapAreas.join(', ')} (not ${s.outerCapExceptAreas.join(', ') || 'none'}) is now never suggested above ${naira(s.outerCapNgn)}.`));
+    }
+    if (word === 'areas') {
+      const keys = String(value ?? '').split(',').map((k) => k.trim()).filter(Boolean);
+      const known = new Set(config.PRICING_AREAS.map((a) => a.key));
+      const unknown = keys.filter((k) => !known.has(k));
+      if (!keys.length || unknown.length) throw new Error(`Say the areas, comma-separated, from: ${[...known].join(', ')}${unknown.length ? ` (not known: ${unknown.join(', ')})` : ''}`);
+      return save(() => ({ outerCapAreas: keys }), (s) => `The outer cap is now for: ${s.outerCapAreas.join(', ')}.`);
+    }
+    throw new Error('npm run pricing outer cap 17000 | outer cap off | outer areas ikorodu,alimosho,ajah,ibeju-lekki,badagry');
+  },
+  minimum: async () => {
+    const [word, value] = rest;
+    if (word !== 'share') throw new Error('npm run pricing minimum share 0.85 | minimum share off');
+    const share = value === 'off' ? null : number(value, 'the share (0.85 = 85% of the suggested price)');
+    return save(() => ({ minOfferShare: share }), (s) => (s.minOfferShare === null
+      ? `The lowest offer is back to the suggested price less ${naira(s.minOfferGapNgn)}.`
+      : `The lowest offer is now ${Math.round(s.minOfferShare * 100)}% of the suggested price: ₦10,000 suggested, ${naira(Math.ceil(10000 * s.minOfferShare / 50) * 50)} lowest.`));
+  },
 };
 
 const run = commands[command];

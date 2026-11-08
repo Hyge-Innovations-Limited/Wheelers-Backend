@@ -554,6 +554,25 @@ export type PricingSettings = {
    */
   lincBonusPercent: number;
   lincBonusCapNgn: number;
+  /**
+   * inDrive's one-click price as the guide (Timi, 8 Nov): the suggestion is inDrive's fare for the
+   * trip (its figures on the live minutes, the hour, the area, our surge and rain) plus
+   * indriveOffsetNgn (Timi: within ₦200 either way). In place of Linc, the extra and inDrive's
+   * high-end floor. Off: as before.
+   */
+  indriveGuideOn: boolean;
+  indriveOffsetNgn: number;
+  /** Never more than (100 − this)% of Linc's price for the trip (3: at most 97% of Linc). Null: off. */
+  lincBelowPercent: number | null;
+  /** The most a trip touching one of outerCapAreas (and none of outerCapExceptAreas) is suggested at. Null: off. */
+  outerCapNgn: number | null;
+  outerCapAreas: string[];
+  outerCapExceptAreas: string[];
+  /**
+   * The rider's minimum offer as a share of the suggested price (inDrive's minimum ÷ its one-click,
+   * learned from its prices), in place of the fixed gap (minOfferGapNgn). Null: the gap.
+   */
+  minOfferShare: number | null;
   /** How much more Linc charges at night (22:00–05:00): ₦7,950 at 23:03 where its daytime figures said ₦6,758. */
   lincNightLift: number;
   /** Linc prices read off its app (npm run pricing linc sample), what its figures are fitted from. */
@@ -620,6 +639,13 @@ export const DEFAULT_PRICING_SETTINGS: PricingSettings = {
   lincMaxAbovePercent: null,
   lincBonusPercent: 0,
   lincBonusCapNgn: 1000,
+  indriveGuideOn: false,
+  indriveOffsetNgn: 0,
+  lincBelowPercent: null,
+  outerCapNgn: null,
+  outerCapAreas: ['alimosho', 'ikorodu', 'ajah', 'ibeju-lekki', 'badagry'],
+  outerCapExceptAreas: ['epe'],
+  minOfferShare: null,
   lincNightLift: 1.15,
   lincSamples: [...LINC_SAMPLES_SEEN],
   ceilingAboveNgn: CEILING_ABOVE_NGN,
@@ -694,6 +720,20 @@ export const LIVE_PRICING_BASELINE: Partial<PricingSettings> = {
     alimosho: { pickup: 1.15, dropoff: 1.2 },
   },
 };
+
+/** Pricing area keys from saved settings: only known areas, else the default list. */
+function areaKeysFrom(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const known = new Set(PRICING_AREAS.map((area) => area.key as string));
+  return [...new Set(value.filter((key): key is string => typeof key === 'string' && known.has(key)))];
+}
+
+/** A trip the outer cap is for: an end in one of its areas, and none in an area kept out of it (Epe). */
+export function underOuterCap(settings: Pick<PricingSettings, 'outerCapAreas' | 'outerCapExceptAreas'>, origin?: { lat: number; lng: number }, destination?: { lat: number; lng: number }): boolean {
+  const keys = [origin, destination].map((point) => (point ? (pricingAreaOf(point.lat, point.lng)?.key as string | undefined) : undefined));
+  if (keys.some((key) => key !== undefined && settings.outerCapExceptAreas.includes(key))) return false;
+  return keys.some((key) => key !== undefined && settings.outerCapAreas.includes(key));
+}
 
 let pricingSettings: PricingSettings = DEFAULT_PRICING_SETTINGS;
 
@@ -836,6 +876,19 @@ export function normalizePricingSettings(value: unknown): PricingSettings {
     lincBonusPercent: Math.round(finite(v.lincBonusPercent, d.lincBonusPercent, 0, 50) * 10) / 10,
     lincBonusCapNgn: Math.round(finite(v.lincBonusCapNgn, d.lincBonusCapNgn, 0, 10_000) / 50) * 50,
     lincNightLift: Math.round(finite(v.lincNightLift, d.lincNightLift, 1, 1.6) * 100) / 100,
+    indriveGuideOn: v.indriveGuideOn === true,
+    indriveOffsetNgn: Math.round(finite(v.indriveOffsetNgn, d.indriveOffsetNgn, -1_000, 1_000) / 50) * 50,
+    lincBelowPercent: v.lincBelowPercent === null || v.lincBelowPercent === undefined
+      ? null
+      : Math.round(finite(v.lincBelowPercent, 3, 0, 30) * 10) / 10,
+    outerCapNgn: v.outerCapNgn === null || v.outerCapNgn === undefined
+      ? null
+      : Math.round(finite(v.outerCapNgn, 17_000, 2_000, 200_000) / 50) * 50,
+    outerCapAreas: areaKeysFrom(v.outerCapAreas, d.outerCapAreas),
+    outerCapExceptAreas: areaKeysFrom(v.outerCapExceptAreas, d.outerCapExceptAreas),
+    minOfferShare: v.minOfferShare === null || v.minOfferShare === undefined
+      ? null
+      : Math.round(finite(v.minOfferShare, 0.9, 0.5, 1) * 100) / 100,
     lincZonesOn: typeof v.lincZonesOn === 'boolean' ? v.lincZonesOn : d.lincZonesOn,
     lincSamples: Array.isArray(v.lincSamples)
       ? (v.lincSamples as unknown[]).flatMap((x) => {
@@ -1147,7 +1200,7 @@ export type SuggestedFare = {
   /** The suggested fare as the driver's rate per km. */
   ratePerKmNgn: number;
   /** What set the fare. "trial": a price near the model's, shown on a small share of trips so there is something to learn from. */
-  setBy: 'floor' | 'rules' | 'model' | 'trial' | 'linc' | 'ceiling';
+  setBy: 'floor' | 'rules' | 'model' | 'trial' | 'linc' | 'ceiling' | 'indrive' | 'under-linc' | 'outer-cap';
   /** The other app's fare for this trip, and the floor it gives (that + the premium). Null with the floor off. */
   marketFareNgn: number | null;
   floorFareNgn: number | null;
@@ -1344,8 +1397,13 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const lincTripNgn = distanceKm > 0 && tripMinutes !== null
     ? Math.round(lincFullPriceNgn(lincFareNgn(distanceKm, tripMinutes, settings.linc) * lincPeriodLifts(settings).lifts[lincSlotOf(factors.at ?? new Date())] * (settings.lincZonesOn ? lincZoneLifts(settings).lifts[lincZone] : 1), settings) * surgeFactor * rainFactor)
     : null;
-  const lincNgn = settings.lincOn ? lincTripNgn : null;
-  if (lincNgn !== null) {
+  const lincNgn = settings.lincOn && !settings.indriveGuideOn ? lincTripNgn : null;
+  // inDrive's one-click price as the guide (in place of Linc, the extra and the high-end floor below).
+  const indriveGuide = settings.indriveGuideOn && marketFare !== null;
+  if (indriveGuide) {
+    suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(marketFare + settings.indriveOffsetNgn, FARE_ROUNDING_INCREMENT));
+    setBy = 'indrive';
+  } else if (lincNgn !== null) {
     suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(lincNgn * (1 + settings.lincAbovePercent / 100) + settings.lincAboveNgn, FARE_ROUNDING_INCREMENT));
     setBy = 'linc';
   } else {
@@ -1359,7 +1417,7 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   const highEndNgn = marketPlainNgn === null
     ? null
     : roundUpToIncrement(marketPlainNgn * Math.max(areaFactor, settings.marketHigh), FARE_ROUNDING_INCREMENT);
-  if (highEndNgn !== null && suggestedFareNgn < highEndNgn && setBy !== 'trial') {
+  if (highEndNgn !== null && suggestedFareNgn < highEndNgn && setBy !== 'trial' && !indriveGuide) {
     suggestedFareNgn = highEndNgn;
     setBy = 'floor';
   }
@@ -1376,6 +1434,19 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
   if (ceilingNgn !== null && suggestedFareNgn > ceilingNgn) {
     suggestedFareNgn = ceilingNgn;
     setBy = 'ceiling';
+  }
+  // Never above Linc: at most (100 − lincBelowPercent)% of its price for the trip, rounded down.
+  if (settings.lincBelowPercent !== null && lincTripNgn !== null && lincTripNgn > 0) {
+    const underLincNgn = Math.max(MIN_FARE_NGN, roundDownToIncrement(lincTripNgn * (1 - settings.lincBelowPercent / 100), FARE_ROUNDING_INCREMENT));
+    if (suggestedFareNgn > underLincNgn) {
+      suggestedFareNgn = underLincNgn;
+      setBy = 'under-linc';
+    }
+  }
+  // Outer areas (not Epe): never shown above outerCapNgn (Timi: ₦17,000; ₦22–24k scares riders off).
+  if (settings.outerCapNgn !== null && suggestedFareNgn > settings.outerCapNgn && underOuterCap(settings, factors.origin, factors.destination)) {
+    suggestedFareNgn = settings.outerCapNgn;
+    setBy = 'outer-cap';
   }
   const limits = offerLimitsNgn(suggestedFareNgn);
 
@@ -1453,6 +1524,14 @@ export function priceReasonOf(distanceKm: number, factors: RateFactors, fare: Su
  */
 export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number; maxOfferNgn: number } {
   const recommendedTripFare = tripFareNgn(suggestedFareNgn);
+  // A share of the suggested price (inDrive's minimum ÷ its one-click): the room grows with the trip.
+  if (pricingSettings.minOfferShare !== null) {
+    const byShare = roundUpToIncrement(suggestedFareNgn * pricingSettings.minOfferShare, FARE_ROUNDING_INCREMENT);
+    return {
+      minOfferNgn: Math.min(Math.max(byShare, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
+      maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
+    };
+  }
   // The minimum sits a set amount under the suggested fare (₦850 unless
   // changed), so a rider always sees the same room to bargain whatever the
   // trip costs. It never goes under the minimum fare, nor above the suggested
@@ -1692,6 +1771,10 @@ export function splitPlatformTotal(
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function roundDownToIncrement(value: number, increment: number): number {
+  return Math.floor(value / increment) * increment;
 }
 
 function roundUpToIncrement(value: number, increment: number): number {
