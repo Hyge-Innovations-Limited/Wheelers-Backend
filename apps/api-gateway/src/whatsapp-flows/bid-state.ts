@@ -65,7 +65,7 @@ export interface WhatsappBid {
   receivedAt: string;
 }
 
-// A search runs 30 minutes (RIDE.BID_TIMEOUT_SECONDS); everything a search needs lives longer.
+// A search runs 5 minutes (RIDE.BID_TIMEOUT_SECONDS); everything a search needs lives longer.
 const RIDE_META_TTL = 7200;          // 2 hours
 const BIDS_TTL = 7200;               // 2 hours
 const RIDE_STATE_TTL = 7200;         // 2 hours

@@ -33,7 +33,7 @@ async function rider() {
   return id;
 }
 
-async function openRide(riderId, { ageMs = 5 * 60_000, status = 'MATCHING', offer = 2500 } = {}) {
+async function openRide(riderId, { ageMs = 60_000, status = 'MATCHING', offer = 2500 } = {}) {
   const id = randomUUID();
   await prisma.ride.create({ data: { id, riderId, status, createdAt: new Date(Date.now() - ageMs), pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address, riderOfferNgn: offer, fareEstimateNgn: 2800, distanceKm: 3.2, paymentMethod: 'WALLET' } });
   return id;
@@ -41,7 +41,7 @@ async function openRide(riderId, { ageMs = 5 * 60_000, status = 'MATCHING', offe
 
 test('on start, every open solo search goes back into memory with what is left of its window — a closed ride and a group seat do not', async () => {
   const riderId = await rider();
-  const live = await openRide(riderId, { ageMs: 10 * 60_000 });
+  const live = await openRide(riderId, { ageMs: 2 * 60_000 });
   const done = await openRide(riderId, { status: 'CANCELLED' });
   const seat = await openRide(riderId);
   await prisma.groupRideMatchRequest.create({ data: { userId: riderId, pickupLat: AKOKA.lat, pickupLng: AKOKA.lng, pickupAddress: AKOKA.address, destLat: YABA.lat, destLng: YABA.lng, destAddress: YABA.address, matchedRideIds: [seat] } }).catch(() => null);
@@ -85,6 +85,6 @@ test("a driver's bid leaves the auction's clock alone — the search runs its fu
   await send({ eventType: 'RIDE_COUNTER_OFFER', rideId, riderId, driverId: randomUUID(), driverUserId: randomUUID(), counterOfferNgn: 2700, driverName: 'Chinedu', driverRating: 4.8, vehiclePlate: 'LND-1', vehicleModel: 'Corolla', etaSeconds: 300 });
   assert.equal(pending.timeout, clock, 'same timer: a bid used to replace it with a 10-minute one');
   assert.equal(pending.counterOfferDrivers.size, 1, 'the bid is on the table');
-  assert.equal(RIDE.BID_TIMEOUT_SECONDS, 1800);
+  assert.equal(RIDE.BID_TIMEOUT_SECONDS, 300);
   clearTimeout(clock);
 });

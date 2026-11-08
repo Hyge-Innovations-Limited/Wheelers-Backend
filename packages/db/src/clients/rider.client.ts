@@ -131,7 +131,7 @@ export const rideClient = {
   // A ride still in REQUESTED/MATCHING long after the bid window is dead —
   // nobody accepted and the timeout should have cancelled it. Don't let a
   // stale one block a rider from booking again while the sweeper catches up.
-  // A search runs 30 minutes (RIDE.BID_TIMEOUT_SECONDS): an unmatched ride is live that long, plus a margin.
+  // A search runs 5 minutes (RIDE.BID_TIMEOUT_SECONDS): an unmatched ride is live that long, plus a margin.
   // A trip with a driver comes first: a rider mid-trip whose scheduled ride
   // has just started searching must get their trip (and its code) back, not
   // the search.

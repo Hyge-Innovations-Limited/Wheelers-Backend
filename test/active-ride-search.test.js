@@ -74,7 +74,7 @@ test('a search still open comes back with its closing time and the open offers, 
   assert.equal(back.riderOfferNgn, 6000);
   assert.ok(back.search, 'it is a search');
   const closes = Date.parse(back.search.bidsCloseAt) - Date.now();
-  assert.ok(closes > 25 * 60_000 && closes <= 30 * 60_000 + 5_000, 'about thirty minutes from the last price');
+  assert.ok(closes > 4 * 60_000 && closes <= 5 * 60_000 + 5_000, 'about five minutes from the last price');
   assert.deepEqual(back.search.offers.map((o) => [o.driverName, o.counterOfferNgn, o.vehicleModel, o.vehiclePlate]), [
     ['Tunde Ade', 6000, 'Toyota Corolla', 'LAG-482-XY'],
     ['Aisha Bello', 6300, 'Honda Accord', 'LAG-111-AB'],
