@@ -65,7 +65,7 @@ export {
   priceReasonOf,
   areaFactorOf,
   AREA_FACTOR_MAX,
-  resolveMaxOfferNgn,
+  resolveMaxOfferNgn, RECOMMENDED_CUT_PERCENT,
   validateRiderOffer,
   validateDriverOffer,
   calculateRideFees, splitPlatformTotal, driverShareNgn, driverRatePerKmNgn,

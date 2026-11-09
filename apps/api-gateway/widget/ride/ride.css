@@ -12,6 +12,7 @@
 
 :root {
   --on-ink-soft: #E9E1D4;
+  --card-edge: #9A9086;     /* card outline on the cream page: 3:1 against white */
   --placeholder: #8C837A;
   --handle: #B8AE9E;
   --card-shadow: 0 4px 14px rgba(13, 13, 13, 0.07);
@@ -226,7 +227,7 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .offer-list:empty { display: none; }
 .offer {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
-  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg);
+  border: 1.5px solid var(--card-edge); border-radius: var(--r-lg); background: var(--bg);
   transition: background 0.2s ease, border-color 0.2s ease, opacity 0.3s ease;
 }
 /* only an offer that has just arrived slides in */
@@ -257,12 +258,8 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .decline-one { flex: 1; border-color: var(--ink); font-size: 14px; font-weight: 700; }
 .accept { flex: 2; background: var(--ink); border-color: var(--ink); color: var(--page); font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
 /* the first card is the dark one */
-.offer.featured { background: var(--ink); border-color: var(--ink); color: var(--page); }
-.offer.featured .who strong { color: var(--page); }
-.offer.featured .who span, .offer.featured .offer-compare { color: var(--on-ink-muted); }
-.offer.featured .price { color: var(--orange); }
-.offer.featured .plate { border-color: var(--ink-line); color: var(--page); }
-.offer.featured .decline-one { border-color: var(--ink-line); color: var(--page); }
+/* Every offer is the same white card with ink text; the first is marked with orange (border and Accept). */
+.offer.featured { border: 2px solid var(--orange); }
 .offer.featured .accept { background: var(--orange); border-color: var(--orange); color: var(--ink); }
 /* green while paying, red once declined */
 .offer-status { display: flex; align-items: center; gap: 8px; min-height: 40px; font-size: 14px; line-height: 20px; font-weight: 700; }

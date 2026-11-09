@@ -5,6 +5,8 @@
 //
 //   node --test test/pricing-linc.test.js
 
+// These tests check the pricing rules themselves, before the recommended cut (pricing.ts RECOMMENDED_CUT_PERCENT).
+process.env.PRICING_RECOMMENDED_CUT_PERCENT = '0';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const config = require('@wheleers/config');

@@ -4,6 +4,8 @@
 // and the gateway consumer. Local Postgres; Kafka recorded. The planner stub measures real distance from the
 // coordinates it is given, so a wrong quote origin changes the price.
 
+// These tests check the pricing rules themselves, before the recommended cut (pricing.ts RECOMMENDED_CUT_PERCENT).
+process.env.PRICING_RECOMMENDED_CUT_PERCENT = '0';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');

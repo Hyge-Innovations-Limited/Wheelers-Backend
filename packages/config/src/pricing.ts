@@ -1450,6 +1450,10 @@ export function calculateSuggestedFare(distanceKm: number, factors: RateFactors 
     suggestedFareNgn = settings.outerCapNgn;
     setBy = 'outer-cap';
   }
+  // The recommended price, a little lower everywhere (Timi, 9 Nov: ₦17,000 → ₦16,000), after every rule
+  // above. The minimum and the drivers' top bid stay where they were: offerLimitsNgn works them out on the
+  // price before this cut.
+  suggestedFareNgn = Math.max(MIN_FARE_NGN, roundUpToIncrement(suggestedFareNgn * RECOMMENDED_FACTOR, FARE_ROUNDING_INCREMENT));
   const limits = offerLimitsNgn(suggestedFareNgn);
 
   return {
@@ -1524,11 +1528,25 @@ export function priceReasonOf(distanceKm: number, factors: RateFactors, fare: Su
  * premium, so an offer of the suggested fare − the premium is never under
  * the other app's fare.
  */
+/**
+ * The recommended price is this much under the price the rules give: 6% (Timi, 9 Nov 2026: ₦17,000 → ₦16,000).
+ * PRICING_RECOMMENDED_CUT_PERCENT (0–30) overrides it: the rule tests set 0 to check the rules underneath.
+ */
+export const RECOMMENDED_CUT_PERCENT = (() => {
+  const raw = typeof process !== 'undefined' ? process.env?.PRICING_RECOMMENDED_CUT_PERCENT : undefined;
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 30 ? n : 6;
+})();
+const RECOMMENDED_FACTOR = 1 - RECOMMENDED_CUT_PERCENT / 100;
+
 export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number; maxOfferNgn: number } {
-  const recommendedTripFare = tripFareNgn(suggestedFareNgn);
+  // The limits are worked out on the price before the recommended cut, so the cut leaves them where they were;
+  // the minimum is still never above the recommended price itself.
+  const pricedNgn = suggestedFareNgn / RECOMMENDED_FACTOR;
+  const recommendedTripFare = tripFareNgn(pricedNgn);
   // A share of the suggested price (inDrive's minimum ÷ its one-click): the room grows with the trip.
   if (pricingSettings.minOfferShare !== null) {
-    const byShare = roundUpToIncrement(suggestedFareNgn * pricingSettings.minOfferShare, FARE_ROUNDING_INCREMENT);
+    const byShare = roundUpToIncrement(pricedNgn * pricingSettings.minOfferShare, FARE_ROUNDING_INCREMENT);
     return {
       minOfferNgn: Math.min(Math.max(byShare, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
       maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
@@ -1539,7 +1557,7 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
   // trip costs. It never goes under the minimum fare, nor above the suggested
   // fare on a trip that is already at the minimum.
   if (pricingSettings.minOfferGapNgn > 0) {
-    const byGap = roundUpToIncrement(suggestedFareNgn - pricingSettings.minOfferGapNgn, FARE_ROUNDING_INCREMENT);
+    const byGap = roundUpToIncrement(pricedNgn - pricingSettings.minOfferGapNgn, FARE_ROUNDING_INCREMENT);
     return {
       minOfferNgn: Math.min(Math.max(byGap, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
       maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
@@ -1550,7 +1568,7 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
   // app as modelPremiumNgn, so that is all a rider may then bargain away.
   const room = mlPricingOn() ? Math.min(premiumAt(), pricingSettings.modelPremiumNgn) : premiumAt();
   const byPremium = pricingSettings.marketFloorOn
-    ? roundUpToIncrement(suggestedFareNgn - room, FARE_ROUNDING_INCREMENT)
+    ? roundUpToIncrement(pricedNgn - room, FARE_ROUNDING_INCREMENT)
     : 0;
   return {
     minOfferNgn: Math.min(Math.max(byShare, byPremium, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
