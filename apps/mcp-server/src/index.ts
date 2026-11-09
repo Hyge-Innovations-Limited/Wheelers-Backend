@@ -1,5 +1,5 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
-import { loadWorkspaceEnv, validateMcpEnv } from '@wheleers/config';
+import { loadWorkspaceEnv, startAlerts, validateMcpEnv } from '@wheleers/config';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -48,6 +48,7 @@ function corsMiddleware(allowedOrigins: Set<string>): RequestHandler {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
   const env = validateMcpEnv();
 
   const publicUrl = new URL(env.MCP_PUBLIC_URL);

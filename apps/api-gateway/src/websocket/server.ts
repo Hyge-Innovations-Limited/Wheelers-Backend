@@ -1,19 +1,26 @@
 import type { IncomingMessage, Server as HttpServer } from 'http';
+import { recordLiveFailure } from '../analytics/user-outcomes';
 import type { Duplex } from 'stream';
 import WebSocket, { Server as WebSocketServer } from 'ws';
-import { driverBidClient, driverClient, userClient } from '@wheleers/db';
-import { DriverOfflineEvent } from '@wheleers/kafka-schemas';
+import { driverClient, driverPresence, userClient } from '@wheleers/db';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildGatewayAuthContext } from '../auth/context';
-import { verifyLocalAccessToken } from '../auth/local';
-import type { InboundWsMessage } from '../types';
+import { RIDE_PAGE_TOKEN_TTL_SECONDS, verifyLocalAccessToken, verifyWalletPageToken } from '../auth/local';
+import type { GatewayAuthContext, InboundWsMessage } from '../types';
 import { isRecord } from '../utils/object';
 import { handleDriverMessage } from './handlers/driver.handler';
 import { handleRideMessage } from './handlers/ride.handler';
 import { handleWalletMessage } from './handlers/wallet.handler';
+import type { RedisClient } from '../redis/client';
+import { createDriverOfflineGrace, withdrawDriverFromMarket, type DropWithdrawnBid } from './driver-offline-grace';
 import { resyncDriverActiveRide } from './driver-ride-sync';
+import { tellEndedRequests } from './driver-ended-requests';
 import type { GatewayPublisher } from './publisher';
+import { createRateLimiter } from './rate-limit';
 import { SocketRegistry } from './registry';
+import { handleAppStateMessage } from './app-state';
+import { ridePageChannel } from '../rides/ride-page-live';
+import { publicMessage } from '../http/public-error';
 
 interface WebSocketServerDeps {
   server: HttpServer;
@@ -23,69 +30,47 @@ interface WebSocketServerDeps {
   registry: SocketRegistry;
   publisher: GatewayPublisher;
   routePlanner: GoogleMapsRoutePlanner;
+  redis: RedisClient;
+  /** DRIVER_STATUS_PUSHES_ENABLED: accept app:state. Off, it is an unknown message as before. */
+  driverStatusPushes?: boolean;
+  /** Takes a bid withdrawn here (driver offline) off its WhatsApp search's list: the ride page and the chat. */
+  dropWithdrawnBid?: DropWithdrawnBid;
+  /** A larger message closes the socket (code 1009). */
+  maxPayloadBytes?: number;
+  /** Messages a second each socket may send, and the burst allowed on top. */
+  rateLimitPerSecond?: number;
+  rateLimitBurst?: number;
+  /** Sign-ins in flight at once before new ones are told to come back. */
+  maxPendingUpgrades?: number;
+  /** Log every connect, close and message. Off, there is one summary line a minute. */
+  verboseLog?: boolean;
+  /** Trip chat and Live call. Asked first about every message; answers only its own. */
+  tripChat?: {
+    handleWsMessage(
+      type: string,
+      payload: Record<string, unknown>,
+      auth: GatewayAuthContext,
+    ): Promise<{ type: string; payload: Record<string, unknown> } | null>;
+  };
+  /**
+   * Where our own pages are served (APP_BASE_URL). A Trip chat page's socket
+   * comes from there, and is let in on its link even if CORS_ORIGINS forgot it.
+   */
+  pageOrigins?: Set<string>;
 }
 
-/**
- * A driver whose socket died gets a short grace to reconnect (network blips
- * are normal); after it, they are OFF the market: marked offline and their
- * open bids withdrawn, each affected rider told. Without this, dead phones
- * stayed ONLINE in the DB forever — ghost drivers absorbed candidate slots
- * and riders paid for drivers who no longer existed.
- */
-const DRIVER_OFFLINE_GRACE_MS = 45_000;
-const pendingDriverOffline = new Map<string, ReturnType<typeof setTimeout>>();
-
-function cancelPendingDriverOffline(driverId: string): void {
-  const timer = pendingDriverOffline.get(driverId);
-  if (timer) {
-    clearTimeout(timer);
-    pendingDriverOffline.delete(driverId);
+/** The type of the message that failed, when it can be read: errors name the request they answer. */
+function requestTypeOf(raw: WebSocket.RawData): string | null {
+  try {
+    const parsed = JSON.parse(raw.toString()) as { type?: unknown };
+    return typeof parsed?.type === 'string' ? parsed.type : null;
+  } catch {
+    return null;
   }
 }
 
-async function withdrawDriverFromMarket(
-  deps: WebSocketServerDeps,
-  driverUserId: string,
-): Promise<void> {
-  const affected = await driverBidClient
-    .withdrawAllPendingForDriver(driverUserId)
-    .catch(() => []);
-  for (const bid of affected) {
-    void deps.registry.sendToUser(bid.riderId, 'ride:driver_rejected', {
-      rideId: bid.rideId,
-      driverId: bid.driverId,
-      reason: 'driver_unavailable',
-    });
-  }
-}
-
-function scheduleDriverOffline(
-  deps: WebSocketServerDeps,
-  auth: { userId: string; driverId: string },
-): void {
-  cancelPendingDriverOffline(auth.driverId);
-  const timer = setTimeout(() => {
-    pendingDriverOffline.delete(auth.driverId);
-    if (deps.registry.hasUser(auth.userId)) return; // reconnected in time
-    console.info('[ws] driver offline after disconnect grace', {
-      driverId: auth.driverId,
-      userId: auth.userId,
-    });
-    void deps.publisher
-      .publishDriverEvent(
-        DriverOfflineEvent.parse({
-          eventType: 'DRIVER_OFFLINE',
-          driverId: auth.driverId,
-          reason: 'inactivity',
-          timestamp: new Date().toISOString(),
-        }),
-      )
-      .catch(() => undefined);
-    void withdrawDriverFromMarket(deps, auth.userId);
-  }, DRIVER_OFFLINE_GRACE_MS);
-  timer.unref?.();
-  pendingDriverOffline.set(auth.driverId, timer);
-}
+/** A socket that keeps sending past its limit this many times is closed. */
+const RATE_LIMIT_STRIKES_BEFORE_CLOSE = 200;
 
 function getRequestOrigin(request: IncomingMessage): string | null {
   const origin = request.headers.origin;
@@ -130,8 +115,24 @@ function getRequestLogContext(request: IncomingMessage, origin: string | null): 
   };
 }
 
-export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
-  const wsServer = new WebSocketServer({ noServer: true });
+export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats: () => Record<string, number> } {
+  // The default was 100 MiB a message. Nothing the apps send is near a
+  // thousandth of that; a socket that tries is closed.
+  const wsServer = new WebSocketServer({ noServer: true, maxPayload: deps.maxPayloadBytes ?? 128 * 1024 });
+  const verbose = deps.verboseLog === true;
+  const maxPendingUpgrades = deps.maxPendingUpgrades ?? 400;
+  const grace = createDriverOfflineGrace({ redis: deps.redis, registry: deps.registry, publisher: deps.publisher, dropBid: deps.dropWithdrawnBid, verbose });
+  grace.start();
+
+  // What happened in the last minute, in one line, instead of a line per event.
+  const counts = { opened: 0, closed: 0, messages: 0, rateLimited: 0, refusedBusy: 0, refusedAuth: 0 };
+  let pendingUpgrades = 0;
+  const summary = setInterval(() => {
+    if (counts.opened + counts.closed + counts.messages + counts.rateLimited + counts.refusedBusy === 0 && deps.registry.connectionCount === 0) return;
+    console.info('[ws] last minute', { open: deps.registry.connectionCount, ...counts });
+    counts.opened = counts.closed = counts.messages = counts.rateLimited = counts.refusedBusy = counts.refusedAuth = 0;
+  }, 60_000);
+  summary.unref?.();
 
   deps.server.on('upgrade', (request, socket, head) => {
     void (async () => {
@@ -146,15 +147,6 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
         return;
       }
 
-      if (deps.allowedOrigins.size > 0 && requestOrigin && !deps.allowedOrigins.has(requestOrigin)) {
-        console.warn('[ws] reject: origin not allowed', {
-          allowedOrigins: Array.from(deps.allowedOrigins),
-          ...getRequestLogContext(request, requestOrigin),
-        });
-        rejectUpgrade(socket, 403, 'Forbidden');
-        return;
-      }
-
       const token = getConnectionToken(request, url.searchParams);
       if (!token) {
         console.warn('[ws] reject: missing access token', getRequestLogContext(request, requestOrigin));
@@ -162,30 +154,122 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
         return;
       }
 
+      // Every sign-in costs database reads. After a restart thousands arrive
+      // at once; past this many in flight, the rest are told to come back,
+      // and the apps do, a little later each time. The token is checked first:
+      // that costs nothing, and a bad one should hear 401, not "busy".
+      let tokenSubject: string;
+      // When a real login (not a page link) was issued: an admin's sign-out ends those from before it.
+      let loginIssuedAt: number | null = null;
+      // A Trip chat page signs in with its link, not a login: that socket may
+      // only chat and call, and only on the ride its link names.
+      let pageRideId: string | null = null;
+      // The WhatsApp booking page signs in with its link too: it may only listen.
+      let ridePage = false;
       try {
-        const localToken = verifyLocalAccessToken(token, deps.jwtSecret);
-        const user = await userClient.findById(localToken.sub);
+        const login = verifyLocalAccessToken(token, deps.jwtSecret);
+        tokenSubject = login.sub;
+        loginIssuedAt = login.iat;
+      } catch (error) {
+        const page = (() => {
+          try {
+            return verifyWalletPageToken(token, deps.jwtSecret);
+          } catch {
+            return null;
+          }
+        })();
+        if (!page || !((page.scope === 'trip' && page.rideId) || page.scope === 'ride')) {
+          counts.refusedAuth += 1;
+          const message = error instanceof Error ? error.message : 'Invalid auth token';
+          if (verbose) console.warn('[ws] reject: invalid access token', { message, ...getRequestLogContext(request, requestOrigin) });
+          rejectUpgrade(socket, 401, message);
+          return;
+        }
+        tokenSubject = page.userId;
+        pageRideId = page.rideId ?? null;
+        ridePage = page.scope === 'ride';
+      }
 
-        const driver = await driverClient.findByUserId(user.id);
+      const originAllowed =
+        deps.allowedOrigins.size === 0 ||
+        !requestOrigin ||
+        deps.allowedOrigins.has(requestOrigin) ||
+        ((pageRideId !== null || ridePage) && (deps.pageOrigins?.has(requestOrigin) ?? false));
+      if (!originAllowed) {
+        console.warn('[ws] reject: origin not allowed', {
+          allowedOrigins: Array.from(deps.allowedOrigins),
+          ...getRequestLogContext(request, requestOrigin),
+        });
+        rejectUpgrade(socket, 403, 'Forbidden');
+        return;
+      }
+      if (pendingUpgrades >= maxPendingUpgrades) {
+        counts.refusedBusy += 1;
+        rejectUpgrade(socket, 503, 'Service Unavailable');
+        return;
+      }
+
+      pendingUpgrades += 1;
+      try {
+        const user = await userClient.findById(tokenSubject);
+        if (loginIssuedAt !== null && user.sessionsEndedAt && loginIssuedAt * 1000 + 999 < user.sessionsEndedAt.getTime()) {
+          counts.refusedAuth += 1;
+          rejectUpgrade(socket, 401, 'You were signed out. Please sign in again.');
+          return;
+        }
+
+        // A page socket is never a driver on shift: no driver record, no presence, no grace.
+        const driver = pageRideId || ridePage ? null : await driverClient.findByUserId(user.id);
 
         const auth = buildGatewayAuthContext({
           user,
           driverId: driver?.id,
         });
+        // The MCP server says so when it connects; used only to label bookings for analytics.
+        auth.client = url.searchParams.get('client') === 'mcp' ? 'mcp' : 'app';
+        if (pageRideId) auth.page = { scope: 'trip', rideId: pageRideId };
+        if (ridePage) {
+          auth.userId = ridePageChannel(user.id);
+          auth.ridePage = true;
+        }
 
         wsServer.handleUpgrade(request, socket as never, head, (ws: WebSocket) => {
-          void deps.registry.register(ws, auth).then(() => {
+          // Listen FIRST. The app speaks the moment its socket opens ("I am
+          // online"), and the listeners used to be attached only after the
+          // registry had written to Redis. When that write took longer than
+          // the phone did, the first message arrived to nobody and was lost:
+          // a driver who believed they were on shift and were not. register()
+          // records who this socket is before it waits for anything, so the
+          // handlers can run straight away.
+          const registered = deps.registry.register(ws, auth);
+          counts.opened += 1;
+          // A booking page listens no longer than its link lives; reconnecting needs a live link.
+          if (ridePage) {
+            const linkOver = setTimeout(() => ws.close(4001, 'Link expired'), RIDE_PAGE_TOKEN_TTL_SECONDS * 1000);
+            linkOver.unref?.();
+            ws.once('close', () => clearTimeout(linkOver));
+          }
+          if (verbose) {
             console.info('[ws] connected', {
               userId: user.id,
               driverId: driver?.id ?? null,
               ...getRequestLogContext(request, requestOrigin),
             });
-            wsServer.emit('connection', ws, request);
+          }
+          // They are back: whatever grace was running for them is over. Said
+          // before the listeners exist, so that if this socket closes a
+          // moment from now, its new grace is written after this cancel and
+          // not wiped out by it.
+          if (driver) void grace.cancel(driver.id);
+          wsServer.emit('connection', ws, request);
+
+          void registered.then(() => {
             // A driver reconnecting mid-trip (or after missing the match
             // while backgrounded) gets their assigned ride back immediately.
-            if (driver) {
-              cancelPendingDriverOffline(driver.id);
+            if (driver && ws.readyState === ws.OPEN) {
               void resyncDriverActiveRide(deps.registry, ws, driver.id);
+              // Requests that ended while the app was away leave its screen now.
+              void tellEndedRequests(deps.registry, ws, deps.redis, user.id, driver.id);
             }
           }).catch((error) => {
             console.error('[ws] registry error', {
@@ -193,16 +277,19 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
               userId: user.id,
               ...getRequestLogContext(request, requestOrigin),
             });
-            ws.close(1011, error instanceof Error ? error.message : 'Socket registry error');
+            ws.close(1011, 'Socket registry error');
           });
         });
       } catch (error) {
+        counts.refusedAuth += 1;
         const message = error instanceof Error ? error.message : 'Invalid auth token';
-        console.warn('[ws] reject: invalid access token', {
+        console.warn('[ws] reject: could not sign in', {
           message,
           ...getRequestLogContext(request, requestOrigin),
         });
         rejectUpgrade(socket, 401, message);
+      } finally {
+        pendingUpgrades -= 1;
       }
     })();
   });
@@ -216,6 +303,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
     // dropped", which are opposite problems with opposite fixes.
     let idleTerminated = false;
     let pongsSeen = 0;
+    const limiter = createRateLimiter(deps.rateLimitPerSecond ?? 10, deps.rateLimitBurst ?? 40);
+    let strikes = 0;
 
     const touch = () => {
       lastSeenAt = Date.now();
@@ -243,13 +332,39 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
       }
     }, Math.max(10_000, Math.floor(deps.idleTimeoutMs / 2)));
 
+    // A pong proves the phone is there. For a driver on shift that IS presence,
+    // so it is written down — at most every 30 s, whatever the ping rate.
+    let presenceNotedAt = 0;
     socket.on('pong', () => {
       pongsSeen += 1;
       touch();
+      const auth = deps.registry.getAuthContext(socket);
+      if (!auth?.driverId || Date.now() - presenceNotedAt < 30_000) return;
+      presenceNotedAt = Date.now();
+      // Redis hears every one; the row in Postgres is touched every couple of minutes.
+      void driverClient.noteAlive(auth.userId, auth.driverId).catch(() => undefined);
     });
 
     socket.on('message', async (raw) => {
       touch();
+
+      // More than its share: the message is dropped and the sender told. A
+      // socket that keeps at it is closed; a real app never gets near this.
+      if (!limiter.take()) {
+        counts.rateLimited += 1;
+        strikes += 1;
+        if (strikes === 1 || strikes % 50 === 0) {
+          deps.registry.sendToSocket(socket, 'error', { code: 'RATE_LIMITED', message: 'Too many messages. Slow down.' });
+        }
+        if (strikes >= RATE_LIMIT_STRIKES_BEFORE_CLOSE) {
+          console.warn('[ws] closing a socket that would not slow down', {
+            userId: deps.registry.getAuthContext(socket)?.userId ?? null,
+          });
+          socket.close(1008, 'Too many messages');
+        }
+        return;
+      }
+      counts.messages += 1;
 
       try {
         const parsed = JSON.parse(raw.toString()) as InboundWsMessage;
@@ -264,22 +379,31 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
           throw new Error('Unauthenticated socket context');
         }
 
-        console.info('[ws] message', {
-          type: parsed.type,
-          userId: auth.userId,
-          driverId: auth.driverId ?? null,
-        });
+        if (verbose) {
+          console.info('[ws] message', {
+            type: parsed.type,
+            userId: auth.userId,
+            driverId: auth.driverId ?? null,
+          });
+        }
 
+        const tripChatResponse = deps.tripChat && !auth.ridePage ? await deps.tripChat.handleWsMessage(parsed.type, payload, auth) : null;
         const response =
-          (await handleRideMessage(
-            parsed.type,
-            payload,
-            auth,
-            deps.publisher,
-            deps.routePlanner,
-          )) ??
-          (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
-          (await handleWalletMessage(parsed.type, payload));
+          tripChatResponse ??
+          (deps.driverStatusPushes && !auth.page && !auth.ridePage && auth.client !== 'mcp' ? await handleAppStateMessage(parsed.type, payload, auth, deps.redis) : null) ??
+          // A Trip chat page's socket does nothing else; a booking page's only listens.
+          (auth.page || auth.ridePage
+            ? null
+            : (await handleRideMessage(
+                parsed.type,
+                payload,
+                auth,
+                deps.publisher,
+                deps.routePlanner,
+                deps.redis,
+              )) ??
+              (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
+              (await handleWalletMessage(parsed.type, payload)));
 
         if (!response) {
           deps.registry.sendToSocket(socket, 'error', {
@@ -289,21 +413,37 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
         }
 
         deps.registry.sendToSocket(socket, response.type, response.payload);
+        // An accept refused because the driver's price moved: the offer as it stands now, in the
+        // message every app version already merges into its list (old apps otherwise retry the old price).
+        if (response.type === 'ride:accept_offer:rejected' && response.payload['reason'] === 'offer_changed' && response.payload['counterOffer']) {
+          deps.registry.sendToSocket(socket, 'ride:counter_offer', response.payload['counterOffer'] as Record<string, unknown>);
+        }
 
         // Going offline on purpose leaves the market immediately: open bids
         // are withdrawn and their riders told — same rule as a dead socket,
         // without the grace.
         if (parsed.type === 'driver:offline' && auth.driverId) {
-          cancelPendingDriverOffline(auth.driverId);
-          void withdrawDriverFromMarket(deps, auth.userId);
+          void grace.cancel(auth.driverId);
+          void driverPresence.remove(auth.driverId);
+          void withdrawDriverFromMarket(deps.registry, auth.userId, deps.dropWithdrawnBid);
         }
 
       } catch (error) {
+        const rawCode = error instanceof Error ? (error as unknown as { code?: unknown }).code : undefined;
+        const code = typeof rawCode === 'string' ? rawCode : undefined;
         console.warn('[ws] message error', {
           message: error instanceof Error ? error.message : 'Unknown message handling error',
+          ...(code ? { code } : {}),
         });
+        // The refusal, for the admin Activity page: who hit it, doing what.
+        const who = deps.registry.getAuthContext(socket);
+        if (who) recordLiveFailure(who.userId, requestTypeOf(raw), error instanceof Error ? error.message : 'Something went wrong.', code);
         deps.registry.sendToSocket(socket, 'error', {
-          message: error instanceof Error ? error.message : 'Unknown message handling error',
+          // Ours, always: an engineer's message stays in the log above.
+          message: publicMessage(error instanceof Error ? error.message : undefined, 400),
+          // Which refusal it was, and to which request, so the app can act on it (e.g. "chat closed").
+          ...(code ? { code } : {}),
+          requestType: requestTypeOf(raw),
         });
       }
     });
@@ -311,7 +451,9 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
     socket.on('close', (code, reason) => {
       clearInterval(heartbeat);
       const auth = deps.registry.getAuthContext(socket);
-      console.info('[ws] closed', {
+      counts.closed += 1;
+      // An idle timeout or a policy close is worth a line; an ordinary close is counted.
+      if (verbose || idleTerminated || code === 1008 || code === 1009) console.info('[ws] closed', {
         code,
         reason: reason.toString() || null,
         // Who ended it, and how long it lasted. A 1006 at roughly the idle
@@ -325,9 +467,9 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
       });
       void deps.registry.unregister(socket);
       if (auth?.driverId) {
-        // unregister is async; the grace timer re-checks liveness at fire
-        // time, so scheduling immediately is safe either way.
-        scheduleDriverOffline(deps, { userId: auth.userId, driverId: auth.driverId });
+        // unregister is async; the grace re-checks liveness when it runs out,
+        // so scheduling immediately is safe either way.
+        void grace.schedule({ userId: auth.userId, driverId: auth.driverId });
       }
     });
 
@@ -342,4 +484,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): void {
       void deps.registry.unregister(socket);
     });
   });
+
+  return {
+    stats: () => ({ open: deps.registry.connectionCount, pendingUpgrades, ...counts }),
+  };
 }

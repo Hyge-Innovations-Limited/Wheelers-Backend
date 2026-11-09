@@ -5,8 +5,9 @@
  *
  *   node scripts/run-with-env.cjs node scripts/audit-money.mjs [settlementNgn]
  *
- * Pass the Pouch settlement-wallet balance (from the dashboard Ledger page)
- * as the argument to get the solvency verdict, e.g.:
+ * With PAYSTACK_SECRET_KEY set (it is, through run-with-env) the Paystack
+ * balance is read live, so the solvency verdict needs no argument. Pass a
+ * figure to override it, e.g. to audit against a number from the dashboard:
  *   node scripts/run-with-env.cjs node scripts/audit-money.mjs 23830
  *
  * Checks, per wallet:
@@ -19,12 +20,43 @@
  * Then globally:
  *   4. LIABILITIES vs CASH — what all wallets sum to (real users vs seed
  *      demo accounts) against the settlement balance you pass in, with
- *      cash-in/cash-out totals from the ledger for cross-checking Pouch.
+ *      cash-in/cash-out totals from the ledger for cross-checking the provider.
  */
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-const settlementNgn = process.argv[2] ? Number(process.argv[2]) : null;
+let settlementNgn = process.argv[2] ? Number(process.argv[2]) : null;
+let settlementSource = 'argument';
+// Paystack keeps a deposit as "pending settlement" until it settles it (next
+// working day). Only the TRANSFER BALANCE can pay a withdrawal. Both are real
+// cash, so both count toward solvency — but they are reported apart, because
+// "solvent" and "able to pay a withdrawal right now" are different questions.
+let transferBalanceNgn = null;
+let pendingSettlementNgn = null;
+if (settlementNgn === null && /^sk_(test|live)_/.test(process.env.PAYSTACK_SECRET_KEY ?? '')) {
+  try {
+    const res = await fetch(`${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/balance`, {
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    });
+    const json = await res.json();
+    const ngn = (json.data ?? []).find((b) => b.currency === 'NGN');
+    if (res.ok && ngn) {
+      const isTest = process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_');
+      transferBalanceNgn = Number(ngn.balance) / 100;
+      const totals = await (await fetch(`${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/transaction/totals`, {
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+      })).json().catch(() => null);
+      const pending = (totals?.data?.pending_transfers_by_currency ?? []).find((b) => b.currency === 'NGN');
+      // Test mode credits the balance instantly AND lists the same money as
+      // pending — counting both would double it.
+      pendingSettlementNgn = isTest ? 0 : Number(pending?.amount ?? 0) / 100;
+      settlementNgn = transferBalanceNgn + pendingSettlementNgn;
+      settlementSource = `Paystack ${isTest ? 'TEST' : 'LIVE'}, read live`;
+    }
+  } catch {
+    // fall through: no verdict without a cash figure
+  }
+}
 const n = (d) => (d === null || d === undefined ? 0 : Number(d));
 const fmt = (v) => `₦${v.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`;
 
@@ -123,31 +155,46 @@ for (const r of realRows.sort((a, b) => (b.balance + b.locked) - (a.balance + a.
     `(${r.tx} tx, deposited ${fmt(r.walletIn)}, withdrew ${fmt(r.walletOut)})`,
   );
 }
-console.log(`platform fee wallet total: ${fmt(platformNgn)} (revenue — mostly fees from the SEEDED fictional rides)`);
+console.log(`platform wallet: ${fmt(platformNgn)} (fees earned minus provider fees absorbed — negative means Wheelers is subsidising)`);
 console.log(`liabilities (REAL users):  ${fmt(liabilitiesReal)}   ← must be covered by cash`);
 console.log(`liabilities (seed/demo):   ${fmt(liabilitiesSeed)}   (not real money)`);
 console.log(`REAL cash-in (deposits): ${fmt(cashIn)}`);
 console.log(`REAL cash-out (withdrawals debited): ${fmt(cashOutSettled)}`);
 console.log(`REAL withdrawals SETTLED: ${settled._count} totalling ${fmt(n(settled._sum.requestedAmountNgn))}`);
 if (stuck.length) {
-  console.log(`⚠ in-flight/stuck withdrawals: ${stuck.length}`);
+  console.log(`in-flight/stuck withdrawals: ${stuck.length}`);
   for (const s of stuck) console.log(`   ${s.status} ${fmt(n(s.requestedAmountNgn))} user ${s.userId.slice(0,8)} since ${s.createdAt.toISOString()}`);
 }
 if (settlementNgn !== null) {
   const gap = settlementNgn - liabilitiesReal;
+  // Every deposit and transfer books the provider's fee, so the WHOLE ledger
+  // (users + platform) should equal the cash to the kobo. A difference here is
+  // money that moved without a ledger row, or a row without money.
+  const ledgerVsCash = (liabilitiesReal + platformNgn) - settlementNgn;
   console.log('──────────────────────────────────────────');
-  console.log(`Pouch settlement wallet:   ${fmt(settlementNgn)}`);
+  console.log(`provider cash:             ${fmt(settlementNgn)}   (${settlementSource})`);
+  if (transferBalanceNgn !== null) {
+    console.log(`  ├ transfer balance:      ${fmt(transferBalanceNgn)}   ← the ONLY money that can pay a withdrawal right now`);
+    console.log(`  └ pending settlement:    ${fmt(pendingSettlementNgn)}   ← deposits Paystack has received but not yet settled`);
+    if (transferBalanceNgn < liabilitiesReal) {
+      console.log(`WITHDRAWALS WILL BE REFUSED: users hold ${fmt(liabilitiesReal)} but only ${fmt(transferBalanceNgn)} is in the transfer balance.`);
+      console.log('  Top up the Paystack balance (dashboard → Transfers → Top up), and ask Paystack to settle into your balance instead of your bank.');
+    }
+  }
+  console.log(Math.abs(ledgerVsCash) < 0.01
+    ? 'BOOKS MATCH CASH: users + platform equals the provider balance exactly'
+    : `books differ from cash by ${fmt(ledgerVsCash)} (ledger − cash)`);
   console.log(gap >= 0
-    ? `✅ SOLVENT: cash covers real-user liabilities with ${fmt(gap)} platform margin`
-    : `❌ SHORTFALL: real-user liabilities exceed cash by ${fmt(-gap)} — that money is promised but not backed`);
+    ? `SOLVENT: cash covers real-user liabilities with ${fmt(gap)} platform margin`
+    : `SHORTFALL: real-user liabilities exceed cash by ${fmt(-gap)} — that money is promised but not backed`);
 } else {
   console.log('(pass the settlement balance as an argument for the solvency verdict)');
 }
 console.log('──────────────────────────────────────────');
 if (problems.length === 0) {
-  console.log('✅ every wallet\'s history replays cleanly; no drift, no orphaned locks');
+  console.log('every wallet\'s history replays cleanly; no drift, no orphaned locks');
 } else {
-  console.log(`❌ ${problems.length} integrity problem(s):`);
+  console.log(`${problems.length} integrity problem(s):`);
   for (const p of problems) console.log('  ' + p);
 }
 await prisma.$disconnect();

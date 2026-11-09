@@ -1,7 +1,9 @@
 import { prisma }   from '../prisma';
 import { Prisma }   from '@prisma/client';
 import type { TransactionType } from '@prisma/client';
-import { calculateRideFees } from '@wheleers/config';
+import { calculateRideFees, pricingVersionOf, splitDeposit } from '@wheleers/config';
+import { PLATFORM_USER_ID, bookProviderFee, ensurePlatformWalletId } from './platform-wallet';
+import { takeFromBalance } from './wallet-balance';
 
 // The type of the transactional client Prisma passes into $transaction callbacks
 type TxClient = Prisma.TransactionClient;
@@ -28,30 +30,8 @@ interface RideHoldWithPayoutResult {
   applied: boolean;
 }
 
-const PLATFORM_USER_ID = '00000000-0000-0000-0000-000000000001';
-
-async function ensurePlatformWallet(): Promise<string> {
-  const existing = await prisma.wallet.findUnique({ where: { userId: PLATFORM_USER_ID } });
-  if (existing) return existing.id;
-
-  // Create the platform user + wallet if they don't exist
-  await prisma.user.upsert({
-    where: { id: PLATFORM_USER_ID },
-    create: {
-      id: PLATFORM_USER_ID,
-      privyDid: 'platform:wheelers',
-      role: 'RIDER',
-      name: 'Wheelers Platform',
-    },
-    update: {},
-  });
-
-  const wallet = await prisma.wallet.create({
-    data: { userId: PLATFORM_USER_ID },
-  });
-
-  return wallet.id;
-}
+const ensurePlatformWallet = (): Promise<string> => ensurePlatformWalletId();
+void PLATFORM_USER_ID;
 
 export const walletClient = {
 
@@ -144,6 +124,91 @@ export const walletClient = {
     }
   },
 
+  /**
+   * A bank deposit, booked in full and in one transaction:
+   *
+   *   user wallet      + (amount − Wheelers fee [− provider fee])   DEPOSIT
+   *   platform wallet  + Wheelers fee                               PLATFORM_FEE
+   *   platform wallet  − provider fee Wheelers absorbs              PROVIDER_FEE
+   *
+   * The three always sum to the cash that actually reached the provider
+   * balance, so ledger and bank cannot drift. Idempotent on the provider's
+   * transaction reference: the DEPOSIT row's unique key is the claim, and a
+   * replay changes nothing.
+   */
+  creditDeposit: async (params: {
+    walletId:        string;
+    amountNgn:       number;
+    providerFeeNgn:  number;
+    referenceId:     string;
+    metadata?:       Record<string, unknown>;
+  }): Promise<WalletMutationResult & { split: ReturnType<typeof splitDeposit> }> => {
+    const { walletId, amountNgn, providerFeeNgn, referenceId, metadata } = params;
+    const split = splitDeposit(amountNgn, providerFeeNgn);
+
+    try {
+      const result = await prisma.$transaction(async (tx: TxClient) => {
+        const wallet = await tx.wallet.update({
+          where: { id: walletId },
+          data:  { balanceNgn: { increment: split.userCreditNgn } },
+        });
+        const txn = await tx.transaction.create({
+          data: {
+            walletId,
+            type:            'DEPOSIT',
+            direction:       'CREDIT',
+            amountNgn:       split.userCreditNgn,
+            balanceAfterNgn: wallet.balanceNgn,
+            referenceId,
+            metadata: {
+              ...(metadata ?? {}),
+              grossAmountNgn: amountNgn,
+              wheelersFeeNgn: split.platformFeeNgn,
+              providerFeeNgn,
+            } as Prisma.InputJsonValue,
+          },
+        });
+
+        if (split.platformFeeNgn > 0) {
+          const platformWalletId = await ensurePlatformWalletId(tx);
+          const platform = await tx.wallet.update({
+            where: { id: platformWalletId },
+            data:  { balanceNgn: { increment: split.platformFeeNgn } },
+          });
+          await tx.transaction.create({
+            data: {
+              walletId:        platformWalletId,
+              type:            'PLATFORM_FEE',
+              direction:       'CREDIT',
+              amountNgn:       split.platformFeeNgn,
+              balanceAfterNgn: platform.balanceNgn,
+              referenceId,
+              metadata: { kind: 'deposit_fee', depositWalletId: walletId } as Prisma.InputJsonValue,
+            },
+          });
+        }
+
+        await bookProviderFee(tx, {
+          amountNgn: split.platformAbsorbsNgn,
+          referenceId,
+          metadata: { kind: 'deposit_provider_fee', depositWalletId: walletId },
+        });
+
+        return { wallet, transaction: txn, applied: true as const };
+      });
+
+      return { ...result, split };
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+
+      const existing = await findExistingTransaction(walletId, 'DEPOSIT', 'CREDIT', referenceId);
+      const wallet = await prisma.wallet.findUniqueOrThrow({ where: { id: walletId } });
+      return { wallet, transaction: existing, applied: false, split };
+    }
+  },
+
   debit: async (params: {
     walletId:    string;
     amountNgn:   number;
@@ -167,10 +232,11 @@ export const walletClient = {
           );
         }
 
-        const wallet = await tx.wallet.update({
-          where: { id: walletId },
-          data:  { balanceNgn: { decrement: amountNgn } },
-        });
+        // Checked again as it is taken: a payment in the same instant may have spent it.
+        const wallet = await takeFromBalance(tx, walletId, amountNgn);
+        if (!wallet) {
+          throw new Error(`Insufficient balance on wallet ${walletId}: needs ${amountNgn} NGN`);
+        }
 
         const txn = await tx.transaction.create({
           data: {
@@ -217,13 +283,11 @@ export const walletClient = {
         );
       }
 
-      return tx.wallet.update({
-        where: { id: walletId },
-        data: {
-          balanceNgn: { decrement: amountNgn },
-          lockedNgn:  { increment: amountNgn },
-        },
-      });
+      const locked = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
+      if (!locked) {
+        throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
+      }
+      return locked;
     }),
 
   unlockFunds: (walletId: string, amountNgn: number) =>
@@ -237,6 +301,23 @@ export const walletClient = {
 
   // ── Ride Hold Operations ──────────────────────────────────────────────────
 
+  /**
+   * Holds still locking money on a ride that ended (cancelled) before
+   * `endedBefore`: nothing will ever settle them. The sweeper releases them.
+   * (A rider paying for a chosen driver after a search timed out revives the
+   * ride within minutes, so the cut-off leaves that window alone.)
+   */
+  strandedRideHolds: async (endedBefore: Date, limit = 50): Promise<Array<{ rideId: string; riderId: string; amountNgn: number }>> => {
+    const rows = await prisma.$queryRaw<Array<{ rideId: string; riderId: string; amountNgn: unknown }>>`
+      SELECT h."rideId", h."riderId", h."amountNgn"
+      FROM "RideHold" h
+      JOIN "Ride" r ON r.id = h."rideId"
+      WHERE h.status = 'ACTIVE' AND r.status = 'CANCELLED' AND r."updatedAt" < ${endedBefore}
+      ORDER BY r."updatedAt" ASC
+      LIMIT ${limit}`;
+    return rows.map((row) => ({ rideId: row.rideId, riderId: row.riderId, amountNgn: Number(row.amountNgn) }));
+  },
+
   createRideHold: async (params: {
     rideId: string;
     walletId: string;
@@ -248,6 +329,21 @@ export const walletClient = {
 
     try {
       return await prisma.$transaction(async (tx: TxClient) => {
+        // Duplicate-hold check MUST come before the balance check: the first
+        // hold locks the funds, so a second attempt (gateway pre-holds, the
+        // wallet-service consumer re-holds on RIDE_OFFER_ACCEPTED) fails the
+        // balance check and throws before the unique constraint could catch
+        // it — surfacing as a fake CRITICAL 'ride running unsecured'.
+        const existing = await tx.rideHold.findUnique({ where: { rideId } });
+        if (existing && existing.status !== 'RELEASED') {
+          const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: walletId } });
+          return { wallet, holdAmountNgn: Number(existing.amountNgn), applied: false as const };
+        }
+        // A RELEASED row means an earlier driver dropped and the ride was
+        // re-matched. Treating it as "already held" let the new match run
+        // with nothing locked and settlement then found no ACTIVE hold.
+        const rearm = existing?.status === 'RELEASED';
+
         const current = await tx.wallet.findUniqueOrThrow({
           where: { id: walletId },
         });
@@ -259,23 +355,30 @@ export const walletClient = {
           );
         }
 
-        const wallet = await tx.wallet.update({
-          where: { id: walletId },
-          data: {
-            balanceNgn: { decrement: amountNgn },
-            lockedNgn: { increment: amountNgn },
-          },
-        });
+        const wallet = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
+        if (!wallet) {
+          throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
+        }
 
-        await tx.rideHold.create({
-          data: {
-            rideId,
-            walletId,
-            riderId,
-            driverUserId,
-            amountNgn,
-          },
-        });
+        if (rearm) {
+          const reclaimed = await tx.rideHold.updateMany({
+            where: { rideId, status: 'RELEASED' },
+            data: { status: 'ACTIVE', walletId, riderId, driverUserId, amountNgn, settledAt: null, settledAmountNgn: null },
+          });
+          if (reclaimed.count === 0) {
+            throw new Error(`Ride hold for ${rideId} changed state while being re-armed`);
+          }
+        } else {
+          await tx.rideHold.create({
+            data: {
+              rideId,
+              walletId,
+              riderId,
+              driverUserId,
+              amountNgn,
+            },
+          });
+        }
 
         return { wallet, holdAmountNgn: amountNgn, applied: true as const };
       });
@@ -334,14 +437,32 @@ export const walletClient = {
           },
         });
 
-        // 2. Calculate fees — rider's offer is inclusive of all fees
-        const fees = calculateRideFees(fareNgn);
-        const riderTotalNgn = fees.totalNgn; // same as fareNgn
+        // 2. Calculate fees — rider's offer is inclusive of all fees. If the
+        // fare came in above what was held and the rider has nothing else,
+        // settle for what is there rather than throwing: a throw rolled the
+        // claim back and left the money locked and the driver unpaid forever.
+        const availableNgn = Number(unlockedRiderWallet.balanceNgn);
+        const effectiveFareNgn = Math.min(fareNgn, Math.max(availableNgn, Number(hold.amountNgn)));
+        if (effectiveFareNgn < fareNgn) {
+          console.error('[wallet] ride settled below fare — rider short after hold', {
+            rideId,
+            fareNgn,
+            heldNgn: Number(hold.amountNgn),
+            availableNgn,
+            settledNgn: effectiveFareNgn,
+          });
+          await tx.rideHold.update({ where: { rideId }, data: { settledAmountNgn: effectiveFareNgn } });
+        }
+        // By the rules the ride was priced under: a ride agreed before the
+        // pricing change still pays its driver what was agreed then.
+        const priced = await tx.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
+        const fees = calculateRideFees(effectiveFareNgn, pricingVersionOf(priced?.pricingVersion));
+        const riderTotalNgn = fees.totalNgn;
         const platformFeeNgn = fees.platformTotalNgn;
         const driverPayoutNgn = fees.driverPayoutNgn;
 
         // 3. Debit rider (their offer amount)
-        if (Number(unlockedRiderWallet.balanceNgn) < riderTotalNgn) {
+        if (availableNgn < riderTotalNgn) {
           throw new Error(
             `Insufficient balance on rider wallet ${hold.walletId} after unlocking: ` +
             `has ${unlockedRiderWallet.balanceNgn} NGN, needs ${riderTotalNgn} NGN`,
@@ -398,6 +519,19 @@ export const walletClient = {
             amountNgn: platformFeeNgn,
             balanceAfterNgn: platformWallet.balanceNgn,
             referenceId: rideId,
+            // Tells ride fees apart from deposit fees (kind 'deposit_fee') in the same ledger type,
+            // with every line of it: booking fee, commission, WhatsApp fee, VAT, levy.
+            metadata: {
+              kind: 'ride_fee',
+              pricingVersion: fees.pricingVersion,
+              bookingFeeNgn: fees.bookingFeeNgn,
+              commissionNgn: fees.commissionNgn,
+              whatsappFeeNgn: fees.whatsappFeeNgn,
+              vatNgn: fees.vatNgn,
+              stateLevyNgn: fees.stateLevyNgn,
+              // Old name of the booking fee, for readers of older rows.
+              serviceFeeNgn: fees.bookingFeeNgn,
+            },
           },
         });
 
@@ -416,10 +550,18 @@ export const walletClient = {
           );
         }
 
-        // 7. Store platform fee on the ride record
+        // 7. Store the platform's total on the ride record, and every line of it for the dashboard.
         await tx.ride.update({
           where: { id: rideId },
-          data: { platformFeeNgn: platformFeeNgn },
+          data: {
+            platformFeeNgn: platformFeeNgn,
+            commissionNgn: fees.commissionNgn,
+            serviceFeeNgn: fees.bookingFeeNgn,
+            vatNgn: fees.vatNgn,
+            stateLevyNgn: fees.stateLevyNgn,
+            whatsappFeeNgn: fees.pricingVersion >= 3 ? fees.whatsappFeeNgn : null,
+            feeSplitEstimated: false,
+          },
         });
 
         return {
@@ -443,7 +585,8 @@ export const walletClient = {
       const riderTxn = await findExistingTransaction(hold.walletId, 'RIDE_PAYMENT', 'DEBIT', rideId);
       const driverTxn = await findExistingTransaction(driverWallet.id, 'DRIVER_PAYOUT', 'CREDIT', rideId);
 
-      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn));
+      const priced = await prisma.ride.findUnique({ where: { id: rideId }, select: { pricingVersion: true } });
+      const fees = calculateRideFees(Number(hold.settledAmountNgn ?? hold.amountNgn), pricingVersionOf(priced?.pricingVersion));
       return {
         riderWallet,
         driverWallet,
@@ -459,6 +602,8 @@ export const walletClient = {
   adjustRideHold: async (params: {
     rideId: string;
     targetAmountNgn: number;
+    /** Change the hold only if it is exactly this now (an undo must not overwrite what happened since). */
+    expectedAmountNgn?: number;
   }): Promise<(RideHoldMutationResult & { previousHoldAmountNgn: number }) | null> => {
     const { rideId, targetAmountNgn } = params;
 
@@ -478,7 +623,13 @@ export const walletClient = {
 
       const currentAmountNgn = Number(hold.amountNgn);
       const normalizedTarget = Math.max(0, targetAmountNgn);
-      const deltaNgn = normalizedTarget - currentAmountNgn;
+      // To the kobo, so the guarded subtract never works on a float tail.
+      const deltaNgn = Math.round((normalizedTarget - currentAmountNgn) * 100) / 100;
+
+      if (params.expectedAmountNgn !== undefined && Math.abs(currentAmountNgn - params.expectedAmountNgn) >= 0.01) {
+        const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
+        return { wallet, holdAmountNgn: currentAmountNgn, previousHoldAmountNgn: currentAmountNgn, applied: false as const };
+      }
 
       if (Math.abs(deltaNgn) < 0.01) {
         const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
@@ -490,27 +641,45 @@ export const walletClient = {
         };
       }
 
-      if (deltaNgn > 0) {
+      // Safe against a withdrawal, a charge or another change at the same moment. The hold is changed only
+      // if it is still ACTIVE and still the amount just read (one guarded update: a hold that was charged or
+      // moved changes zero rows, and nothing is written). A raise then takes the money from the wallet's balance
+      // in one statement that checks the balance as it subtracts, so the balance can never go below zero.
+      const moved = await tx.rideHold.updateMany({
+        where: { rideId, status: 'ACTIVE', amountNgn: hold.amountNgn },
+        data: { amountNgn: normalizedTarget },
+      });
+      if (moved.count === 0) {
+        const fresh = await tx.rideHold.findUnique({ where: { rideId } });
         const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
-        if (Number(wallet.balanceNgn) < deltaNgn) {
+        return {
+          wallet,
+          holdAmountNgn: fresh ? Number(fresh.amountNgn) : currentAmountNgn,
+          previousHoldAmountNgn: currentAmountNgn,
+          applied: false as const,
+        };
+      }
+
+      let wallet;
+      if (deltaNgn > 0) {
+        wallet = await takeFromBalance(tx, hold.walletId, deltaNgn, { lock: true });
+        if (!wallet) {
+          // Throwing undoes the hold update above: nothing changed.
           throw new Error(
             `Insufficient balance on wallet ${hold.walletId} to adjust ride hold by ${deltaNgn} NGN`,
           );
         }
+      } else {
+        const back = -deltaNgn;
+        const released = await tx.wallet.updateMany({
+          where: { id: hold.walletId, lockedNgn: { gte: back } },
+          data: { balanceNgn: { increment: back }, lockedNgn: { decrement: back } },
+        });
+        if (released.count === 0) {
+          throw new Error(`Wallet ${hold.walletId} has less locked than the ride hold to release by ${back} NGN`);
+        }
+        wallet = await tx.wallet.findUniqueOrThrow({ where: { id: hold.walletId } });
       }
-
-      const wallet = await tx.wallet.update({
-        where: { id: hold.walletId },
-        data: {
-          balanceNgn: { increment: -deltaNgn },
-          lockedNgn: { increment: deltaNgn },
-        },
-      });
-
-      await tx.rideHold.update({
-        where: { rideId },
-        data: { amountNgn: normalizedTarget },
-      });
 
       return {
         wallet,
@@ -521,7 +690,16 @@ export const walletClient = {
     });
   },
 
-  cancelRideHold: async (rideId: string): Promise<RideHoldMutationResult | null> => {
+  /** The ride's hold as it stands: whose driver it is for, and whether it still holds money. */
+  rideHoldOf: (rideId: string) =>
+    prisma.rideHold.findUnique({ where: { rideId }, select: { status: true, driverUserId: true, amountNgn: true, createdAt: true, updatedAt: true } }),
+
+  /**
+   * `forDriverUserId`: release only a hold taken for that driver. A late
+   * "that driver was busy" must never release the hold of the driver the
+   * rider chose after them.
+   */
+  cancelRideHold: async (rideId: string, forDriverUserId?: string): Promise<RideHoldMutationResult | null> => {
     return prisma.$transaction(async (tx: TxClient) => {
       const hold = await tx.rideHold.findUnique({ where: { rideId } });
       if (!hold) return null;
@@ -533,7 +711,7 @@ export const walletClient = {
       // gate: Postgres row-locks the hold, the loser re-evaluates after the
       // winner commits, matches zero rows, and moves no money.
       const claimed = await tx.rideHold.updateMany({
-        where: { rideId, status: 'ACTIVE' },
+        where: { rideId, status: 'ACTIVE', ...(forDriverUserId ? { OR: [{ driverUserId: forDriverUserId }, { driverUserId: null }] } : {}) },
         data: { status: 'RELEASED', settledAt: new Date() },
       });
 

@@ -4,6 +4,8 @@ import { authenticateHttpUser } from "./authenticate";
 import { readJsonBody, sendJson } from "./utils";
 import { getNumber, getString, isRecord } from "../utils/object";
 import { logActivity } from "../analytics/log-activity";
+import { noteRequestDetail } from "../analytics/user-outcomes";
+import { referralChatMessage, referralLinkTarget, referralShareLink } from "../whatsapp/referral";
 
 interface ReferralRouteDeps {
   jwtSecret: string;
@@ -35,12 +37,11 @@ function decimalToNumber(value: unknown): number | null {
 function mapReferralItem(
   referral: Awaited<ReturnType<typeof referralClient.listReferrals>>[number],
 ) {
+  // Their first name only: a friend's phone number or email is not the referrer's to see.
   const referredUser =
-    referral.referredUser.name ??
-    referral.referredUser.username ??
-    referral.referredUser.phone ??
-    referral.referredUser.email ??
-    "Referred rider";
+    referral.referredUser.name?.trim().split(/\s+/)[0] ||
+    referral.referredUser.username ||
+    "A friend";
 
   return {
     id: referral.id,
@@ -85,7 +86,14 @@ export async function handleGetReferralSummaryRoute(
     const user = await authenticateHttpUser(req, deps.jwtSecret);
     const summary = await referralClient.findSummary(user.id);
 
-    sendJson(res, 200, summary);
+    // The link a referral QR code holds: a chat with the Wheelers bot with the code typed.
+    sendJson(res, 200, {
+      ...summary,
+      shareLink: summary.code ? referralShareLink(summary.code) : null,
+      shareMessage: summary.code ? referralChatMessage(summary.code) : null,
+      // Whether someone else's code is already on this account: one per person.
+      hasAppliedCode: await referralClient.hasAppliedCode(user.id),
+    });
   } catch (error) {
     sendJson(res, 400, {
       error:
@@ -93,6 +101,56 @@ export async function handleGetReferralSummaryRoute(
           ? error.message
           : "Could not load referral summary.",
     });
+  }
+}
+
+/**
+ * GET /r/:code, no sign-in: a referral link of the kind shared for a day
+ * (app.wheelersng.com/r/CODE). Sends the friend to the chat with the bot,
+ * the code typed, so those links keep working.
+ */
+export function handleReferralLinkRoute(req: IncomingMessage, res: ServerResponse, rawCode: string): void {
+  let code = "";
+  try {
+    code = referralClient.normalizeCode(decodeURIComponent(rawCode)).slice(0, 12);
+  } catch {
+    // A broken escape: no code, still sent on.
+  }
+  res.statusCode = 302;
+  res.setHeader("Location", referralLinkTarget(code));
+  res.setHeader("Cache-Control", "no-store");
+  res.end();
+}
+
+/** PUT /referrals/me/code { code } — the person's own choice of referral code. */
+export async function handleSetReferralCodeRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReferralRouteDeps,
+): Promise<void> {
+  let userId: string;
+  try {
+    userId = (await authenticateHttpUser(req, deps.jwtSecret)).id;
+  } catch {
+    sendJson(res, 401, { error: "Please sign in again." });
+    return;
+  }
+  try {
+    const rawBody = await readJsonBody(req);
+    const wanted = isRecord(rawBody) ? getString(rawBody, "code") : undefined;
+    if (!wanted) {
+      sendJson(res, 400, { error: "Type the code you want." });
+      return;
+    }
+    const saved = await referralClient.setCustomCode(userId, wanted);
+    logActivity({ userId, eventType: "referral_code_changed", metadata: { code: saved.code } });
+    sendJson(res, 200, {
+      code: saved.code,
+      shareLink: referralShareLink(saved.code),
+      shareMessage: referralChatMessage(saved.code),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error instanceof Error ? error.message : "Could not change your referral code." });
   }
 }
 
@@ -114,6 +172,8 @@ export async function handleApplyReferralCodeRoute(
       sendJson(res, 400, { error: "code is required" });
       return;
     }
+    // The Activity page shows the code they entered, worked or not.
+    noteRequestDetail(res, referralClient.normalizeCode(code));
 
     const result = await referralClient.applyCode({
       referredUserId: user.id,

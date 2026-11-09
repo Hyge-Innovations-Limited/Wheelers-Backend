@@ -1,0 +1,196 @@
+{
+  "version": "6.0",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "EMAIL": [
+      "TERMS"
+    ],
+    "TERMS": [
+      "DONE"
+    ],
+    "DONE": []
+  },
+  "screens": [
+    {
+      "id": "EMAIL",
+      "title": "Welcome",
+      "terminal": false,
+      "data": {
+        "email": {
+          "type": "string",
+          "__example__": ""
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "email_form",
+            "init-values": {
+              "email": "${data.email}"
+            },
+            "children": [
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Enter your email"
+              },
+              {
+                "type": "TextInput",
+                "name": "email",
+                "label": "Email",
+                "input-type": "email",
+                "required": true
+              },
+              {
+                "type": "OptIn",
+                "name": "marketing",
+                "label": "Send me news and offers by email",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Next",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "welcome_email",
+                    "email": "${form.email}",
+                    "marketing": "${form.marketing}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TERMS",
+      "title": "Welcome",
+      "terminal": false,
+      "data": {
+        "email": {
+          "type": "string",
+          "__example__": "ada@example.com"
+        },
+        "privacy_url": {
+          "type": "string",
+          "__example__": "https://wheelersng.com/privacy"
+        },
+        "terms_url": {
+          "type": "string",
+          "__example__": "https://wheelersng.com/terms"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "marketing": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "terms_form",
+            "children": [
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Read our Privacy Policy and Terms and Conditions."
+              },
+              {
+                "type": "EmbeddedLink",
+                "text": "Privacy Policy",
+                "on-click-action": {
+                  "name": "open_url",
+                  "url": "${data.privacy_url}"
+                }
+              },
+              {
+                "type": "EmbeddedLink",
+                "text": "Terms and Conditions",
+                "on-click-action": {
+                  "name": "open_url",
+                  "url": "${data.terms_url}"
+                }
+              },
+              {
+                "type": "OptIn",
+                "name": "agree",
+                "label": "I agree",
+                "required": false
+              },
+              {
+                "type": "TextCaption",
+                "text": "By tapping Get started, you agree to both."
+              },
+              {
+                "type": "Footer",
+                "label": "Get started",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "welcome_agree",
+                    "email": "${data.email}",
+                    "marketing": "${data.marketing}",
+                    "agree": "${form.agree}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Wheelers",
+      "terminal": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "You're all set."
+          },
+          {
+            "type": "Footer",
+            "label": "Back to chat",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "flow": "welcome"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

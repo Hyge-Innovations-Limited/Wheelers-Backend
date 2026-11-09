@@ -9,17 +9,22 @@ export const RIDE = {
   // The offer card and the auction are ONE clock, deliberately equal: a
   // driver's card lives exactly as long as the rider's search. They used to
   // differ (150s card / 180s auction), which left drivers staring at an
-  // empty feed during a live auction — and before that they were both a
-  // too-short 30s. If you change one, change both.
-  OFFER_TTL_SECONDS: 90,
+  // empty feed during a live auction. If you change one, change both.
+  OFFER_TTL_SECONDS: 300,
 
-  // How long the whole search runs before the rider is told nobody took it.
-  // 90s: three minutes measurably lost riders to silence; half kept them.
-  BID_TIMEOUT_SECONDS: 90,
+  // How long the whole search runs before it gives up. Five minutes since 2026-11-08 (Timi: half an
+  // hour was far too long to wait on a search nobody takes). Thirty minutes (an hour for a day, 2026-10-01)
+  // from
+  // 2026-09-25: the rider is not sitting on it any more — the search lives in
+  // the offers form, which they open when they like, and nothing is sent to
+  // the chat when it ends. The form says "no driver took ₦X" and offers
+  // Search again / Change my price right there. (90 s before that, when every
+  // end of a search was a chat message the rider had to wait for.)
+  BID_TIMEOUT_SECONDS: 300,
 
-  // Maximum number of drivers to attempt before cancelling the ride
-  // with a "no drivers available" reason.
-  MAX_MATCH_ATTEMPTS: 5,
+  // How many drivers one request reaches at most: in practice every driver
+  // inside the match radius (see MAX_MATCH_ATTEMPTS in ride.env).
+  MAX_MATCH_ATTEMPTS: 200,
 
   // How long after RIDE_COMPLETED the rider has to submit a rating.
   RATING_WINDOW_HOURS: 24,

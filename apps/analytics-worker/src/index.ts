@@ -1,4 +1,4 @@
-import { loadWorkspaceEnv, validateSharedEnv } from '@wheleers/config';
+import { loadWorkspaceEnv, startAlerts, validateSharedEnv } from '@wheleers/config';
 import { activityClient, driverClient, type ActivityEventInput } from '@wheleers/db';
 import { createConsumer, onShutdown, registerShutdownHandlers } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
@@ -90,6 +90,7 @@ async function extractUserIds(topic: string, event: Record<string, unknown>): Pr
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
   process.env['NODE_ENV'] ??= 'development';
   process.env['KAFKA_CLIENT_ID'] ??= SERVICE_ID;
   process.env['KAFKA_BROKERS'] ??= 'localhost:9092';

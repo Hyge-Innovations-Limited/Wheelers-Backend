@@ -1,4 +1,38 @@
-import { createDecipheriv, createCipheriv, createHmac, privateDecrypt, constants, randomBytes, timingSafeEqual } from 'crypto';
+import { createDecipheriv, createCipheriv, createHmac, createPrivateKey, privateDecrypt, constants, randomBytes, timingSafeEqual, type KeyObject } from 'crypto';
+
+/**
+ * Parse the flow private key however it survived the trip through .env:
+ * real newlines, literal \n sequences (the usual casualty of pasting a PEM
+ * into an env file), base64-wrapped whole-PEM, and optionally passphrase-
+ * protected (WHATSAPP_FLOW_KEY_PASSPHRASE). OpenSSL's raw error for all of
+ * these is the useless "DECODER routines::unsupported" — normalize first
+ * and fail with words a human can act on.
+ */
+function parseFlowPrivateKey(privateKeyPem: string): KeyObject {
+  let pem = privateKeyPem.trim();
+  if (!pem.includes('-----BEGIN')) {
+    // Whole PEM stored base64-encoded (a safe way to keep it on one line)
+    try {
+      const decoded = Buffer.from(pem, 'base64').toString('utf8');
+      if (decoded.includes('-----BEGIN')) pem = decoded.trim();
+    } catch { /* fall through to the error below */ }
+  }
+  pem = pem.replace(/\\n/g, '\n').replace(/\r/g, '');
+  if (!pem.includes('-----BEGIN')) {
+    throw new Error(
+      'WHATSAPP_FLOW_PRIVATE_KEY does not look like a PEM key. Paste the full key including the BEGIN/END lines (literal \n for line breaks is fine), or base64-encode the whole file.',
+    );
+  }
+  const passphrase = process.env.WHATSAPP_FLOW_KEY_PASSPHRASE;
+  try {
+    return createPrivateKey(passphrase ? { key: pem, passphrase } : pem);
+  } catch (error) {
+    const hint = /ENCRYPTED|bad decrypt|passphrase/i.test(String(error)) || pem.includes('ENCRYPTED')
+      ? 'The key is passphrase-protected — set WHATSAPP_FLOW_KEY_PASSPHRASE in .env, or regenerate without a passphrase.'
+      : 'Check that the key was pasted completely and line breaks survived (use literal \n or base64-encode the file).';
+    throw new Error(`Could not parse WHATSAPP_FLOW_PRIVATE_KEY: ${hint}`);
+  }
+}
 
 export interface DecryptedFlowRequest {
   decryptedBody: FlowRequestBody;
@@ -29,7 +63,7 @@ export function decryptFlowRequest(
   // 1. Decrypt the AES key with RSA-OAEP (SHA-256)
   const aesKey = privateDecrypt(
     {
-      key: privateKeyPem,
+      key: parseFlowPrivateKey(privateKeyPem),
       padding: constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: 'sha256',
     },

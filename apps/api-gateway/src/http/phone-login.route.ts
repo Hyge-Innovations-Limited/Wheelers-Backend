@@ -1,3 +1,5 @@
+import { openDepositAccountWhenReady } from '../onboarding/user-onboarding';
+import { noteRequestPhone } from '../analytics/user-outcomes';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { userClient } from '@wheleers/db';
 import { createLocalAccessToken } from '../auth/local';
@@ -32,7 +34,8 @@ import { readJsonBody, sendJson } from './utils';
 
 const LOGIN_OTP_KEY_PREFIX = 'auth:phone-login:otp:';
 const LOGIN_SEND_COUNT_PREFIX = 'auth:phone-login:sends:';
-const LOGIN_OTP_TTL_SECONDS = 300;
+/** A sign-in code is good for 30 minutes, the same as a driver's phone code. */
+export const LOGIN_OTP_TTL_SECONDS = 30 * 60;
 const MAX_SENDS_PER_WINDOW = 5;
 const SEND_WINDOW_SECONDS = 600;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -110,6 +113,8 @@ export async function handlePhoneLoginSendOtpRoute(
       return;
     }
     phone = normalizePhoneNumber(rawPhone);
+    // Not signed in yet: the number is how the admin Activity page knows whose attempt this was.
+    noteRequestPhone(res, phone);
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid request' });
     return;
@@ -122,24 +127,27 @@ export async function handlePhoneLoginSendOtpRoute(
     }
     if (sends > MAX_SENDS_PER_WINDOW) {
       sendJson(res, 429, {
-        error: `Too many codes requested for this number. Wait up to ${Math.ceil(SEND_WINDOW_SECONDS / 60)} minutes and check WhatsApp for the last code sent.`,
+        error: `Too many codes requested for this number. Wait up to ${Math.ceil(SEND_WINDOW_SECONDS / 60)} minutes and check your text messages for the last code sent.`,
         code: 'OTP_RATE_LIMITED',
       });
       return;
     }
 
     const code = buildOtpCode();
-    const ttlSeconds = deps.phoneOtpTtlSeconds ?? LOGIN_OTP_TTL_SECONDS;
+    // Its own lifetime: WHATSAPP_OTP_TTL_SECONDS is for codes sent over WhatsApp, which this never is.
+    const ttlSeconds = LOGIN_OTP_TTL_SECONDS;
     await deps.redisClient.set(
       otpKey(phone),
       JSON.stringify({ codeHash: hashOtp(code), attempts: 0 } satisfies StoredLoginOtp),
       ttlSeconds,
     );
 
-    const messageBody = `Your Wheelers sign-in code is ${code}. It expires in ${Math.max(1, Math.floor(ttlSeconds / 60))} minute(s). If you did not request this, ignore this message.`;
+    const minutes = Math.max(1, Math.floor(ttlSeconds / 60));
+    const messageBody = `Your Wheelers sign-in code is ${code}. It expires in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. Do not share it with anyone.`;
 
     let channel: 'whatsapp' | 'sms';
     try {
+      // By text message and on WhatsApp at once: it arrives wherever they look.
       channel = await sendPhoneOtpMessage(deps, phone, messageBody, code);
     } catch (error) {
       // A code that never left the building must not eat the rider's quota —
@@ -161,7 +169,7 @@ export async function handlePhoneLoginSendOtpRoute(
         return;
       }
       sendJson(res, 502, {
-        error: `We could not deliver the code: ${error instanceof Error ? error.message : 'unknown error'}`,
+        error: 'We could not send a text message to this number. Check the number and try again.',
         code: 'OTP_DELIVERY_FAILED',
       });
       return;
@@ -196,6 +204,8 @@ export async function handlePhoneLoginVerifyOtpRoute(
       return;
     }
     phone = normalizePhoneNumber(rawPhone);
+    // Not signed in yet: the number is how the admin Activity page knows whose attempt this was.
+    noteRequestPhone(res, phone);
     code = rawCode;
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid request' });
@@ -209,7 +219,7 @@ export async function handlePhoneLoginVerifyOtpRoute(
       return;
     }
 
-    const codeIsGood = isProviderManagedOtp(phone)
+    const codeIsGood = (await isProviderManagedOtp(deps.redisClient, phone))
       ? await verifyProviderManagedOtp(deps, phone, code)
       : timingSafeStringEquals(hashOtp(code), stored.codeHash);
 
@@ -241,11 +251,17 @@ export async function handlePhoneLoginVerifyOtpRoute(
     const accessToken = createLocalAccessToken(user.id, deps.jwtSecret);
 
     logActivity({ userId: user.id, eventType: 'phone_login', metadata: { created } });
+    // Someone who agreed on WhatsApp, or signed up in the app before accounts
+    // were opened for them, gets theirs now if everything the bank needs is there.
+    void openDepositAccountWhenReady(deps.onboarding.paymentsClient, user.id);
 
     sendJson(res, 200, {
       accessToken,
       tokenType: 'Bearer',
       isNewUser: created,
+      // Whether this account has agreed to the terms and privacy policy, here
+      // or on WhatsApp. Said only now: the code has proved the number is theirs.
+      privacyConsent: await userClient.getPrivacyConsent(user.id).catch(() => 'PENDING'),
       user: {
         id: user.id,
         privyDid: user.privyDid,

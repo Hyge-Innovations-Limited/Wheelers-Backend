@@ -1,3 +1,5 @@
+import { zoneFor, type PriceReason, type TripDetails } from '@wheleers/config';
+import { logActivity } from '../analytics/log-activity';
 import type { RedisClient } from '../redis/client';
 
 export type RideState = 'setup' | 'searching' | 'bidding' | 'confirmed' | 'in_progress' | 'completed';
@@ -7,24 +9,45 @@ export interface PendingLocation {
   lng: number;
   address: string;
   savedAt: string;
+  /**
+   * A destination the rider already named in their first message, carried
+   * forward so "yes" at the destination prompt confirms it instead of being
+   * geocoded as a place called "Yes".
+   */
+  suggestedDestination?: string;
 }
 
 export interface WhatsappRideMeta {
   riderId: string;
   phone: string;
+  /** 'flow' = booked inside the WhatsApp form; bid chat spam is suppressed. */
+  source?: 'chat' | 'flow';
   pickupAddress: string;
   pickupLat?: number;
   pickupLng?: number;
   destinationAddress: string;
   destinationLat?: number;
   destinationLng?: number;
+  /** Places to pass through on the way, in order. */
+  stops?: RouteStop[];
   distanceKm?: number;
   durationSeconds?: number;
   offerNgn: number;
   suggestedFareNgn: number;
+  /** Why the suggested price is up (busy area, rain, rush hour), from the quote. Absent on older searches. */
+  priceReason?: PriceReason | null;
   paymentMethod: 'CASH' | 'WALLET';
   createdAt: string;
 }
+
+export interface RouteStop {
+  lat: number;
+  lng: number;
+  address: string;
+}
+
+/** A chat booking carries at most this many stops (the ride event allows 5). */
+export const MAX_CHAT_STOPS = 3;
 
 export interface WhatsappBid {
   /** Durable DriverBid.id — acceptance names this exact bid and price. */
@@ -42,14 +65,35 @@ export interface WhatsappBid {
   receivedAt: string;
 }
 
-const RIDE_META_TTL = 900;           // 15 minutes
-const BIDS_TTL = 900;                // 15 minutes
-const RIDE_STATE_TTL = 1800;         // 30 minutes
-const ACTIVE_RIDE_TTL = 1800;        // 30 minutes
-const PENDING_LOCATION_TTL = 600;    // 10 minutes
+// A search runs 5 minutes (RIDE.BID_TIMEOUT_SECONDS); everything a search needs lives longer.
+const RIDE_META_TTL = 7200;          // 2 hours
+const BIDS_TTL = 7200;               // 2 hours
+const RIDE_STATE_TTL = 7200;         // 2 hours
+const ACTIVE_RIDE_TTL = 7200;        // 2 hours — outlives the search (and a price change restarting it)
+/**
+ * Once a driver is assigned the pointer must outlive the trip. It used to
+ * expire 30 minutes after booking, so on a long ride "cancel" fell into the
+ * booking flow and the completion message never came.
+ */
+export const IN_TRIP_ACTIVE_RIDE_TTL = 3 * 60 * 60;
+/**
+ * How long a booking in progress (the trip, a shared pickup, the step it is
+ * at) waits for the rider: an hour, and it starts again every time they do
+ * something with it. Ten minutes lost the trip of anyone who stopped to
+ * answer a call before tapping Confirm.
+ */
+export const BOOKING_TTL = 60 * 60;
+const PENDING_LOCATION_TTL = BOOKING_TTL;
+
+/** Keep a booking key alive while the rider is using it. Best effort: never blocks or throws. */
+function touch(redis: RedisClient, key: string, ttlSeconds: number): void {
+  void Promise.resolve()
+    .then(() => redis.send('EXPIRE', key, String(ttlSeconds)))
+    .catch(() => undefined);
+}
 const PHONE_LOOKUP_TTL = 86400;      // 24 hours
-const DEBOUNCE_TTL = 30;             // 30 seconds
-const BID_BATCH_TTL = 900;           // 15 minutes — stores last batch sent to rider
+const DEBOUNCE_TTL = 3;              // offers that are not urgent are bundled this long (was 15: riders waited too long)
+const BID_BATCH_TTL = 7200;          // 2 hours — stores last batch sent to rider
 
 function rideMetaKey(rideId: string): string {
   return `whatsapp:ride:${rideId}:meta`;
@@ -93,6 +137,25 @@ export async function storeWhatsappRide(
     redis.set(rideBidsKey(rideId), JSON.stringify([]), BIDS_TTL),
     redis.set(rideStateKey(rideId), 'searching' as RideState, RIDE_STATE_TTL),
   ]);
+}
+
+/**
+ * The rider changed their price mid-search. The meta is rewritten with the
+ * SEARCH's TTL (it used to be re-set for 15 minutes here, which told a rider who
+ * raised their price at minute 2 that the search had ended at minute 17 while the
+ * auction was still live), and the remembered route learns the new price so
+ * "Search again" and the ended-search screen repeat what the rider last asked.
+ */
+export async function storeRiderOfferChange(
+  redis: RedisClient,
+  rideId: string,
+  meta: WhatsappRideMeta,
+  offerNgn: number,
+): Promise<void> {
+  meta.offerNgn = offerNgn;
+  await redis.set(rideMetaKey(rideId), JSON.stringify(meta), RIDE_META_TTL);
+  const route = await getLastRoute(redis, meta.riderId);
+  if (route) await storeLastRoute(redis, meta.riderId, { ...route, offerNgn });
 }
 
 export async function getRideMeta(
@@ -164,8 +227,24 @@ export async function setActiveRide(
   redis: RedisClient,
   userId: string,
   rideId: string,
+  ttlSeconds: number = ACTIVE_RIDE_TTL,
 ): Promise<void> {
-  await redis.set(activeRideKey(userId), rideId, ACTIVE_RIDE_TTL);
+  await redis.set(activeRideKey(userId), rideId, ttlSeconds);
+}
+
+/**
+ * Clear the pointer only if it still names this ride. Cleanup for a ride
+ * that ended used to wipe whatever the rider had moved on to.
+ */
+export async function clearActiveRideIfMatches(
+  redis: RedisClient,
+  userId: string,
+  rideId: string,
+): Promise<boolean> {
+  const current = await redis.get(activeRideKey(userId)).catch(() => null);
+  if (current !== null && current !== rideId) return false;
+  await redis.del(activeRideKey(userId));
+  return true;
 }
 
 export async function getActiveRide(
@@ -190,12 +269,104 @@ export async function isWhatsappRider(
   return activeRide !== null;
 }
 
+/**
+ * A rider cancelled in the chat and gave a reason: kept for the one message
+ * that follows (reason + refund together), sent once the cancellation and
+ * the refund have gone through.
+ */
+const cancelChatKey = (rideId: string) => `whatsapp:cancel:${rideId}`;
+
+/** Cancelled by the rider on the ride page: they did it there, so the chat says nothing. */
+const pageCancelKey = (rideId: string) => `whatsapp:cancel:${rideId}:on_page`;
+export async function markCancelledOnPage(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(pageCancelKey(rideId), '1', 15 * 60);
+}
+/** The cancel did not go out after all: the ride is not over, and the chat may speak of it again. */
+export async function unmarkCancelledOnPage(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(pageCancelKey(rideId));
+}
+export async function wasCancelledOnPage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return (await redis.get(pageCancelKey(rideId)).catch(() => null)) !== null;
+}
+
+export async function rememberChatCancellation(redis: RedisClient, rideId: string, phone: string, reason: string): Promise<void> {
+  await redis.set(cancelChatKey(rideId), JSON.stringify({ phone, reason }), 15 * 60);
+}
+
+export async function takeChatCancellation(redis: RedisClient, rideId: string): Promise<{ phone: string; reason: string } | null> {
+  const raw = await redis.get(cancelChatKey(rideId)).catch(() => null);
+  if (!raw) return null;
+  await redis.del(cancelChatKey(rideId)).catch(() => undefined);
+  try {
+    return JSON.parse(raw) as { phone: string; reason: string };
+  } catch {
+    return null;
+  }
+}
+
+const userLookupKey = (phone: string) => `whatsapp:phone:${phone.replace(/^\+/, '')}:user`;
+
+/** Both directions: the consumer needs user → phone; the reply sender needs phone → user. */
 export async function setPhoneLookup(
   redis: RedisClient,
   userId: string,
   phone: string,
 ): Promise<void> {
   await redis.set(phoneLookupKey(userId), phone, PHONE_LOOKUP_TTL);
+  await redis.set(userLookupKey(phone), userId, PHONE_LOOKUP_TTL);
+}
+
+/**
+ * Meta's customer-service window: a plain message reaches a WhatsApp user only
+ * this long after their last message to us. Outside it, only an approved template.
+ */
+export const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
+const lastInboundKey = (userId: string) => `whatsapp:user:${userId}:last_in`;
+/**
+ * The time is kept long after the window closes: while it is there it alone says
+ * whether the window is open (the phone lookup's TTL is renewed by other things).
+ */
+const LAST_INBOUND_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** A start template went out and the rider has not answered since: chat bubbles wait for the page. */
+const chatWaitKey = (userId: string) => `whatsapp:user:${userId}:chat_wait`;
+const CHAT_WAIT_TTL_SECONDS = 6 * 60 * 60;
+
+/** The rider just wrote to us (any message, a template's button included): their window runs 24 h from now. */
+export async function markWhatsappInbound(redis: RedisClient, userId: string, at = Date.now()): Promise<void> {
+  await redis.set(lastInboundKey(userId), new Date(at).toISOString(), LAST_INBOUND_TTL_SECONDS);
+  // They answered: the chat can speak to them again.
+  await redis.del(chatWaitKey(userId)).catch(() => undefined);
+}
+
+/**
+ * A ride for later's start went out as the template (outside the rider's
+ * window): until they answer or tap it, free-form messages would not reach
+ * them, so everything the chat would say waits for the page (as if they were
+ * on it; page-catchup says what is still true once they answer).
+ */
+export async function holdChatUntilAnswered(redis: RedisClient, userId: string): Promise<void> {
+  await redis.set(chatWaitKey(userId), String(Date.now()), CHAT_WAIT_TTL_SECONDS);
+}
+
+export async function isChatHeldUntilAnswered(redis: RedisClient, userId: string): Promise<boolean> {
+  return (await redis.get(chatWaitKey(userId)).catch(() => null)) !== null;
+}
+
+/**
+ * When the rider's window closes (ms since epoch), or null when it is closed or
+ * unknown. Before their last message's time was kept, the phone lookup — renewed
+ * for 24 h on every message — says it.
+ */
+export async function whatsappWindowEnd(redis: RedisClient, userId: string, now = Date.now()): Promise<number | null> {
+  const raw = await redis.get(lastInboundKey(userId)).catch(() => null);
+  const at = raw ? Date.parse(raw) : NaN;
+  if (Number.isFinite(at)) return at + WHATSAPP_WINDOW_MS > now ? at + WHATSAPP_WINDOW_MS : null;
+  const ttl = await Promise.resolve().then(() => redis.send('TTL', phoneLookupKey(userId))).catch(() => null);
+  return typeof ttl === 'number' && ttl > 0 ? now + ttl * 1000 : null;
+}
+
+export async function lookupUserIdByPhone(redis: RedisClient, phone: string): Promise<string | null> {
+  return redis.get(userLookupKey(phone));
 }
 
 export async function lookupPhoneByUserId(
@@ -229,6 +400,67 @@ export async function shouldNotify(
   return true;
 }
 
+/**
+ * With the offers form, the chat holds at most ONE unopened offers message per
+ * search: the form shows the live list whenever it is opened, so a second
+ * message about offers they have not looked at yet is only noise. Set when the
+ * form message is sent; cleared when the form is opened, or after two minutes.
+ */
+const unopenedOffersKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_message_unopened`;
+
+// Two minutes, not the whole search: a rider who never opened it is buzzed again by
+// the next offer after that — silence must never be why a driver was missed.
+const UNOPENED_OFFERS_TTL = 120;
+
+/**
+ * With the offers form, a search gets ONE message with the button — sent the moment
+ * the bid goes in, or by the first offer when nothing was sent — and never another:
+ * the form shows the live list, and its own row checks for more. This mark lives
+ * as long as the search does.
+ */
+const offersMessageKey = (rideId: string) => `whatsapp:ride:${rideId}:offers_message_sent`;
+const OFFERS_MESSAGE_TTL = 7200;
+
+export async function markOffersMessageSent(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(unopenedOffersKey(rideId), Date.now().toString(), UNOPENED_OFFERS_TTL);
+  await redis.set(offersMessageKey(rideId), Date.now().toString(), OFFERS_MESSAGE_TTL);
+}
+export async function hasOffersMessage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return Boolean(await redis.get(offersMessageKey(rideId)).catch(() => null));
+}
+export async function markOffersMessageOpened(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(unopenedOffersKey(rideId));
+}
+export async function hasUnopenedOffersMessage(redis: RedisClient, rideId: string): Promise<boolean> {
+  return Boolean(await redis.get(unopenedOffersKey(rideId)).catch(() => null));
+}
+
+/**
+ * The last search ended with no driver. Nothing is sent to the chat about it: the
+ * rider finds out in the offers form (its button is already in the chat), which
+ * offers Search again and Change my price. Cleared the moment a new search starts.
+ */
+export interface SearchTimedOut { rideId: string; offerNgn: number; at: string }
+const searchTimedOutKey = (userId: string) => `whatsapp:user:${userId}:search_timed_out`;
+const SEARCH_TIMED_OUT_TTL = 86_400;
+
+export async function markSearchTimedOut(redis: RedisClient, userId: string, info: SearchTimedOut): Promise<void> {
+  await redis.set(searchTimedOutKey(userId), JSON.stringify(info), SEARCH_TIMED_OUT_TTL);
+}
+export async function getSearchTimedOut(redis: RedisClient, userId: string): Promise<SearchTimedOut | null> {
+  const raw = await redis.get(searchTimedOutKey(userId)).catch(() => null);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as SearchTimedOut; } catch { return null; }
+}
+export async function clearSearchTimedOut(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(searchTimedOutKey(userId)).catch(() => undefined);
+}
+
+/** An urgent offer went out regardless of the window: start a fresh one behind it. */
+export async function noteNotified(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.set(debounceKey(rideId), Date.now().toString(), DEBOUNCE_TTL);
+}
+
 // ── Accepted bid (stored so driver profile flow can read it) ──────────────
 
 export interface AcceptedBidInfo {
@@ -246,6 +478,10 @@ export interface AcceptedBidInfo {
 
 function acceptedBidKey(rideId: string): string {
   return `whatsapp:ride:${rideId}:accepted_bid`;
+}
+
+export async function clearAcceptedBid(redis: RedisClient, rideId: string): Promise<void> {
+  await redis.del(acceptedBidKey(rideId));
 }
 
 export async function storeAcceptedBid(
@@ -275,8 +511,9 @@ export async function setRideState(
   redis: RedisClient,
   rideId: string,
   state: RideState,
+  ttlSeconds: number = RIDE_STATE_TTL,
 ): Promise<void> {
-  await redis.set(rideStateKey(rideId), state, RIDE_STATE_TTL);
+  await redis.set(rideStateKey(rideId), state, ttlSeconds);
 }
 
 export async function getRideState(
@@ -303,6 +540,7 @@ export async function getPendingLocation(
 ): Promise<PendingLocation | null> {
   const raw = await redis.get(pendingLocationKey(userId));
   if (!raw) return null;
+  touch(redis, pendingLocationKey(userId), PENDING_LOCATION_TTL);
   try {
     return JSON.parse(raw) as PendingLocation;
   } catch {
@@ -319,7 +557,7 @@ export async function clearPendingLocation(
 
 // ── Rider booking stage (tracks where the rider is in the booking flow) ───
 
-export type BookingStage = 'awaiting_pickup' | 'awaiting_destination' | 'awaiting_route_confirmation' | 'awaiting_price' | 'awaiting_payment' | 'awaiting_cancel_reason' | 'awaiting_withdrawal_amount' | 'awaiting_withdrawal_bank' | 'awaiting_withdrawal_account' | 'awaiting_withdrawal_confirmation' | 'searching' | 'bidding' | 'editing_pickup' | 'editing_destination' | 'group_awaiting_pickup' | 'group_awaiting_destination' | 'group_awaiting_confirm' | 'group_awaiting_face_photo';
+export type BookingStage = 'awaiting_pickup' | 'awaiting_destination' | 'awaiting_route_confirmation' | 'awaiting_trip_confirm' | 'adding_stop' | 'awaiting_price' | 'awaiting_payment' | 'awaiting_cancel_reason' | 'awaiting_withdrawal_amount' | 'awaiting_withdrawal_bank' | 'awaiting_withdrawal_account' | 'awaiting_withdrawal_confirmation' | 'searching' | 'bidding' | 'editing_pickup' | 'editing_destination' | 'group_awaiting_pickup' | 'group_awaiting_destination' | 'group_awaiting_confirm' | 'group_awaiting_face_photo';
 
 function bookingStageKey(userId: string): string {
   return `whatsapp:user:${userId}:booking_stage`;
@@ -330,11 +568,10 @@ export async function setBookingStage(
   userId: string,
   stage: BookingStage,
 ): Promise<void> {
-  // Group-ride stages get a longer window: riders answer the pickup and
-  // selfie prompts on their own time, and a 10-minute expiry silently dumped
-  // them into the solo flow mid-conversation.
-  const ttl = stage.startsWith('group_') ? 1800 : PENDING_LOCATION_TTL;
-  await redis.set(bookingStageKey(userId), stage, ttl);
+  // Every stage, solo or group, waits the booking window (an hour, restarted
+  // on use): riders answer on their own time, and a short expiry silently
+  // dropped them out of the step they were in.
+  await redis.set(bookingStageKey(userId), stage, BOOKING_TTL);
 }
 
 export async function getBookingStage(
@@ -342,6 +579,7 @@ export async function getBookingStage(
   userId: string,
 ): Promise<BookingStage | null> {
   const raw = await redis.get(bookingStageKey(userId));
+  if (raw) touch(redis, bookingStageKey(userId), BOOKING_TTL);
   return (raw as BookingStage) ?? null;
 }
 
@@ -411,11 +649,23 @@ export interface PendingRouteData {
   minOfferNgn: number;
   ratePerKmNgn: number;
   route: unknown;
+  /** Places to pass through on the way, in order. */
+  stops?: RouteStop[];
+  /**
+   * The rider has looked at this exact trip and said it is right. Any change
+   * to it stores a new route WITHOUT this, so the changed trip is shown for
+   * confirmation again before a price is asked for.
+   */
+  confirmed?: boolean;
   /** Price the rider already named, held across the confirmation step. */
   offerNgn?: number;
+  /** Why the suggested price is up (busy area, rain, rush hour) and by how much; null or absent: nothing notable. */
+  priceReason?: PriceReason | null;
+  /** People, luggage, pet and a note the trip was searched with (search again keeps them). */
+  tripDetails?: TripDetails;
 }
 
-const PENDING_ROUTE_TTL = 600; // 10 minutes
+const PENDING_ROUTE_TTL = BOOKING_TTL;
 
 function pendingRouteKey(userId: string): string {
   return `whatsapp:user:${userId}:pending_route`;
@@ -427,6 +677,21 @@ export async function storePendingRoute(
   data: PendingRouteData,
 ): Promise<void> {
   await redis.set(pendingRouteKey(userId), JSON.stringify(data), PENDING_ROUTE_TTL);
+  // For analytics: a WhatsApp rider shown a price for a trip (ride_quoted), or saying the trip is right
+  // (ride_trip_confirmed). With the search that follows (ride_search_started), where they stopped.
+  logActivity({
+    userId,
+    eventType: data.confirmed ? 'ride_trip_confirmed' : 'ride_quoted',
+    source: 'whatsapp',
+    metadata: {
+      distanceKm: data.distanceKm,
+      suggestedFareNgn: data.suggestedFareNgn,
+      minOfferNgn: data.minOfferNgn,
+      stops: data.stops?.length ?? 0,
+      pickupZone: zoneFor(data.pickupLat, data.pickupLng) ?? 'outside',
+      ...(data.offerNgn ? { offerNgn: data.offerNgn } : {}),
+    },
+  });
 }
 
 export async function getPendingRoute(
@@ -435,6 +700,7 @@ export async function getPendingRoute(
 ): Promise<PendingRouteData | null> {
   const raw = await redis.get(pendingRouteKey(userId));
   if (!raw) return null;
+  touch(redis, pendingRouteKey(userId), PENDING_ROUTE_TTL);
   try {
     return JSON.parse(raw) as PendingRouteData;
   } catch {
@@ -466,7 +732,11 @@ export interface PendingAcceptData {
   fareNgn: number;
 }
 
-const PENDING_ACCEPT_TTL = 300; // 5 minutes
+// Long enough for a bank transfer to land: the chosen driver is confirmed by
+// the deposit itself, so the choice has to outlive the trip to the bank app.
+const PENDING_ACCEPT_TTL = 15 * 60;
+/** How long a rider's choice of a driver waits on their payment (seconds). */
+export const PENDING_ACCEPT_TTL_SECONDS = PENDING_ACCEPT_TTL;
 
 function pendingAcceptKey(userId: string): string {
   return `whatsapp:user:${userId}:pending_accept`;
@@ -515,7 +785,12 @@ export interface LastRouteData {
   minOfferNgn: number;
   ratePerKmNgn: number;
   route?: unknown;
+  /** Carried so "search again" asks drivers for the same trip, stops included. */
+  stops?: RouteStop[];
   offerNgn: number;
+  priceReason?: PriceReason | null;
+  /** People, luggage, pet and a note it was searched with: search again sends them again. */
+  tripDetails?: TripDetails;
 }
 
 const lastRouteKey = (userId: string) => `wa:lastroute:${userId}`;
@@ -722,7 +997,7 @@ export async function clearGroupRequestRider(
 
 export interface PendingGeoChoices {
   /** Which field the answer fills. */
-  context: 'group_pickup' | 'group_destination' | 'destination';
+  context: 'group_pickup' | 'group_destination' | 'pickup' | 'destination' | 'edit_pickup' | 'edit_destination' | 'stop' | 'menu' | 'history';
   options: Array<{ lat: number; lng: number; address: string }>;
 }
 
@@ -756,6 +1031,123 @@ export async function clearPendingGeoChoices(
   userId: string,
 ): Promise<void> {
   await redis.del(geoChoicesKey(userId));
+}
+
+// ── A place in another city, waiting for the rider to say "yes, really" ────
+
+/**
+ * The bot found the place the rider typed — hundreds of kilometres from the
+ * other end of the trip. It is held here, not applied, until they confirm.
+ */
+export interface PendingFarPlace {
+  field: 'pickup' | 'destination';
+  lat: number;
+  lng: number;
+  address: string;
+  distanceKm: number;
+}
+
+function farPlaceKey(userId: string): string {
+  return `whatsapp:user:${userId}:far_place`;
+}
+
+export async function storePendingFarPlace(redis: RedisClient, userId: string, data: PendingFarPlace): Promise<void> {
+  await redis.set(farPlaceKey(userId), JSON.stringify(data), 600);
+}
+
+export async function getPendingFarPlace(redis: RedisClient, userId: string): Promise<PendingFarPlace | null> {
+  const raw = await redis.get(farPlaceKey(userId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingFarPlace;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingFarPlace(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(farPlaceKey(userId));
+}
+
+// ── Is the rider looking at the bidding page right now? ────────────────────
+
+const RIDE_PAGE_SEEN_TTL = 25; // the page asks for news every 3 s; 25 s of silence = gone
+
+function ridePageSeenKey(userId: string): string {
+  return `whatsapp:user:${userId}:ride_page_seen`;
+}
+
+/** Every request from the bidding page doubles as "still here". */
+export async function markRidePageSeen(redis: RedisClient, userId: string): Promise<void> {
+  await redis.set(ridePageSeenKey(userId), String(Date.now()), RIDE_PAGE_SEEN_TTL);
+}
+
+/**
+ * While this is true, offers reach the rider as toasts on the page and the chat
+ * stays quiet. The moment they leave, chat notifications resume on their own.
+ */
+export async function isRidePageOpen(redis: RedisClient, userId: string): Promise<boolean> {
+  if ((await redis.get(ridePageSeenKey(userId)).catch(() => null)) !== null) return true;
+  // A start template is waiting for their answer: the chat cannot reach them, so it waits as for the page.
+  return isChatHeldUntilAnswered(redis, userId);
+}
+
+/** Really on the page now (not only the chat waiting for an answer). */
+export async function isRidePageSeen(redis: RedisClient, userId: string): Promise<boolean> {
+  return (await redis.get(ridePageSeenKey(userId)).catch(() => null)) !== null;
+}
+
+// ── One line for Home on the ride page ─────────────────────────────────────
+
+/** Something the rider must hear that the chat could not say (its window closed): shown on Home until seen. */
+const pageNoticeKey = (userId: string) => `ride_page:notice:${userId}`;
+const PAGE_NOTICE_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+export interface PageNotice { id: string; text: string }
+
+export async function setPageNotice(redis: RedisClient, userId: string, notice: PageNotice): Promise<void> {
+  await redis.set(pageNoticeKey(userId), JSON.stringify(notice), PAGE_NOTICE_TTL_SECONDS);
+}
+
+export async function getPageNotice(redis: RedisClient, userId: string): Promise<PageNotice | null> {
+  const raw = await redis.get(pageNoticeKey(userId)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PageNotice;
+    return parsed && typeof parsed.id === 'string' && typeof parsed.text === 'string' ? { id: parsed.id, text: parsed.text } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Seen on the page: gone (only the notice with this id: a newer one stays). */
+export async function clearPageNotice(redis: RedisClient, userId: string, id: string): Promise<boolean> {
+  const notice = await getPageNotice(redis, userId);
+  if (!notice || notice.id !== id) return false;
+  await redis.del(pageNoticeKey(userId)).catch(() => undefined);
+  return true;
+}
+
+// ── Not getting anywhere ───────────────────────────────────────────────────
+
+function bookingMissKey(userId: string): string {
+  return `whatsapp:user:${userId}:booking_misses`;
+}
+
+/**
+ * Count one reply the booking flow could not use. Read-then-write is fine: one
+ * rider sends one message at a time, and an off-by-one only changes which
+ * reply first shows the way out.
+ */
+export async function noteBookingMiss(redis: RedisClient, userId: string): Promise<number> {
+  const current = Number(await redis.get(bookingMissKey(userId))) || 0;
+  const next = current + 1;
+  await redis.set(bookingMissKey(userId), String(next), 600);
+  return next;
+}
+
+export async function clearBookingMisses(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(bookingMissKey(userId));
 }
 
 // ── Group seat bidding (per-rider negotiation on shared rides) ────────────
@@ -867,5 +1259,111 @@ export async function getGroupSeatMembers(
     return JSON.parse(raw) as GroupSeatMember[];
   } catch {
     return [];
+  }
+}
+
+// ── Flow fare estimate (RIDE_SETUP -> FARE_CONFIRM handoff) ───────────────
+// The estimate step geocodes and plans the route; Find Drivers reuses that
+// work instead of paying for a second geocode + route call.
+
+export interface FlowEstimate {
+  pickupAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  destinationAddress: string;
+  destinationLat: number;
+  destinationLng: number;
+  distanceKm: number;
+  durationSeconds: number;
+  suggestedFareNgn: number;
+  minOfferNgn: number;
+  ratePerKmNgn: number;
+  geometry: unknown;
+}
+
+const flowEstimateKey = (userId: string) => `whatsapp:flow:estimate:${userId}`;
+const FLOW_ESTIMATE_TTL = 15 * 60;
+
+export async function storeFlowEstimate(
+  redis: RedisClient,
+  userId: string,
+  estimate: FlowEstimate,
+): Promise<void> {
+  await redis.set(flowEstimateKey(userId), JSON.stringify(estimate), FLOW_ESTIMATE_TTL);
+}
+
+export async function getFlowEstimate(
+  redis: RedisClient,
+  userId: string,
+): Promise<FlowEstimate | null> {
+  const raw = await redis.get(flowEstimateKey(userId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as FlowEstimate;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearFlowEstimate(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(flowEstimateKey(userId));
+}
+
+// ── Flow pending accept (BID_LIST -> TOP_UP -> re-check handoff) ──────────
+
+export interface FlowPendingAccept {
+  rideId: string;
+  driverId: string;
+  /** The price the rider saw for this driver (absent on choices kept before it was recorded). */
+  fareNgn?: number;
+}
+
+const flowPendingAcceptKey = (userId: string) => `whatsapp:flow:pendingaccept:${userId}`;
+const FLOW_PENDING_ACCEPT_TTL = 30 * 60;
+
+export async function storeFlowPendingAccept(
+  redis: RedisClient,
+  userId: string,
+  pending: FlowPendingAccept,
+): Promise<void> {
+  await redis.set(flowPendingAcceptKey(userId), JSON.stringify(pending), FLOW_PENDING_ACCEPT_TTL);
+}
+
+export async function getFlowPendingAccept(
+  redis: RedisClient,
+  userId: string,
+): Promise<FlowPendingAccept | null> {
+  const raw = await redis.get(flowPendingAcceptKey(userId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as FlowPendingAccept;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearFlowPendingAccept(redis: RedisClient, userId: string): Promise<void> {
+  await redis.del(flowPendingAcceptKey(userId));
+}
+
+// ── A booked trip's road, once its route was changed ───────────────────────
+
+/** The road a booked trip takes after a route change (the last route saved is the one searched). */
+const tripLineKey = (rideId: string) => `ride:${rideId}:trip_line`;
+const TRIP_LINE_TTL_SECONDS = 12 * 60 * 60;
+
+export async function storeTripLine(redis: RedisClient, rideId: string, line: Array<{ lat: number; lng: number }>): Promise<void> {
+  const points = line.filter((p) => typeof p?.lat === 'number' && typeof p?.lng === 'number').map((p) => ({ lat: p.lat, lng: p.lng }));
+  if (points.length) await redis.set(tripLineKey(rideId), JSON.stringify(points), TRIP_LINE_TTL_SECONDS);
+}
+
+export async function getTripLine(redis: RedisClient, rideId: string): Promise<Array<{ lat: number; lng: number }> | null> {
+  const raw = await redis.get(tripLineKey(rideId)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) && parsed.length ? (parsed as Array<{ lat: number; lng: number }>) : null;
+  } catch {
+    return null;
   }
 }

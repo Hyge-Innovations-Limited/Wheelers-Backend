@@ -1,11 +1,16 @@
+import { formatTripId } from '@wheleers/config';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
-import { authenticateHttpUser, HttpAuthError } from './authenticate';
+import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
+import { authenticateHttpUser, HttpAuthError, authenticateHttpToken } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
+import type { RedisClient } from '../redis/client';
+import { payingStatusEnabled, payingWindow, readPaying } from '../rides/paying-status';
 import { loadDriverActiveRideSnapshot } from '../websocket/driver-ride-sync';
 
 interface DriverRouteDeps {
   jwtSecret: string;
+  /** For the bids list's "rider is paying" state (DRIVER_PAYING_STATUS_ENABLED). Absent: not added. */
+  redisClient?: RedisClient;
 }
 
 /**
@@ -157,6 +162,19 @@ export async function handleGetDriverBidsRoute(
     const hasMore = bids.length > limit;
     const page = hasMore ? bids.slice(0, limit) : bids;
 
+    // The rider is paying for this driver right now: the card is restored on reconnect (one read per waiting bid).
+    const paying = new Map<string, { payingSince: string; payingUntil: string; payingRemainingMs: number }>();
+    if (payingStatusEnabled() && deps.redisClient) {
+      const redis = deps.redisClient;
+      await Promise.all(page.filter((bid) => bid.status === 'PENDING').map(async (bid) => {
+        const state = await readPaying(redis, bid.rideId);
+        if (state && state.driverUserId === user.id) {
+          const window = payingWindow(state);
+          paying.set(bid.id, { ...window, payingRemainingMs: Math.max(0, Date.parse(window.payingUntil) - Date.now()) });
+        }
+      }));
+    }
+
     sendJson(res, 200, {
       items: page.map((bid) => ({
         id: bid.id,
@@ -170,6 +188,8 @@ export async function handleGetDriverBidsRoute(
         status: bid.status,
         createdAt: bid.createdAt.toISOString(),
         resolvedAt: bid.resolvedAt?.toISOString() ?? null,
+        // Only with DRIVER_PAYING_STATUS_ENABLED, and only while the rider is paying for this driver.
+        ...(paying.get(bid.id) ?? {}),
         ride: {
           status: bid.ride.status,
           pickupAddress: bid.ride.pickupAddress,
@@ -181,6 +201,7 @@ export async function handleGetDriverBidsRoute(
           fareEstimateNgn:
             bid.ride.fareEstimateNgn === null ? null : decimalToNumber(bid.ride.fareEstimateNgn),
           distanceKm: bid.ride.distanceKm ?? null,
+          pricingVersion: bid.ride.pricingVersion,
           matchedAt: bid.ride.matchedAt?.toISOString() ?? null,
           completedAt: bid.ride.completedAt?.toISOString() ?? null,
           cancelledAt: bid.ride.cancelledAt?.toISOString() ?? null,
@@ -196,18 +217,38 @@ export async function handleGetDriverBidsRoute(
 // POST /drivers/me/location — background heartbeat. The WebSocket dies when
 // the app is backgrounded; this is how a pocketed phone stays a live driver
 // (matching requires lastSeenAt within 90s). Body: { lat, lng }.
+//
+// Every online driver calls this every 30 seconds, so it does no more than it
+// must: the token is verified without reading the user, which driver the user
+// is comes from memory after the first call, and the position goes to Redis
+// (the row in Postgres is brought up to date every couple of minutes).
+const DRIVER_ID_TTL_MS = 10 * 60_000;
+const DRIVER_ID_CACHE_MAX = 50_000;
+const driverIdByUser = new Map<string, { driverId: string | null; at: number }>();
+
+async function driverIdFor(userId: string): Promise<string | null> {
+  const cached = driverIdByUser.get(userId);
+  if (cached && Date.now() - cached.at < DRIVER_ID_TTL_MS) return cached.driverId;
+  const driver = await driverClient.findByUserId(userId);
+  if (driverIdByUser.size >= DRIVER_ID_CACHE_MAX) driverIdByUser.clear();
+  // "Not a driver" is remembered too, but only briefly: they may be approved any minute.
+  driverIdByUser.set(userId, { driverId: driver?.id ?? null, at: driver ? Date.now() : Date.now() - DRIVER_ID_TTL_MS + 30_000 });
+  return driver?.id ?? null;
+}
+
 export async function handlePostDriverLocationRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: DriverRouteDeps,
 ): Promise<void> {
   try {
-    const user = await authenticateHttpUser(req, deps.jwtSecret);
-    const driver = await driverClient.findByUserId(user.id);
-    if (!driver) {
+    const { userId } = authenticateHttpToken(req, deps.jwtSecret);
+    const driverId = await driverIdFor(userId);
+    if (!driverId) {
       sendJson(res, 404, { error: 'No driver profile found.' });
       return;
     }
+    const driver = { id: driverId };
     const body = await readJsonBody(req).catch(() => null);
     const record = (body ?? {}) as Record<string, unknown>;
     const lat = typeof record.lat === 'number' ? record.lat : Number(record.lat);
@@ -220,6 +261,85 @@ export async function handlePostDriverLocationRoute(
     sendJson(res, 200, { ok: true });
   } catch (error) {
     sendDriverRouteError(res, 'POST /drivers/me/location', error, 'Could not update location.');
+  }
+}
+
+function readLatLng(body: unknown): { lat: number; lng: number } | null {
+  const record = (body ?? {}) as Record<string, unknown>;
+  const lat = typeof record.lat === 'number' ? record.lat : Number(record.lat);
+  const lng = typeof record.lng === 'number' ? record.lng : Number(record.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}
+
+function serialiseStandby(state: { standbyEnabled: boolean; standbyConsentAt: Date | null; standbySeenAt: Date | null }) {
+  return {
+    enabled: state.standbyEnabled,
+    consentAt: state.standbyConsentAt?.toISOString() ?? null,
+    lastSentAt: state.standbySeenAt?.toISOString() ?? null,
+  };
+}
+
+// GET /drivers/me/standby  — is "Nearby ride alerts" on?
+// PUT /drivers/me/standby  — { enabled }. Off also erases the stored position.
+export async function handleDriverStandbyRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: DriverRouteDeps,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const driver = await driverClient.findByUserId(user.id);
+    if (!driver) {
+      sendJson(res, 404, { error: 'No driver profile found.' });
+      return;
+    }
+    if (req.method === 'GET') {
+      const state = await driverLocationClient.getStandby(driver.id);
+      sendJson(res, 200, serialiseStandby(state ?? { standbyEnabled: false, standbyConsentAt: null, standbySeenAt: null }));
+      return;
+    }
+    const body = (await readJsonBody(req).catch(() => null)) as Record<string, unknown> | null;
+    if (typeof body?.enabled !== 'boolean') {
+      sendJson(res, 400, { error: 'enabled must be true or false.' });
+      return;
+    }
+    const state = await driverLocationClient.setStandby(driver.id, body.enabled);
+    console.info('[driver] nearby ride alerts ' + (body.enabled ? 'on' : 'off'), { driverId: driver.id });
+    sendJson(res, 200, serialiseStandby(state));
+  } catch (error) {
+    sendDriverRouteError(res, 'PUT /drivers/me/standby', error, 'Could not update nearby ride alerts.');
+  }
+}
+
+// POST /drivers/me/standby-location — rough position while OFF shift. Never
+// touches lat/lng/lastSeenAt, so it cannot make an offline driver matchable.
+// 409 STANDBY_OFF tells the app to stop its background task.
+export async function handlePostDriverStandbyLocationRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: DriverRouteDeps,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const driver = await driverClient.findByUserId(user.id);
+    if (!driver) {
+      sendJson(res, 404, { error: 'No driver profile found.' });
+      return;
+    }
+    const point = readLatLng(await readJsonBody(req).catch(() => null));
+    if (!point) {
+      sendJson(res, 400, { error: 'lat and lng are required numbers.' });
+      return;
+    }
+    const stored = await driverLocationClient.updateStandbyLocation(driver.id, point.lat, point.lng);
+    if (!stored) {
+      sendJson(res, 409, { error: 'Nearby ride alerts are off.', code: 'STANDBY_OFF' });
+      return;
+    }
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendDriverRouteError(res, 'POST /drivers/me/standby-location', error, 'Could not update location.');
   }
 }
 
@@ -303,6 +423,7 @@ export async function handleGetDriverRideHistoryRoute(
     sendJson(res, 200, {
       items: rides.map((ride) => ({
         id: ride.id,
+        tripId: formatTripId(ride.tripNumber),
         status: ride.status,
         pickupAddress: ride.pickupAddress,
         destAddress: ride.destAddress,

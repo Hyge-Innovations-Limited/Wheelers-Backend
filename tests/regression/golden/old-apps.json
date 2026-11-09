@@ -1,0 +1,176 @@
+{
+  "bids": {
+    "status": 200,
+    "shape": {
+      "items": [
+        {
+          "amountNgn": "number",
+          "createdAt": "string",
+          "distanceKm": "null",
+          "etaSeconds": "number",
+          "id": "string",
+          "resolvedAt": "null",
+          "ride": {
+            "agreedFareNgn": "null",
+            "cancelledAt": "null",
+            "completedAt": "null",
+            "destAddress": "string",
+            "distanceKm": "null",
+            "fareEstimateNgn": "null",
+            "matchedAt": "null",
+            "pickupAddress": "string",
+            "pricingVersion": "number",
+            "riderOfferNgn": "number",
+            "status": "string"
+          },
+          "rideId": "string",
+          "riderId": "string",
+          "status": "string"
+        }
+      ],
+      "nextCursor": "null"
+    }
+  },
+  "register": {
+    "status": 200,
+    "shape": {
+      "device": {
+        "appOwnership": "string",
+        "deviceName": "string",
+        "enabled": "boolean",
+        "expoPushToken": "string",
+        "id": "string",
+        "lastRegisteredAt": "string",
+        "platform": "string"
+      }
+    },
+    "body": {
+      "id": "x",
+      "expoPushToken": "x",
+      "enabled": true,
+      "platform": "android",
+      "deviceName": "Old phone",
+      "appOwnership": "standalone",
+      "lastRegisteredAt": "x"
+    },
+    "enabled": true
+  },
+  "walletShort": {
+    "accept": {
+      "status": 402,
+      "body": {
+        "error": "Add ₦6,000 to take this ride.",
+        "code": "WALLET_SHORT",
+        "balanceNgn": 0,
+        "fareNgn": 6000,
+        "shortNgn": 6000,
+        "sendNgn": 6091,
+        "account": null
+      }
+    },
+    "keepLooking": {
+      "status": 200,
+      "body": {
+        "phase": "offers",
+        "rideId": "<id>",
+        "balanceNgn": 0,
+        "route": {
+          "pickupAddress": "Yaba",
+          "stopAddresses": [],
+          "distanceKm": 5,
+          "durationMin": 0,
+          "priceReason": null
+        },
+        "driversNotified": null,
+        "bidsCloseAt": null,
+        "autoAccept": false,
+        "autoAcceptPriceNgn": null,
+        "places": null,
+        "line": [],
+        "xlm": null,
+        "minOfferNgn": null,
+        "offerCount": 1,
+        "chatUrl": "https://wa.me/2348141979106",
+        "offers": [
+          {
+            "key": "<id>",
+            "topupSendNgn": 6091,
+            "driverName": "T",
+            "rating": 5,
+            "vehicle": "Y",
+            "plate": "X",
+            "priceNgn": 6000,
+            "etaMin": 2,
+            "distanceKm": 1,
+            "receivedAt": "<time>"
+          }
+        ],
+        "mapsKey": null
+      }
+    },
+    "decline": {
+      "status": 200,
+      "body": {
+        "phase": "offers",
+        "rideId": "<id>",
+        "balanceNgn": 0,
+        "route": {
+          "pickupAddress": "Yaba",
+          "stopAddresses": [],
+          "distanceKm": 5,
+          "durationMin": 0,
+          "priceReason": null
+        },
+        "driversNotified": null,
+        "bidsCloseAt": null,
+        "autoAccept": false,
+        "autoAcceptPriceNgn": null,
+        "places": null,
+        "line": [],
+        "xlm": null,
+        "minOfferNgn": null,
+        "offerCount": 0,
+        "chatUrl": "https://wa.me/2348141979106",
+        "offers": [],
+        "mapsKey": null
+      }
+    },
+    "events": [
+      {
+        "type": "RIDE_RIDER_PAYING",
+        "keys": [
+          "eventType"
+        ]
+      },
+      {
+        "type": "RIDE_BIDS_DECLINED",
+        "keys": [
+          "driverUserIds",
+          "eventType",
+          "remainingOffers"
+        ]
+      }
+    ],
+    "payingRoute": {
+      "status": 200,
+      "body": null
+    }
+  },
+  "rider_ws": {
+    "pay_sheet": {
+      "type": "error",
+      "message": "Unknown event type: ride:pay_sheet"
+    },
+    "app_state_on_rider": {
+      "type": "error",
+      "message": "Unknown event type: app:state"
+    },
+    "unknown": {
+      "type": "error",
+      "message": "Unknown event type: ride:nope"
+    },
+    "decline_offer": {
+      "type": "ride:decline_offer:done"
+    }
+  }
+}

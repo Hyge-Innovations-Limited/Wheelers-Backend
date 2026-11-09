@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#FEFAEF">
+<meta name="format-detection" content="telephone=no">
+<link rel="preload" href="../shared/fonts/BricolageGrotesque_800ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="wallet.css">
+<title>Add money · Wheelers</title>
+</head>
+<body>
+<!-- The app's Add money screen (Wheelersapp app/rider-add-money.tsx). -->
+<div class="shell">
+  <button class="back" id="back" type="button" hidden aria-label="Back"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="48" d="M328 112L184 256l144 144"/></svg></button>
+
+  <section data-view="loading">
+    <div class="head"><h1 class="title">Add money</h1></div>
+    <p class="body muted">Transfer to the account below. Your wallet is credited automatically.</p>
+    <div class="card ink feature">
+      <div class="state-box" aria-live="polite"><span class="spinner"></span><p class="small on-ink-soft">Getting your account number.</p></div>
+    </div>
+  </section>
+
+  <section data-view="fatal" hidden>
+    <div class="outcome">
+      <div class="outcome-icon bad"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="44" d="M256 120v170"/><circle cx="256" cy="376" r="28" fill="currentColor"/></svg></div>
+      <h1 class="title center">Link problem</h1>
+      <p class="body muted center" id="fatal-message"></p>
+      <p class="small muted center">Go back to WhatsApp and ask to add money again for a fresh link.</p>
+    </div>
+  </section>
+
+  <section data-view="needs-phone" hidden>
+    <div class="head"><h1 class="title">Add money</h1></div>
+    <p class="body muted">Transfer to the account below. Your wallet is credited automatically.</p>
+    <div class="card ink feature">
+      <div class="state-box" aria-live="polite">
+        <p class="body-bold on-ink">Phone number needed</p>
+        <p class="small on-ink-soft">The bank needs your phone number to open your Wheelers account. Message the Wheelers bot and we’ll sort it out.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 · how much: what they want in the wallet; the server says what to send -->
+  <section data-view="amount" hidden>
+    <div class="head"><h1 class="title">Add money</h1></div>
+    <p class="body muted">Type the amount you want in your wallet. Next, we’ll tell you exactly what to send.</p>
+
+    <div class="card ink feature">
+      <div class="amount-top">
+        <span class="small on-ink-muted">Amount</span>
+        <span class="balance">Balance <b id="balance">₦—</b></span>
+      </div>
+      <label class="amount-row" id="amount-row" for="amount"><span class="amount-figure" aria-hidden="true">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount to add, in naira"></label>
+      <div class="quick four" id="chips">
+        <button type="button" data-amount="1000">1,000</button>
+        <button type="button" data-amount="2000">2,000</button>
+        <button type="button" data-amount="5000">5,000</button>
+        <button type="button" data-amount="10000">10,000</button>
+      </div>
+    </div>
+
+    <p class="small danger" id="amount-err" role="alert" hidden></p>
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="continue" disabled>Continue</button>
+  </section>
+
+  <!-- 2 · the account to transfer to -->
+  <section data-view="pay" hidden>
+    <div class="head"><h1 class="title">Add money</h1></div>
+    <p class="body muted">Transfer to the account below. Your wallet is credited automatically.</p>
+
+    <div class="card ink feature">
+      <div class="account-copy">
+        <p class="small on-ink-muted" id="acct-bank"></p>
+        <p class="account-number" id="acct-number"></p>
+        <p class="account-name" id="acct-name"></p>
+      </div>
+      <div class="account-actions">
+        <button class="btn md" type="button" id="copy" aria-label="Copy account number" aria-live="polite">Copy</button>
+        <button class="btn md on-ink" type="button" id="share" aria-label="Share account details">Share details</button>
+      </div>
+    </div>
+
+    <div class="steps">
+      <p class="label">HOW IT WORKS</p>
+      <div class="step"><span class="step-number">1</span><p class="step-text">Copy the account number.</p></div>
+      <div class="step"><span class="step-number">2</span><p class="step-text">Transfer <b id="pay-amount"></b> from your bank app.</p></div>
+      <div class="step"><span class="step-number">3</span><p class="step-text">We notify you when your wallet is credited.</p></div>
+    </div>
+
+    <div class="card soft needed">
+      <p class="body-bold" id="needed-title"></p>
+      <p class="small muted" id="needed-text" hidden></p>
+    </div>
+
+    <div class="spacer"></div>
+    <button class="btn dark" type="button" id="made">I have made the transfer</button>
+    <div class="waiting" id="waiting" aria-live="polite"><span class="pulse"></span><span class="caption" id="waiting-text">Waiting for your transfer</span></div>
+  </section>
+
+  <section data-view="landed" hidden>
+    <div class="outcome" aria-live="polite">
+      <div class="outcome-icon"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="44" d="M416 128L192 384l-96-96"/></svg></div>
+      <h1 class="title center" id="landed-title"></h1>
+      <p class="body muted center" id="landed-text"></p>
+      <p class="small muted center">You can close this page and go back to WhatsApp.</p>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="common.js"></script>
+<script src="deposit.js"></script>
+</body>
+</html>

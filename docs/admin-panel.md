@@ -87,8 +87,8 @@ What it produces, at the defaults:
 - ~35,000 ledger rows — deposits fund riders, ride payments debit them, drivers
   are paid out and withdraw to banks, the platform wallet accrues fees
 
-The fee split is the same calculation production uses (7.5% VAT + ₦30 Lagos levy
-+ ₦200 service fee), and balances are replayed in chronological order, so
+The fee split is the same calculation production uses (4% fee + ₦30 Lagos levy
++ ₦375 service fee), and balances are replayed in chronological order, so
 `balanceAfterNgn` on every transaction is arithmetically true and rider debits
 reconcile exactly against driver payouts + platform fees.
 

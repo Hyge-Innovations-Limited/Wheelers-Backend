@@ -2,11 +2,28 @@
   "version": "5.1",
   "data_api_version": "3.0",
   "routing_model": {
-    "RIDE_SETUP": ["BID_LIST", "SUCCESS"],
-    "BID_LIST": ["RIDE_CONFIRMED", "SUCCESS"],
-    "RIDE_CONFIRMED": ["DRIVER_PROFILE", "PAYMENT", "SUCCESS"],
-    "DRIVER_PROFILE": ["PAYMENT", "SUCCESS"],
-    "PAYMENT": ["SUCCESS"],
+    "RIDE_SETUP": [
+      "FARE_CONFIRM",
+      "SUCCESS"
+    ],
+    "FARE_CONFIRM": [
+      "BID_LIST",
+      "SUCCESS"
+    ],
+    "BID_LIST": [
+      "TOP_UP",
+      "RIDE_CONFIRMED",
+      "SUCCESS"
+    ],
+    "TOP_UP": [
+      "RIDE_CONFIRMED",
+      "SUCCESS"
+    ],
+    "RIDE_CONFIRMED": [
+      "DRIVER_PROFILE",
+      "SUCCESS"
+    ],
+    "DRIVER_PROFILE": [],
     "SUCCESS": []
   },
   "screens": [
@@ -15,24 +32,21 @@
       "title": "Book a Ride",
       "terminal": false,
       "data": {
-        "pickup_address": { "type": "string", "__example__": "Chevron, Lekki" },
-        "destination_address": { "type": "string", "__example__": "Adeola Odeku, VI" },
-        "suggested_fare": { "type": "string", "__example__": "₦3,700" },
-        "suggested_fare_value": { "type": "string", "__example__": "3700" },
-        "route_info": { "type": "string", "__example__": "12.3 km · ~25 min" },
-        "has_route_info": { "type": "boolean", "__example__": true },
-        "error": { "type": "string", "__example__": "" },
-        "has_error": { "type": "boolean", "__example__": false },
-        "payment_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": { "type": "string" },
-              "title": { "type": "string" }
-            }
-          },
-          "__example__": [{ "id": "WALLET", "title": "Wallet" }]
+        "pickup_address": {
+          "type": "string",
+          "__example__": "Chevron, Lekki"
+        },
+        "destination_address": {
+          "type": "string",
+          "__example__": "Adeola Odeku, VI"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
         }
       },
       "layout": {
@@ -43,15 +57,12 @@
             "name": "ride_form",
             "init-values": {
               "pickup_address": "${data.pickup_address}",
-              "destination_address": "${data.destination_address}",
-              "offer_amount": "${data.suggested_fare_value}",
-              "payment_method": "WALLET"
+              "destination_address": "${data.destination_address}"
             },
             "children": [
               {
-                "type": "TextBody",
-                "text": "${data.route_info}",
-                "visible": "${data.has_route_info}"
+                "type": "TextCaption",
+                "text": "Enter a street, landmark or bus stop — e.g. 108 Opebi Road, Ikeja."
               },
               {
                 "type": "TextCaption",
@@ -73,9 +84,105 @@
                 "required": true
               },
               {
-                "type": "TextBody",
-                "text": "Suggested fare: ${data.suggested_fare}"
-              },
+                "type": "Footer",
+                "label": "See suggested fare",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "estimate_fare",
+                    "pickup_address": "${form.pickup_address}",
+                    "destination_address": "${form.destination_address}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "FARE_CONFIRM",
+      "title": "Confirm Fare",
+      "terminal": false,
+      "data": {
+        "route_line": {
+          "type": "string",
+          "__example__": "Chevron, Lekki → Adeola Odeku, VI"
+        },
+        "trip_line": {
+          "type": "string",
+          "__example__": "12.3 km · ~25 min"
+        },
+        "has_trip_line": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "suggested_fare_line": {
+          "type": "string",
+          "__example__": "Suggested fare: ₦3,700"
+        },
+        "suggested_fare_value": {
+          "type": "string",
+          "__example__": "3700"
+        },
+        "pickup_address": {
+          "type": "string",
+          "__example__": "Chevron, Lekki"
+        },
+        "destination_address": {
+          "type": "string",
+          "__example__": "Adeola Odeku, VI"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "min_fare_line": {
+          "type": "string",
+          "__example__": "Minimum offer: ₦3,744"
+        },
+        "has_min_fare_line": {
+          "type": "boolean",
+          "__example__": true
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextCaption",
+            "text": "${data.route_line}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.trip_line}",
+            "visible": "${data.has_trip_line}"
+          },
+          {
+            "type": "TextHeading",
+            "text": "${data.suggested_fare_line}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.min_fare_line}",
+            "visible": "${data.has_min_fare_line}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.error}",
+            "visible": "${data.has_error}"
+          },
+          {
+            "type": "Form",
+            "name": "fare_form",
+            "init-values": {
+              "offer_amount": "${data.suggested_fare_value}"
+            },
+            "children": [
               {
                 "type": "TextInput",
                 "name": "offer_amount",
@@ -84,11 +191,8 @@
                 "required": true
               },
               {
-                "type": "Dropdown",
-                "name": "payment_method",
-                "label": "Payment method",
-                "required": true,
-                "data-source": "${data.payment_options}"
+                "type": "TextCaption",
+                "text": "Payment method: Wallet"
               },
               {
                 "type": "Footer",
@@ -97,10 +201,10 @@
                   "name": "data_exchange",
                   "payload": {
                     "action": "find_drivers",
-                    "pickup_address": "${form.pickup_address}",
-                    "destination_address": "${form.destination_address}",
+                    "pickup_address": "${data.pickup_address}",
+                    "destination_address": "${data.destination_address}",
                     "offer_amount": "${form.offer_amount}",
-                    "payment_method": "${form.payment_method}"
+                    "payment_method": "WALLET"
                   }
                 }
               }
@@ -114,21 +218,40 @@
       "title": "Driver Offers",
       "terminal": false,
       "data": {
-        "route_summary": { "type": "string", "__example__": "Chevron → Adeola Odeku, VI" },
-        "offer_amount": { "type": "string", "__example__": "₦3,700" },
-        "bid_count": { "type": "string", "__example__": "3 offers" },
+        "route_summary": {
+          "type": "string",
+          "__example__": "Chevron → Adeola Odeku, VI"
+        },
+        "offer_amount": {
+          "type": "string",
+          "__example__": "₦3,700"
+        },
+        "bid_count": {
+          "type": "string",
+          "__example__": "3 offers"
+        },
         "bids": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "title": { "type": "string" },
-              "description": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
             }
           },
           "__example__": [
-            { "id": "bid-0", "title": "John — ₦3,500", "description": "Toyota Camry | 4.8★ | ETA 8 min" }
+            {
+              "id": "bid-0",
+              "title": "John — ₦3,500",
+              "description": "Toyota Camry | 4.8★ | ETA 8 min"
+            }
           ]
         },
         "bid_actions": {
@@ -136,14 +259,48 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "title": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
             }
           },
           "__example__": [
-            { "id": "accept", "title": "Accept" },
-            { "id": "decline", "title": "Decline" }
+            {
+              "id": "accept",
+              "title": "Accept"
+            },
+            {
+              "id": "decline",
+              "title": "Decline"
+            }
           ]
+        },
+        "offer_line": {
+          "type": "string",
+          "__example__": "Your offer: ₦3,700"
+        },
+        "has_bids": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "has_no_bids": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "waiting_line": {
+          "type": "string",
+          "__example__": "No offers yet — tap below to check again."
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
         }
       },
       "layout": {
@@ -154,37 +311,51 @@
             "name": "bid_form",
             "children": [
               {
-                "type": "TextBody",
+                "type": "TextCaption",
                 "text": "${data.route_summary}"
               },
               {
-                "type": "TextBody",
-                "text": "Your offer: ${data.offer_amount}"
+                "type": "TextSubheading",
+                "text": "${data.offer_line}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.bid_count}",
+                "visible": "${data.has_bids}"
               },
               {
                 "type": "TextBody",
-                "text": "${data.bid_count}"
+                "text": "${data.waiting_line}",
+                "visible": "${data.has_no_bids}"
               },
               {
                 "type": "RadioButtonsGroup",
                 "name": "selected_bid",
                 "label": "Select a driver",
                 "required": true,
-                "data-source": "${data.bids}"
+                "data-source": "${data.bids}",
+                "visible": "${data.has_bids}"
               },
               {
                 "type": "RadioButtonsGroup",
                 "name": "bid_action",
                 "label": "Accept or decline",
                 "required": true,
-                "data-source": "${data.bid_actions}"
+                "data-source": "${data.bid_actions}",
+                "visible": "${data.has_bids}"
               },
               {
                 "type": "TextInput",
                 "name": "adjust_amount",
                 "label": "Adjust amount (₦)",
                 "input-type": "number",
-                "required": false
+                "required": false,
+                "visible": "${data.has_bids}"
               },
               {
                 "type": "Footer",
@@ -205,15 +376,135 @@
       }
     },
     {
+      "id": "TOP_UP",
+      "title": "Top Up to Book",
+      "terminal": false,
+      "data": {
+        "fare_line": {
+          "type": "string",
+          "__example__": "Ride fare: ₦5,000"
+        },
+        "balance_line": {
+          "type": "string",
+          "__example__": "Wallet: ₦520 — ₦4,480 short"
+        },
+        "bank_line": {
+          "type": "string",
+          "__example__": "Bank: Rubies MFB"
+        },
+        "account_line": {
+          "type": "string",
+          "__example__": "Account: 8881695342"
+        },
+        "name_line": {
+          "type": "string",
+          "__example__": "Name: Timi Olowu"
+        },
+        "note_line": {
+          "type": "string",
+          "__example__": "Transfer the shortfall, then tap below."
+        },
+        "status_line": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_status": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextBody",
+            "text": "${data.fare_line}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.balance_line}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.bank_line}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.account_line}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.name_line}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.note_line}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.status_line}",
+            "visible": "${data.has_status}"
+          },
+          {
+            "type": "Form",
+            "name": "topup_form",
+            "children": [
+              {
+                "type": "Footer",
+                "label": "I've paid — Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "topup_check"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "RIDE_CONFIRMED",
       "title": "Ride Confirmed!",
       "terminal": false,
       "data": {
-        "driver_name": { "type": "string", "__example__": "John Doe" },
-        "vehicle_info": { "type": "string", "__example__": "Toyota Camry (ABC-123)" },
-        "rating": { "type": "string", "__example__": "4.8★" },
-        "eta": { "type": "string", "__example__": "8 minutes" },
-        "fare": { "type": "string", "__example__": "₦3,500" }
+        "driver_name": {
+          "type": "string",
+          "__example__": "John Doe"
+        },
+        "vehicle_info": {
+          "type": "string",
+          "__example__": "Toyota Camry (ABC-123)"
+        },
+        "rating": {
+          "type": "string",
+          "__example__": "4.8★"
+        },
+        "eta": {
+          "type": "string",
+          "__example__": "8 minutes"
+        },
+        "fare": {
+          "type": "string",
+          "__example__": "₦3,500"
+        },
+        "headline_line": {
+          "type": "string",
+          "__example__": "John is on the way!"
+        },
+        "rating_line": {
+          "type": "string",
+          "__example__": "Rating: 4.8★"
+        },
+        "eta_line": {
+          "type": "string",
+          "__example__": "ETA: 8 minutes"
+        },
+        "fare_line": {
+          "type": "string",
+          "__example__": "Fare: ₦3,700"
+        }
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -228,7 +519,7 @@
               },
               {
                 "type": "TextBody",
-                "text": "${data.driver_name} is on the way!"
+                "text": "${data.headline_line}"
               },
               {
                 "type": "TextBody",
@@ -236,15 +527,15 @@
               },
               {
                 "type": "TextBody",
-                "text": "Rating: ${data.rating}"
+                "text": "${data.rating_line}"
               },
               {
                 "type": "TextBody",
-                "text": "ETA: ${data.eta}"
+                "text": "${data.eta_line}"
               },
               {
                 "type": "TextBody",
-                "text": "Fare: ${data.fare}"
+                "text": "${data.fare_line}"
               },
               {
                 "type": "Footer",
@@ -264,19 +555,72 @@
     {
       "id": "DRIVER_PROFILE",
       "title": "Your Driver",
-      "terminal": false,
+      "terminal": true,
       "data": {
-        "driver_name": { "type": "string", "__example__": "John Doe" },
-        "phone_number": { "type": "string", "__example__": "+2348012345678" },
-        "vehicle_info": { "type": "string", "__example__": "White Toyota Camry" },
-        "vehicle_plate": { "type": "string", "__example__": "ABC-123 LA" },
-        "rating_info": { "type": "string", "__example__": "4.8★ · 152 rides" },
-        "eta": { "type": "string", "__example__": "8 minutes away" },
-        "fare": { "type": "string", "__example__": "₦3,500" },
-        "driver_photo": { "type": "string", "__example__": "data:image/jpeg;base64,/9j/4AAQ" },
-        "has_driver_photo": { "type": "boolean", "__example__": true },
-        "vehicle_photo": { "type": "string", "__example__": "data:image/jpeg;base64,/9j/4AAQ" },
-        "has_vehicle_photo": { "type": "boolean", "__example__": true }
+        "driver_name": {
+          "type": "string",
+          "__example__": "John Doe"
+        },
+        "phone_number": {
+          "type": "string",
+          "__example__": "+2348012345678"
+        },
+        "vehicle_info": {
+          "type": "string",
+          "__example__": "White Toyota Camry"
+        },
+        "vehicle_plate": {
+          "type": "string",
+          "__example__": "ABC-123 LA"
+        },
+        "rating_info": {
+          "type": "string",
+          "__example__": "4.8★ · 152 rides"
+        },
+        "eta": {
+          "type": "string",
+          "__example__": "8 minutes away"
+        },
+        "fare": {
+          "type": "string",
+          "__example__": "₦3,500"
+        },
+        "driver_photo": {
+          "type": "string",
+          "__example__": "data:image/jpeg;base64,/9j/4AAQ"
+        },
+        "has_driver_photo": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "vehicle_photo": {
+          "type": "string",
+          "__example__": "data:image/jpeg;base64,/9j/4AAQ"
+        },
+        "has_vehicle_photo": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "plate_line": {
+          "type": "string",
+          "__example__": "Plate: ABC-123DE"
+        },
+        "fare_line": {
+          "type": "string",
+          "__example__": "Fare: ₦3,700"
+        },
+        "eta_line": {
+          "type": "string",
+          "__example__": "ETA: 8 minutes"
+        },
+        "phone_line": {
+          "type": "string",
+          "__example__": "Call: +2348012345678"
+        },
+        "paid_line": {
+          "type": "string",
+          "__example__": "Fare secured from your wallet ✓"
+        }
       },
       "layout": {
         "type": "SingleColumnLayout",
@@ -315,102 +659,30 @@
               },
               {
                 "type": "TextBody",
-                "text": "Plate: ${data.vehicle_plate}"
+                "text": "${data.plate_line}"
               },
               {
                 "type": "TextBody",
-                "text": "Fare: ${data.fare}"
-              },
-              {
-                "type": "TextBody",
-                "text": "ETA: ${data.eta}"
-              },
-              {
-                "type": "TextBody",
-                "text": "Call: ${data.phone_number}"
-              },
-              {
-                "type": "Footer",
-                "label": "Pay Now",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "action": "view_payment"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "PAYMENT",
-      "title": "Payment",
-      "terminal": false,
-      "data": {
-        "wallet_balance": { "type": "string", "__example__": "Wallet: ₦5,200" },
-        "fare": { "type": "string", "__example__": "Ride fare: ₦3,500" },
-        "status": { "type": "string", "__example__": "Your wallet has enough funds." },
-        "bank_name": { "type": "string", "__example__": "Wema Bank" },
-        "account_number": { "type": "string", "__example__": "7825463910" },
-        "account_name": { "type": "string", "__example__": "Wheelers/Timi" },
-        "has_virtual_account": { "type": "boolean", "__example__": true },
-        "transfer_note": { "type": "string", "__example__": "Transfer to this account to fund your wallet" }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Form",
-            "name": "payment_form",
-            "children": [
-              {
-                "type": "TextSubheading",
-                "text": "${data.fare}"
-              },
-              {
-                "type": "TextSubheading",
-                "text": "${data.wallet_balance}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.status}"
-              },
-              {
-                "type": "TextSubheading",
-                "text": "Bank Transfer",
-                "visible": "${data.has_virtual_account}"
-              },
-              {
-                "type": "TextBody",
-                "text": "Bank: ${data.bank_name}",
-                "visible": "${data.has_virtual_account}"
-              },
-              {
-                "type": "TextBody",
-                "text": "Account: ${data.account_number}",
-                "visible": "${data.has_virtual_account}"
-              },
-              {
-                "type": "TextBody",
-                "text": "Name: ${data.account_name}",
-                "visible": "${data.has_virtual_account}"
+                "text": "${data.fare_line}"
               },
               {
                 "type": "TextCaption",
-                "text": "${data.transfer_note}",
-                "visible": "${data.has_virtual_account}"
+                "text": "${data.paid_line}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.eta_line}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.phone_line}"
               },
               {
                 "type": "Footer",
                 "label": "Done",
                 "on-click-action": {
-                  "name": "navigate",
-                  "next": { "type": "screen", "name": "SUCCESS" },
-                  "payload": {
-                    "message": "Your driver will be notified once payment is received."
-                  }
+                  "name": "complete",
+                  "payload": {}
                 }
               }
             ]
@@ -423,7 +695,10 @@
       "title": "Wheelers",
       "terminal": true,
       "data": {
-        "message": { "type": "string", "__example__": "Thanks for riding with Wheelers!" }
+        "message": {
+          "type": "string",
+          "__example__": "Thanks for riding with Wheelers!"
+        }
       },
       "layout": {
         "type": "SingleColumnLayout",

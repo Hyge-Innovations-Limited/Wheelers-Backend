@@ -13,6 +13,7 @@ import {
 import {
   GoogleMapsRoutePlanner,
   loadWorkspaceEnv,
+  startAlerts,
   validateGatewayEnv,
   validateSharedEnv,
 } from "@wheleers/config";
@@ -30,6 +31,9 @@ import {
 } from "./http/social-auth.route";
 import {
   handleLogoutRoute,
+  handleRefreshRoute,
+  handleSessionCheckRoute,
+  handlePrivacyConsentRoute,
   handleDeleteAccountRoute,
 } from "./http/account.route";
 import {
@@ -61,12 +65,24 @@ import {
   handleGetDriverRideHistoryRoute,
   handleGetDriverActiveRideRoute,
   handlePostDriverLocationRoute,
+  handleDriverStandbyRoute,
+  handlePostDriverStandbyLocationRoute,
   handleGetDriverBidsRoute,
 } from "./http/driver.route";
 import {
   handleDriverKycSubmitRoute,
+  handleDriverKycResubmitRoute,
   handleDriverKycStatusRoute,
 } from "./http/driver-kyc.route";
+import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
+import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
+import { handleAdminDriverChecksRoute } from "./http/admin-driver-checks.route";
+import { premblyConfigFromEnv } from "./verification/prembly";
+import { handleDriverPhoneRoute } from "./http/driver-phone.route";
+import { handleSupportChatRoute } from "./http/support-chat.route";
+import { startPaperReminderJob } from "./drivers/paper-notify";
+import { ridePageCsp } from "./http/ride-page-csp";
+import { createDriverPhotoResolver, setDriverPhotoResolver } from "./drivers/driver-photo";
 import {
   handleAdminListDriversRoute,
   handleAdminGetDriverRoute,
@@ -77,6 +93,8 @@ import {
 import {
   handleAdminLoginRoute,
   handleCreateAdminRoute,
+  supportDeskRefuses,
+  extractAdminId,
 } from "./http/admin-auth.route";
 import {
   handleAdminPlatformStatsRoute,
@@ -85,6 +103,7 @@ import {
   handleAdminRecentRidesRoute,
   handleAdminUserActivityRoute,
   handleAdminActivityFeedRoute,
+  handleAdminAppActivityRoute,
 } from "./http/admin-analytics.route";
 import {
   handleCancelGroupRideMatchRequestRoute,
@@ -95,9 +114,51 @@ import {
   handleGetGroupRideMatchRequestRoute,
   handleListGroupRideMatchRequestsRoute,
 } from "./http/group-ride.route";
+import { handlePaystackWebhookRoute } from "./http/paystack.route";
+import { handleWalletPageRoute } from "./http/wallet-page.route";
+import { handleWalletSecurityRoute } from "./http/wallet-security.route";
+import { attachRequestLog } from "./http/request-log";
+import { recordRequestOutcome } from "./analytics/user-outcomes";
+import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
+import { setRidePageStateBuilder } from "./rides/ride-page-live";
+import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
+import { createTripChatService } from "./trip-chat/service";
+import { handleTripChatPageRoute } from "./trip-chat/page.route";
+import { handleAdminTripRoute } from "./http/admin-trip.route";
+import { stellarConfigFromEnv } from "./stellar/config";
+import { onPrismaExecution, onPrismaQuery } from "@wheleers/db";
+import { addDbTime, currentTiming, routeKey, runWithTiming } from "./health/request-timing";
+import { createStatsRecorder } from "./health/stats";
+import { startHealthJobs } from "./health/jobs";
+import { configureMapsCache } from "./maps/shared-cache";
+import { CachedRoutePlanner } from "./maps/cached-route-planner";
+import { handleAdminHealthRoute, handleAdminHealthSqlRoute } from "./http/admin-health.route";
+import { handleAdminTeamRoute } from "./http/admin-team.route";
+import { startBusynessJob } from "./pricing/busyness";
+import { startSurgeJob } from "./pricing/surge";
+import { handleAdminDeskRoute } from "./http/admin-desk.route";
+import { startHourCurveJob } from "./pricing/hour-curve-job";
+import { startWeatherJob } from "./pricing/weather";
+import { recordAdminRequest } from "./admin/activity";
+import { createHorizonNetwork } from "./stellar/network";
+import { createStellarService, startStellarJob } from "./stellar/service";
+import { startHoldSweeper } from "./payments/hold-sweeper";
+import { createRateProvider } from "./stellar/rates";
+import { handleStellarRoute } from "./stellar/routes";
+import { createTripWhatsapp, tripPageUrl } from "./trip-chat/whatsapp";
+import { createLlm, describeLlm } from "./LLM/llm";
 import {
-  handlePouchWebhookRoute,
-} from "./http/pouch.route";
+  handleLiveDriversRoute,
+  handleLiveDriverDetailRoute,
+  handleLiveDriverTrailRoute,
+  handleLiveDispatchRoute,
+  handleLiveNudgeRoute,
+  handleLiveContactRoute,
+  startLocationHistoryCleanup,
+} from "./http/live-map.route";
+import { sendMetaWhatsappMessage } from "./whatsapp-flows/whatsapp-notifier";
+import { lookupUserIdByPhone } from "./whatsapp-flows/bid-state";
+import { ridePageUrl } from "./whatsapp/trip";
 import {
   handleCreateWalletWithdrawalRoute,
   handleGetWalletWithdrawalRoute,
@@ -108,9 +169,9 @@ import {
   handleWalletOverviewRoute,
   handleWalletTransactionsRoute,
   handleWalletDepositInfoRoute,
+  handleWalletDepositPreviewRoute,
 } from "./http/wallet.route";
-import { PouchLiquifiaClient } from "@wheleers/pouch-client";
-import { startTreasurySweep } from "./treasury-sweep";
+import { PaymentsClient } from "@wheleers/payments";
 import {
   handleListInterstateRoutesRoute,
   handleInterstateCitiesRoute,
@@ -142,7 +203,10 @@ import {
 import {
   handleAdminListUsersRoute,
   handleAdminGetUserRoute,
+  handleAdminWithdrawalFreezeRoute,
+  handleAdminSignOutUserRoute,
   handleAdminOverviewRoute,
+  handleAdminServiceUsageRoute,
   handleAdminTimeseriesRoute,
   handleAdminCancellationsRoute,
   handleAdminGroupRideMetricsRoute,
@@ -160,13 +224,16 @@ import {
   handlePhoneLoginSendOtpRoute,
   handlePhoneLoginVerifyOtpRoute,
 } from "./http/phone-login.route";
-import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify } from "./http/whatsapp.route";
+import { getSafePathForLog } from "./http/log-path";
+import { handleMetaWhatsappWebhookRoute, handleMetaWhatsappVerify, createRidePageChatNotifier, sayRidePageEventInChat, createWhatsappDepositFinisher, createQuickActionsChatHooks } from "./http/whatsapp.route";
 import {
   handleApplyReferralCodeRoute,
   handleGetReferralSummaryRoute,
   handleListReferralCashbackRoute,
   handleListReferralReferralsRoute,
   handlePreviewReferralRideCashbackRoute,
+  handleReferralLinkRoute,
+  handleSetReferralCodeRoute,
 } from "./http/referral.route";
 import {
   handleGetKycStatusRoute,
@@ -174,20 +241,36 @@ import {
 } from "./http/kyc.route";
 import { handleGetRideChatMessagesRoute } from "./http/chat.route";
 import { applyCorsHeaders, sendJson } from "./http/utils";
-import { startGatewayKafkaConsumer } from "./kafka/consumer";
+import { driverPresence, pricingClient } from "@wheleers/db";
+import { createLeaderLock } from "./cluster/leader";
+import { handleAdminInsightsRoute } from "./http/admin-insights.route";
+import { handleAdminDataRoute } from "./http/admin-data.route";
+import { handleAdminReferralsRoute } from "./http/admin-referrals.route";
+import { handleAdminSecurityRoute } from "./http/admin-security.route";
+import { dropBidFromWhatsappRide, startGatewayKafkaConsumer } from "./kafka/consumer";
 import { startGroupRideWaitNudgeSweep } from "./group-ride/wait-nudge";
-// COMMENTED OUT: WhatsApp Flows — using pure chat-based ride booking instead
-// import { handleWhatsappFlowEndpoint } from "./whatsapp-flows/flow-endpoint";
-// import { handleRideSearchFlowEndpoint } from "./whatsapp-flows/ride-search-flow-endpoint";
+// WhatsApp Flows (meta-flows branch): tappable booking forms riding on the
+// same guarded handlers as the chat bot. main keeps these unmounted.
+import { handleWhatsappFlowEndpoint } from "./whatsapp-flows/flow-endpoint";
+import { meterOutboundCalls } from "./usage/service-usage";
+import { recordOutboundWhatsapp } from "./whatsapp/transcript";
+import { handleRideSearchFlowEndpoint } from "./whatsapp-flows/ride-search-flow-endpoint";
 import { RedisClient } from "./redis/client";
 import { asRawProducer, startOutboxPublisher } from "./outbox/outbox-publisher";
 import { GatewayPublisher } from "./websocket/publisher";
 import { SocketRegistry } from "./websocket/registry";
+import { setPayingStatusEnabled } from "./rides/paying-status";
+import { setStopFixedPriceEnabled } from "./rides/trip-route-quote";
 import { createGatewayWebSocketServer } from "./websocket/server";
 import { GroupRideFaceStorage } from "./storage/group-ride-face-storage";
 import { RiderKycFaceStorage } from "./storage/rider-kyc-face-storage";
 import { DriverKycStorage } from "./storage/driver-kyc-storage";
+import { TripRecordingStorage } from "./storage/trip-recording-storage";
+import { handleTripRecordingRoute, sweepTripRecordings } from "./http/trip-recording.route";
+import { handleAdminChatRoute } from "./http/admin-chat.route";
 import { startReferralJobs } from "./referrals/jobs";
+import { clientIp } from "./utils/client-ip";
+import { handlePasskeyRoute } from "./http/passkey.route";
 
 const SCHEDULED_RIDE_QUEUE = "wheleers-scheduled-rides";
 
@@ -222,7 +305,39 @@ const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".css": "text/css",
   ".js": "application/javascript",
+  // The bidding page wears the mobile app's typeface, served from here.
+  ".ttf": "font/ttf",
 };
+
+// The live-trip map draws its pictures from a tile server; that host — and only
+// that host — may be loaded as images. Derived from the same MAP_TILE_URL the
+// page is told to use, so changing map provider is one setting, not two.
+const MAP_TILE_ORIGIN = (() => {
+  const template = (process.env.MAP_TILE_URL ?? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").trim();
+  try {
+    const url = new URL(template.replace("{s}", "a").replace(/\{[^}]+\}/g, "0"));
+    return `${url.protocol}//${template.includes("{s}") ? url.host.replace(/^a\./, "*.") : url.host}`;
+  } catch {
+    return "https://*.tile.openstreetmap.org";
+  }
+})();
+// The Trip chat page keeps a socket to us. 'self' covers wss:// to our own
+// host in current browsers; older WebViews want it spelled out.
+const WIDGET_SOCKET_ORIGIN = (() => {
+  try {
+    const base = new URL((process.env.APP_BASE_URL ?? "https://app.wheelersng.com").trim());
+    return `${base.protocol === "http:" ? "ws:" : "wss:"}//${base.host}`;
+  } catch {
+    return "wss://app.wheelersng.com";
+  }
+})();
+const WIDGET_CSP =
+  // Nothing is loaded from anywhere but us and the map tiles: the pages use the
+  // system font stack, so Google Fonts is no longer allowed either.
+  `default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${MAP_TILE_ORIGIN}; connect-src 'self' ${WIDGET_SOCKET_ORIGIN}; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+
+// The ride page draws its maps with Google Maps (as the app does): Google's own
+// list of hosts for its script, tiles and data. Its <style> tags need inline styles.
 
 async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<void> {
   // Only allow known extensions to prevent path traversal / serving unexpected files
@@ -249,7 +364,19 @@ async function serveWidgetFile(pathname: string, res: ServerResponse): Promise<v
 
   try {
     const data = await readFile(filePath);
-    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+      // These pages handle money: never framed by another site, never leak
+      // their address (the link token rides in the #fragment, which is not
+      // sent anyway), and only ever load their own scripts.
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      // The ride page's map is Google's, and its key is locked to our address:
+      // that page sends its origin (the link token is in the #fragment, never sent).
+      "Referrer-Policy": relative.startsWith("ride/") ? "origin" : "no-referrer",
+      "Content-Security-Policy": relative.startsWith("ride/") ? ridePageCsp(process.env.R2_ACCOUNT_ID) : WIDGET_CSP,
+    });
     res.end(data);
   } catch {
     sendJson(res, 404, { error: "Not found" });
@@ -261,59 +388,11 @@ function getHeaderValue(req: IncomingMessage, name: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function getClientIp(req: IncomingMessage): string | null {
-  const forwardedFor = getHeaderValue(req, "x-forwarded-for");
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0]?.trim() || null;
-  }
 
-  return req.socket.remoteAddress ?? null;
-}
-
-function getSafePathForLog(url: URL): string {
-  if (url.searchParams.size === 0) {
-    return url.pathname;
-  }
-
-  const queryKeys = Array.from(url.searchParams.keys())
-    .filter((key) => !/token|secret|password|authorization|otp|code/i.test(key))
-    .sort();
-
-  return queryKeys.length > 0
-    ? `${url.pathname}?${queryKeys.map((key) => `${key}=<redacted>`).join("&")}`
-    : url.pathname;
-}
-
-function logHttpRequestStart(req: IncomingMessage, url: URL): void {
-  console.info("[http] request", {
-    method: req.method ?? null,
-    path: getSafePathForLog(url),
-    origin: getHeaderValue(req, "origin"),
-    ip: getClientIp(req),
-    userAgent: getHeaderValue(req, "user-agent"),
-  });
-}
-
-function attachHttpResponseLogger(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  startedAt: number,
-): void {
-  res.on("finish", () => {
-    console.info("[http] response", {
-      method: req.method ?? null,
-      path: getSafePathForLog(url),
-      statusCode: res.statusCode,
-      durationMs: Date.now() - startedAt,
-      origin: getHeaderValue(req, "origin"),
-      ip: getClientIp(req),
-    });
-  });
-}
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
 
   process.env["NODE_ENV"] ??= "development";
   process.env["KAFKA_CLIENT_ID"] ??= "api-gateway";
@@ -381,21 +460,96 @@ async function bootstrap(): Promise<void> {
   const redisSubscriberClient = new RedisClient(sharedEnv.REDIS_URL);
 
   await redisCommandClient.connect();
+  // Driver heartbeats and "who is near this pickup" live in Redis (see driver-presence).
+  driverPresence.configure((...args) => redisCommandClient.send(...args));
+  // Every outbound call to Google, Gemini, Groq, Paystack, Meta… is counted for /admin/usage/services.
+  // Every outgoing call is counted; every WhatsApp message the bot sends is also written to the rider's transcript.
+  meterOutboundCalls(redisCommandClient, { onWhatsappSent: (body) => { void recordOutboundWhatsapp(body); } });
   await redisSubscriberClient.connect();
 
   const publisher = new GatewayPublisher(producer);
 
-  const pouchLiquifiaClient = new PouchLiquifiaClient({
-    baseUrl: gatewayEnv.POUCH_LIQUIFIA_BASE_URL,
-    apiKey: gatewayEnv.POUCH_LIQUIFIA_API_KEY,
+  const paymentsClient = new PaymentsClient({
+    secretKey: gatewayEnv.PAYSTACK_SECRET_KEY,
+    baseUrl: gatewayEnv.PAYSTACK_BASE_URL,
+    dvaBank: gatewayEnv.PAYSTACK_DVA_BANK,
+    emailDomain: gatewayEnv.PAYSTACK_CUSTOMER_EMAIL_DOMAIN,
   });
+  // "Your PIN was changed" goes to the rider's WhatsApp, whichever surface did it.
+  const notifyUserOnWhatsapp =
+    gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+      ? (phone: string, message: string) =>
+          sendMetaWhatsappMessage(
+            { metaAccessToken: gatewayEnv.META_ACCESS_TOKEN!, metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID! },
+            phone,
+            message,
+          )
+      : undefined;
 
-  const routePlanner = new GoogleMapsRoutePlanner(
+  console.log("[api-gateway] payments: Paystack", {
+    mode: paymentsClient.isTestMode ? "TEST" : "LIVE",
+  });
+  // Who answers the bot's questions — so "why is the bot slow/dumb today?" is
+  // one glance at the boot log, not a guess.
+  console.log("[api-gateway] language model:", describeLlm({
+    groqApiKey: gatewayEnv.GROQ_API_KEY,
+    groqModel: gatewayEnv.GROQ_MODEL,
+    timeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
+  }));
+
+  // The pricing settings owners save in the admin, reloaded every minute.
+  const stopPricingSync = await pricingClient.startSync();
+
+  // Google's routes and places, remembered in Redis for a few hours and shared by every process.
+  configureMapsCache(redisCommandClient);
+  const routePlanner = new CachedRoutePlanner(
     gatewayEnv.GOOGLE_MAPS_BASE_URL,
     gatewayEnv.GOOGLE_MAPS_API_KEY,
   );
 
   const r2Configured = !!(gatewayEnv.R2_ACCOUNT_ID && gatewayEnv.R2_ACCESS_KEY_ID && gatewayEnv.R2_SECRET_ACCESS_KEY && gatewayEnv.R2_BUCKET);
+
+  // Trip voice recording: its own bucket, never the documents one. Phones record only with
+  // TRIP_RECORDING_ENABLED; the bucket alone keeps the 30-day sweep running, so switching
+  // recording off never stops what was recorded from being deleted.
+  const tripRecordingBucket = gatewayEnv.TRIP_RECORDING_R2_BUCKET;
+  // The account the recordings bucket is in: the main one's keys, or (TRIP_RECORDING_R2_ACCOUNT=backup)
+  // the backup account's, the ones the database backups use.
+  const recordingAccount = gatewayEnv.TRIP_RECORDING_R2_ACCOUNT === 'backup'
+    ? (gatewayEnv.BACKUP_R2_ACCOUNT_ID && gatewayEnv.BACKUP_R2_ACCESS_KEY_ID && gatewayEnv.BACKUP_R2_SECRET_ACCESS_KEY
+      ? { accountId: gatewayEnv.BACKUP_R2_ACCOUNT_ID, accessKeyId: gatewayEnv.BACKUP_R2_ACCESS_KEY_ID, secretAccessKey: gatewayEnv.BACKUP_R2_SECRET_ACCESS_KEY, jurisdiction: gatewayEnv.BACKUP_R2_JURISDICTION }
+      : null)
+    : (r2Configured
+      ? { accountId: gatewayEnv.R2_ACCOUNT_ID!, accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!, secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY! }
+      : null);
+  const tripRecordingStorage =
+    recordingAccount && tripRecordingBucket && tripRecordingBucket !== gatewayEnv.R2_BUCKET && tripRecordingBucket !== gatewayEnv.BACKUP_R2_BUCKET
+      ? new TripRecordingStorage({ ...recordingAccount, bucket: tripRecordingBucket })
+      : null;
+  if (gatewayEnv.TRIP_RECORDING_ENABLED && !tripRecordingStorage) {
+    console.warn('[trip-recording] TRIP_RECORDING_ENABLED is on but nothing records: TRIP_RECORDING_R2_BUCKET is missing or is the documents or backups bucket, or that account\'s keys are not set', { account: gatewayEnv.TRIP_RECORDING_R2_ACCOUNT });
+  }
+  const tripRecordingDeps = {
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    adminApiKey: process.env.ADMIN_API_KEY ?? '',
+    enabled: gatewayEnv.TRIP_RECORDING_ENABLED,
+    driverIds: gatewayEnv.TRIP_RECORDING_DRIVER_IDS,
+    storage: tripRecordingStorage,
+  };
+  if (tripRecordingStorage) {
+    // The 30-day sweep, every 6 hours, one gateway process at a time.
+    const sweep = async () => {
+      const mine = await redisCommandClient.setIfNotExists('trip-recording:sweep', '1', 5 * 60 * 60).catch(() => false);
+      if (!mine) return;
+      const removed = await sweepTripRecordings(tripRecordingStorage).catch((error) => {
+        console.warn('[trip-recording] sweep failed', error instanceof Error ? error.message : String(error));
+        return 0;
+      });
+      if (removed) console.log(`[trip-recording] removed ${removed} segment(s) older than 30 days`);
+    };
+    setTimeout(() => void sweep(), 60_000).unref();
+    setInterval(() => void sweep(), 6 * 60 * 60 * 1000).unref();
+  }
 
   const groupRideFaceStorage = r2Configured
     ? new GroupRideFaceStorage({
@@ -427,6 +581,25 @@ async function bootstrap(): Promise<void> {
         prefix: 'drivers/kyc',
       })
     : null;
+  // DRIVER_PHOTO_ENABLED: the driver's face for the rider's avatar. Undefined (flag off) keeps every payload as it was.
+  const driverPhoto = gatewayEnv.DRIVER_PHOTO_ENABLED
+    ? createDriverPhotoResolver({
+      // Signed with a read-only R2 token when one is set (R2_READ_ACCESS_KEY_ID / _SECRET), else with the usual key.
+      storage: driverKycStorage && gatewayEnv.R2_READ_ACCESS_KEY_ID && gatewayEnv.R2_READ_SECRET_ACCESS_KEY
+        ? new DriverKycStorage({
+            accountId: gatewayEnv.R2_ACCOUNT_ID!,
+            accessKeyId: gatewayEnv.R2_READ_ACCESS_KEY_ID,
+            secretAccessKey: gatewayEnv.R2_READ_SECRET_ACCESS_KEY,
+            bucket: gatewayEnv.R2_BUCKET!,
+            prefix: 'drivers/kyc',
+          })
+        : driverKycStorage,
+      redis: redisCommandClient,
+    })
+    : undefined;
+  setDriverPhotoResolver(driverPhoto);
+  // Reads the driver's licence photo for the admin's licence check (Gemini, Groq as backup).
+  const licenceReader = createLlm({ groqApiKey: gatewayEnv.GROQ_API_KEY, groqModel: gatewayEnv.GROQ_MODEL, timeoutMs: Math.max(gatewayEnv.GROQ_TIMEOUT_MS, 30_000) });
 
   const registry = new SocketRegistry({
     instanceId: `${sharedEnv.KAFKA_CLIENT_ID}-${process.pid}-${Math.random()
@@ -439,6 +612,62 @@ async function bootstrap(): Promise<void> {
   await registry.start();
 
   const allowedOrigins = parseAllowedOrigins(gatewayEnv.CORS_ORIGINS);
+
+  // Trip chat and Live call: between a trip's rider and driver, on the app and
+  // on the WhatsApp rider's Trip chat page. Calls stay off until the TURN
+  // server is configured and LIVE_CALL_ENABLED says so.
+  setPayingStatusEnabled(gatewayEnv.DRIVER_PAYING_STATUS_ENABLED);
+  setStopFixedPriceEnabled(gatewayEnv.STOP_FIXED_PRICE_ENABLED);
+  if (gatewayEnv.LIVE_CALL_ENABLED && !(gatewayEnv.TURN_HOST && gatewayEnv.TURN_SHARED_SECRET)) {
+    console.warn("[live-call] LIVE_CALL_ENABLED is on but TURN_HOST or TURN_SHARED_SECRET is missing: calls on mobile data will often fail to connect.");
+  }
+  const tripChat = createTripChatService({
+    redis: redisCommandClient,
+    sockets: registry,
+    publisher,
+    whatsapp:
+      gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+        ? createTripWhatsapp(
+            {
+              metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+              metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+              flowTokenSecret: gatewayEnv.JWT_SECRET,
+              quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+              riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+            },
+            gatewayEnv.APP_BASE_URL,
+            gatewayEnv.JWT_SECRET,
+            redisCommandClient,
+          )
+        : undefined,
+    calls: {
+      enabled: gatewayEnv.LIVE_CALL_ENABLED,
+      turn: {
+        host: gatewayEnv.TURN_HOST,
+        secret: gatewayEnv.TURN_SHARED_SECRET,
+        tlsPort: gatewayEnv.TURN_TLS_PORT,
+        ttlSeconds: gatewayEnv.TURN_CREDENTIAL_TTL_SECONDS,
+      },
+    },
+  });
+  tripChat.start();
+
+  // Stellar Testnet (grant deliverable 3): off unless STELLAR_ENABLED=true. Testnet only.
+  const stellarConfig = stellarConfigFromEnv();
+  const stellar = stellarConfig
+    ? createStellarService({
+        config: stellarConfig,
+        network: createHorizonNetwork(stellarConfig),
+        rates: createRateProvider({ redis: redisCommandClient, fallbackNgnPerXlm: stellarConfig.fallbackNgnPerXlm }),
+      })
+    : null;
+  // Our own pages' address: the Trip chat page's socket comes from there.
+  const pageOrigins = new Set<string>();
+  try {
+    pageOrigins.add(new URL(gatewayEnv.APP_BASE_URL).origin);
+  } catch {
+    /* no public address configured: page sockets need CORS_ORIGINS */
+  }
 
   const scheduledRideDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
@@ -463,17 +692,10 @@ async function bootstrap(): Promise<void> {
   const walletDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
     publisher,
-    pouchLiquifiaClient,
+    paymentsClient,
     redisClient: redisCommandClient,
-    treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
+    pinPolicy: gatewayEnv.APP_WITHDRAWAL_PIN_POLICY,
   };
-
-  // Deposits land in user VAs; withdrawals pay from the treasury VA. This
-  // job continuously bridges the two so float scales with deposits.
-  startTreasurySweep({
-    pouchLiquifiaClient,
-    treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
-  });
 
   const kycDeps = {
     jwtSecret: gatewayEnv.JWT_SECRET,
@@ -481,11 +703,81 @@ async function bootstrap(): Promise<void> {
     faceStorage: riderKycFaceStorage,
   };
 
-  const server = createServer(async (req, res) => {
+  // The bidding page, the WhatsApp webhook and the deposit hook all talk to the
+  // same chat, so they are built from the same settings.
+  const buildMetaWhatsappDeps = () => ({
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    publisher,
+    paymentsClient,
+    redisClient: redisCommandClient,
+    routePlanner,
+    googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+    metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+    metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+    metaAppSecret: gatewayEnv.META_APP_SECRET,
+    metaWebhookVerifyToken: gatewayEnv.META_WEBHOOK_VERIFY_TOKEN,
+    groqApiKey: gatewayEnv.GROQ_API_KEY,
+    groqModel: gatewayEnv.GROQ_MODEL,
+    groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
+    appBaseUrl: gatewayEnv.APP_BASE_URL,
+    liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
+    driverKycStorage: driverKycStorage ?? undefined,
+    groupRideFaceStorage: groupRideFaceStorage ?? undefined,
+    whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
+    whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+    whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
+    whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+    whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+    legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+  });
+
+  // The WhatsApp booking page's deps: its routes, and the state its open socket is sent.
+  const ridePageDeps = (): RidePageRouteDeps => ({
+    jwtSecret: gatewayEnv.JWT_SECRET,
+    liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
+    redisClient: redisCommandClient,
+    publisher,
+    paymentsClient,
+    driverPhoto,
+    notifyChat: createRidePageChatNotifier(buildMetaWhatsappDeps()),
+    // Changing the trip on the page: the chat's place lookup and route planner.
+    googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+    // The page's own map: a key locked to our web address, never the server's key.
+    googleMapsBrowserKey: process.env.GOOGLE_MAPS_BROWSER_KEY?.trim() || undefined,
+    routePlanner,
+    // Rides for later ("Later" on the page's home): the same queue and lead time as the app's.
+    scheduling: { dispatcherQueue, leadTimeMs },
+    // Paying with XLM (testnet): only when Stellar is on.
+    stellar: stellar ?? null,
+  });
+  setRidePageStateBuilder((riderId) => buildRidePageState(ridePageDeps(), riderId));
+
+  // Every API request and database query, counted per minute for the admin Health page.
+  const healthStats = createStatsRecorder();
+  onPrismaQuery((name, ms, failed) => {
+    healthStats.db(name, ms, failed);
+    addDbTime(ms);
+  });
+  // Postgres's own time per query: the rest of a query's time was the wait for a free connection.
+  onPrismaExecution(healthStats.dbExec);
+
+  // Each request runs inside its own timing: the database and outside services add to it (health/request-timing.ts).
+  const server = createServer((req, res) => runWithTiming(async () => {
     const startedAt = Date.now();
+    const timing = currentTiming();
+    res.once("finish", () => {
+      healthStats.http(Date.now() - startedAt, res.statusCode);
+      healthStats.route(routeKey(req.method, url.pathname, res.statusCode), Date.now() - startedAt, res.statusCode, timing);
+      // What people tried in the app and how it went, for the admin Activity page.
+      recordRequestOutcome(req, res, url.pathname, gatewayEnv.JWT_SECRET);
+      // Admins' searches, records opened and changes, for the owners' Team activity page.
+      if (url.pathname.startsWith("/admin/")) {
+        const adminId = extractAdminId(req, gatewayEnv.JWT_SECRET);
+        if (adminId) void recordAdminRequest(adminId, req.method ?? "GET", url, res.statusCode, clientIp(req)).catch(() => undefined);
+      }
+    });
     const url = new URL(req.url ?? "/", "http://localhost");
-    attachHttpResponseLogger(req, res, url, startedAt);
-    logHttpRequestStart(req, url);
+    attachRequestLog(req, res, getSafePathForLog(url), url.pathname, clientIp(req), startedAt);
 
     try {
       applyCorsHeaders(req, res, allowedOrigins);
@@ -494,6 +786,21 @@ async function bootstrap(): Promise<void> {
         res.statusCode = 204;
         res.end();
         return;
+      }
+
+      // The support desk sees only its own pages: anything else is refused here, before any route runs.
+      if (url.pathname.startsWith("/admin/") && url.pathname !== "/admin/login" && await supportDeskRefuses(req, gatewayEnv.JWT_SECRET)) {
+        sendJson(res, 403, { error: "This is not part of the support desk." });
+        return;
+      }
+
+      // Chats, Trip recordings and the money pages: the password again, five minutes at a time (admin/area-lock).
+      if (url.pathname.startsWith("/admin/")) {
+        if (await handleAdminAreaLockRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redis: redisCommandClient }, url)) return;
+        if (isLockedAdminPath(url) && await adminAreaLocked(req, gatewayEnv.JWT_SECRET, redisCommandClient)) {
+          sendJson(res, 423, ADMIN_LOCKED_BODY);
+          return;
+        }
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
@@ -514,7 +821,7 @@ async function bootstrap(): Promise<void> {
       await handleUsernamePasswordSignupRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         publisher,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
@@ -584,7 +891,7 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         appleBundleId: gatewayEnv.APPLE_BUNDLE_ID,
         googleClientId: gatewayEnv.GOOGLE_CLIENT_ID,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
@@ -601,10 +908,15 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         appleBundleId: gatewayEnv.APPLE_BUNDLE_ID,
         googleClientId: gatewayEnv.GOOGLE_CLIENT_ID,
-        pouchLiquifiaClient,
+        paymentsClient,
         resendApiKey: gatewayEnv.RESEND_API_KEY,
       });
 
+      return;
+    }
+
+    // Passkeys: Face ID or a fingerprint instead of an SMS code.
+    if (await handlePasskeyRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient }, url)) {
       return;
     }
 
@@ -628,6 +940,7 @@ async function bootstrap(): Promise<void> {
 
       await handleUpdateCurrentProfileRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
+        paymentsClient,
       });
       return;
     }
@@ -639,6 +952,46 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleLogoutRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/privacy-consent") {
+      if (req.method !== "GET" && req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handlePrivacyConsentRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        paymentsClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/session") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleSessionCheckRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+      });
+      return;
+    }
+
+    if (url.pathname === "/auth/refresh") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleRefreshRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
       });
@@ -665,6 +1018,24 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleGetReferralSummaryRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
+    // A referral link, tapped or scanned: on to the store or the chat.
+    if (url.pathname.startsWith("/r/") && req.method === "GET") {
+      handleReferralLinkRoute(req, res, url.pathname.slice("/r/".length));
+      return;
+    }
+
+    if (url.pathname === "/referrals/me/code") {
+      if (req.method !== "PUT") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleSetReferralCodeRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
       });
       return;
@@ -770,6 +1141,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -783,7 +1159,7 @@ async function bootstrap(): Promise<void> {
           onboarding: {
             jwtSecret: gatewayEnv.JWT_SECRET,
             publisher,
-            pouchLiquifiaClient,
+            paymentsClient,
           },
         });
       }
@@ -806,6 +1182,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -815,11 +1196,37 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname === "/drivers/me/trip-recording" || url.pathname.startsWith("/drivers/me/trip-recordings/") || url.pathname === "/admin/trip-recordings" || /^\/admin\/rides\/[^/]+\/recordings$/.test(url.pathname)) {
+      const handled = await handleTripRecordingRoute(req, res, tripRecordingDeps, url);
+      if (handled) return;
+    }
+
+    // Admin chat history: a rider's whole chat with Wheelers, and a trip's.
+    if (url.pathname.startsWith("/admin/chats/")) {
+      const handled = await handleAdminChatRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, adminApiKey: process.env.ADMIN_API_KEY ?? "" }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname.startsWith("/stellar/") || url.pathname === "/admin/stellar") {
+      const handled = await handleStellarRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, adminApiKey: process.env.ADMIN_API_KEY ?? '', stellar }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname.startsWith("/trip-chat/")) {
+      const handled = await handleTripChatPageRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, tripChat }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname.startsWith("/ride-page/")) {
+      const handled = await handleRidePageRoute(req, res, ridePageDeps(), url);
+      if (handled) return;
+    }
+
     if (url.pathname === "/webhooks/whatsapp") {
       const metaWhatsappDeps = {
         jwtSecret: gatewayEnv.JWT_SECRET,
         publisher,
-        pouchLiquifiaClient,
+        paymentsClient,
         redisClient: redisCommandClient,
         routePlanner,
         googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
@@ -831,9 +1238,15 @@ async function bootstrap(): Promise<void> {
         groqModel: gatewayEnv.GROQ_MODEL,
         groqTimeoutMs: gatewayEnv.GROQ_TIMEOUT_MS,
         appBaseUrl: gatewayEnv.APP_BASE_URL,
+        liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
         driverKycStorage: driverKycStorage ?? undefined,
         groupRideFaceStorage: groupRideFaceStorage ?? undefined,
-        treasuryVirtualAccountId: gatewayEnv.POUCH_TREASURY_VIRTUAL_ACCOUNT_ID,
+        whatsappFlowId: gatewayEnv.WHATSAPP_FLOW_ID,
+        whatsappOffersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+        whatsappEditTripFlowId: gatewayEnv.WHATSAPP_EDIT_TRIP_FLOW_ID,
+        whatsappOffersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+    whatsappQuickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+    legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
       };
 
       if (req.method === "GET") {
@@ -850,9 +1263,62 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    // COMMENTED OUT: WhatsApp Flows endpoints — using pure chat-based ride booking
-    // if (url.pathname === "/webhooks/whatsapp-ride-search-flow") { ... }
-    // if (url.pathname === "/webhooks/whatsapp-flow") { ... }
+    if (url.pathname === "/webhooks/whatsapp-flow") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      if (!gatewayEnv.WHATSAPP_FLOW_PRIVATE_KEY) {
+        sendJson(res, 404, { error: "WhatsApp Flows are not configured." });
+        return;
+      }
+      await handleWhatsappFlowEndpoint(req, res, {
+        redisClient: redisCommandClient,
+        publisher,
+        privateKeyPem: gatewayEnv.WHATSAPP_FLOW_PRIVATE_KEY,
+        tokenSecret: gatewayEnv.JWT_SECRET,
+        googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+        routePlanner,
+        kycStorage: driverKycStorage ?? undefined,
+        legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+        ...createQuickActionsChatHooks(buildMetaWhatsappDeps()),
+        notifier:
+          gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+            ? {
+                metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+                metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+                offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+                legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+                flowTokenSecret: gatewayEnv.JWT_SECRET,
+                quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+                riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+              }
+            : undefined,
+      });
+      return;
+    }
+
+    if (url.pathname === "/webhooks/whatsapp-ride-search-flow") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      const rideSearchKey =
+        gatewayEnv.WHATSAPP_RIDE_SEARCH_FLOW_PRIVATE_KEY ?? gatewayEnv.WHATSAPP_FLOW_PRIVATE_KEY;
+      if (!rideSearchKey) {
+        sendJson(res, 404, { error: "WhatsApp Flows are not configured." });
+        return;
+      }
+      await handleRideSearchFlowEndpoint(req, res, {
+        redisClient: redisCommandClient,
+        publisher,
+        privateKeyPem: rideSearchKey,
+        tokenSecret: gatewayEnv.JWT_SECRET,
+        googleMapsApiKey: gatewayEnv.GOOGLE_MAPS_API_KEY,
+        routePlanner,
+      });
+      return;
+    }
 
 
 
@@ -866,6 +1332,7 @@ async function bootstrap(): Promise<void> {
       await handleVerifyPhoneOtpRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         redisClient: redisCommandClient,
+        paymentsClient,
         metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
         metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
         metaOtpTemplateName: gatewayEnv.META_OTP_TEMPLATE_NAME,
@@ -873,6 +1340,11 @@ async function bootstrap(): Promise<void> {
         twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
         twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
         twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
         twilioWhatsappNumber: gatewayEnv.TWILIO_WHATSAPP_NUMBER,
         twilioVerifyServiceSid: gatewayEnv.TWILIO_VERIFY_SERVICE_SID,
         otpChannelOrder: gatewayEnv.OTP_CHANNEL_ORDER,
@@ -917,6 +1389,28 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname === "/drivers/me/standby") {
+      if (req.method !== "GET" && req.method !== "PUT") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleDriverStandbyRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
+    if (url.pathname === "/drivers/me/standby-location") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handlePostDriverStandbyLocationRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      });
+      return;
+    }
+
     if (url.pathname === "/drivers/me/bids") {
       if (req.method !== "GET") {
         sendMethodNotAllowed(res);
@@ -925,6 +1419,7 @@ async function bootstrap(): Promise<void> {
 
       await handleGetDriverBidsRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
       }, url);
       return;
     }
@@ -967,6 +1462,61 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleDriverKycSubmitRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        kycStorage: driverKycStorage,
+      });
+      return;
+    }
+
+    // Chat with support: the person's side and the admin panel's inbox.
+    if (await handleSupportChatRoute(req, res, {
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      sendToUser: (userId, type, payload) => registry.sendToUser(userId, type, payload),
+      publisher,
+    }, url)) {
+      return;
+    }
+
+    // A driver proves their phone number with a code sent to it by SMS.
+    if (await handleDriverPhoneRoute(req, res, {
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      redisClient: redisCommandClient,
+      otp: {
+        metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+        metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+        metaOtpTemplateName: gatewayEnv.META_OTP_TEMPLATE_NAME,
+        metaOtpTemplateLanguage: gatewayEnv.META_OTP_TEMPLATE_LANGUAGE,
+        twilioAccountSid: gatewayEnv.TWILIO_ACCOUNT_SID,
+        twilioAuthToken: gatewayEnv.TWILIO_AUTH_TOKEN,
+        twilioFromNumber: gatewayEnv.TWILIO_FROM_NUMBER,
+        termiiApiKey: gatewayEnv.TERMII_API_KEY,
+        termiiSenderId: gatewayEnv.TERMII_SENDER_ID,
+        termiiBaseUrl: gatewayEnv.TERMII_BASE_URL,
+        termiiChannel: gatewayEnv.TERMII_CHANNEL,
+        smsProvider: gatewayEnv.SMS_PROVIDER,
+      },
+    }, url)) {
+      return;
+    }
+
+    // The papers a driver keeps for their car, and their name as on the licence.
+    if (await handleDriverPapersRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, kycStorage: driverKycStorage }, url)) {
+      return;
+    }
+
+    if (url.pathname === "/drivers/kyc/resubmit") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      if (!driverKycStorage) {
+        sendJson(res, 503, { error: 'KYC storage not configured' });
+        return;
+      }
+
+      await handleDriverKycResubmitRoute(req, res, {
         jwtSecret: gatewayEnv.JWT_SECRET,
         kycStorage: driverKycStorage,
       });
@@ -1034,6 +1584,27 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    // Checking a driver's licence and car: Prembly (owners), and checks done by hand on government sites.
+    if (await handleAdminDriverChecksRoute(req, res, {
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      kycStorage: driverKycStorage,
+      prembly: premblyConfigFromEnv(),
+      llm: licenceReader,
+    }, url)) {
+      return;
+    }
+
+    // Drivers' papers: the lists, one driver's papers, and approving or sending one back.
+    if (await handleAdminDriverPapersRoute(req, res, {
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      kycStorage: driverKycStorage,
+      publisher,
+    }, url)) {
+      return;
+    }
+
     if (url.pathname.startsWith("/admin/drivers/")) {
       const approveMatch = url.pathname.match(/^\/admin\/drivers\/([^/]+)\/approve$/);
       if (approveMatch) {
@@ -1052,6 +1623,7 @@ async function bootstrap(): Promise<void> {
           jwtSecret: gatewayEnv.JWT_SECRET,
           kycStorage: driverKycStorage,
           resendApiKey: gatewayEnv.RESEND_API_KEY,
+          publisher,
         }, approveMatch[1]!);
         return;
       }
@@ -1092,6 +1664,8 @@ async function bootstrap(): Promise<void> {
           adminApiKey: process.env.ADMIN_API_KEY ?? '',
           jwtSecret: gatewayEnv.JWT_SECRET,
           kycStorage: driverKycStorage,
+          resendApiKey: gatewayEnv.RESEND_API_KEY,
+          publisher,
         }, rejectMatch[1]!);
         return;
       }
@@ -1381,12 +1955,65 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
       };
 
+      // ── Live map + dispatch ──
+      if (url.pathname.startsWith("/admin/live/")) {
+        const liveDeps = { ...adminDeps, publisher };
+        const liveDriver = url.pathname.match(/^\/admin\/live\/drivers\/([^/]+)(?:\/(trail|nudge|contacts))?$/);
+        const expectPost = liveDriver?.[2] === "nudge" || liveDriver?.[2] === "contacts";
+        if (req.method !== (expectPost ? "POST" : "GET")) {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        if (url.pathname === "/admin/live/drivers") {
+          await handleLiveDriversRoute(req, res, liveDeps);
+          return;
+        }
+        if (url.pathname === "/admin/live/dispatch") {
+          await handleLiveDispatchRoute(req, res, liveDeps);
+          return;
+        }
+        if (liveDriver) {
+          const driverId = decodeURIComponent(liveDriver[1]);
+          if (liveDriver[2] === "trail") await handleLiveDriverTrailRoute(req, res, liveDeps, driverId, url);
+          else if (liveDriver[2] === "nudge") await handleLiveNudgeRoute(req, res, liveDeps, driverId);
+          else if (liveDriver[2] === "contacts") await handleLiveContactRoute(req, res, liveDeps, driverId);
+          else await handleLiveDriverDetailRoute(req, res, liveDeps, driverId);
+          return;
+        }
+      }
+
       if (url.pathname === "/admin/users") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
           return;
         }
         await handleAdminListUsersRoute(req, res, adminDeps, url);
+        return;
+      }
+
+      const adminFreezeMatch = url.pathname.match(/^\/admin\/users\/([^/]+)\/withdrawals\/(freeze|unfreeze)$/);
+      if (adminFreezeMatch) {
+        if (req.method !== "POST") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminWithdrawalFreezeRoute(
+          req,
+          res,
+          adminDeps,
+          decodeURIComponent(adminFreezeMatch[1]),
+          adminFreezeMatch[2] as "freeze" | "unfreeze",
+        );
+        return;
+      }
+
+      const adminSignOutMatch = url.pathname.match(/^\/admin\/users\/([^/]+)\/sign-out$/);
+      if (adminSignOutMatch) {
+        if (req.method !== "POST") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminSignOutUserRoute(req, res, adminDeps, decodeURIComponent(adminSignOutMatch[1]));
         return;
       }
 
@@ -1405,12 +2032,74 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      // A trip's chat, calls and trip code, and support's unlock: /admin/rides/:id/trip…
+      if (await handleAdminTripRoute(req, res, { ...adminDeps, redis: redisCommandClient, sockets: registry, stellar }, url)) {
+        return;
+      }
+
       if (url.pathname === "/admin/rides") {
         if (req.method !== "GET") {
           sendMethodNotAllowed(res);
           return;
         }
         await handleAdminListRidesRoute(req, res, adminDeps, url);
+        return;
+      }
+
+      // Home analytics and the Fees page: /admin/insights/* and /admin/fees/*.
+      if (await handleAdminInsightsRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // Where riders stop: datasets to download for Power BI or Python, and the funnel.
+      if (await handleAdminDataRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // Who brought whom: the Referrals page.
+      if (await handleAdminReferralsRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // The admin panel reports a screenshot attempt it noticed.
+      if (await handleAdminSecurityRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // Who is signed in, the team, roles and the activity timeline.
+      if (await handleAdminTeamRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // The support desk's look-ups: people and trips, with no money in them.
+      if (await handleAdminDeskRoute(req, res, adminDeps, url)) {
+        return;
+      }
+
+      // The database's own figures: slowest SQL, and table scans and dead rows.
+      if (await handleAdminHealthSqlRoute(req, res, { ...adminDeps, redis: redisCommandClient }, url)) {
+        return;
+      }
+
+      if (url.pathname === "/admin/health") {
+        if (req.method !== "GET") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminHealthRoute(req, res, {
+          ...adminDeps,
+          redis: redisCommandClient,
+          horizonUrl: stellarConfig?.horizonUrl ?? null,
+        }, url);
+        return;
+      }
+
+      if (url.pathname === "/admin/usage/services") {
+        if (req.method !== "GET") {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        await handleAdminServiceUsageRoute(req, res, { ...adminDeps, redisClient: redisCommandClient }, url);
         return;
       }
 
@@ -1570,6 +2259,19 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    if (url.pathname === "/admin/analytics/app-activity") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleAdminAppActivityRoute(req, res, {
+        adminApiKey: process.env.ADMIN_API_KEY ?? '',
+        jwtSecret: gatewayEnv.JWT_SECRET,
+      }, url);
+      return;
+    }
+
     if (url.pathname === "/admin/analytics/activity-feed") {
       if (req.method !== "GET") {
         sendMethodNotAllowed(res);
@@ -1594,6 +2296,7 @@ async function bootstrap(): Promise<void> {
 
         const handler = handleGetRideChatMessagesRoute({
           jwtSecret: gatewayEnv.JWT_SECRET,
+          liveCallEnabled: gatewayEnv.LIVE_CALL_ENABLED,
         });
         await handler(req, res, { rideId: chatMatch[1] });
         return;
@@ -1605,7 +2308,7 @@ async function bootstrap(): Promise<void> {
         sendMethodNotAllowed(res);
         return;
       }
-      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET });
+      await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, driverPhoto });
       return;
     }
 
@@ -1797,15 +2500,37 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    if (url.pathname === "/webhooks/pouchpay") {
+    if (url.pathname.startsWith("/wallet-page/")) {
+      const handled = await handleWalletPageRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        paymentsClient,
+        publisher,
+        resendApiKey: gatewayEnv.RESEND_API_KEY,
+        notifyUser: notifyUserOnWhatsapp,
+      }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname === "/wallet/security" || url.pathname.startsWith("/wallet/pin")) {
+      const handled = await handleWalletSecurityRoute(req, res, {
+        jwtSecret: gatewayEnv.JWT_SECRET,
+        redisClient: redisCommandClient,
+        resendApiKey: gatewayEnv.RESEND_API_KEY,
+        notifyUser: notifyUserOnWhatsapp,
+      }, url);
+      if (handled) return;
+    }
+
+    if (url.pathname === "/webhooks/paystack") {
       if (req.method !== "POST") {
         sendMethodNotAllowed(res);
         return;
       }
 
-      await handlePouchWebhookRoute(req, res, {
+      await handlePaystackWebhookRoute(req, res, {
         publisher,
-        webhookSecret: gatewayEnv.POUCH_WEBHOOK_SECRET,
+        paymentsClient,
         redisClient: redisCommandClient,
       });
 
@@ -1829,6 +2554,16 @@ async function bootstrap(): Promise<void> {
       }
 
       await handleWalletDepositInfoRoute(req, res, walletDeps);
+      return;
+    }
+
+    if (url.pathname === "/wallet/deposit-preview") {
+      if (req.method !== "GET") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+
+      await handleWalletDepositPreviewRoute(req, res, walletDeps, url);
       return;
     }
 
@@ -1953,28 +2688,82 @@ async function bootstrap(): Promise<void> {
 
       res.destroy(error instanceof Error ? error : undefined);
     }
-  });
+  }));
+
+  // A bid withdrawn when its driver goes offline leaves the ride page and the chat's offer list too.
+  const whatsappSenderForBids =
+    gatewayEnv.META_ACCESS_TOKEN && gatewayEnv.META_PHONE_NUMBER_ID
+      ? {
+          metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+          metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+          offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+          legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+          flowTokenSecret: gatewayEnv.JWT_SECRET,
+          offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+          quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+          riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+        }
+      : undefined;
 
   createGatewayWebSocketServer({
     server,
+    dropWithdrawnBid: (rideId: string, riderId: string, driverId: string) =>
+      dropBidFromWhatsappRide({ redisClient: redisCommandClient, whatsappNotifier: whatsappSenderForBids }, rideId, riderId, driverId),
     jwtSecret: gatewayEnv.JWT_SECRET,
     allowedOrigins,
     idleTimeoutMs: Number(gatewayEnv.WS_IDLE_TIMEOUT_MS),
     registry,
     publisher,
     routePlanner,
+    redis: redisCommandClient,
+    driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
+    maxPayloadBytes: gatewayEnv.WS_MAX_PAYLOAD_BYTES,
+    rateLimitPerSecond: gatewayEnv.WS_RATE_LIMIT_PER_SECOND,
+    rateLimitBurst: gatewayEnv.WS_RATE_LIMIT_BURST,
+    maxPendingUpgrades: gatewayEnv.WS_MAX_PENDING_UPGRADES,
+    verboseLog: gatewayEnv.WS_VERBOSE_LOG,
+    tripChat,
+    pageOrigins,
   });
+
+  // Jobs that must run once, however many gateway processes there are.
+  const leader = createLeaderLock(redisCommandClient, registry.instanceId);
 
   const outboxPublisher = startOutboxPublisher({
     producer: asRawProducer(producer),
     intervalMs: 2_000,
     batchSize: 100,
+    shouldRun: leader.isLeader,
   });
 
-  const referralJobs = startReferralJobs();
+  const referralJobs = startReferralJobs(leader.isLeader);
+  const stopStellarJob = stellar ? startStellarJob(stellar, leader.isLeader) : () => undefined;
+  const stopHoldSweeper = startHoldSweeper(leader.isLeader);
+  const stopBusynessJob = startBusynessJob(redisCommandClient, leader.isLeader);
+  const stopSurgeJob = startSurgeJob(redisCommandClient, leader.isLeader);
+  const stopHourCurveJob = startHourCurveJob(leader.isLeader);
+  // Rain at each zone every 15 minutes, for pricing (needs the Weather API enabled on the Google key).
+  const stopWeatherJob = startWeatherJob(redisCommandClient, gatewayEnv.GOOGLE_MAPS_API_KEY, leader.isLeader);
+  const stopPaperReminders = startPaperReminderJob({ publisher }, leader.isLeader, () => lagosToday());
+  const stopHealthJobs = startHealthJobs({
+    redis: redisCommandClient,
+    recorder: healthStats,
+    instanceId: registry.instanceId,
+    sockets: () => registry.connectionCount,
+    isLeader: leader.isLeader,
+    horizonUrl: stellarConfig?.horizonUrl ?? null,
+  });
+  if (stellar) {
+    void stellar.ensureOperations()
+      .then((ops) => console.info("[stellar] testnet on; operations account", { publicKey: ops.publicKey }))
+      .catch((error) => console.warn("[stellar] operations account not ready yet", { error: error instanceof Error ? error.message : String(error) }));
+  }
 
   await startGatewayKafkaConsumer({
     consumer,
+    driverStatusPushes: gatewayEnv.DRIVER_STATUS_PUSHES_ENABLED,
+    driverPhoto,
+    routePlanner,
     registry,
     publisher,
     redisClient: redisCommandClient,
@@ -1983,8 +2772,25 @@ async function bootstrap(): Promise<void> {
         ? {
             metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+            offersFlowId: gatewayEnv.WHATSAPP_OFFERS_FLOW_ID,
+            legacyFlowsEnabled: gatewayEnv.WHATSAPP_LEGACY_FLOWS_ENABLED,
+            flowTokenSecret: gatewayEnv.JWT_SECRET,
+            offersFormFlowId: gatewayEnv.WHATSAPP_OFFERS_FORM_FLOW_ID,
+            quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+            riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
+            // Live call on: "driver is here" carries Chat or call (the trip page) instead of the driver's number.
+            liveCallPageUrl: gatewayEnv.LIVE_CALL_ENABLED && gatewayEnv.APP_BASE_URL
+              ? (riderId: string, rideId: string) => tripPageUrl(gatewayEnv.APP_BASE_URL!, gatewayEnv.JWT_SECRET, riderId, rideId)
+              : undefined,
           }
         : undefined,
+    kycStorage: driverKycStorage ?? undefined,
+    // A rider who tapped a driver and went to add money: the deposit confirms the ride.
+    onWhatsappDeposit: createWhatsappDepositFinisher(buildMetaWhatsappDeps()),
+    stellar,
+    ridePageUrlFor: (userId: string) => ridePageUrl(buildMetaWhatsappDeps(), userId),
+    // The ride page's news, told to the chat once the rider has left the page.
+    ridePageChat: (event) => sayRidePageEventInChat(buildMetaWhatsappDeps(), event),
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in
@@ -1996,6 +2802,9 @@ async function bootstrap(): Promise<void> {
         ? {
             metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
             metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+            flowTokenSecret: gatewayEnv.JWT_SECRET,
+            quickActionsFlowId: gatewayEnv.WHATSAPP_QUICK_ACTIONS_FLOW_ID,
+            riderIdFor: (phone: string) => lookupUserIdByPhone(redisCommandClient, phone),
           }
         : undefined,
   });
@@ -2003,10 +2812,28 @@ async function bootstrap(): Promise<void> {
   const port = Number(gatewayEnv.PORT);
 
   await new Promise<void>((resolve) => {
+    startLocationHistoryCleanup(gatewayEnv.LOCATION_HISTORY_DAYS);
+
     server.listen(port, () => {
       console.log(`[api-gateway] listening on :${port}`);
       resolve();
     });
+  });
+
+  // First: let go of the sockets and the job lock while Redis is still connected.
+  onShutdown(async () => {
+    tripChat.stop();
+    stopStellarJob();
+    stopHoldSweeper();
+    stopBusynessJob();
+    stopSurgeJob();
+    stopHourCurveJob();
+    stopWeatherJob();
+    stopPaperReminders();
+    stopPricingSync();
+    stopHealthJobs();
+    await leader.release();
+    await registry.shutdown();
   });
 
   onShutdown(async () => {

@@ -11,6 +11,21 @@ export const userClient = {
       include: { wallet: true },
     }),
 
+  /**
+   * Sign this person out everywhere: logins made before now are refused from
+   * here on. A driver is taken offline too, so no ride is offered to a phone
+   * that is about to be asked to sign in. Null when there is no such person.
+   */
+  endSessions: async (userId: string): Promise<Date | null> => {
+    const now = new Date();
+    const changed = await prisma.user.updateMany({ where: { id: userId }, data: { sessionsEndedAt: now } });
+    if (changed.count === 0) return null;
+    await prisma.driver.updateMany({ where: { userId, status: 'ONLINE' }, data: { status: 'OFFLINE' } });
+    // A passkey on a lost phone would sign straight back in: they go too, and are made again after an SMS sign-in.
+    await prisma.passkey.deleteMany({ where: { userId } });
+    return now;
+  },
+
   /** Lightweight batch lookup for labelling ids in admin views. */
   findManyByIds: (userIds: string[]) =>
     prisma.user.findMany({
@@ -48,6 +63,9 @@ export const userClient = {
 
   // Phone is not unique in the schema (an app account can verify the same
   // number a WhatsApp account was created with), so callers decide precedence.
+  findByProviderCustomerId: (providerCustomerId: string) =>
+    prisma.user.findUnique({ where: { providerCustomerId } }),
+
   findByPhone: (phone: string) =>
     prisma.user.findFirst({
       where: { phone },
@@ -109,10 +127,10 @@ export const userClient = {
       include: { wallet: true },
     }),
 
-  updatePouchCustomerId: (userId: string, pouchCustomerId: string) =>
+  updateProviderCustomerId: (userId: string, providerCustomerId: string) =>
     prisma.user.update({
       where: { id: userId },
-      data: { pouchCustomerId },
+      data: { providerCustomerId },
     }),
 
   updateBvn: (userId: string, bvn: string) =>
@@ -126,6 +144,7 @@ export const userClient = {
     platform?: string;
     deviceName?: string;
     appOwnership?: string;
+    androidChannelId?: string;
     enabled?: boolean;
   }) =>
     prisma.notificationDevice.upsert({
@@ -138,6 +157,7 @@ export const userClient = {
         platform: data.platform,
         deviceName: data.deviceName,
         appOwnership: data.appOwnership,
+        androidChannelId: data.androidChannelId,
         enabled: data.enabled ?? true,
         lastRegisteredAt: new Date(),
       },
@@ -146,6 +166,8 @@ export const userClient = {
         platform: data.platform,
         deviceName: data.deviceName,
         appOwnership: data.appOwnership,
+        // Only when the app said: an older app re-registering does not wipe a channel.
+        ...(data.androidChannelId !== undefined ? { androidChannelId: data.androidChannelId } : {}),
         enabled: data.enabled ?? true,
         lastRegisteredAt: new Date(),
       },
@@ -221,6 +243,40 @@ export const userClient = {
    * Soft-delete a user account by anonymizing PII and clearing auth credentials.
    * The row stays for referential integrity but is no longer usable.
    */
+  getPrivacyConsent: async (userId: string) => {
+    const row = await prisma.user.findUnique({ where: { id: userId }, select: { privacyConsent: true } });
+    return row?.privacyConsent ?? 'PENDING';
+  },
+
+  setPrivacyConsent: (userId: string, consent: 'AGREED' | 'DECLINED') =>
+    prisma.user.update({
+      where: { id: userId },
+      data: { privacyConsent: consent, privacyConsentAt: new Date() },
+      select: { id: true, privacyConsent: true, privacyConsentAt: true },
+    }),
+
+  /** One atomic update: true only for the call that moved the user to AGREED. */
+  agreePrivacyOnce: async (userId: string, now = new Date()): Promise<boolean> => {
+    const r = await prisma.user.updateMany({
+      where: { id: userId, privacyConsent: { not: 'AGREED' } },
+      data: { privacyConsent: 'AGREED', privacyConsentAt: now },
+    });
+    return r.count === 1;
+  },
+
+  /** Contact email typed on WhatsApp. Unverified; never touches User.email. */
+  setContactEmail: async (userId: string, email: string, now = new Date()): Promise<void> => {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { contactEmail: email.trim().toLowerCase(), contactEmailAt: now },
+    });
+  },
+
+  /** The Welcome form's optional tick: news and offers by email, yes or no. */
+  setMarketingEmailOptIn: async (userId: string, optIn: boolean, now = new Date()): Promise<void> => {
+    await prisma.user.update({ where: { id: userId }, data: { marketingEmailOptIn: optIn, marketingEmailOptInAt: now } });
+  },
+
   softDelete: (userId: string) =>
     prisma.$transaction([
       // Anonymize user PII

@@ -6,13 +6,14 @@ import { verifyLocalAccessToken } from '../auth/local';
 import { getString, isRecord } from '../utils/object';
 import { readJsonBody, sendJson } from './utils';
 import { logActivity } from '../analytics/log-activity';
+import type { PaymentsClient } from '@wheleers/payments';
+import { provisionDepositAccount } from '../onboarding/user-onboarding';
 import {
   checkTwilioVerify,
-  deliverOtp,
+  deliverOtpEverywhere,
   isOtpConfigured,
   OtpDeliveryFailed,
-  type OtpChannelConfig,
-} from '../otp/channels';
+  type OtpChannelConfig } from '../otp/channels';
 
 const PHONE_OTP_KEY_PREFIX = 'auth:phone-otp:';
 const PHONE_OTP_LENGTH = 6;
@@ -21,6 +22,10 @@ const PHONE_OTP_TTL_SECONDS = 300;
 export interface PhoneRouteDeps {
   jwtSecret: string;
   redisClient: RedisClient;
+  // Optional: when present, a freshly verified phone kicks off deposit-account
+  // provisioning. Accounts that signed up with no contact info have no
+  // virtual account until this moment.
+  paymentsClient?: PaymentsClient;
   // Meta WhatsApp Cloud API — the same credentials the bot replies with.
   metaAccessToken?: string;
   metaPhoneNumberId?: string;
@@ -33,6 +38,11 @@ export interface PhoneRouteDeps {
   twilioFromNumber?: string;
   twilioWhatsappNumber?: string;
   twilioVerifyServiceSid?: string;
+  termiiApiKey?: string;
+  termiiSenderId?: string;
+  termiiBaseUrl?: string;
+  termiiChannel?: string;
+  smsProvider?: 'twilio' | 'termii';
   otpChannelOrder?: string;
   phoneOtpTtlSeconds?: number;
 }
@@ -72,7 +82,7 @@ async function authenticateHttpUser(
 export function normalizePhoneNumber(value: string): string {
   const trimmed = value.trim();
   if (!/^\+[1-9]\d{7,14}$/.test(trimmed)) {
-    throw new Error('phone must be a valid E.164 number, for example +2348012345678');
+    throw new Error('Enter a valid phone number with the country code, for example +2348012345678.');
   }
 
   return trimmed;
@@ -115,6 +125,11 @@ export function otpConfigFrom(deps: PhoneRouteDeps): OtpChannelConfig {
     twilioFromNumber: deps.twilioFromNumber,
     twilioWhatsappNumber: deps.twilioWhatsappNumber,
     twilioVerifyServiceSid: deps.twilioVerifyServiceSid,
+    termiiApiKey: deps.termiiApiKey,
+    termiiSenderId: deps.termiiSenderId,
+    termiiBaseUrl: deps.termiiBaseUrl,
+    termiiChannel: deps.termiiChannel,
+    smsProvider: deps.smsProvider,
     channelOrder: deps.otpChannelOrder,
   };
 }
@@ -162,8 +177,9 @@ export async function getWhatsappBusinessNumber(
 }
 
 /**
- * Deliver a code over the best available channel. Returns which one worked so
- * the caller can tell the rider where to look ("check WhatsApp" vs "check SMS").
+ * Deliver a code by SMS and on WhatsApp at once, the same code in both
+ * (deliverOtpEverywhere). Returns 'sms' when the text message went, else
+ * 'whatsapp'; the apps say only that a code was sent to the number.
  */
 export async function sendPhoneOtpMessage(
   deps: PhoneRouteDeps,
@@ -176,15 +192,15 @@ export async function sendPhoneOtpMessage(
   }
 
   try {
-    const result = await deliverOtp(otpConfigFrom(deps), {
+    const config = otpConfigFrom(deps);
+    const result = await deliverOtpEverywhere(config, {
       phone,
       code,
       body,
       log: (message, meta) => console.warn(message, meta ?? {}),
     });
-    // Twilio Verify owns the code; remember that so verification asks Twilio
-    // instead of comparing against a hash we never generated.
-    lastDeliveryWasProviderManaged.set(phone, result.providerManaged);
+    // The code is ours (never Twilio Verify): an earlier Verify code for this phone no longer applies.
+    await rememberProviderManaged(deps.redisClient, phone, false);
     return result.medium;
   } catch (error) {
     if (error instanceof OtpDeliveryFailed) {
@@ -199,13 +215,28 @@ export async function sendPhoneOtpMessage(
 }
 
 /**
- * Which phones currently hold a Twilio-Verify-issued code. In-memory is enough:
- * a gateway restart simply falls back to the hash check, which fails closed.
+ * Which phones currently hold a Twilio-Verify-issued code. Kept in Redis, not
+ * in this process's memory: with more than one gateway process, the request
+ * that sends the code and the one that checks it can land on different
+ * processes, and the second would compare against a hash that was never made.
+ * If Redis cannot be reached the hash check is used, which fails closed.
  */
-const lastDeliveryWasProviderManaged = new Map<string, boolean>();
+const PROVIDER_MANAGED_TTL_SECONDS = 15 * 60;
+const providerManagedKey = (phone: string) => `otp:provider-managed:${phone}`;
 
-export function isProviderManagedOtp(phone: string): boolean {
-  return lastDeliveryWasProviderManaged.get(phone) === true;
+async function rememberProviderManaged(redisClient: RedisClient, phone: string, providerManaged: boolean): Promise<void> {
+  try {
+    if (providerManaged) await redisClient.set(providerManagedKey(phone), '1', PROVIDER_MANAGED_TTL_SECONDS);
+    else await redisClient.del(providerManagedKey(phone));
+  } catch (error) {
+    console.warn('[otp] could not record which channel owns the code', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function isProviderManagedOtp(redisClient: RedisClient, phone: string): Promise<boolean> {
+  return (await redisClient.get(providerManagedKey(phone)).catch(() => null)) === '1';
 }
 
 export async function verifyProviderManagedOtp(
@@ -214,7 +245,7 @@ export async function verifyProviderManagedOtp(
   code: string,
 ): Promise<boolean> {
   const ok = await checkTwilioVerify(otpConfigFrom(deps), phone, code);
-  if (ok) lastDeliveryWasProviderManaged.delete(phone);
+  if (ok) await deps.redisClient.del(providerManagedKey(phone)).catch(() => undefined);
   return ok;
 }
 
@@ -329,7 +360,7 @@ export async function handleVerifyPhoneOtpRoute(
 
     // Twilio Verify generates the code, so only Twilio can confirm it. Every
     // other channel used a code we hashed ourselves.
-    if (isProviderManagedOtp(stored.phone)) {
+    if (await isProviderManagedOtp(deps.redisClient, stored.phone)) {
       const approved = await verifyProviderManagedOtp(deps, stored.phone, code);
       if (!approved) {
         sendJson(res, 400, { error: 'Invalid verification code' });
@@ -347,6 +378,20 @@ export async function handleVerifyPhoneOtpRoute(
     await deps.redisClient.del(buildOtpRedisKey(user.id));
 
     logActivity({ userId: user.id, eventType: 'phone_verified', metadata: {} });
+
+    if (deps.paymentsClient) {
+      void provisionDepositAccount(
+        deps.paymentsClient,
+        user.id,
+        updatedUser.name ?? undefined,
+        updatedUser.phone ?? undefined,
+      ).catch((provisionError) => {
+        console.warn('[phone] deposit account provisioning after phone verify failed (non-blocking)', {
+          userId: user.id,
+          error: provisionError instanceof Error ? provisionError.message : String(provisionError),
+        });
+      });
+    }
 
     sendJson(res, 200, {
       verified: true,

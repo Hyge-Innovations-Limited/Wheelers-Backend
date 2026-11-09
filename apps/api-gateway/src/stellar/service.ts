@@ -1,0 +1,498 @@
+import { randomUUID } from 'crypto';
+import { Account, BASE_FEE, Keypair, Memo, Operation, StrKey, TransactionBuilder, Asset, type Transaction } from '@stellar/stellar-sdk';
+import { rideClient, stellarClient } from '@wheleers/db';
+import { explorerAccount, explorerTx, type StellarConfig } from './config';
+import { keypairAt } from './keys';
+import { StellarSubmitError, type StellarNetwork } from './network';
+import type { NgnRate, RateProvider } from './rates';
+
+/**
+ * Wheelers on Stellar Testnet (grant deliverable 3): its OWN ledger, in test
+ * XLM, beside the naira one. Nothing naira is copied onto it.
+ *
+ *   ACCOUNT_OPEN  every rider and driver gets an address, opened by operations
+ *                 with 100 test XLM
+ *   OPS_REFILL    operations running low: Friendbot funds a throwaway account
+ *                 that is merged straight into operations (+~10,000 XLM)
+ *   FARE          when a wallet trip ends: rider → driver, the fare in XLM at
+ *                 the live rate, memo = the trip ID
+ *   COMMISSION    then driver → operations, the platform's share, same rate
+ *   WITHDRAWAL    a driver sends test XLM to any testnet address
+ *   RESET         one-off: an account's test XLM above the starting amount
+ *                 goes back to operations (scripts/stellar-reset.mjs)
+ *
+ * A rider whose account has too little test XLM for a fare is SKIPPED, not
+ * topped up: the trip itself is paid in naira as always. Operations pays
+ * every fee (fee-bump). Each transfer keeps the naira rate it used. Transfers
+ * are queued once (by reference) and sent by a background job, one at a
+ * time, with the hash saved before sending: a send cut short is looked up,
+ * never repeated.
+ */
+
+/** What an account keeps untouchable: Stellar's minimum balance, and a margin. */
+export const RESERVE_XLM = 1.5;
+const MAX_ATTEMPTS = 8;
+/** A sent transaction not seen on Stellar after this long never will be (it has a 2-minute time limit). */
+const LOST_AFTER_MS = 3 * 60 * 1000;
+/** Account openings queued at once while everyone is given one. */
+const OPENS_IN_FLIGHT = 3;
+/** Operations is topped up from Friendbot when it would drop below this. */
+const OPS_KEEPS_XLM = 1000;
+/** Without a top-up, operations still opens accounts while this much would be left for fees. */
+const OPS_FLOOR_XLM = 20;
+/** Who "sends" an account's opening XLM when Friendbot opens it. */
+
+export type StellarTransferRow = Awaited<ReturnType<typeof stellarClient.due>>[number];
+
+export class StellarUserError extends Error {
+  constructor(readonly code: string, message: string, readonly status = 400) {
+    super(message);
+  }
+}
+
+export function xlm(amount: number): string {
+  // Stellar takes at most 7 decimal places.
+  return (Math.floor(amount * 1e7) / 1e7).toFixed(7).replace(/\.?0+$/, '') || '0';
+}
+
+export function createStellarService(deps: { config: StellarConfig; network: StellarNetwork; rates: RateProvider }) {
+  const { config, network, rates } = deps;
+  const keypair = (index: number): Keypair => keypairAt(config.masterSeed, index);
+
+  /** Wheelers' own account, number 0: opened with Friendbot the first time. */
+  async function ensureOperations() {
+    const row = await stellarClient.operationsAccount()
+      ?? await stellarClient.createAccount({ userId: null, role: 'operations', index: 0, derive: (i) => keypair(i).publicKey() });
+    if (!row.openedAt) {
+      if (!(await network.account(row.publicKey))) {
+        await network.fund(row.publicKey);
+        console.info('[stellar] operations account opened by Friendbot', { publicKey: row.publicKey });
+      }
+      await stellarClient.markOpened(row.publicKey);
+    }
+    return row;
+  }
+
+  /** A rider's or driver's address: recorded now, opened on Stellar (by operations) by the job. */
+  async function ensureUserAccount(userId: string) {
+    const row = await stellarClient.accountForUser(userId)
+      ?? await stellarClient.createAccount({ userId, role: 'user', derive: (i) => keypair(i).publicKey() });
+    if (!row.openedAt) {
+      await stellarClient.enqueue({
+        kind: 'ACCOUNT_OPEN', reference: `open:${row.publicKey}`, userId,
+        fromPublicKey: keypair(0).publicKey(), toPublicKey: row.publicKey, amountXlm: config.startingXlm,
+      });
+    }
+    return row;
+  }
+
+  /**
+   * Everyone gets an account by default, not only at their first trip: each
+   * pass queues a few riders and drivers who have none, so Friendbot is
+   * asked a few at a time and trip payments never wait behind a long queue.
+   */
+  async function openForEveryone(options: { inFlight?: number; among?: string[]; onQueueFull?: () => void } = {}): Promise<number> {
+    const room = (options.inFlight ?? OPENS_IN_FLIGHT) - await stellarClient.pendingOpens();
+    // Openings still in flight: nobody was looked for, which is not the same as nobody waiting.
+    if (room <= 0) options.onQueueFull?.();
+    const userIds = await stellarClient.usersWithoutAccount(room, options.among);
+    for (const userId of userIds) await ensureUserAccount(userId);
+    return userIds.length;
+  }
+
+  const toXlm = (ngn: number, rate: NgnRate) => xlm(ngn / rate.ngnPerXlm);
+  const ngnOf = (amountXlm: number, rate: NgnRate | null) => (rate ? Math.round(amountXlm * rate.ngnPerXlm * 100) / 100 : null);
+
+  /**
+   * A rider paying a fare from their XLM balance: the rate now (refreshed every
+   * 30 minutes), the fare in XLM, and whether their balance covers it (Stellar
+   * keeps RESERVE_XLM in every account). Null when there is no account or no rate.
+   */
+  async function quoteRidePayment(userId: string, fareNgn: number): Promise<{
+    rate: NgnRate; amountXlm: string; balanceXlm: number; spendableXlm: number; enough: boolean;
+  } | null> {
+    const account = await stellarClient.accountForUser(userId);
+    if (!account?.openedAt) return null;
+    const rate = await rates.current().catch(() => null);
+    if (!rate) return null;
+    const balance = await balanceOf(account.publicKey);
+    if (balance === null) return null;
+    const amountXlm = toXlm(fareNgn, rate);
+    const spendableXlm = Math.max(0, Math.floor((balance - RESERVE_XLM) * 1e7) / 1e7);
+    return { rate, amountXlm, balanceXlm: balance, spendableXlm, enough: Number(amountXlm) <= spendableXlm };
+  }
+
+  /** What the page shows next to "Pay with XLM": the balance and today's rate. Null without an open account. */
+  async function walletSummary(userId: string): Promise<{ balanceXlm: number; spendableXlm: number; rate: NgnRate | null } | null> {
+    const account = await stellarClient.accountForUser(userId);
+    if (!account?.openedAt) return null;
+    const balance = await balanceOf(account.publicKey);
+    if (balance === null) return null;
+    const rate = await rates.current().catch(() => null);
+    return { balanceXlm: balance, spendableXlm: Math.max(0, Math.floor((balance - RESERVE_XLM) * 1e7) / 1e7), rate };
+  }
+
+  /**
+   * A finished trip: the fare rider → driver, then the commission driver →
+   * operations, in XLM. A naira trip mirrors at the live rate; an XLM trip IS
+   * paid this way, at the rate the rider accepted (`rateNgnPerXlm`), so it is
+   * exactly the XLM they agreed to.
+   */
+  async function settleRide(input: { rideId: string; tripId: string | null; riderId: string; driverUserId: string; fareNgn: number; commissionNgn: number; rateNgnPerXlm?: number | null }) {
+    if (!(input.fareNgn > 0)) return;
+    const ops = await ensureOperations();
+    const rider = await ensureUserAccount(input.riderId);
+    const driver = await ensureUserAccount(input.driverUserId);
+    const memo = (input.tripId ?? input.rideId).slice(0, 28);
+    const rate: NgnRate | null = input.rateNgnPerXlm && input.rateNgnPerXlm > 0
+      ? { ngnPerXlm: input.rateNgnPerXlm, source: 'rate at accept', at: new Date().toISOString() }
+      : await rates.current();
+    const fare = await stellarClient.enqueue({
+      kind: 'FARE', reference: `fare:${input.rideId}`, rideId: input.rideId, userId: input.riderId,
+      fromPublicKey: rider.publicKey, toPublicKey: driver.publicKey,
+      amountXlm: rate ? toXlm(input.fareNgn, rate) : '0', amountNgn: input.fareNgn, rateNgnPerXlm: rate?.ngnPerXlm ?? null, memo,
+    });
+    if (!rate) {
+      if (fare.status === 'PENDING') await stellarClient.markSkipped(fare.id, 'no XLM price could be had to size the payment');
+      return;
+    }
+    if (input.commissionNgn > 0) {
+      await stellarClient.enqueue({
+        kind: 'COMMISSION', reference: `commission:${input.rideId}`, rideId: input.rideId, userId: input.driverUserId,
+        fromPublicKey: driver.publicKey, toPublicKey: ops.publicKey,
+        amountXlm: toXlm(input.commissionNgn, rate), amountNgn: input.commissionNgn, rateNgnPerXlm: rate.ngnPerXlm, memo,
+      });
+    }
+  }
+
+  /**
+   * Bring every open account back to the starting amount: whatever is above
+   * it goes back to operations. Queued (the job sends them, operations pays
+   * the fees); asking twice on one day queues nothing new.
+   */
+  async function resetBalances(options: { dryRun?: boolean } = {}): Promise<Array<{ userId: string | null; publicKey: string; balanceXlm: number; returnXlm: number }>> {
+    const ops = await ensureOperations();
+    const starting = Number(config.startingXlm);
+    const day = new Date().toISOString().slice(0, 10);
+    const plan = [];
+    for (const account of await stellarClient.openedUserAccounts()) {
+      const balance = await balanceOf(account.publicKey);
+      if (balance === null) continue;
+      const returnXlm = Math.floor((balance - starting) * 1e7) / 1e7;
+      if (returnXlm <= 0) continue;
+      plan.push({ userId: account.userId, publicKey: account.publicKey, balanceXlm: balance, returnXlm });
+      if (options.dryRun) continue;
+      await stellarClient.enqueue({
+        kind: 'RESET', reference: `reset:${account.publicKey}:${day}`, userId: account.userId,
+        fromPublicKey: account.publicKey, toPublicKey: ops.publicKey, amountXlm: xlm(returnXlm), memo: `Reset to ${config.startingXlm} XLM`,
+      });
+    }
+    return plan;
+  }
+
+  async function balanceOf(publicKey: string): Promise<number | null> {
+    const account = await network.account(publicKey).catch(() => null);
+    return account ? Number(account.balanceXlm) : null;
+  }
+
+  /** The XLM a rider owes on the ride they are on, when they chose to pay it in XLM (0 otherwise). */
+  async function xlmOwedOnActiveRide(userId: string): Promise<number> {
+    const ride = await rideClient.findActiveByRider(userId).catch(() => null);
+    return ride?.paymentMethod === 'XLM' && ride.fareXlm != null ? Number(ride.fareXlm) : 0;
+  }
+
+  /** A driver sends test XLM out to an address of their choosing. */
+  async function requestWithdrawal(input: { userId: string; destination: string; amountXlm: number }) {
+    const destination = input.destination.trim();
+    if (!StrKey.isValidEd25519PublicKey(destination)) {
+      throw new StellarUserError('BAD_ADDRESS', 'That is not a Stellar address. It starts with G and is 56 characters long.');
+    }
+    const amount = Number(input.amountXlm);
+    if (!Number.isFinite(amount) || amount <= 0) throw new StellarUserError('BAD_AMOUNT', 'Enter an amount of XLM.');
+    const account = await stellarClient.accountForUser(input.userId);
+    if (!account?.openedAt) throw new StellarUserError('NO_ACCOUNT', 'Your Stellar account is still being opened. Try again in a minute.', 409);
+    if (destination === account.publicKey) throw new StellarUserError('SAME_ADDRESS', 'That is your own Wheelers address.');
+    const balance = await balanceOf(account.publicKey);
+    // A ride being paid in XLM keeps its fare here until it is paid to the driver at the end.
+    const owed = await xlmOwedOnActiveRide(input.userId);
+    const spendable = balance === null ? 0 : balance - RESERVE_XLM - owed;
+    if (amount > spendable) {
+      throw new StellarUserError('TOO_MUCH', owed > 0
+        ? `You can send up to ${xlm(Math.max(0, spendable))} XLM: ${xlm(owed)} XLM is kept for the ride you're on, and Stellar keeps ${RESERVE_XLM} XLM in every account.`
+        : `You can send up to ${xlm(Math.max(0, spendable))} XLM (Stellar keeps ${RESERVE_XLM} XLM in every account).`, 409);
+    }
+    const rate = await rates.current().catch(() => null);
+    return stellarClient.enqueue({
+      kind: 'WITHDRAWAL', reference: `withdraw:${randomUUID()}`, userId: input.userId,
+      fromPublicKey: account.publicKey, toPublicKey: destination,
+      amountXlm: xlm(amount), amountNgn: ngnOf(amount, rate), rateNgnPerXlm: rate?.ngnPerXlm ?? null, memo: 'Wheelers withdrawal',
+    });
+  }
+
+  /* ── the job ─────────────────────────────────────────────────────────── */
+
+  async function signerFor(publicKey: string): Promise<Keypair> {
+    const row = await stellarClient.accountByPublicKey(publicKey);
+    if (!row) throw new Error(`No Wheelers account for ${publicKey}`);
+    return keypair(row.derivationIndex);
+  }
+
+  /** Why this transfer cannot go yet (wait), or must not go at all (skip). */
+  async function checkReady(t: StellarTransferRow): Promise<{ wait?: string; skip?: string }> {
+    if (t.kind === 'ACCOUNT_OPEN') return {};
+    const source = await stellarClient.accountByPublicKey(t.fromPublicKey);
+    if (!source?.openedAt) return { wait: 'waiting for the paying account to open' };
+    const dest = await stellarClient.accountByPublicKey(t.toPublicKey);
+    if (dest && !dest.openedAt) return { wait: 'waiting for the receiving account to open' };
+    if (t.kind === 'COMMISSION' && t.rideId) {
+      const fare = await stellarClient.byReference(`fare:${t.rideId}`);
+      if (fare?.status === 'SKIPPED' || fare?.status === 'FAILED') return { skip: 'the fare was not paid on Stellar' };
+      if (fare && fare.status !== 'CONFIRMED') return { wait: 'waiting for the fare to land' };
+    }
+    if (t.kind === 'FARE') {
+      const balance = await balanceOf(t.fromPublicKey);
+      if (balance !== null && balance - RESERVE_XLM < Number(t.amountXlm)) {
+        return { skip: `the rider's Stellar account had ${xlm(balance)} test XLM, not enough for ${String(t.amountXlm)} XLM` };
+      }
+    }
+    return {};
+  }
+
+  async function build(t: Pick<StellarTransferRow, 'kind' | 'fromPublicKey' | 'toPublicKey' | 'amountXlm' | 'memo'>): Promise<Transaction | ReturnType<typeof TransactionBuilder.buildFeeBumpTransaction>> {
+    const source = await network.account(t.fromPublicKey);
+    if (!source) throw new StellarSubmitError('The paying account does not exist on Stellar', ['tx_no_source_account'], true);
+    const signer = await signerFor(t.fromPublicKey);
+    const ops = await ensureOperations();
+    const opsSigner = keypair(ops.derivationIndex);
+    const operation = t.kind === 'ACCOUNT_OPEN'
+      ? Operation.createAccount({ destination: t.toPublicKey, startingBalance: String(t.amountXlm) })
+      : Operation.payment({ destination: t.toPublicKey, asset: Asset.native(), amount: xlm(Number(t.amountXlm)) });
+    const builder = new TransactionBuilder(new Account(t.fromPublicKey, source.sequence), {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    }).addOperation(operation).setTimeout(120);
+    if (t.memo) builder.addMemo(Memo.text(t.memo.slice(0, 28)));
+    const inner = builder.build();
+    inner.sign(signer);
+    // Operations' own transfers pay their own fee; a rider's or driver's are fee-bumped by operations.
+    if (t.fromPublicKey === ops.publicKey) return inner;
+    const bump = TransactionBuilder.buildFeeBumpTransaction(opsSigner, String(Number(BASE_FEE) * 10), inner, config.networkPassphrase);
+    bump.sign(opsSigner);
+    return bump;
+  }
+
+  async function confirmed(t: StellarTransferRow, ledger: number | null, txHash?: string | null) {
+    await stellarClient.markConfirmed(t.id, ledger, txHash);
+    if (t.kind === 'ACCOUNT_OPEN') await stellarClient.markOpened(t.toPublicKey);
+  }
+
+  /**
+   * Keep operations stocked. Friendbot only funds accounts that do not exist
+   * yet, so it funds a throwaway one that is merged straight into operations.
+   * The throwaway's key lives only in memory for those few seconds.
+   * True when operations can open another account.
+   */
+  async function stockOperations(opsKey: string): Promise<boolean> {
+    const starting = Number(config.startingXlm);
+    const balance = await balanceOf(opsKey);
+    if (balance !== null && balance - starting >= OPS_KEEPS_XLM) return true;
+    try {
+      const helper = Keypair.random();
+      await network.fund(helper.publicKey());
+      const source = await network.account(helper.publicKey());
+      if (!source) throw new Error('the Friendbot account did not appear');
+      const tx = new TransactionBuilder(new Account(helper.publicKey(), source.sequence), { fee: BASE_FEE, networkPassphrase: config.networkPassphrase })
+        .addOperation(Operation.accountMerge({ destination: opsKey }))
+        .setTimeout(120)
+        .build();
+      tx.sign(helper);
+      const result = await network.submit(tx);
+      const row = await stellarClient.enqueue({
+        kind: 'OPS_REFILL', reference: `refill:${helper.publicKey()}`,
+        fromPublicKey: helper.publicKey(), toPublicKey: opsKey, amountXlm: source.balanceXlm, memo: null,
+      });
+      await stellarClient.markConfirmed(row.id, result.ledger, tx.hash().toString('hex'));
+      console.info('[stellar] operations topped up from Friendbot', { amountXlm: source.balanceXlm });
+      return true;
+    } catch (error) {
+      console.warn('[stellar] could not top up operations', { error: error instanceof Error ? error.message : String(error) });
+      return balance !== null && balance - starting >= OPS_FLOOR_XLM;
+    }
+  }
+
+  /** Operations opens the account with the starting amount (and pays its own fee). */
+  async function openAccount(t: StellarTransferRow): Promise<'confirmed' | 'retry'> {
+    const ops = await ensureOperations();
+    if (t.fromPublicKey !== ops.publicKey || Number(t.amountXlm) !== Number(config.startingXlm)) {
+      await stellarClient.reshapeOpen(t.id, ops.publicKey, config.startingXlm);
+    }
+    if (!(await stockOperations(ops.publicKey))) {
+      await stellarClient.markWaiting(t.id, 'operations is low on test XLM and Friendbot is not answering; trying again shortly');
+      return 'retry';
+    }
+    const tx = await build({ kind: 'ACCOUNT_OPEN', fromPublicKey: ops.publicKey, toPublicKey: t.toPublicKey, amountXlm: config.startingXlm as never, memo: null });
+    const hash = tx.hash().toString('hex');
+    await stellarClient.markSubmitted(t.id, hash);
+    try {
+      const result = await network.submit(tx);
+      await confirmed(t, result.ledger);
+      return 'confirmed';
+    } catch (error) {
+      if (error instanceof StellarSubmitError && error.codes.includes('timeout')) return 'retry';
+      await stellarClient.markRetry(t.id, error instanceof Error ? error.message : String(error));
+      return 'retry';
+    }
+  }
+
+  async function processOne(t: StellarTransferRow): Promise<'confirmed' | 'waiting' | 'retry' | 'failed' | 'skipped'> {
+    // Sent before: did it make it?
+    if (t.status === 'SUBMITTED' && t.txHash) {
+      const seen = await network.transaction(t.txHash).catch(() => undefined);
+      if (seen === undefined) return 'waiting';
+      if (seen?.successful) { await confirmed(t, seen.ledger); return 'confirmed'; }
+      if (seen && !seen.successful) { await stellarClient.markRetry(t.id, 'failed on the network'); return 'retry'; }
+      if (t.submittedAt && Date.now() - t.submittedAt.getTime() < LOST_AFTER_MS) return 'waiting';
+      await stellarClient.markRetry(t.id, 'never reached the network');
+      return 'retry';
+    }
+
+    // A top-up is recorded after it happened; one left waiting was never finished and is not retried.
+    if (t.kind === 'OPS_REFILL') { await stellarClient.markFailed(t.id, 'top-up record left unfinished'); return 'failed'; }
+
+    if (t.kind === 'ACCOUNT_OPEN') {
+      // Already open (a rerun): just note it.
+      if (await network.account(t.toPublicKey)) { await confirmed(t, null); return 'confirmed'; }
+      if (t.attempts >= MAX_ATTEMPTS) { await stellarClient.markFailed(t.id, t.lastError ?? 'too many attempts'); return 'failed'; }
+      return openAccount(t);
+    }
+
+    const ready = await checkReady(t);
+    if (ready.skip) { await stellarClient.markSkipped(t.id, ready.skip); return 'skipped'; }
+    if (ready.wait) { await stellarClient.markWaiting(t.id, ready.wait); return 'waiting'; }
+
+    if (t.attempts >= MAX_ATTEMPTS) { await stellarClient.markFailed(t.id, t.lastError ?? 'too many attempts'); return 'failed'; }
+    let tx;
+    try {
+      tx = await build(t);
+    } catch (error) {
+      await stellarClient.markRetry(t.id, error instanceof Error ? error.message : String(error));
+      return 'retry';
+    }
+    const hash = tx.hash().toString('hex');
+    await stellarClient.markSubmitted(t.id, hash);
+    try {
+      const result = await network.submit(tx);
+      await confirmed(t, result.ledger);
+      console.info('[stellar] confirmed', { kind: t.kind, reference: t.reference, hash });
+      return 'confirmed';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof StellarSubmitError && !error.retryable && t.attempts + 1 >= 3) {
+        await stellarClient.markFailed(t.id, message);
+        console.warn('[stellar] failed', { kind: t.kind, reference: t.reference, message });
+        return 'failed';
+      }
+      // A network hiccup: leave it SUBMITTED; the next pass looks the hash up.
+      if (error instanceof StellarSubmitError && error.codes.includes('timeout')) return 'waiting';
+      await stellarClient.markRetry(t.id, message);
+      return 'retry';
+    }
+  }
+
+  let running = false;
+  /** One pass over the queue, oldest first, one at a time (so no two use the same sequence number). */
+  async function processDue(): Promise<number> {
+    if (running) return 0;
+    running = true;
+    let done = 0;
+    try {
+      for (const t of await stellarClient.due(20)) {
+        const outcome = await processOne(t).catch((error) => {
+          console.warn('[stellar] transfer step failed', { reference: t.reference, error: error instanceof Error ? error.message : String(error) });
+          return 'retry' as const;
+        });
+        if (outcome === 'confirmed') done += 1;
+      }
+    } finally {
+      running = false;
+    }
+    return done;
+  }
+
+  function describe(t: { id: string; kind: string; status: string; amountXlm: unknown; amountNgn: unknown; rateNgnPerXlm?: unknown; memo: string | null; txHash: string | null; rideId: string | null; fromPublicKey: string; toPublicKey: string; createdAt: Date; confirmedAt: Date | null; lastError: string | null }) {
+    return {
+      id: t.id,
+      kind: t.kind,
+      status: t.status,
+      amountXlm: String(t.amountXlm),
+      amountNgn: t.amountNgn === null || t.amountNgn === undefined ? null : Number(t.amountNgn),
+      rateNgnPerXlm: t.rateNgnPerXlm === null || t.rateNgnPerXlm === undefined ? null : Number(t.rateNgnPerXlm),
+      memo: t.memo,
+      rideId: t.rideId,
+      from: t.fromPublicKey,
+      to: t.toPublicKey,
+      txHash: t.status === 'CONFIRMED' ? t.txHash : null,
+      explorerUrl: t.status === 'CONFIRMED' && t.txHash ? explorerTx(config, t.txHash) : null,
+      createdAt: t.createdAt.toISOString(),
+      confirmedAt: t.confirmedAt?.toISOString() ?? null,
+      note: t.status === 'CONFIRMED' ? null : t.lastError,
+    };
+  }
+
+  return {
+    config,
+    rates,
+    ensureOperations,
+    ensureUserAccount,
+    openForEveryone,
+    resetBalances,
+    settleRide,
+    quoteRidePayment,
+    walletSummary,
+    requestWithdrawal,
+    balanceOf,
+    processDue,
+    processOne,
+    describe,
+    accountUrl: (publicKey: string) => explorerAccount(config, publicKey),
+  };
+}
+
+export type StellarService = ReturnType<typeof createStellarService>;
+
+/** When the last look found nobody without an account, the next look is this much later. */
+const OPENS_IDLE_MS = 2 * 60_000;
+
+/**
+ * The background job, on the one gateway process that runs jobs. Payments
+ * and account openings already queued are pushed every few seconds (a rider
+ * paying waits for this). Looking for people with no account yet is a scan
+ * of every user: every few seconds while some are found, otherwise every two
+ * minutes (it ran 13,000 times a day finding nobody). Someone who needs their
+ * account sooner gets it then (ensureUserAccount).
+ */
+export function startStellarJob(service: StellarService, shouldRun: () => Promise<boolean>, everyMs = 5_000, opensIdleMs = OPENS_IDLE_MS): () => void {
+  let nextOpensAt = 0;
+  let busy = false;
+  const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
+    void (async () => {
+      if (!(await shouldRun().catch(() => false))) return;
+      if (Date.now() >= nextOpensAt) {
+        let queueFull = false;
+        const opened = await service.openForEveryone({ onQueueFull: () => { queueFull = true; } }).catch((error) => {
+          console.warn('[stellar] opening accounts failed', { error: error instanceof Error ? error.message : String(error) });
+          return 0;
+        });
+        // Found some, or the queue was full: look again next round. Found nobody: in two minutes.
+        nextOpensAt = opened > 0 || queueFull ? 0 : Date.now() + opensIdleMs;
+      }
+      await service.processDue().catch((error) => console.warn('[stellar] job failed', { error: error instanceof Error ? error.message : String(error) }));
+    })().finally(() => {
+      busy = false;
+    });
+  }, everyMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}

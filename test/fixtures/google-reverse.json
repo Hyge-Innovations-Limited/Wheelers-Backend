@@ -1,0 +1,2293 @@
+{
+ "ilemereOrupodi": [
+  {
+   "formatted_address": "GFVQ+VQ4, Orupodi, Ikorodu 104102, Lagos, Nigeria",
+   "types": [
+    "premise",
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "GFVQ+VQ4",
+     "short_name": "GFVQ+VQ4",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "GFVQ+VQ4 Ilemere, Nigeria",
+   "types": [
+    "plus_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "GFVQ+VQ4",
+     "short_name": "GFVQ+VQ4",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Unnamed Road, Ikorodu, Ilemere 104102, Lagos, Nigeria",
+   "types": [
+    "route"
+   ],
+   "address_components": [
+    {
+     "long_name": "Unnamed Road",
+     "short_name": "Unnamed Road",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ilemere 104102, Lagos, Nigeria",
+   "types": [
+    "locality",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ibeshe, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_3",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "104102, Lagos, Nigeria",
+   "types": [
+    "postal_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ijede, Lagos, Nigeria",
+   "types": [
+    "neighborhood",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ijede",
+     "short_name": "Ijede",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_2",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_1",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Nigeria",
+   "types": [
+    "country",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  }
+ ],
+ "ilemereAdebs": [
+  {
+   "formatted_address": "GFVQ+MP4, Adebs Rd, Ikorodu, 104102, Lagos, Nigeria",
+   "types": [
+    "premise",
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "GFVQ+MP4",
+     "short_name": "GFVQ+MP4",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Adebs Rd",
+     "short_name": "Adebs Rd",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "GFVQ+PR Ilemere, Nigeria",
+   "types": [
+    "plus_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "GFVQ+PR",
+     "short_name": "GFVQ+PR",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Unnamed Road, Ikorodu, Ilemere 104102, Lagos, Nigeria",
+   "types": [
+    "route"
+   ],
+   "address_components": [
+    {
+     "long_name": "Unnamed Road",
+     "short_name": "Unnamed Road",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ilemere 104102, Lagos, Nigeria",
+   "types": [
+    "locality",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ilemere",
+     "short_name": "Ilemere",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ibeshe, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_3",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ibeshe",
+     "short_name": "Ibeshe",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "104102, Lagos, Nigeria",
+   "types": [
+    "postal_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "104102",
+     "short_name": "104102",
+     "types": [
+      "postal_code"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Ijede, Lagos, Nigeria",
+   "types": [
+    "neighborhood",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ijede",
+     "short_name": "Ijede",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ikorodu, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_2",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ikorodu",
+     "short_name": "Ikorodu",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_1",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Nigeria",
+   "types": [
+    "country",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  }
+ ],
+ "yaba": [
+  {
+   "formatted_address": "3 Herbert Macaulay Way, Yaba, Lagos 101245, Lagos, Nigeria",
+   "types": [
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "3",
+     "short_name": "3",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Herbert Macaulay Way",
+     "short_name": "Herbert Macaulay Way",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "1a Murtala Muhammed Way, Yaba, Ikeja 101245, Lagos, Nigeria",
+   "types": [
+    "premise",
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "1a",
+     "short_name": "1a",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Murtala Muhammed Way",
+     "short_name": "Murtala Muhammed Way",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikeja",
+     "short_name": "Ikeja",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Yaba BRT Station, Yaba, Ikeja 101245, Lagos, Nigeria",
+   "types": [
+    "establishment",
+    "point_of_interest",
+    "transit_station"
+   ],
+   "address_components": [
+    {
+     "long_name": "Yaba BRT Station",
+     "short_name": "Yaba BRT Station",
+     "types": [
+      "establishment",
+      "point_of_interest",
+      "transit_station"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikeja",
+     "short_name": "Ikeja",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "1a Ojuelegba Rd, Surulere, Lagos 101241, Lagos, Nigeria",
+   "types": [
+    "street_address",
+    "subpremise"
+   ],
+   "address_components": [
+    {
+     "long_name": "1a",
+     "short_name": "1a",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Ojuelegba Road",
+     "short_name": "Ojuelegba Rd",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Surulere",
+     "short_name": "Surulere",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101241",
+     "short_name": "101241",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "15 Ojuelegba Rd, Yaba, Lagos 101245, Lagos, Nigeria",
+   "types": [
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "15",
+     "short_name": "15",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Ojuelegba Road",
+     "short_name": "Ojuelegba Rd",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "G95C+RC Lagos, Nigeria",
+   "types": [
+    "plus_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "G95C+RC",
+     "short_name": "G95C+RC",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Ojuelegba Rd, Yaba, Lagos 101245, Lagos, Nigeria",
+   "types": [
+    "route"
+   ],
+   "address_components": [
+    {
+     "long_name": "Ojuelegba Road",
+     "short_name": "Ojuelegba Rd",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Yaba/Ojuelegba, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_3",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Yaba/Ojuelegba",
+     "short_name": "Yaba/Ojuelegba",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Ikeja",
+     "short_name": "Ikeja",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Surulere",
+     "short_name": "Surulere",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Yaba, Oworonshoki, Lagos, Nigeria",
+   "types": [
+    "neighborhood",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Yaba",
+     "short_name": "Yaba",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Oworonshoki",
+     "short_name": "Oworonshoki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Igbaja/Stadium",
+     "short_name": "Igbaja/Stadium",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Surulere",
+     "short_name": "Surulere",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Lagos Mainland 101245, Lagos, Nigeria",
+   "types": [
+    "administrative_area_level_2",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Lagos Mainland",
+     "short_name": "Lagos Mainland",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101245",
+     "short_name": "101245",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  }
+ ],
+ "lekkiPhase1": [
+  {
+   "formatted_address": "68 Admiralty Wy, beside D'Wine bank, Lekki Phase I, Lekki 101233, Lagos, Nigeria",
+   "types": [
+    "street_address",
+    "subpremise"
+   ],
+   "address_components": [
+    {
+     "long_name": "68",
+     "short_name": "68",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "D'Wine bank",
+     "short_name": "D'Wine bank",
+     "types": [
+      "landmark"
+     ]
+    },
+    {
+     "long_name": "Admiralty Way",
+     "short_name": "Admiralty Wy",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "101233",
+     "short_name": "101233",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "69 Admiralty Wy, Eti-Osa, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "establishment",
+    "food",
+    "point_of_interest",
+    "restaurant"
+   ],
+   "address_components": [
+    {
+     "long_name": "69",
+     "short_name": "69",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Admiralty Way",
+     "short_name": "Admiralty Wy",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "5 Abiodun Ikomi St, Lekki Phase I, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "premise",
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "5",
+     "short_name": "5",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Abiodun Ikomi Street",
+     "short_name": "Abiodun Ikomi St",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "5b Admiralty Wy, Lekki Phase 1, Lagos 106104, Lagos, Nigeria",
+   "types": [
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "5b",
+     "short_name": "5b",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Admiralty Way",
+     "short_name": "Admiralty Wy",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "8 Abiodun Ikomi St, Lekki Phase I, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "street_address"
+   ],
+   "address_components": [
+    {
+     "long_name": "8",
+     "short_name": "8",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Abiodun Ikomi Street",
+     "short_name": "Abiodun Ikomi St",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "8-6 Abiodun Ikomi St, Lekki Phase I, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "route"
+   ],
+   "address_components": [
+    {
+     "long_name": "8-6",
+     "short_name": "8-6",
+     "types": [
+      "street_number"
+     ]
+    },
+    {
+     "long_name": "Abiodun Ikomi Street",
+     "short_name": "Abiodun Ikomi St",
+     "types": [
+      "route"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Raw Materials, Lekki Phase I, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "bus_station",
+    "establishment",
+    "point_of_interest",
+    "transit_station"
+   ],
+   "address_components": [
+    {
+     "long_name": "Raw Materials",
+     "short_name": "Raw Materials",
+     "types": [
+      "bus_station",
+      "establishment",
+      "point_of_interest",
+      "transit_station"
+     ]
+    },
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "CFWF+XH Lekki, Nigeria",
+   "types": [
+    "plus_code"
+   ],
+   "address_components": [
+    {
+     "long_name": "CFWF+XH",
+     "short_name": "CFWF+XH",
+     "types": [
+      "plus_code"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Lekki Phase I, Lagos 106104, Lagos, Nigeria",
+   "types": [
+    "neighborhood",
+    "political"
+   ],
+   "address_components": [
+    {
+     "long_name": "Lekki Phase I",
+     "short_name": "Lekki Phase I",
+     "types": [
+      "neighborhood",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "Lagos",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lekki/Ikate And Environs",
+     "short_name": "Lekki/Ikate And Environs",
+     "types": [
+      "administrative_area_level_3",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Eti Osa",
+     "short_name": "Eti Osa",
+     "types": [
+      "administrative_area_level_2",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  },
+  {
+   "formatted_address": "Lekki Phase 1, Lekki 106104, Lagos, Nigeria",
+   "types": [
+    "political",
+    "sublocality",
+    "sublocality_level_1"
+   ],
+   "address_components": [
+    {
+     "long_name": "Lekki Phase 1",
+     "short_name": "Lekki Phase 1",
+     "types": [
+      "political",
+      "sublocality",
+      "sublocality_level_1"
+     ]
+    },
+    {
+     "long_name": "Lekki",
+     "short_name": "Lekki",
+     "types": [
+      "locality",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Lagos",
+     "short_name": "LA",
+     "types": [
+      "administrative_area_level_1",
+      "political"
+     ]
+    },
+    {
+     "long_name": "Nigeria",
+     "short_name": "NG",
+     "types": [
+      "country",
+      "political"
+     ]
+    },
+    {
+     "long_name": "106104",
+     "short_name": "106104",
+     "types": [
+      "postal_code"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,3 +1,4 @@
+import { tripDetailsForOffer } from '@wheleers/config';
 import type { WheelersProducer } from '@wheleers/kafka-client';
 import {
   TOPICS,
@@ -5,6 +6,7 @@ import {
   type GpsStaleWarningEvent,
   type InAppSendEvent,
   type PushSendEvent,
+  type RideAssignmentFailedEvent,
   type RideBidTimeoutEvent,
   type RideCancelledEvent,
   type RideCompletedEvent,
@@ -14,6 +16,8 @@ import {
   type RideOfferSentEvent,
   type RideRouteUpdatedEvent,
   type RideRequestedEvent,
+  type ScheduledRideHeldEvent,
+  type ScheduledRideGaveUpEvent,
 } from '@wheleers/kafka-schemas';
 import { randomUUID } from 'node:crypto';
 
@@ -39,6 +43,11 @@ export type RideEventsProducer = {
   rideCompleted(event: RideCompletedEvent): Promise<void>;
   rideRouteUpdated(event: RideRouteUpdatedEvent): Promise<void>;
   rideBidTimeout(event: RideBidTimeoutEvent): Promise<void>;
+  /** A WhatsApp ride for later is due while the rider is busy: it waits (the gateway tells them once). */
+  scheduledRideHeld(event: ScheduledRideHeldEvent): Promise<void>;
+  /** A WhatsApp ride for later given up on (cancelled): the gateway tells the rider once. */
+  scheduledRideGaveUp(event: ScheduledRideGaveUpEvent): Promise<void>;
+  rideAssignmentFailed(event: RideAssignmentFailedEvent): Promise<void>;
   groupRideDriverAssigned(event: GroupRideDriverAssignedEvent): Promise<void>;
   rideOfferAccepted(event: RideOfferAcceptedEvent): Promise<void>;
   broadcastRideOffer(params: {
@@ -89,6 +98,18 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
       await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
     },
 
+    async scheduledRideHeld(event) {
+      await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
+    },
+
+    async scheduledRideGaveUp(event) {
+      await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
+    },
+
+    async rideAssignmentFailed(event) {
+      await producer.send(TOPICS.RIDE_EVENTS, event as any, { key: event.rideId });
+    },
+
     async groupRideDriverAssigned(event) {
       await producer.send(TOPICS.GROUP_RIDE_EVENTS, event as any, { key: event.groupId });
     },
@@ -126,15 +147,19 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           paymentMethod: rideRequested.paymentMethod,
           riderOfferNgn: rideRequested.riderOfferNgn,
           suggestedFareNgn: rideRequested.suggestedFareNgn,
+          minOfferNgn: rideRequested.minOfferNgn,
           ratePerKmNgn: rideRequested.ratePerKmNgn,
           plannedDistanceKm: rideRequested.plannedDistanceKm,
           plannedDurationSeconds: rideRequested.plannedDurationSeconds,
           ...pickupProximity(driver, rideRequested.pickup),
+          ...(driver.afterCurrentTrip ? { afterCurrentTrip: true } : {}),
           expiresAt: expiresAt.toISOString(),
           // Same instant as expiresAt — the card and the auction are one
           // clock now. Sent under its own name so clients state intent.
           bidsCloseAt: expiresAt.toISOString(),
           route: rideRequested.route,
+          // People, luggage, pet and the rider's note: every driver who gets the request sees them.
+          ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
           timestamp,
           ...(group
             ? {
@@ -216,12 +241,20 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
         paymentMethod: rideRequested.paymentMethod,
         riderOfferNgn: updatedOfferNgn,
         suggestedFareNgn: rideRequested.suggestedFareNgn,
+        minOfferNgn: rideRequested.minOfferNgn,
         ratePerKmNgn: rideRequested.ratePerKmNgn,
         plannedDistanceKm: rideRequested.plannedDistanceKm,
         plannedDurationSeconds: rideRequested.plannedDurationSeconds,
         ...pickupProximity(driver, rideRequested.pickup),
         expiresAt: expiresAt.toISOString(),
+        // The new price restarted the search: the same clock under its own name, as a first offer carries it.
+        bidsCloseAt: expiresAt.toISOString(),
+        // A re-price: the gateway pushes "New price ₦X" to a driver whose app is not connected
+        // (it knows who is connected; this service does not). It used to push to every driver here.
+        repriced: true,
         route: rideRequested.route,
+        // People, luggage, pet and the rider's note: every driver who gets the request sees them.
+        ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
         timestamp,
         // A re-price replaces the offer card in the driver app. Omitting these
         // stripped the group badge and the pickup/dropoff labels off a shared
@@ -236,25 +269,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           : {}),
       };
 
-      const push: PushSendEvent = {
-        eventType: 'PUSH_SEND',
-        notificationId: randomUUID(),
-        userId: driver.userId,
-        title: group ? `Updated offer · group ride (${group.riderCount} riders)` : 'Updated rider offer',
-        body: `Rider updated their offer to ₦${updatedOfferNgn} for ${rideRequested.pickup.address} → ${rideRequested.destination.address}`,
-        data: {
-          type: 'ride:offer_updated',
-          rideId: rideRequested.rideId,
-          riderOfferNgn: String(updatedOfferNgn),
-        },
-        priority: 'high',
-        timestamp,
-      };
-
-      await producer.sendBatch([
-        { topic: TOPICS.RIDE_EVENTS, value: offerEvent, options: { key: rideRequested.rideId } },
-        { topic: TOPICS.NOTIFICATION_EVENTS, value: push, options: { key: driver.driverId } },
-      ]);
+      await producer.send(TOPICS.RIDE_EVENTS, offerEvent as any, { key: rideRequested.rideId });
     },
 
     async gpsStaleWarning(event) {

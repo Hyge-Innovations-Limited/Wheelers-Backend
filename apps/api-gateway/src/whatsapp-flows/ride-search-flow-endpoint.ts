@@ -9,6 +9,7 @@ import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encr
 import type { FlowRequestBody } from './encryption';
 import { geocodeAddress } from '../LLM/geocoding';
 import { storeWhatsappRide, setActiveRide, getActiveRide } from './bid-state';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 
 export interface RideSearchFlowDeps {
   redisClient: RedisClient;
@@ -197,6 +198,7 @@ async function handleFlowAction(
 
       const event = RideRequestedEvent.parse({
         eventType: 'RIDE_REQUESTED',
+        channel: 'WHATSAPP',
         rideId,
         riderId: userId,
         pickup: { lat: pickupGeo.lat, lng: pickupGeo.lng, address: pickupGeo.formattedAddress },
@@ -211,10 +213,12 @@ async function handleFlowAction(
         minOfferNgn: plannedRoute.minOfferNgn,
         ratePerKmNgn: plannedRoute.ratePerKmNgn,
         route: plannedRoute.geometry,
+        ...(await searchTripDetails(deps.redisClient, userId)),
         timestamp: new Date().toISOString(),
       });
 
       await deps.publisher.publishRideEvent(event);
+      await clearSaidTripDetails(deps.redisClient, userId);
 
       await storeWhatsappRide(deps.redisClient, rideId, {
         riderId: userId,
@@ -254,7 +258,19 @@ export async function handleRideSearchFlowEndpoint(
     const rawBody = await readRawBody(req);
     const envelope = JSON.parse(rawBody.toString('utf8'));
 
-    const { decryptedBody, aesKey, iv } = decryptFlowRequest(envelope, deps.privateKeyPem);
+    let decryptedParts;
+    try {
+      decryptedParts = decryptFlowRequest(envelope, deps.privateKeyPem);
+    } catch (error) {
+      // Meta spec: 421 = "re-fetch my public key and retry" — never 500.
+      console.warn('[whatsapp-ride-search-flow] could not decrypt — 421 so Meta refreshes the key', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.statusCode = 421;
+      res.end();
+      return;
+    }
+    const { decryptedBody, aesKey, iv } = decryptedParts;
 
     const response = await handleFlowAction(decryptedBody, deps);
 

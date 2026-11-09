@@ -1,3 +1,4 @@
+import { rainAt } from './weather';
 import { calculateSuggestedFare, calculateRideFees, type SuggestedFare, type RideFeeBreakdown } from '@wheleers/config';
 
 export const RIDE_PRICING_CURRENCY = 'NGN' as const;
@@ -14,6 +15,10 @@ export type RideEstimatePricingFields = {
 
 export function buildRideEstimatePricing(
   distanceKm: number | null | undefined,
+  /** The trip's planned time: the fare has a per-minute part, so pass it wherever it is known. */
+  durationSeconds?: number | null,
+  /** The trip's ends, wherever known: a pickup or drop-off in an outer area (Ikorodu, Epe…) lifts the price. */
+  ends: { origin?: { lat: number; lng: number }; destination?: { lat: number; lng: number } } = {},
 ): RideEstimatePricingFields {
   if (distanceKm === null || distanceKm === undefined || !Number.isFinite(distanceKm)) {
     return {
@@ -27,7 +32,9 @@ export function buildRideEstimatePricing(
     };
   }
 
-  const pricing = calculateSuggestedFare(distanceKm);
+  // Raining at the pickup, when it is known (weather.ts): the same lift the main quote gets.
+  const rain = ends.origin ? rainAt(ends.origin.lat, ends.origin.lng) : 'none';
+  const pricing = calculateSuggestedFare(distanceKm, { durationSeconds: durationSeconds ?? undefined, ...ends, rain });
   const fees = calculateRideFees(pricing.suggestedFareNgn);
 
   return {

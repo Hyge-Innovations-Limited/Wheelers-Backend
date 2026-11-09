@@ -13,7 +13,6 @@ import type { RideEventsProducer } from '../producers/ride-events.producer';
 import { matchDriver } from '../handlers/match-driver.handler';
 
 /** Same windows solo rides use, so a group offer behaves identically. */
-const OFFER_TTL_MS = RIDE.OFFER_TTL_SECONDS * 1000;
 const BID_TIMEOUT_MS = RIDE.BID_TIMEOUT_SECONDS * 1000;
 
 export function createGroupRideDispatchConsumer(params: {
@@ -183,6 +182,8 @@ export function createGroupRideDispatchConsumer(params: {
       attemptedDriverIds: new Set<string>(),
       offeredDriverId: null,
       timeout: null as NodeJS.Timeout | null,
+      // When this search closes: every offer of it, sent now or re-sent later, shows the same clock.
+      closesAt: Date.now() + BID_TIMEOUT_MS,
       counterOfferDrivers: new Map(),
       group: groupInfo,
     };
@@ -203,7 +204,7 @@ export function createGroupRideDispatchConsumer(params: {
     }
 
     // Broadcast ride offer to ALL nearby drivers simultaneously
-    const expiresAt = new Date(Date.now() + OFFER_TTL_MS);
+    const expiresAt = new Date(pending.closesAt);
 
     await rideEventsProducer.broadcastRideOffer({
       drivers: result.drivers,

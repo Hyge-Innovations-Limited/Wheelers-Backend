@@ -16,7 +16,7 @@ function parseIntervalMs(): number {
     : DEFAULT_REFERRAL_JOB_INTERVAL_MS;
 }
 
-export function startReferralJobs(): ReferralJobsHandle {
+export function startReferralJobs(shouldRun?: () => Promise<boolean>): ReferralJobsHandle {
   let running = false;
   let stopped = false;
   const intervalMs = parseIntervalMs();
@@ -26,6 +26,8 @@ export function startReferralJobs(): ReferralJobsHandle {
     running = true;
 
     try {
+      // With more than one gateway process, one of them settles; the rest skip.
+      if (shouldRun && !(await shouldRun())) return;
       const now = new Date();
       const frozen = await referralClient.freezeExpiredCashbacks(now);
       const qualified = await referralClient.settleQualifiedRideRewards(now);

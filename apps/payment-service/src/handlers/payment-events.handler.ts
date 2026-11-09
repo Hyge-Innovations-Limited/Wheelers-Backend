@@ -1,6 +1,5 @@
-import { withdrawalClient } from '@wheleers/db';
-import { classifyPouchPayoutStatus } from '@wheleers/pouch-client';
-import type { PouchLiquifiaClient } from '@wheleers/pouch-client';
+import type { PaymentsClient } from '@wheleers/payments';
+import { resolvePayout } from './payout-reconciliation';
 import type {
   VirtualAccountCreditedEvent,
   PayoutCreatedEvent,
@@ -11,12 +10,12 @@ import type {
 const TAG = '[payment-events-handler]';
 
 export interface PaymentEventsHandlerDeps {
-  pouchClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   serviceId?: string;
 }
 
 export function createPaymentEventsHandler(deps: PaymentEventsHandlerDeps) {
-  const { pouchClient, serviceId = 'payment-service' } = deps;
+  const { paymentsClient, serviceId = 'payment-service' } = deps;
 
   return {
     /**
@@ -27,7 +26,7 @@ export function createPaymentEventsHandler(deps: PaymentEventsHandlerDeps) {
     async handleVirtualAccountCredited(event: VirtualAccountCreditedEvent): Promise<void> {
       console.log(
         `${TAG} DEPOSIT userId=${event.userId} amount=NGN${event.amountNgn} ` +
-        `ref=${event.providerReference} va=${event.pouchVirtualAccountId}`,
+        `ref=${event.providerReference} account=${event.providerAccountId} providerFee=NGN${event.providerFeeNgn ?? 0}`,
       );
 
       if (event.bankName) {
@@ -39,48 +38,28 @@ export function createPaymentEventsHandler(deps: PaymentEventsHandlerDeps) {
     },
 
     /**
-     * Payout created — verify with Pouch that the payout is in a valid state.
-     * If Pouch returns PROCESSING/PENDING, mark it accordingly.
-     * If it already shows as completed/failed (rare race), settle immediately.
+     * Payout created — ask the provider straight away. A transfer can finish
+     * (or be refused) before its webhook arrives; syncing now means the user
+     * sees the true state on their very next status check.
      */
     async handlePayoutCreated(event: PayoutCreatedEvent): Promise<void> {
       console.log(
         `${TAG} PAYOUT_CREATED userId=${event.userId} ` +
-        `payoutId=${event.pouchPayoutId} withdrawal=${event.withdrawalId} ` +
+        `payoutId=${event.providerPayoutId} withdrawal=${event.withdrawalId} ` +
         `amount=NGN${event.amountNgn} → ${event.bankAccountName} (${event.bankAccountNumber})`,
       );
 
       try {
-        const payout = await pouchClient.getPayout(event.pouchPayoutId);
-        const outcome = classifyPouchPayoutStatus(payout.status);
-
-        console.log(
-          `${TAG} payout ${event.pouchPayoutId} provider status: ${payout.status} (${outcome})`,
+        const resolution = await resolvePayout(
+          paymentsClient,
+          { id: event.withdrawalId, amountNgn: event.amountNgn, neverRecorded: false },
+          'at creation',
         );
-
-        // Sync local state with Pouch's current status
-        if (outcome === 'settled') {
-          // Race condition: payout settled before event processed
-          await withdrawalClient.settle(payout.reference);
-          console.warn(
-            `${TAG} payout ${event.pouchPayoutId} already settled — synced`,
-          );
-        } else if (outcome === 'failed') {
-          await withdrawalClient.releaseFailedRequest({
-            providerReference: payout.reference,
-            failureReason: `Payout ${(payout.status ?? 'failed').toLowerCase()} (detected at creation)`,
-            status: 'FAILED',
-          });
-          console.warn(
-            `${TAG} payout ${event.pouchPayoutId} ${(payout.status ?? '').toLowerCase()} — released`,
-          );
-        } else {
-          await withdrawalClient.markProcessing(payout.reference);
-        }
+        console.log(`${TAG} payout ${event.providerPayoutId} → ${resolution}`);
       } catch (error) {
-        // Non-critical — webhook will handle final state
+        // Non-critical — the webhook and the reconciler both still run.
         console.warn(
-          `${TAG} could not verify payout ${event.pouchPayoutId}:`,
+          `${TAG} could not verify payout ${event.providerPayoutId}:`,
           error instanceof Error ? error.message : String(error),
         );
       }
@@ -93,7 +72,7 @@ export function createPaymentEventsHandler(deps: PaymentEventsHandlerDeps) {
     async handlePayoutCompleted(event: PayoutCompletedEvent): Promise<void> {
       console.log(
         `${TAG} PAYOUT_COMPLETED userId=${event.userId} ` +
-        `payoutId=${event.pouchPayoutId} amount=NGN${event.amountNgn} ` +
+        `payoutId=${event.providerPayoutId} amount=NGN${event.amountNgn} ` +
         `ref=${event.providerReference}`,
       );
     },
@@ -105,7 +84,7 @@ export function createPaymentEventsHandler(deps: PaymentEventsHandlerDeps) {
     async handlePayoutFailed(event: PayoutFailedEvent): Promise<void> {
       console.error(
         `${TAG} PAYOUT_FAILED userId=${event.userId} ` +
-        `payoutId=${event.pouchPayoutId} reason=${event.failureReason} ` +
+        `payoutId=${event.providerPayoutId} reason=${event.failureReason} ` +
         `ref=${event.providerReference}`,
       );
     },

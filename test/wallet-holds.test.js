@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 
 const { prisma, walletClient } = require('@wheleers/db');
+const { calculateRideFees } = require('../packages/config/dist/index.js');
 
 const seeded = { users: [], rides: [] };
 
@@ -95,7 +96,8 @@ test('five concurrent settlements pay the driver exactly once', async () => {
   assert.deepEqual(await walletState(wallet.id), { balance: 4_000, locked: 0 },
     'rider debited the fare exactly once');
   const driverWallet = await prisma.wallet.findUniqueOrThrow({ where: { userId: driver.id } });
-  const fees = 6_000 * 0.075 + 30 + 200;
+  // The live rate card, so this test checks exactly-once and not a fee formula that has since changed.
+  const fees = calculateRideFees(6_000).platformTotalNgn;
   assert.equal(Number(driverWallet.balanceNgn), 6_000 - fees, 'driver credited exactly once');
   const payoutRows = await prisma.transaction.count({
     where: { walletId: driverWallet.id, type: 'DRIVER_PAYOUT', referenceId: ride.id },

@@ -1,3 +1,6 @@
+import { formatTripId, tripDetailsFromRow } from '@wheleers/config';
+import type { TripDetails } from '@wheleers/config';
+import { tripCodeStillNeeded } from '../rides/trip-code';
 import type WebSocket from 'ws';
 import { rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
@@ -14,6 +17,8 @@ import type { SocketRegistry } from './registry';
  */
 export type DriverRideSnapshot = {
   rideId: string;
+  /** The short trip ID people use, e.g. WH-01234. */
+  tripId: string | null;
   riderId: string;
   driverId: string | null;
   rideStatus: string;
@@ -22,13 +27,21 @@ export type DriverRideSnapshot = {
   destination: { lat: number; lng: number; address: string };
   stops: Array<{ lat: number; lng: number; address: string }>;
   agreedFareNgn: number;
+  /** Which rules the fare was agreed under: the app works the driver's pay out from it. */
+  pricingVersion: number;
   riderOfferNgn: number | null;
   /** Wallet rides are held before a driver is assigned — the fare is secured. */
   riderPaid: boolean;
   riderPhone: string | null;
+  /** The rider's first name: what the driver's chat says ("Chat with Ada"). */
+  riderName: string | null;
+  /** Start trip asks for the rider's 4-digit code. The code itself never goes to the driver. */
+  tripCodeRequired: boolean;
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
+  /** People, luggage, pet and the rider's note. Absent: booked without them. */
+  tripDetails?: TripDetails;
 };
 
 function decimalToNumber(value: unknown): number | null {
@@ -53,6 +66,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
 
   return {
     rideId: ride.id,
+    tripId: formatTripId(ride.tripNumber),
     riderId: ride.riderId,
     driverId: ride.driverId ?? null,
     rideStatus: ride.status,
@@ -69,12 +83,16 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
       decimalToNumber(ride.riderOfferNgn) ??
       decimalToNumber(ride.fareEstimateNgn) ??
       0,
+    pricingVersion: ride.pricingVersion,
     riderOfferNgn: decimalToNumber(ride.riderOfferNgn),
     riderPaid: ride.paymentMethod === 'WALLET',
     riderPhone: rider?.phone ?? null,
+    riderName: rider?.name?.trim().split(/\s+/)[0] || null,
+    tripCodeRequired: await tripCodeStillNeeded(ride.id).catch(() => false),
     matchedAt: ride.matchedAt?.toISOString() ?? null,
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,
+    ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
   };
 }
 

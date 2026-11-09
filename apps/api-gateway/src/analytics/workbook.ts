@@ -1,0 +1,936 @@
+import ExcelJS from 'exceljs';
+import { adminAnalyticsClient, CHANNEL_LABELS, excelInsightsClient, tripActivityClient } from '@wheleers/db';
+import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
+import { vehicleTankLitres } from '@wheleers/config';
+import { cleanName, cleanText } from './clean-text';
+
+/**
+ * The Excel download for the admin Home page and the Fees page: one workbook,
+ * one sheet per view, every sheet built from the same filters as the screen.
+ *
+ * Each sheet has a frozen bold header, naira and percent number formats, sized
+ * columns and filter dropdowns. Phone numbers are left out unless asked for:
+ * these files leave the company (investors, partners), and a phone number is
+ * personal data.
+ */
+
+export type WorkbookScope = 'overview' | 'fees';
+
+/** Rows per sheet. Well above today's volume; past it the sheet says it was cut. */
+const MAX_ROWS = 50_000;
+const PAGE = 5_000;
+
+const NAIRA = '"₦"#,##0.00';
+const WHOLE = '#,##0';
+const PERCENT = '0.0%';
+
+interface Column {
+  header: string;
+  key: string;
+  width?: number;
+  format?: string;
+  /** What the column means, shown when the header cell is hovered. */
+  note?: string;
+}
+
+function addSheet(book: ExcelJS.Workbook, name: string, columns: Column[], rows: readonly object[], note?: string): ExcelJS.Worksheet {
+  const sheet = book.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
+  sheet.columns = columns.map((c) => ({ header: c.header, key: c.key, width: c.width ?? Math.max(12, c.header.length + 4) }));
+  const header = sheet.getRow(1);
+  header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A1D21' } };
+  header.alignment = { vertical: 'middle' };
+  header.height = 20;
+  for (const row of rows) sheet.addRow(row);
+  columns.forEach((c, i) => {
+    if (c.format) sheet.getColumn(i + 1).numFmt = c.format;
+    if (c.note) header.getCell(i + 1).note = c.note;
+  });
+  if (columns.length) sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+  if (note) {
+    const at = sheet.addRow([]);
+    at.getCell(1).value = note;
+    at.getCell(1).font = { italic: true, color: { argb: 'FF786F68' } };
+  }
+  return sheet;
+}
+
+/** Every page of a paged query, up to MAX_ROWS. */
+async function all<T>(fetchPage: (offset: number) => Promise<{ items: T[]; hasMore: boolean; total: number }>): Promise<{ items: T[]; total: number }> {
+  const items: T[] = [];
+  let total = 0;
+  for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+    const page = await fetchPage(offset);
+    total = page.total;
+    items.push(...page.items);
+    if (!page.hasMore) break;
+  }
+  return { items, total };
+}
+
+const cut = (shown: number, total: number) => (total > shown ? `Showing the first ${shown.toLocaleString()} of ${total.toLocaleString()} rows.` : undefined);
+const lagosTime = (isoTime: string | null) => (isoTime ? new Date(Date.parse(isoTime) + 3_600_000).toISOString().replace('T', ' ').slice(0, 16) : '');
+const channel = (value: string | null) => (value ? CHANNEL_LABELS[value as RideChannelName] ?? value : '');
+
+function filterLines(f: AnalyticsFilters, bucket: Bucket): Array<[string, string]> {
+  return [
+    ['Period', `${f.from} to ${f.to} (Lagos days, both included)`],
+    ['Grouped by', bucket],
+    ['Zone', f.zone === 'outside' ? 'Outside launch zones' : f.zone ?? 'All'],
+    ['Channel', f.channel ? channel(f.channel) : 'All'],
+    ['Ride type', f.rideType ?? 'All'],
+    ['Driver', f.driverId ?? 'All'],
+    ['Rider', f.riderId ?? 'All'],
+    ['Downloaded', `${lagosTime(new Date().toISOString())} Lagos time`],
+  ];
+}
+
+function kpiRows(current: Kpis, previous: Kpis): Array<Record<string, unknown>> {
+  const line = (metric: string, key: keyof Kpis, kind: 'naira' | 'count' | 'percent' | 'number' = 'count') => ({
+    metric,
+    current: current[key] ?? null,
+    previous: previous[key] ?? null,
+    change: typeof current[key] === 'number' && typeof previous[key] === 'number' && (previous[key] as number) !== 0
+      ? ((current[key] as number) - (previous[key] as number)) / Math.abs(previous[key] as number)
+      : null,
+    kind,
+  });
+  return [
+    line('Ride requests', 'requests'),
+    line('Trips completed', 'completed'),
+    line('Match rate', 'matchRate', 'percent'),
+    line('Trips cancelled', 'cancelled'),
+    line('  No driver found', 'cancelledNoDriver'),
+    line('  Cancelled before a driver', 'cancelledBeforeMatch'),
+    line('  Cancelled after a driver', 'cancelledAfterMatch'),
+    line('Disputed', 'disputed'),
+    line('GMV (fares of completed trips)', 'gmvNgn', 'naira'),
+    line('Average fare', 'avgFareNgn', 'naira'),
+    line('Median fare', 'medianFareNgn', 'naira'),
+    line('Commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before)', 'commissionNgn', 'naira'),
+    line('WhatsApp fee (₦300 a ride from 21 Oct 2026)', 'whatsappFeeNgn', 'naira'),
+    line('Booking fee (₦350 a ride; ₦375 before 10 Oct 2026)', 'serviceFeeNgn', 'naira'),
+    line('Deposit fees', 'depositFeesNgn', 'naira'),
+    line('Withdrawal fees', 'withdrawalFeesNgn', 'naira'),
+    line('Platform revenue', 'platformRevenueNgn', 'naira'),
+    line('State levy (owed to Lagos)', 'stateLevyNgn', 'naira'),
+    line('VAT 7.5% of the trip fare (owed)', 'vatNgn', 'naira'),
+    line('Driver payouts', 'driverPayoutsNgn', 'naira'),
+    line('Active drivers', 'activeDrivers'),
+    line('Active riders', 'activeRiders'),
+    line('Drivers on shift', 'driversOnShift'),
+    line('Driver hours online', 'driverOnlineHours', 'number'),
+    line('Average hours online per driver', 'avgOnlineHoursPerDriver', 'number'),
+    line('Trips per driver hour online', 'tripsPerOnlineHour', 'number'),
+    line('Rides that got bids', 'ridesWithBids'),
+    line('Bid acceptance rate', 'bidAcceptanceRate', 'percent'),
+    line('Average bids per ride', 'avgBidsPerRide', 'number'),
+    line('Median seconds to first bid', 'medianSecondsToFirstBid', 'number'),
+    line('Deposits in', 'depositsNgn', 'naira'),
+    line('Deposits (count)', 'depositCount'),
+    line('Withdrawals out', 'withdrawalsNgn', 'naira'),
+    line('Withdrawals (count)', 'withdrawalCount'),
+    line('Refunds', 'refundsNgn', 'naira'),
+    line('New users', 'newUsers'),
+    line('New riders', 'newRiders'),
+    line('New drivers', 'newDrivers'),
+  ];
+}
+
+function summarySheet(book: ExcelJS.Workbook, title: string, f: AnalyticsFilters, bucket: Bucket, previous: { from: string; to: string }, rows: Array<Record<string, unknown>>): void {
+  const sheet = book.addWorksheet('Summary');
+  sheet.columns = [{ width: 36 }, { width: 22 }, { width: 22 }, { width: 14 }];
+  sheet.addRow([title]).font = { bold: true, size: 14 };
+  for (const [k, v] of filterLines(f, bucket)) sheet.addRow([k, v]);
+  sheet.addRow([]);
+  const head = sheet.addRow(['Metric', `${f.from} to ${f.to}`, `${previous.from} to ${previous.to}`, 'Change']);
+  head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A1D21' } };
+  for (const r of rows) {
+    const row = sheet.addRow([r.metric, r.current, r.previous, r.change]);
+    const fmt = r.kind === 'naira' ? NAIRA : r.kind === 'percent' ? PERCENT : r.kind === 'number' ? '#,##0.0' : WHOLE;
+    row.getCell(2).numFmt = fmt;
+    row.getCell(3).numFmt = fmt;
+    row.getCell(4).numFmt = PERCENT;
+  }
+}
+
+/** A trip's status in five plain words, the same on every sheet. */
+function tripStatus(t: TripRow): string {
+  if (t.status === 'COMPLETED') return 'Completed';
+  if (t.status === 'CANCELLED') return t.noDriver ? 'No driver found' : 'Cancelled';
+  if (t.status === 'REQUESTED' || t.status === 'MATCHING') return 'Searching';
+  if (t.status === 'DISPUTED') return 'Disputed';
+  return 'In progress';
+}
+
+/** Lagos date (YYYY-MM-DD) and time (HH:MM) of an instant. */
+function lagosParts(isoTime: string | null): { day: string; time: string } | null {
+  if (!isoTime) return null;
+  const at = new Date(Date.parse(isoTime) + 3_600_000).toISOString();
+  return { day: at.slice(0, 10), time: at.slice(11, 16) };
+}
+
+/** A time on the booking's day is just the time; on another day it carries its date. */
+function timeOn(bookedDay: string, isoTime: string | null): string {
+  const parts = lagosParts(isoTime);
+  if (!parts) return '';
+  return parts.day === bookedDay ? parts.time : `${parts.day} ${parts.time}`;
+}
+
+/** The rider's WhatsApp number: whole with contacts, else only its last four digits. */
+function platformId(t: TripRow, contacts: boolean): string {
+  if (t.channel !== 'WHATSAPP' || !t.riderWhatsapp) return '';
+  if (contacts) return t.riderWhatsapp;
+  return `••••${t.riderWhatsapp.replace(/\D/g, '').slice(-4)}`;
+}
+
+/** Seconds as an Excel duration (a fraction of a day), shown as minutes:seconds and summable. */
+const asDuration = (seconds: number | null) => (seconds == null ? null : seconds / 86_400);
+const DURATION = '[m]:ss';
+
+const STELLAR_TX = 'https://stellar.expert/explorer/testnet/tx/';
+/** A transaction hash as a clickable cell, opening it on the testnet explorer. */
+const txLink = (hash: string | null) => (hash ? { text: `${hash.slice(0, 10)}…`, hyperlink: `${STELLAR_TX}${hash}` } : '');
+const LONG_TRIP_SECONDS = 3 * 60 * 60;
+const CODE_LABEL: Record<string, string> = { none: '', waiting: 'Not entered', verified: 'Entered', unlocked: 'Unlocked by support' };
+
+async function tripsSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, status: 'all' | 'completed', contacts: boolean, name: string): Promise<TripRow[]> {
+  const { items, total } = await all((offset) => adminAnalyticsClient.trips(f, status, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  // Chat, calls, the trip code and the trip's Stellar transfers, for all these trips at once.
+  const activity = await tripActivityClient.forRides(items.map((t) => t.id)).catch(() => new Map());
+  // In the order the team keeps its own sheet: who, when, how it ended, where, how long, for how much.
+  const columns: Column[] = [
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    { header: 'Date', key: 'date', width: 11 },
+    { header: 'Status', key: 'statusLabel', width: 16 },
+    { header: 'Rider ID', key: 'riderId', width: 38 },
+    { header: 'Platform ID', key: 'platformId', width: 16 },
+    { header: 'From', key: 'pickupAddress', width: 40 },
+    { header: 'Platform', key: 'channel', width: 10 },
+    { header: 'To', key: 'destAddress', width: 40 },
+    { header: 'Book time', key: 'bookTime', width: 10 },
+    { header: 'Start trip time', key: 'startTime', width: 15 },
+    { header: 'End trip time', key: 'endTime', width: 15 },
+    { header: 'Suggested amount', key: 'suggestedFareNgn', format: NAIRA, width: 17 },
+    { header: 'Rider offered', key: 'riderOfferNgn', format: NAIRA, width: 14 },
+    { header: 'Amount agreed', key: 'agreedFareNgn', format: NAIRA, width: 15 },
+    { header: 'Time to negotiate', key: 'negotiate', format: DURATION, width: 17, note: 'From the request to a driver being booked, in minutes and seconds. Empty when no driver was booked.' },
+    { header: 'Messages to book', key: 'messagesToBook', format: WHOLE, width: 17, note: "The rider's WhatsApp messages from after their previous trip ended until this one got a driver (or ended without one). Empty for App and Claude bookings." },
+    { header: 'Driver', key: 'driverName', width: 20 },
+    { header: 'Driver ID', key: 'driverId', width: 38 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }, { header: 'Driver phone', key: 'driverPhone', width: 16 }] : []),
+    { header: 'Pickup zone', key: 'pickupZone', width: 14 },
+    { header: 'Destination zone', key: 'destZone', width: 16 },
+    { header: 'Ride type', key: 'rideType', width: 10 },
+    { header: 'Fare', key: 'fareNgn', format: NAIRA, note: 'What the rider paid: the trip fare, VAT and the booking fee as one amount.' },
+    { header: 'Trip fare', key: 'tripFareNgn', format: NAIRA, note: "What the driver priced (rate per km × distance). Commission is taken from this." },
+    { header: 'Booking fee', key: 'serviceFeeNgn', format: NAIRA },
+    { header: 'VAT', key: 'vatNgn', format: NAIRA, note: '7.5% of the trip fare. Since 10 Oct 2026 it is added to the rider\'s fare; before, it came out of the driver\'s share.' },
+    { header: 'Commission', key: 'commissionNgn', format: NAIRA, note: '5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before.' },
+    { header: 'WhatsApp fee', key: 'whatsappFeeNgn', format: NAIRA, note: '₦300 from the driver on every ride from 21 Oct 2026.' },
+    { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
+    { header: 'Platform total', key: 'platformTotalNgn', format: NAIRA },
+    { header: 'Driver payout', key: 'driverPayoutNgn', format: NAIRA },
+    { header: 'Pricing', key: 'pricingVersion', format: WHOLE, width: 9, note: '1: 4% commission, VAT from the driver. 2: 10% commission, VAT added to the fare. 3: 5% commission and the ₦300 WhatsApp fee. 4 (from 3 Nov 2026): no booking fee; the ₦300 WhatsApp fee off the fare, then VAT, the levy and 5% commission from the rest.' },
+    { header: 'Split estimated', key: 'feeSplitEstimated', width: 15 },
+    { header: 'Distance km', key: 'distanceKm', format: '#,##0.0' },
+    { header: 'Trip minutes', key: 'minutes', format: WHOLE },
+    { header: 'Bids', key: 'bids', format: WHOLE },
+    { header: 'Cancel reason', key: 'cancelReason', width: 30 },
+    { header: 'Long trip (3h+)', key: 'longTrip', width: 15, note: 'Yes when the trip ran 3 hours or more from start to end.' },
+    { header: 'Chat: rider messages', key: 'riderMessages', format: WHOLE, width: 20 },
+    { header: 'Chat: driver messages', key: 'driverMessages', format: WHOLE, width: 21 },
+    { header: 'Calls', key: 'calls', format: WHOLE },
+    { header: 'Calls answered', key: 'callsAnswered', format: WHOLE, width: 15 },
+    { header: 'Calls missed', key: 'callsMissed', format: WHOLE, width: 13 },
+    { header: 'Call minutes', key: 'callMinutes', format: '#,##0.0', width: 13 },
+    { header: 'Trip code', key: 'tripCodeLabel', width: 20, note: "Entered: the driver typed the rider's code. Unlocked by support: started without it. Empty: no code (group seats, older trips)." },
+    { header: 'Wrong codes', key: 'wrongCodes', format: WHOLE, width: 12 },
+    { header: 'Unlocked by', key: 'unlockedBy', width: 16 },
+    { header: 'Stellar fare tx', key: 'stellarFare', width: 16, note: 'Stellar TESTNET: the fare, rider to driver, with the trip ID as memo. Click to open it on stellar.expert.' },
+    { header: 'Stellar commission tx', key: 'stellarCommission', width: 20, note: 'Stellar TESTNET: the commission, driver to Wheelers operations.' },
+    { header: 'Ride ID', key: 'id', width: 38 },
+  ];
+  addSheet(book, name, columns, items.map((t) => {
+    const booked = lagosParts(t.createdAt)!;
+    const ended = t.completedAt ?? t.cancelledAt;
+    const a = activity.get(t.id);
+    const ranSeconds = t.startedAt && t.completedAt ? (Date.parse(t.completedAt) - Date.parse(t.startedAt)) / 1000 : null;
+    return {
+      ...t,
+      longTrip: ranSeconds !== null && ranSeconds >= LONG_TRIP_SECONDS ? 'yes' : '',
+      riderMessages: a?.riderMessages ?? 0,
+      driverMessages: a?.driverMessages ?? 0,
+      calls: a?.calls ?? 0,
+      callsAnswered: a?.callsAnswered ?? 0,
+      callsMissed: a?.callsMissed ?? 0,
+      callMinutes: a ? Math.round((a.callSeconds / 60) * 10) / 10 : 0,
+      tripCodeLabel: CODE_LABEL[a?.tripCode ?? 'none'],
+      wrongCodes: a?.wrongCodes ?? 0,
+      unlockedBy: a?.unlockedBy ?? '',
+      stellarFare: txLink(a?.stellarFareTx ?? null),
+      stellarCommission: txLink(a?.stellarCommissionTx ?? null),
+      tripId: t.tripId ?? '',
+      riderName: cleanName(t.riderName),
+      driverName: t.driverId ? cleanName(t.driverName, 'Unnamed driver') : '',
+      date: booked.day,
+      statusLabel: tripStatus(t),
+      platformId: platformId(t, contacts),
+      pickupAddress: cleanText(t.pickupAddress),
+      destAddress: cleanText(t.destAddress),
+      channel: channel(t.channel),
+      bookTime: booked.time,
+      startTime: timeOn(booked.day, t.startedAt),
+      endTime: timeOn(booked.day, ended),
+      negotiate: asDuration(t.negotiateSeconds),
+      pickupZone: t.pickupZone ?? 'Outside',
+      destZone: t.destZone ?? 'Outside',
+      rideType: t.rideType === 'group' ? 'Group' : 'Single',
+      feeSplitEstimated: t.platformTotalNgn == null ? '' : t.feeSplitEstimated ? 'yes' : 'no',
+      minutes: t.durationSeconds == null ? null : Math.round(t.durationSeconds / 60),
+      cancelReason: cleanText(t.cancelReason),
+    };
+  }), cut(items.length, total));
+  return items;
+}
+
+/** One row per Live call on the exported trips. */
+async function callsSheet(book: ExcelJS.Workbook, trips: TripRow[]): Promise<void> {
+  const tripIdOf = new Map(trips.map((t) => [t.id, t.tripId ?? '']));
+  const calls = await tripActivityClient.callsForRides(trips.map((t) => t.id)).catch(() => []);
+  const OUTCOME: Record<string, string> = { COMPLETED: 'Talked', MISSED: 'Missed', CANCELLED: 'Missed (caller hung up)', DECLINED: 'Declined', FAILED: 'Could not connect', RINGING: 'Ringing', ACTIVE: 'On the call' };
+  addSheet(book, 'Calls', [
+    { header: 'Time (Lagos)', key: 'time', width: 18 },
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'Caller', key: 'caller', width: 10 },
+    { header: 'Rung on', key: 'channel', width: 10 },
+    { header: 'Outcome', key: 'outcome', width: 22 },
+    { header: 'Talk seconds', key: 'durationSeconds', format: WHOLE, width: 13 },
+    { header: 'Ended because', key: 'endReason', width: 14 },
+    { header: 'Ride ID', key: 'rideId', width: 38 },
+  ], calls.map((c) => ({
+    time: lagosTime(c.createdAt.toISOString()),
+    tripId: tripIdOf.get(c.rideId) ?? '',
+    caller: c.callerRole === 'DRIVER' ? 'Driver' : 'Rider',
+    channel: c.calleeChannel === 'whatsapp' ? 'WhatsApp' : 'App',
+    outcome: OUTCOME[c.status] ?? c.status,
+    durationSeconds: c.durationSeconds ?? '',
+    endReason: c.endReason ?? '',
+    rideId: c.rideId,
+  })), 'Every Live call on the trips in this export. Talk seconds are from answering to hanging up.');
+}
+
+/** Every Stellar TESTNET transfer in the period: the grant evidence, with explorer links. */
+async function stellarSheet(book: ExcelJS.Workbook, f: AnalyticsFilters, trips: TripRow[]): Promise<void> {
+  const from = new Date(`${f.from}T00:00:00+01:00`);
+  const to = new Date(Date.parse(`${f.to}T00:00:00+01:00`) + 24 * 60 * 60 * 1000);
+  const transfers = await tripActivityClient.stellarBetween(from, to).catch(() => []);
+  if (!transfers.length) return;
+  const tripIdOf = new Map(trips.map((t) => [t.id, t.tripId ?? '']));
+  const KIND: Record<string, string> = { ACCOUNT_OPEN: 'Account opened', TOPUP: 'Top-up (earlier design)', FARE: 'Trip fare', COMMISSION: 'Commission', WITHDRAWAL: 'Driver withdrawal' };
+  addSheet(book, 'Stellar', [
+    { header: 'Time (Lagos)', key: 'time', width: 18 },
+    { header: 'Kind', key: 'kind', width: 18 },
+    { header: 'Trip ID', key: 'tripId', width: 11 },
+    { header: 'XLM', key: 'amountXlm', format: '#,##0.0000000', width: 14 },
+    { header: 'Naira equivalent', key: 'amountNgn', format: NAIRA, width: 16 },
+    { header: '₦ per XLM used', key: 'rate', format: '#,##0.00', width: 15 },
+    { header: 'Status', key: 'status', width: 11 },
+    { header: 'Why skipped', key: 'note', width: 40 },
+    { header: 'Transaction', key: 'tx', width: 16 },
+    { header: 'From', key: 'from', width: 58 },
+    { header: 'To', key: 'to', width: 58 },
+    { header: 'Memo', key: 'memo', width: 16 },
+  ], transfers.map((t) => ({
+    time: lagosTime(t.createdAt.toISOString()),
+    kind: KIND[t.kind] ?? t.kind,
+    tripId: t.rideId ? tripIdOf.get(t.rideId) ?? '' : '',
+    amountXlm: Number(t.amountXlm),
+    amountNgn: t.amountNgn === null ? '' : Number(t.amountNgn),
+    rate: t.rateNgnPerXlm === null ? '' : Number(t.rateNgnPerXlm),
+    status: t.status,
+    note: t.status === 'SKIPPED' ? t.lastError ?? '' : '',
+    tx: t.status === 'CONFIRMED' ? txLink(t.txHash) : '',
+    from: t.fromPublicKey,
+    to: t.toPublicKey,
+    memo: t.memo ?? '',
+  })), 'Stellar TESTNET only: test XLM, no real value, on its own ledger. A trip is paid in XLM at the live XLM price of the moment (the rate is kept on each row); the naira column is only its equivalent. Skipped: the rider\'s account had too little test XLM; the trip itself was paid in naira. Click a transaction to open it on stellar.expert.');
+}
+
+async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: Bucket, contacts: boolean): Promise<void> {
+  const points = await adminAnalyticsClient.feePoints(f, bucket);
+  addSheet(book, 'Fees', [
+    { header: `${bucket[0]!.toUpperCase()}${bucket.slice(1)} starting`, key: 'bucket', width: 14 },
+    { header: 'Commission', key: 'commissionNgn', format: NAIRA },
+    { header: 'Booking fee', key: 'serviceFeeNgn', format: NAIRA },
+    { header: 'Deposit fees', key: 'depositFeesNgn', format: NAIRA },
+    { header: 'Withdrawal fees', key: 'withdrawalFeesNgn', format: NAIRA, width: 16 },
+    { header: 'Income', key: 'incomeNgn', format: NAIRA },
+    { header: 'State levy (owed)', key: 'stateLevyNgn', format: NAIRA, width: 18 },
+    { header: 'VAT (owed)', key: 'vatNgn', format: NAIRA, width: 14 },
+    { header: 'Platform deposit costs', key: 'depositProviderCostNgn', format: NAIRA, width: 20 },
+    { header: 'Platform withdrawal costs', key: 'transferCostNgn', format: NAIRA, width: 21 },
+    { header: 'Other platform costs', key: 'otherProviderCostNgn', format: NAIRA, width: 19 },
+    { header: 'Costs', key: 'costsNgn', format: NAIRA },
+    { header: 'Net', key: 'netNgn', format: NAIRA },
+    { header: 'Rides with fees', key: 'feeRides', format: WHOLE },
+    { header: 'Deposits', key: 'deposits', format: WHOLE },
+    { header: 'Withdrawal transfers', key: 'transfers', format: WHOLE, width: 20 },
+    { header: 'Withdrawals that paid the fee', key: 'feeWithdrawals', format: WHOLE, width: 26 },
+    { header: 'Commission, estimated split', key: 'estimatedCommissionNgn', format: NAIRA, width: 26 },
+  ], points, 'Income is commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before), the ₦300 WhatsApp fee, the booking fee (none from 3 Nov 2026), the ₦30 deposit fee and the withdrawal fee. The state levy (for Lagos State) and VAT (7.5% of the trip fare) are collected and owed, so they are not income.');
+
+  const { items, total } = await all((offset) => adminAnalyticsClient.feeLedger(f, null, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  addSheet(book, 'Fee ledger', [
+    { header: 'Ledger ID', key: 'id', width: 38 },
+    { header: 'Time (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Kind', key: 'label', width: 22 },
+    { header: 'Direction', key: 'direction', width: 10 },
+    { header: 'Amount', key: 'amountNgn', format: NAIRA },
+    { header: 'Reference (ride, deposit or withdrawal)', key: 'referenceId', width: 40 },
+    { header: 'Commission', key: 'commissionNgn', format: NAIRA },
+    { header: 'Booking fee', key: 'serviceFeeNgn', format: NAIRA },
+    { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
+    { header: 'VAT', key: 'vatNgn', format: NAIRA },
+  ], items.map((r) => ({ ...r, createdAt: lagosTime(r.createdAt) })), cut(items.length, total));
+
+  const dep = await all((offset) => adminAnalyticsClient.deposits(f, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  addSheet(book, 'Deposits', [
+    { header: 'Time (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Wallet owner', key: 'name', width: 22 },
+    ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+    { header: 'Sent', key: 'grossNgn', format: NAIRA },
+    { header: 'Deposit fee', key: 'feeNgn', format: NAIRA },
+    { header: 'Provider charge', key: 'providerFeeNgn', format: NAIRA, width: 16 },
+    { header: 'Credited to wallet', key: 'creditedNgn', format: NAIRA, width: 18 },
+    { header: 'Sender', key: 'senderName', width: 22 },
+    { header: 'Sender bank', key: 'senderBank', width: 16 },
+    { header: 'Reference', key: 'reference', width: 34 },
+  ], dep.items.map((r) => ({ ...r, name: cleanName(r.name), senderName: r.senderName ? cleanName(r.senderName) : '', createdAt: lagosTime(r.createdAt) })), cut(dep.items.length, dep.total));
+
+  const wd = await all((offset) => adminAnalyticsClient.withdrawals(f, { limit: PAGE, offset, sort: 'createdAt', dir: 'asc' }, PAGE));
+  addSheet(book, 'Withdrawals', [
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Paid (Lagos)', key: 'settledAt', width: 18 },
+    { header: 'Wallet owner', key: 'name', width: 22 },
+    ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+    { header: 'Status', key: 'status', width: 16 },
+    { header: 'Amount', key: 'amountNgn', format: NAIRA },
+    { header: 'Withdrawal fee', key: 'feeNgn', format: NAIRA, width: 15 },
+    { header: 'Sent to bank', key: 'payoutNgn', format: NAIRA, width: 14 },
+    { header: 'Platform cost', key: 'transferFeeNgn', format: NAIRA, width: 15 },
+    { header: 'To account', key: 'accountName', width: 24 },
+    { header: 'Account ending', key: 'accountEnding', width: 15 },
+    { header: 'Why it failed', key: 'failureReason', width: 30 },
+  ], wd.items.map((r) => ({ ...r, name: cleanName(r.name), accountName: cleanName(r.accountName), createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
+}
+
+export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean, raw = false): Promise<Buffer> {
+  const book = new ExcelJS.Workbook();
+  book.creator = 'Wheelers admin';
+  book.created = new Date();
+
+  if (scope === 'fees') {
+    const fees = await adminAnalyticsClient.fees(f, bucket);
+    const t = fees.totals;
+    const p = fees.previousTotals;
+    const line = (metric: string, key: keyof typeof t, kind: 'naira' | 'count' = 'naira') => ({
+      metric, current: t[key], previous: p[key], change: p[key] ? ((t[key] as number) - (p[key] as number)) / Math.abs(p[key] as number) : null, kind,
+    });
+    summarySheet(book, 'Wheelers fees', f, bucket, fees.previous, [
+      line('Commission (5% of the trip fare from 21 Oct 2026; 10% from 10 Oct; 4% before)', 'commissionNgn'),
+      line('WhatsApp fee (₦300 a ride from 21 Oct 2026)', 'whatsappFeeNgn'),
+      line('Booking fee (₦350 a ride; ₦375 before 10 Oct 2026)', 'serviceFeeNgn'),
+      line('Deposit fees', 'depositFeesNgn'),
+      line('Withdrawal fees', 'withdrawalFeesNgn'),
+      line('Income', 'incomeNgn'),
+      line('State levy (owed to Lagos)', 'stateLevyNgn'),
+      line('VAT 7.5% of the trip fare (owed)', 'vatNgn'),
+      line('Platform deposit costs', 'depositProviderCostNgn'),
+      line('Platform withdrawal costs', 'transferCostNgn'),
+      line('Other platform costs', 'otherProviderCostNgn'),
+      line('Costs', 'costsNgn'),
+      line('Net', 'netNgn'),
+      line('Rides with fees', 'feeRides', 'count'),
+      line('Deposits', 'deposits', 'count'),
+      line('Withdrawal transfers', 'transfers', 'count'),
+      line('Withdrawals that paid the fee', 'feeWithdrawals', 'count'),
+      line('Commission from estimated splits', 'estimatedCommissionNgn'),
+    ]);
+    await feesSheets(book, f, bucket, contacts);
+    await tripsSheet(book, f, 'completed', contacts, 'Trips with fees');
+  } else {
+    const [summary, series, byHour, byChannel, byZone, byType, byCancel] = await Promise.all([
+      adminAnalyticsClient.summary(f),
+      adminAnalyticsClient.timeseries(f, bucket),
+      adminAnalyticsClient.hours(f),
+      adminAnalyticsClient.breakdown(f, 'channel'),
+      adminAnalyticsClient.breakdown(f, 'zone'),
+      adminAnalyticsClient.breakdown(f, 'rideType'),
+      adminAnalyticsClient.breakdown(f, 'cancelReason'),
+    ]);
+    summarySheet(book, 'Wheelers overview', f, bucket, summary.previous, kpiRows(summary.current, summary.previousKpis));
+
+    addSheet(book, bucket === 'day' ? 'Daily' : bucket === 'week' ? 'Weekly' : 'Monthly', [
+      { header: `${bucket[0]!.toUpperCase()}${bucket.slice(1)} starting`, key: 'bucket', width: 14 },
+      { header: 'Requests', key: 'requests', format: WHOLE },
+      { header: 'Completed', key: 'completed', format: WHOLE },
+      { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+      { header: 'GMV', key: 'gmvNgn', format: NAIRA },
+      { header: 'Commission', key: 'commissionNgn', format: NAIRA },
+      { header: 'Booking fee', key: 'serviceFeeNgn', format: NAIRA },
+      { header: 'State levy', key: 'stateLevyNgn', format: NAIRA },
+      { header: 'VAT', key: 'vatNgn', format: NAIRA },
+      { header: 'Deposit fees', key: 'depositFeesNgn', format: NAIRA },
+      { header: 'Deposits in', key: 'depositsNgn', format: NAIRA },
+      { header: 'New users', key: 'newUsers', format: WHOLE },
+    ], series);
+
+    const clock = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+    const supplyNote = !byHour.supply.shown
+      ? 'Drivers on shift are not shown under a zone, channel, ride type or rider filter: a shift belongs to no ride.'
+      : byHour.supply.recordedFrom
+        ? `Drivers on shift are recorded from ${lagosTime(byHour.supply.recordedFrom)} Lagos time. Hours before that have requests but no drivers to show.`
+        : 'No driver shift has been recorded yet.';
+    const hourColumns: Column[] = [
+      { header: 'Requests', key: 'requests', format: WHOLE },
+      { header: 'Completed', key: 'completed', format: WHOLE },
+      { header: 'No driver found', key: 'noDriver', format: WHOLE, width: 16 },
+      { header: 'Match rate', key: 'matchRate', format: PERCENT },
+      { header: 'GMV', key: 'gmvNgn', format: NAIRA },
+      { header: 'Drivers on shift (average)', key: 'avgDriversOnline', format: '#,##0.0', width: 26 },
+      { header: 'Driver hours online', key: 'driverHours', format: '#,##0.0', width: 20 },
+      { header: 'Requests per driver', key: 'requestsPerDriver', format: '#,##0.00', width: 20 },
+    ];
+    addSheet(book, 'Hours', [{ header: 'Hour (Lagos)', key: 'label', width: 14 }, ...hourColumns],
+      byHour.hours.map((h) => ({ ...h, label: `${clock(h.hour)} to ${clock(h.hour).slice(0, 2)}:59` })), supplyNote);
+    addSheet(book, 'Weekdays', [{ header: 'Day', key: 'label', width: 14 }, ...hourColumns], byHour.weekdays, supplyNote);
+    addSheet(book, 'Hours by weekday', [
+      { header: 'Requests', key: 'day', width: 14 },
+      ...Array.from({ length: 24 }, (_, hour) => ({ header: clock(hour), key: `h${hour}`, width: 7, format: WHOLE })),
+    ], byHour.grid.map((row, i) => ({ day: byHour.weekdays[i]?.label ?? '', ...Object.fromEntries(row.map((n, hour) => [`h${hour}`, n])) })));
+
+    const trips = await tripsSheet(book, f, 'all', contacts, 'Trips');
+    await callsSheet(book, trips);
+    await stellarSheet(book, f, trips);
+
+    const drivers = await all((offset) => adminAnalyticsClient.drivers(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
+    const carOf = raw ? await adminAnalyticsClient.driverExtras(f, drivers.items.map((d) => d.driverId)) : new Map<string, { make: string | null; model: string | null; year: number | null; cancels: number }>();
+    addSheet(book, 'Drivers', [
+      { header: 'Driver ID', key: 'driverId', width: 38 },
+      { header: 'Name', key: 'name', width: 22 },
+      ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+      { header: 'KYC', key: 'kycStatus', width: 11 },
+      { header: 'Trips', key: 'trips', format: WHOLE },
+      { header: 'GMV', key: 'gmvNgn', format: NAIRA },
+      { header: 'Earnings', key: 'earningsNgn', format: NAIRA },
+      { header: 'Commission', key: 'commissionNgn', format: NAIRA },
+      { header: 'Average fare', key: 'avgFareNgn', format: NAIRA },
+      { header: 'Bids', key: 'bids', format: WHOLE },
+      { header: 'Bids won', key: 'bidsWon', format: WHOLE },
+      { header: 'Win rate', key: 'bidWinRate', format: PERCENT },
+      { header: 'Last trip (Lagos)', key: 'lastTripAt', width: 18 },
+      { header: 'Hours online', key: 'onlineHours', format: '#,##0.0', width: 14 },
+      { header: 'Shifts', key: 'shifts', format: WHOLE },
+      { header: 'Trips per hour online', key: 'tripsPerOnlineHour', format: '#,##0.00', width: 21 },
+      { header: 'Last online (Lagos)', key: 'lastOnlineAt', width: 19 },
+      ...(raw ? [
+        { header: 'Car', key: 'car', width: 24 },
+        { header: 'Tank (litres)', key: 'tankLitres', format: WHOLE, width: 14, note: 'From the maker\'s spec; blank when the car or year is not in the table.' },
+        { header: 'Cancels', key: 'cancels', format: WHOLE },
+        { header: 'Earnings per online hour', key: 'earningsPerHour', format: NAIRA, width: 24, note: 'Blank under a quarter of an hour online.' },
+      ] : []),
+    ], drivers.items.map((d) => {
+      const x = carOf.get(d.driverId);
+      return { ...d, ...(raw ? {
+        car: [x?.make, x?.model, x?.year].filter(Boolean).join(' '),
+        tankLitres: vehicleTankLitres(x?.make, x?.model, x?.year),
+        cancels: x?.cancels ?? 0,
+        earningsPerHour: d.onlineHours > 0.25 ? Math.round(d.earningsNgn / d.onlineHours) : null,
+      } : {}), name: cleanName(d.name, 'Unnamed driver'), lastTripAt: lagosTime(d.lastTripAt), lastOnlineAt: lagosTime(d.lastOnlineAt) };
+    }), cut(drivers.items.length, drivers.total));
+
+    const riders = await all((offset) => adminAnalyticsClient.riders(f, { limit: PAGE, offset, sort: 'trips' }, PAGE));
+    const rideOf = raw ? await adminAnalyticsClient.riderExtras(riders.items.map((r) => r.riderId)) : new Map<string, { firstRideAt: string | null; lastRideAt: string | null; cameBack: boolean }>();
+    addSheet(book, 'Riders', [
+      { header: 'Rider ID', key: 'riderId', width: 38 },
+      { header: 'Name', key: 'name', width: 22 },
+      ...(contacts ? [{ header: 'Phone', key: 'phone', width: 16 }] : []),
+      { header: 'Joined (Lagos)', key: 'joinedAt', width: 18 },
+      { header: 'Requests', key: 'requests', format: WHOLE },
+      { header: 'Trips', key: 'trips', format: WHOLE },
+      { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+      { header: 'Spend', key: 'spendNgn', format: NAIRA },
+      { header: 'Average fare', key: 'avgFareNgn', format: NAIRA },
+      { header: 'Usual channel', key: 'topChannel', width: 14 },
+      { header: 'Last request (Lagos)', key: 'lastRequestAt', width: 20 },
+      { header: 'WhatsApp messages', key: 'messages', format: WHOLE, width: 18 },
+      { header: 'Messages per trip', key: 'messagesPerTrip', format: '#,##0.0', width: 17 },
+      { header: 'Wallet balance', key: 'walletBalanceNgn', format: NAIRA },
+      ...(raw ? [
+        { header: 'First ride (Lagos)', key: 'firstRideAt', width: 18 },
+        { header: 'Last ride (Lagos)', key: 'lastRideAt', width: 18 },
+        { header: 'Came back', key: 'cameBack', width: 11, note: 'Yes when the rider has completed rides on two or more different Lagos days.' },
+      ] : []),
+    ], riders.items.map((r) => ({ ...r, ...(raw ? {
+      firstRideAt: lagosTime(rideOf.get(r.riderId)?.firstRideAt ?? null), lastRideAt: lagosTime(rideOf.get(r.riderId)?.lastRideAt ?? null),
+      cameBack: rideOf.get(r.riderId)?.cameBack ? 'Yes' : 'No',
+    } : {}), name: cleanName(r.name), joinedAt: lagosTime(r.joinedAt), lastRequestAt: lagosTime(r.lastRequestAt), topChannel: channel(r.topChannel) })), cut(riders.items.length, riders.total));
+
+    await feesSheets(book, f, bucket, contacts);
+
+    const breakdownRows = [
+      ...byChannel.map((r) => ({ ...r, by: 'Channel' })),
+      ...byZone.map((r) => ({ ...r, by: 'Pickup zone' })),
+      ...byType.map((r) => ({ ...r, by: 'Ride type' })),
+      ...byCancel.map((r) => ({ ...r, by: 'Cancellation' })),
+    ];
+    addSheet(book, 'Breakdown', [
+      { header: 'By', key: 'by', width: 14 },
+      { header: 'Group', key: 'label', width: 26 },
+      { header: 'Requests', key: 'requests', format: WHOLE },
+      { header: 'Completed', key: 'completed', format: WHOLE },
+      { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+      { header: 'GMV', key: 'gmvNgn', format: NAIRA },
+    ], breakdownRows);
+
+    // Where riders stop, and why.
+    await whySheets(book, f);
+    if (raw) await rawSheets(book, f, contacts);
+  }
+
+  return Buffer.from(await book.xlsx.writeBuffer());
+}
+
+/* ── where riders stop, and why ─────────────────────────────────────── */
+
+const day = (value: unknown) => (value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? '').slice(0, 10));
+const share = (part: unknown, whole: unknown) => {
+  const w = Number(whole) || 0;
+  return w > 0 ? (Number(part) || 0) / w : null;
+};
+const STAGE_WORDS: Record<string, string> = {
+  '1_searching': 'Searching, no offer yet',
+  '2_offers_received': 'Had offers',
+  '3_driver_assigned': 'Driver assigned',
+  '4_driver_arrived': 'Driver arrived',
+  '5_trip_started': 'Trip started',
+  '6_completed': 'Completed',
+};
+const STEP_WORDS: Record<string, string> = {
+  '0_opened': 'Only opened the page',
+  '1_saw_price': 'Saw the price',
+  '2_searched': 'Searched',
+  '3_got_offers': 'Got offers',
+  '4_tapped_accept': 'Tapped Accept',
+  '5_driver_confirmed': 'Driver confirmed',
+};
+const MINUTES = '#,##0.0';
+
+/** Shades a column's cells from calm (low) to orange (high): the slow or busy spots stand out. */
+function heat(sheet: ExcelJS.Worksheet, column: number, rows: number, highIsBad = true): void {
+  if (rows < 2) return;
+  const letter = sheet.getColumn(column).letter;
+  const calm = { argb: 'FFE3F8F0' };
+  const hot = { argb: 'FFFFB27A' };
+  sheet.addConditionalFormatting({
+    ref: `${letter}2:${letter}${rows + 1}`,
+    rules: [{ type: 'colorScale', priority: 1, cfvo: [{ type: 'min' }, { type: 'max' }], color: highIsBad ? [calm, hot] : [hot, calm] }],
+  });
+}
+
+/** Bars inside the cells of a count column. */
+function bars(sheet: ExcelJS.Worksheet, column: number, rows: number): void {
+  if (rows < 1) return;
+  const letter = sheet.getColumn(column).letter;
+  sheet.addConditionalFormatting({
+    ref: `${letter}2:${letter}${rows + 1}`,
+    rules: [{ type: 'dataBar', priority: 1, cfvo: [{ type: 'min' }, { type: 'max' }], color: { argb: 'FFFF9A5C' } } as unknown as ExcelJS.ConditionalFormattingRule],
+  });
+}
+
+async function whySheets(book: ExcelJS.Workbook, f: AnalyticsFilters): Promise<void> {
+  const filters = { from: f.from, to: f.to, zone: f.zone ?? null, channel: f.channel ?? null };
+  const c = excelInsightsClient;
+  const [funnel, stopped, quotes, page, pageLeft, offerBands, bidBands, raises, speed, supply, riderCohorts, driverCohorts, riderTypes, rideCounts, drivers, money] =
+    await Promise.all([
+      c.funnel(filters), c.stopped(filters), c.quotes(filters), c.page(filters), c.pageLeft(filters), c.offerBands(filters),
+      c.bidBands(filters), c.raises(filters), c.speed(filters), c.supply(filters), c.cohorts(filters, 'rider'), c.cohorts(filters, 'driver'),
+      c.riderTypes(filters), c.rideCounts(filters), c.drivers(filters), c.money(filters),
+    ]);
+
+  // 1 · Funnel: each step's share of requests, and the biggest drop between two steps.
+  const steps: Array<[string, string]> = [['requested', 'Requested'], ['got_offer', 'Got an offer'], ['driver_assigned', 'Driver assigned'], ['driver_arrived', 'Driver arrived'], ['trip_started', 'Trip started'], ['completed', 'Completed']];
+  const funnelSheet = addSheet(book, 'Funnel', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Channel', key: 'channel', width: 11 },
+    { header: 'Requested', key: 'requested', format: WHOLE },
+    { header: 'Got an offer', key: 'got_offer', format: WHOLE },
+    { header: '% got an offer', key: 'p_offer', format: PERCENT },
+    { header: 'Driver assigned', key: 'driver_assigned', format: WHOLE },
+    { header: '% driver', key: 'p_driver', format: PERCENT },
+    { header: 'Driver arrived', key: 'driver_arrived', format: WHOLE },
+    { header: 'Trip started', key: 'trip_started', format: WHOLE },
+    { header: 'Completed', key: 'completed', format: WHOLE },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+    { header: 'No driver in time', key: 'no_driver', format: WHOLE, width: 17 },
+    { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+    { header: 'Biggest drop', key: 'drop', width: 34, note: 'The two steps between which the most rides were lost that day' },
+  ], funnel.map((r) => {
+    let drop = '';
+    let worst = 0;
+    for (let i = 1; i < steps.length; i++) {
+      const before = Number(r[steps[i - 1]![0]]) || 0;
+      const after = Number(r[steps[i]![0]]) || 0;
+      if (before > 0 && (before - after) / before > worst) {
+        worst = (before - after) / before;
+        drop = `${steps[i - 1]![1]} → ${steps[i]![1]} (−${Math.round(worst * 100)}%)`;
+      }
+    }
+    return {
+      ...r, day: day(r.day), channel: channel(String(r.channel) as RideChannelName),
+      p_offer: share(r.got_offer, r.requested), p_driver: share(r.driver_assigned, r.requested), p_completed: share(r.completed, r.requested), drop,
+    };
+  }), 'Requests exclude searches replaced by a newer one. Every step counts the rides that got at least that far.');
+  heat(funnelSheet, 11, funnel.length, false);
+
+  // 2 · Where rides stopped: the 10 biggest reasons at each stage, the rest as Other.
+  const byStage = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of stopped) byStage.set(String(r.stage), [...(byStage.get(String(r.stage)) ?? []), r]);
+  const stoppedRows: Array<Record<string, unknown>> = [];
+  for (const [stage, rows] of byStage) {
+    rows.slice(0, 10).forEach((r) => stoppedRows.push({ stage: STAGE_WORDS[stage] ?? stage, reason: r.reason, rides: r.rides, median: r.median_minutes_searched }));
+    const rest = rows.slice(10);
+    if (rest.length) stoppedRows.push({ stage: STAGE_WORDS[stage] ?? stage, reason: `Other (${rest.length} reasons)`, rides: rest.reduce((n, r) => n + (Number(r.rides) || 0), 0), median: null });
+  }
+  const stoppedSheet = addSheet(book, 'Where rides stopped', [
+    { header: 'Stopped at', key: 'stage', width: 24 },
+    { header: 'Reason', key: 'reason', width: 44 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: 'Median minutes before it ended', key: 'median', format: MINUTES, width: 30 },
+  ], stoppedRows, 'Cancelled rides and searches nobody took. "Other: …" reasons are the rider\'s own words.');
+  bars(stoppedSheet, 3, stoppedRows.length);
+
+  // 3 · Shown a price.
+  addSheet(book, 'Shown a price', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Where', key: 'source', width: 11 },
+    { header: 'Riders shown a price', key: 'riders_shown_a_price', format: WHOLE, width: 20 },
+    { header: 'Confirmed the trip (WhatsApp)', key: 'confirmed_the_trip', format: WHOLE, width: 28 },
+    { header: 'Searched', key: 'searched', format: WHOLE },
+    { header: '% searched', key: 'p_searched', format: PERCENT },
+    { header: 'Completed a ride', key: 'completed_a_ride', format: WHOLE, width: 16 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], quotes.map((r) => ({ ...r, day: day(r.day), source: r.source === 'app' ? 'App' : 'WhatsApp', p_searched: share(r.searched, r.riders_shown_a_price), p_completed: share(r.completed_a_ride, r.riders_shown_a_price) })),
+  'Per rider and day. Recorded from 23 Oct 2026; the zone filter does not apply here.');
+
+  // 4 · The WhatsApp ride page.
+  addSheet(book, 'WhatsApp page', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Visits', key: 'visits', format: WHOLE },
+    { header: 'Saw the price', key: 'saw_price', format: WHOLE },
+    { header: 'Searched', key: 'searched', format: WHOLE },
+    { header: 'Got offers', key: 'got_offers', format: WHOLE },
+    { header: 'Tapped Accept', key: 'tapped_accept', format: WHOLE },
+    { header: 'Booked', key: 'booked', format: WHOLE },
+    { header: '% booked', key: 'p_booked', format: PERCENT },
+    { header: 'Cancelled', key: 'cancelled', format: WHOLE },
+    { header: 'Asked to add money', key: 'asked_to_add_money', format: WHOLE, width: 18 },
+    { header: 'Seconds on the page (average)', key: 'avg_seconds_on_page', format: WHOLE, width: 28 },
+  ], page.map((r) => ({ ...r, day: day(r.day), p_booked: share(r.booked, r.visits) })), 'One row per visit to the ride page WhatsApp opens. Recorded from 23 Oct 2026.');
+  const leftSheet = addSheet(book, 'WhatsApp - where they left', [
+    { header: 'Got as far as', key: 'step', width: 22 },
+    { header: 'The last thing they did', key: 'last', width: 30 },
+    { header: 'Visits', key: 'visits', format: WHOLE },
+  ], pageLeft.map((r) => ({ step: STEP_WORDS[String(r.furthest_step)] ?? r.furthest_step, last: String(r.last_event).replace(/_/g, ' '), visits: r.visits })), 'Visits that did not book.');
+  bars(leftSheet, 3, pageLeft.length);
+
+  // 5 · Price and booking.
+  addSheet(book, 'Price vs booking', [
+    { header: "Rider's offer, against the suggested price", key: 'band', width: 40 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: '% got an offer', key: 'p_offer', format: PERCENT },
+    { header: '% got a driver', key: 'p_driver', format: PERCENT },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], offerBands.map((r) => ({ band: String(r.band).slice(2), rides: r.rides, p_offer: share(r.got_offer, r.rides), p_driver: share(r.driver_assigned, r.rides), p_completed: share(r.completed, r.rides) })));
+  addSheet(book, 'Driver counter-offers', [
+    { header: "Driver's offer, against the rider's price", key: 'band', width: 40 },
+    { header: 'Offers', key: 'offers', format: WHOLE },
+    { header: 'Chosen by the rider', key: 'chosen', format: WHOLE, width: 18 },
+    { header: '% chosen', key: 'p_chosen', format: PERCENT },
+    { header: 'Minutes after the request (average)', key: 'avg_minutes_after_request', format: '#,##0.00', width: 32 },
+  ], bidBands.map((r) => ({ ...r, band: String(r.band).slice(2), p_chosen: share(r.chosen, r.offers) })));
+  addSheet(book, 'Raising the price', [
+    { header: 'While searching on WhatsApp', key: 'what_they_did', width: 30 },
+    { header: 'Visits that searched', key: 'visits_that_searched', format: WHOLE, width: 20 },
+    { header: '% got offers', key: 'p_offers', format: PERCENT },
+    { header: '% booked', key: 'p_booked', format: PERCENT },
+  ], raises.map((r) => ({ ...r, p_offers: share(r.got_offers, r.visits_that_searched), p_booked: share(r.booked, r.visits_that_searched) })), 'Recorded from 23 Oct 2026.');
+
+  // 6 · Speed of service, by zone and hour.
+  const speedSheet = addSheet(book, 'Speed of service', [
+    { header: 'Pickup zone', key: 'zone', width: 18 },
+    { header: 'Hour (Lagos)', key: 'hour', format: '00":00"', width: 12 },
+    { header: 'Rides', key: 'rides', format: WHOLE },
+    { header: 'Minutes to first offer (median)', key: 'median_to_first_offer', format: MINUTES, width: 28 },
+    { header: 'Slowest 10% to first offer', key: 'slowest10_to_first_offer', format: MINUTES, width: 26 },
+    { header: 'Minutes to a driver (median)', key: 'median_to_driver', format: MINUTES, width: 27 },
+    { header: 'Driver to pickup, minutes (median)', key: 'median_driver_to_pickup', format: MINUTES, width: 32 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], speed.map((r) => ({ ...r, p_completed: (Number(r.pct_completed) || 0) / 100 })));
+  heat(speedSheet, 4, speed.length);
+  heat(speedSheet, 6, speed.length);
+  heat(speedSheet, 7, speed.length);
+
+  // 7 · Supply against demand.
+  const supplySheet = addSheet(book, 'Supply vs demand', [
+    { header: 'Hour (Lagos)', key: 'hour', format: '00":00"', width: 12 },
+    { header: 'Days', key: 'days', width: 10 },
+    { header: 'Requests per hour (average)', key: 'avg_requests_per_hour', format: '#,##0.00', width: 26 },
+    { header: 'Drivers online (average)', key: 'avg_drivers_online', format: '#,##0.0', width: 23 },
+    { header: 'Requests per driver online', key: 'requests_per_driver_online', format: '#,##0.00', width: 25 },
+    { header: '% completed', key: 'p_completed', format: PERCENT },
+  ], supply.map((r) => ({ ...r, p_completed: r.pct_completed === null ? null : (Number(r.pct_completed) || 0) / 100 })), 'Drivers online is city-wide (a shift has no zone). Many requests per driver online means riders waited.');
+  heat(supplySheet, 5, supply.length);
+
+  // 8 · Cohorts.
+  const cohortColumns = (who: string): Column[] => [
+    { header: 'First trip, week of', key: 'first_week', width: 18 },
+    { header: who, key: 'people', format: WHOLE },
+    ...Array.from({ length: 8 }, (_, i) => ({ header: `Week ${i + 1}`, key: `w${i + 1}`, format: PERCENT, width: 9 })),
+  ];
+  const cohortRows = (rows: Array<Record<string, unknown>>) => rows.map((r) => ({
+    first_week: day(r.first_week), people: r.people,
+    ...Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`w${i + 1}`, share(r[`week_${i + 1}`], r.people)])),
+  }));
+  const riderCohortSheet = addSheet(book, 'Rider cohorts', cohortColumns('Riders'), cohortRows(riderCohorts), 'The share of each week\'s new riders who completed a trip again 1, 2 … 8 weeks later. Weeks still to come show 0%.');
+  for (let col = 3; col <= 10; col++) heat(riderCohortSheet, col, riderCohorts.length, false);
+  const driverCohortSheet = addSheet(book, 'Driver cohorts', cohortColumns('Drivers'), cohortRows(driverCohorts), 'The share of each week\'s new drivers who completed a trip again 1, 2 … 8 weeks later.');
+  for (let col = 3; col <= 10; col++) heat(driverCohortSheet, col, driverCohorts.length, false);
+
+  // 9 · Rider types.
+  addSheet(book, 'Rider types', [
+    { header: 'Week of', key: 'week', width: 12 },
+    { header: 'Riders with a trip', key: 'riders', format: WHOLE, width: 18 },
+    { header: 'Trips', key: 'rides', format: WHOLE },
+    { header: 'New', key: 'new_riders', format: WHOLE },
+    { header: 'Returning', key: 'returning', format: WHOLE },
+    { header: 'Back after a gap', key: 'back_after_a_gap', format: WHOLE, width: 16 },
+    { header: '% new', key: 'p_new', format: PERCENT },
+  ], riderTypes.map((r) => ({ ...r, week: day(r.week), p_new: share(r.new_riders, r.riders) })), 'Returning: rode in the 28 days before the week. Back after a gap: rode before, but not in those 28 days.');
+  addSheet(book, 'Trips per rider', [
+    { header: 'Riders with', key: 'riders_with', width: 46 },
+    { header: 'Riders', key: 'riders', format: WHOLE },
+  ], rideCounts, 'Completed trips in the period. At risk is counted at the end of the period.');
+
+  // 10 · Driver quality.
+  addSheet(book, 'Driver quality', [
+    { header: 'Driver ID', key: 'driver_id', width: 38 },
+    { header: 'Driver', key: 'driver', width: 22 },
+    { header: 'Rating', key: 'rating', format: '0.0', width: 8 },
+    { header: 'Offers made', key: 'offers', format: WHOLE },
+    { header: '% chosen', key: 'p_chosen', format: PERCENT },
+    { header: 'Minutes to offer (median)', key: 'median_minutes_to_offer', format: '#,##0.00', width: 24 },
+    { header: 'Trips completed', key: 'completed', format: WHOLE, width: 16 },
+    { header: 'Cancelled after accepting', key: 'cancelled_after_assigned', format: WHOLE, width: 24 },
+    { header: 'Minutes to pickup (average)', key: 'avg_minutes_to_pickup', format: MINUTES, width: 25 },
+    { header: 'Hours online', key: 'online_hours', format: '#,##0.0' },
+    { header: 'Fares', key: 'fares_ngn', format: NAIRA },
+    { header: 'Fares per online hour', key: 'fares_per_online_hour', format: NAIRA, width: 20 },
+  ], drivers.map((r) => ({ ...r, driver: cleanName(r.driver as string | null, 'Unnamed driver'), p_chosen: share(r.chosen, r.offers) })), 'The 500 drivers with the most completed trips in the period.');
+
+  // 11 · The money journey.
+  addSheet(book, 'Money journey', [
+    { header: 'Day', key: 'day', width: 12 },
+    { header: 'Asked to add money (WhatsApp)', key: 'asked_to_add_money', format: WHOLE, width: 28 },
+    { header: 'Deposited within 30 minutes', key: 'deposited_within_30_min', format: WHOLE, width: 26 },
+    { header: 'Then booked', key: 'then_booked', format: WHOLE },
+    { header: 'Trips completed', key: 'completed_trips', format: WHOLE, width: 16 },
+    { header: 'Paid in XLM', key: 'completed_paid_in_xlm', format: WHOLE },
+    { header: '% in XLM', key: 'p_xlm', format: PERCENT },
+  ], money.map((r) => ({ ...r, day: day(r.day), p_xlm: share(r.completed_paid_in_xlm, r.completed_trips) })), 'Asked to add money is recorded from 23 Oct 2026.');
+
+  // 12 · What each new sheet means.
+  addSheet(book, 'About these sheets', [
+    { header: 'Sheet', key: 'sheet', width: 26 },
+    { header: 'What it answers', key: 'what', width: 110 },
+  ], [
+    { sheet: 'Funnel', what: 'Each day and channel: how many requests got an offer, a driver, a pickup, a trip and a finish, and where the most were lost.' },
+    { sheet: 'Where rides stopped', what: 'Rides that ended without a trip: the stage they reached, the reason, and how long the rider had waited.' },
+    { sheet: 'Shown a price', what: 'Riders shown a price (WhatsApp or the app) and how many then searched and rode: those who saw the price and left.' },
+    { sheet: 'WhatsApp page', what: 'Visits to the ride page WhatsApp opens, step by step, with time on the page.' },
+    { sheet: 'WhatsApp - where they left', what: 'For visits that did not book: how far they got and the very last thing they did.' },
+    { sheet: 'Price vs booking', what: "Does offering under or over the suggested price change whether a ride happens?" },
+    { sheet: 'Driver counter-offers', what: "How much drivers ask over the rider's price, and how often riders take it." },
+    { sheet: 'Raising the price', what: 'On WhatsApp, riders who raised their price while searching, against those who kept it.' },
+    { sheet: 'Speed of service', what: 'By pickup zone and hour: minutes to the first offer, to a driver and to the pickup. Orange is slow.' },
+    { sheet: 'Supply vs demand', what: 'By hour, weekdays and weekends: requests against drivers online. Orange is short of drivers.' },
+    { sheet: 'Rider cohorts / Driver cohorts', what: "Of each week's new riders (drivers), the share still riding (driving) 1 to 8 weeks later." },
+    { sheet: 'Rider types / Trips per rider', what: 'New, returning and back-after-a-gap riders each week; how many trips riders take; riders at risk of leaving.' },
+    { sheet: 'Driver quality', what: 'Per driver: offers, how often chosen, reliability, speed to pickup, hours online and fares per hour.' },
+    { sheet: 'Money journey', what: 'Riders told to add money: did they deposit and book? And how many trips were paid in XLM.' },
+    { sheet: 'All of them', what: 'Times are Lagos time. The period applies to every sheet. Zone and channel apply to Funnel, Where rides stopped, Price vs booking, Speed of service, Supply vs demand, Trips per rider (not its riders at risk) and the trips in Driver quality; channel also to Shown a price. The WhatsApp sheets, Driver counter-offers, Raising the price, the cohorts, Rider types and Money journey cover every zone and channel. Ride type, driver and rider filters do not apply to these sheets. Row-by-row data for Power BI or Python: admin → Data → Download CSV.' },
+  ]);
+}
+
+/* ── raw rows: lost requests, cancels, prices ───────────────────────── */
+
+async function rawSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, contacts: boolean): Promise<void> {
+  const lost = await all((offset) => adminAnalyticsClient.rawLost(f, PAGE, offset));
+  addSheet(book, 'Lost requests', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }] : []),
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Drivers on shift that hour', key: 'driversOnShift', format: WHOLE, width: 24, note: 'Blank before shifts were recorded.' },
+    { header: 'Price asked', key: 'priceAskedNgn', format: NAIRA },
+    { header: 'Km', key: 'distanceKm', format: '#,##0.0' },
+    { header: 'How it ended', key: 'endedAs', width: 28 },
+  ], lost.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), createdAt: lagosTime(r.createdAt), channel: channel(r.channel) })),
+  cut(lost.items.length, lost.total) ?? 'Requests that ended with no driver: the same cancelled-in-period rides as Home counts as no driver or cancelled before a match.');
+
+  const cancels = await all((offset) => adminAnalyticsClient.rawCancels(f, PAGE, offset));
+  addSheet(book, 'Cancels', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    ...(contacts ? [{ header: 'Rider phone', key: 'riderPhone', width: 16 }] : []),
+    { header: 'Driver', key: 'driverName', width: 22 },
+    ...(contacts ? [{ header: 'Driver phone', key: 'driverPhone', width: 16 }] : []),
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Cancelled (Lagos)', key: 'cancelledAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Who cancelled', key: 'cancelledBy', width: 14, note: 'Blank for cancellations before this was recorded.' },
+    { header: 'Stage', key: 'stage', width: 16 },
+    { header: 'Minutes since request', key: 'minutesSinceRequest', format: '#,##0.0', width: 20 },
+    { header: 'Reason', key: 'reason', width: 34 },
+  ], cancels.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), driverName: r.driverName ? cleanName(r.driverName) : '', cancelledAt: lagosTime(r.cancelledAt), channel: channel(r.channel), reason: cleanText(r.reason ?? '') })),
+  cut(cancels.items.length, cancels.total));
+
+  const prices = await all((offset) => adminAnalyticsClient.rawPrices(f, PAGE, offset));
+  addSheet(book, 'Prices', [
+    { header: 'Ride ID', key: 'id', width: 38 },
+    { header: 'Status', key: 'status', width: 16 },
+    { header: 'Rider', key: 'riderName', width: 22 },
+    { header: 'Driver', key: 'driverName', width: 22 },
+    { header: 'Pickup zone', key: 'pickupZone', width: 16 },
+    { header: 'Requested (Lagos)', key: 'createdAt', width: 18 },
+    { header: 'Weekday', key: 'weekday', width: 12 },
+    { header: 'Hour (Lagos)', key: 'hour', format: WHOLE },
+    { header: 'Channel', key: 'channel', width: 12 },
+    { header: 'Km', key: 'distanceKm', format: '#,##0.0' },
+    { header: 'First rider price', key: 'firstRiderPriceNgn', format: NAIRA, width: 17, note: 'The rider\'s first price; for older rides, their last.' },
+    { header: 'Rider price changes', key: 'riderPriceChanges', format: WHOLE, width: 19 },
+    { header: 'Driver offers', key: 'driverOffers', format: WHOLE },
+    { header: 'Agreed price', key: 'agreedNgn', format: NAIRA },
+    { header: 'Our suggestion', key: 'suggestedNgn', format: NAIRA, note: 'Blank on rides before it was recorded.' },
+  ], prices.items.map((r) => ({ ...r, riderName: cleanName(r.riderName), driverName: r.driverName ? cleanName(r.driverName) : '', createdAt: lagosTime(r.createdAt), channel: channel(r.channel) })),
+  cut(prices.items.length, prices.total) ?? 'One row per request in the period, the same requests Home counts. inDrive and Linc prices are not per ride yet.');
+}

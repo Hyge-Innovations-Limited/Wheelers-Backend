@@ -40,7 +40,11 @@ export const driverBidClient = {
       },
     }),
 
-  /** The rider picked this driver: their bid won, every other open bid lost. */
+  /**
+   * The rider picked this driver: their bid won, every other open bid lost.
+   * Open includes DECLINED — a declined driver is still in the search (their
+   * card is live, red) until the ride goes, so it ends for them too.
+   */
   markAccepted: (rideId: string, driverId: string) => {
     const now = new Date();
     return prisma.$transaction([
@@ -49,18 +53,62 @@ export const driverBidClient = {
         data: { status: 'ACCEPTED', resolvedAt: now },
       }),
       prisma.driverBid.updateMany({
-        where: { rideId, driverId: { not: driverId }, status: 'PENDING' },
+        where: { rideId, driverId: { not: driverId }, status: { in: ['PENDING', 'DECLINED'] } },
         data: { status: 'LOST', resolvedAt: now },
       }),
     ]);
   },
 
+  /**
+   * The trip itself was cancelled after a driver was chosen (by them, by the
+   * rider, by the system). Their bid stops reading ACCEPTED: the driver app
+   * rebuilds cards from these rows, and an ACCEPTED one came back as a green
+   * "Starting your trip…" for a trip that no longer exists.
+   */
+  cancelAccepted: (rideId: string) =>
+    prisma.driverBid.updateMany({
+      where: { rideId, status: 'ACCEPTED' },
+      data: { status: 'CANCELLED', resolvedAt: new Date() },
+    }),
+
   /** The auction ended with nobody chosen — timeout or cancellation. */
   resolvePending: (rideId: string, status: Extract<DriverBidStatus, 'EXPIRED' | 'CANCELLED'>) =>
     prisma.driverBid.updateMany({
-      where: { rideId, status: 'PENDING' },
+      // DECLINED bids are still open (the driver can bid again): they end with the search too.
+      where: { rideId, status: { in: ['PENDING', 'DECLINED'] } },
       data: { status, resolvedAt: new Date() },
     }),
+
+  /**
+   * The rider declined every open offer (the search goes on). Answers which
+   * drivers to tell.
+   */
+  declineOpen: async (rideId: string): Promise<Array<{ driverId: string; driverUserId: string }>> => {
+    const open = await prisma.driverBid.findMany({
+      where: { rideId, status: 'PENDING' },
+      select: { driverId: true, driverUserId: true },
+    });
+    if (open.length === 0) return [];
+    await prisma.driverBid.updateMany({
+      where: { rideId, status: 'PENDING', driverId: { in: open.map((bid) => bid.driverId) } },
+      data: { status: 'DECLINED', resolvedAt: new Date() },
+    });
+    return open;
+  },
+
+  /** The rider declined this one driver's open offer (the search goes on; they can bid again). */
+  declineOne: async (rideId: string, driverId: string): Promise<{ driverId: string; driverUserId: string } | null> => {
+    const open = await prisma.driverBid.findFirst({
+      where: { rideId, driverId, status: 'PENDING' },
+      select: { driverId: true, driverUserId: true },
+    });
+    if (!open) return null;
+    await prisma.driverBid.updateMany({
+      where: { rideId, driverId, status: 'PENDING' },
+      data: { status: 'DECLINED', resolvedAt: new Date() },
+    });
+    return open;
+  },
 
   /** The driver took their own bid back before the rider answered. */
   markWithdrawn: (rideId: string, driverId: string) =>
@@ -84,6 +132,7 @@ export const driverBidClient = {
             fareEstimateNgn: true,
             riderOfferNgn: true,
             agreedFareNgn: true,
+            pricingVersion: true,
             distanceKm: true,
             matchedAt: true,
             completedAt: true,

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { activityClient, analyticsClient, userClient } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { sendJson } from './utils';
+import { GUEST_USER_ID, OUTCOME_FAILED, OUTCOME_OK, OUTCOME_PROBE } from '../analytics/user-outcomes';
 
 interface AnalyticsDeps {
   adminApiKey: string;
@@ -141,5 +142,148 @@ export async function handleAdminActivityFeedRoute(
       occurredAt: row.occurredAt.toISOString(),
       createdAt: row.createdAt.toISOString(),
     })),
+  });
+}
+
+/** "referral_code_applied" → "Referral code applied": a name for the rows other parts of the server write. */
+function eventWords(eventType: string): string {
+  const words = eventType.replace(/[_:.]+/g, ' ').trim().toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : 'Activity';
+}
+
+const text = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null);
+
+/**
+ * GET /admin/analytics/app-activity?outcome=failed|ok|all&before=<ISO>&limit=
+ *
+ * The admin Activity page: what people tried in the app and how it went, in
+ * words. `failed` is the refusals, each with the sentence the person saw;
+ * `ok` is everything that worked. With it, the last 24 hours counted: how
+ * many problems, how many people, how many were our fault, and the problems
+ * hitting the most people.
+ */
+export async function handleAdminAppActivityRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: AnalyticsDeps,
+  url: URL,
+): Promise<void> {
+  const auth = await verifyAdminAuth(req, deps);
+  if (!auth) {
+    sendJson(res, 401, { error: 'Unauthorized' });
+    return;
+  }
+
+  const outcome = url.searchParams.get('outcome') ?? 'all';
+  const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
+  const moment = (name: string) => {
+    const raw = url.searchParams.get(name);
+    return raw && !Number.isNaN(Date.parse(raw)) ? new Date(raw) : undefined;
+  };
+  // The window looked at: `from`–`to` when a range is picked, else the last 24 hours.
+  const to = moment('to');
+  const since = moment('from') ?? new Date((to?.getTime() ?? Date.now()) - 24 * 60 * 60 * 1000);
+  const pageCursor = moment('before');
+  const before = pageCursor && to ? (pageCursor < to ? pageCursor : to) : (pageCursor ?? to);
+
+  const [page, failures, probes] = await Promise.all([
+    activityClient.listPage({
+      eventTypes: outcome === 'failed' ? [OUTCOME_FAILED] : undefined,
+      exceptTypes: [OUTCOME_PROBE],
+      userId: url.searchParams.get('userId') ?? undefined,
+      before,
+      after: since,
+      limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 60,
+    }),
+    activityClient.listSince(OUTCOME_FAILED, since, 2000, to),
+    activityClient.listSince(OUTCOME_PROBE, since, 2000, to),
+  ]);
+  // A bot's "not found" saved before probes were told apart is not a person's problem either.
+  const byPerson = <T extends { userId: string; metadata: unknown }>(row: T) =>
+    !(row.userId === GUEST_USER_ID && (row.metadata as Record<string, unknown> | null)?.status === 404 && !(row.metadata as Record<string, unknown>).phone);
+  // "ok" is everything but the refusals; asked for alone, they are dropped from the page.
+  const rows = (outcome === 'ok' ? page.rows.filter((row) => row.eventType !== OUTCOME_FAILED) : page.rows).filter(byPerson);
+
+  const userIds = [...new Set(rows.map((row) => row.userId).filter((id) => id !== GUEST_USER_ID))];
+  const users = userIds.length ? await userClient.findManyByIds(userIds).catch(() => []) : [];
+  const userById = new Map(users.map((user) => [user.id, user]));
+
+  // The last 24 hours: each distinct problem, and how many different people met it.
+  const problems = new Map<string, { action: string; message: string; count: number; people: Set<string>; ours: boolean }>();
+  const affected = new Set<string>();
+  let ours = 0;
+  for (const row of failures.filter(byPerson)) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const action = text(meta.action) ?? 'Used the app';
+    const message = text(meta.message) ?? 'The request was refused.';
+    const person = row.userId === GUEST_USER_ID ? `guest:${text(meta.phone) ?? ''}` : row.userId;
+    affected.add(person);
+    if (meta.fault === 'ours') ours += 1;
+    const key = `${action}|${message}`;
+    const known = problems.get(key) ?? { action, message, count: 0, people: new Set<string>(), ours: meta.fault === 'ours' };
+    known.count += 1;
+    known.people.add(person);
+    problems.set(key, known);
+  }
+
+  // Bots probing the server: how many tries, from how many addresses, after what.
+  const probePaths = new Map<string, number>();
+  const probeAddresses = new Map<string, number>();
+  for (const row of probes) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const path = `${text(meta.method) ?? ''} ${text(meta.path) ?? ''}`.trim();
+    probePaths.set(path, (probePaths.get(path) ?? 0) + 1);
+    const ip = text(meta.ip) ?? 'unknown';
+    probeAddresses.set(ip, (probeAddresses.get(ip) ?? 0) + 1);
+  }
+  const most = (counts: Map<string, number>, take: number) =>
+    [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, take).map(([name, count]) => ({ name, count }));
+
+  sendJson(res, 200, {
+    range: { from: since.toISOString(), to: (to ?? new Date()).toISOString() },
+    probes: {
+      count: probes.length,
+      addresses: probeAddresses.size,
+      paths: most(probePaths, 8),
+      fromWhere: most(probeAddresses, 5),
+      recent: probes.slice(0, 15).map((row) => {
+        const meta = (row.metadata ?? {}) as Record<string, unknown>;
+        return { at: row.createdAt.toISOString(), method: text(meta.method), path: text(meta.path), ip: text(meta.ip), userAgent: text(meta.userAgent), status: typeof meta.status === 'number' ? meta.status : null };
+      }),
+    },
+    summary: {
+      failed: failures.filter(byPerson).length,
+      people: affected.size,
+      ourFault: ours,
+      top: [...problems.values()]
+        .sort((a, b) => b.people.size - a.people.size || b.count - a.count)
+        .slice(0, 6)
+        .map((problem) => ({ action: problem.action, message: problem.message, count: problem.count, people: problem.people.size, ours: problem.ours })),
+    },
+    rows: rows.map((row) => {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      const failed = row.eventType === OUTCOME_FAILED;
+      const user = userById.get(row.userId) ?? null;
+      return {
+        id: row.id,
+        at: row.createdAt.toISOString(),
+        ok: !failed,
+        // What they entered, after what they did: "Entered a referral code: DEJI".
+        action: [text(meta.action) ?? eventWords(row.eventType), text(meta.detail)].filter(Boolean).join(': '),
+        message: failed ? (text(meta.message) ?? 'The request was refused.') : null,
+        ourFault: meta.fault === 'ours',
+        userId: user ? row.userId : null,
+        name: user?.name ?? null,
+        phone: user?.phone ?? text(meta.phone),
+        role: user?.role ?? null,
+        signedIn: row.userId !== GUEST_USER_ID,
+        where: row.source,
+        rideId: row.rideId,
+        // For whoever has to find it in the logs.
+        technical: [text(meta.method), text(meta.path), typeof meta.status === 'number' ? String(meta.status) : null].filter(Boolean).join(' ') || null,
+      };
+    }),
+    hasMore: page.hasMore,
+    nextBefore: page.rows.length ? page.rows[page.rows.length - 1].createdAt.toISOString() : null,
   });
 }

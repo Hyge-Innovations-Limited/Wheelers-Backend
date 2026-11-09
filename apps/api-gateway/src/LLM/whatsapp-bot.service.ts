@@ -1,7 +1,10 @@
 import { userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { DEPOSIT_FEE_NOTICE } from '@wheleers/config';
 import { createLocalAccessToken } from '../auth/local';
-import { GroqClient, type GroqClientConfig } from './groq.client';
+import type { GroqClientConfig } from './groq.client';
+import { createLlm, type LlmClient } from './llm';
 import { WHATSAPP_SYSTEM_PROMPT } from './whatsapp-system-prompt';
+import { loadRiderMemory, rememberExchange, renderRiderMemory } from './rider-memory';
 import type {
   LlmChatMessage,
   WhatsappBotUserContext,
@@ -39,10 +42,10 @@ function buildFallbackReply(context: WhatsappBotUserContext): string {
   const name = firstName(context.name, context.phone);
 
   if (context.isNewUser) {
-    return `Hi ${name}! Welcome to Wheelers 🚗\n\nNeed help booking a ride?`;
+    return `Hi ${name}, welcome to Wheelers. Need a ride? Send your pickup and destination.`;
   }
 
-  return `Hi ${name}! Need a ride? Where are you headed?`;
+  return `Hi ${name}, need a ride? Send your pickup and destination.`;
 }
 
 function buildContextMessage(context: WhatsappBotUserContext): string {
@@ -67,6 +70,9 @@ function buildContextMessage(context: WhatsappBotUserContext): string {
     lines.push(`  Bank: ${context.virtualAccountDetails.bankName}`);
     lines.push(`  Account Number: \`${context.virtualAccountDetails.accountNumber}\` (format with backticks so user can copy)`);
     lines.push(`  Account Name: ${context.virtualAccountDetails.accountName}`);
+    if (DEPOSIT_FEE_NOTICE) {
+      lines.push(`  Deposit charges: do NOT bring these up or itemise them. To add money, send the rider to the Add money page — it tells them the exact amount to send for what they want in their wallet. ONLY if they ask directly about charges, answer truthfully in one line: ${DEPOSIT_FEE_NOTICE}`);
+    }
   }
 
   if (context.riderKycStatus !== 'VERIFIED' && context.kycLink) {
@@ -89,12 +95,12 @@ function clampWhatsappReply(reply: string): string {
 }
 
 export class WhatsappBotService {
-  private readonly groq: GroqClient;
+  private readonly groq: LlmClient;
   private readonly jwtSecret: string;
   private readonly appBaseUrl: string | undefined;
 
   constructor(config: WhatsappBotConfig) {
-    this.groq = new GroqClient(config);
+    this.groq = createLlm({ groqApiKey: config.apiKey, groqModel: config.model, timeoutMs: config.timeoutMs });
     this.jwtSecret = config.jwtSecret;
     this.appBaseUrl = config.appBaseUrl;
   }
@@ -106,10 +112,11 @@ export class WhatsappBotService {
   }
 
   async generateReply(request: WhatsappBotRequest): Promise<string> {
-    const [user, virtualAccount, wallet] = await Promise.all([
+    const [user, virtualAccount, wallet, memory] = await Promise.all([
       userClient.findById(request.userId),
       virtualAccountClient.findByUserId(request.userId),
       walletClient.findByUserId(request.userId),
+      loadRiderMemory(request.userId).catch(() => null),
     ]);
     const kycStatus = String(user.riderKycStatus ?? 'NONE');
     const context: WhatsappBotUserContext = {
@@ -134,10 +141,13 @@ export class WhatsappBotService {
     }
 
     const userMessage = cleanMessage(request.incomingMessage) || 'User sent an empty WhatsApp message.';
+    // The durable transcript is longer than the Redis window; prefer it.
+    const history = memory?.transcript?.length ? memory.transcript : request.recentMessages;
     const messages: LlmChatMessage[] = [
       { role: 'system', content: WHATSAPP_SYSTEM_PROMPT },
       { role: 'system', content: buildContextMessage(context) },
-      ...request.recentMessages.map((message) => ({
+      ...(memory ? [{ role: 'system' as const, content: renderRiderMemory(memory) }] : []),
+      ...history.map((message) => ({
         role: message.role,
         content: message.content,
       })),
@@ -146,7 +156,9 @@ export class WhatsappBotService {
 
     try {
       const reply = await this.groq.complete(messages);
-      return reply ? clampWhatsappReply(reply) : buildFallbackReply(context);
+      const finalReply = reply ? clampWhatsappReply(reply) : buildFallbackReply(context);
+      rememberExchange(this.groq, request.userId, request.incomingMessage, finalReply);
+      return finalReply;
     } catch (error) {
       console.warn('[whatsapp] Groq reply failed', {
         userId: request.userId,

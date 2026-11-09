@@ -5,6 +5,7 @@ import {
   ScheduledRideStatus,
 } from '@prisma/client';
 import { prisma } from '../prisma';
+import type { TripDetails } from '@wheleers/config';
 
 type ScheduledStopInput = {
   lat: number;
@@ -54,6 +55,10 @@ export const scheduledRideClient = {
     plannedDistanceKm?: number;
     plannedDurationSeconds?: number;
     fareEstimateNgn?: number;
+    /** "WHATSAPP" for a ride booked on the ride page: its search is a WhatsApp search. Absent: the app. */
+    channel?: 'WHATSAPP';
+    /** People, luggage, pet and a note, for its search. Absent: none given. */
+    tripDetails?: TripDetails;
   }) =>
     prisma.scheduledRide.create({
       data: {
@@ -71,6 +76,8 @@ export const scheduledRideClient = {
         plannedDistanceKm: data.plannedDistanceKm,
         plannedDurationSeconds: data.plannedDurationSeconds,
         fareEstimateNgn: data.fareEstimateNgn,
+        ...(data.channel ? { channel: data.channel } : {}),
+        ...(data.tripDetails ? { tripDetails: data.tripDetails as unknown as Prisma.InputJsonValue } : {}),
       },
     }),
 
@@ -165,8 +172,11 @@ export const scheduledRideClient = {
     outbox: { topic: string; key: string; payload: unknown };
   }) => {
     const [ride] = await prisma.$transaction(async (tx) => {
+      // Only a ride still being dispatched: one cancelled in the instant between
+      // the claim and this update stays cancelled, and no search goes out
+      // (the update finds nothing, throws, and the whole transaction is undone).
       const dispatchedRide = await tx.scheduledRide.update({
-        where: { id: params.id },
+        where: { id: params.id, status: ScheduledRideStatus.DISPATCHING },
         data: {
           status: ScheduledRideStatus.DISPATCHED,
           requestedRideId: params.rideId,
@@ -225,6 +235,24 @@ export const scheduledRideClient = {
       },
       data: { status: ScheduledRideStatus.SCHEDULED },
     }),
+
+  findById: (id: string) => prisma.scheduledRide.findUnique({ where: { id } }),
+
+  /** The ride for later whose search is this live ride (null: the ride was not started by the scheduler). */
+  findByRequestedRideId: (rideId: string) => prisma.scheduledRide.findUnique({ where: { requestedRideId: rideId } }),
+
+  /**
+   * Its search did not go ahead (the rider was busy when it reached them): back
+   * to waiting, so the scheduler starts it again once they are free. Only one
+   * still DISPATCHED for this ride; true when it was put back.
+   */
+  requeueDispatched: async (rideId: string) => {
+    const result = await prisma.scheduledRide.updateMany({
+      where: { requestedRideId: rideId, status: ScheduledRideStatus.DISPATCHED },
+      data: { status: ScheduledRideStatus.SCHEDULED, requestedRideId: null, dispatchedAt: null },
+    });
+    return result.count > 0;
+  },
 
   parseStops,
 };

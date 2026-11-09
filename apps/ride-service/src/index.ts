@@ -1,4 +1,4 @@
-import { GoogleMapsRoutePlanner, RIDE, loadWorkspaceEnv, validateRideEnv, validateSharedEnv } from '@wheleers/config';
+import { GoogleMapsRoutePlanner, RIDE, loadWorkspaceEnv, startAlerts, validateRideEnv, validateSharedEnv } from '@wheleers/config';
 import { createConsumer, createProducer, onShutdown } from '@wheleers/kafka-client';
 import { TOPICS } from '@wheleers/kafka-schemas';
 
@@ -15,6 +15,8 @@ import { startStaleRideSweep } from './handlers/stale-rides.handler';
 import { startScheduledRideDispatcher } from './handlers/scheduled-rides.handler';
 import { createTripLifecycleHandler } from './handlers/trip-lifecycle.handler';
 import type { RideRequestedEvent } from '@wheleers/kafka-schemas';
+import IORedis from 'ioredis';
+import { driverPresence, pricingClient } from '@wheleers/db';
 
 export type OnlineDriver = {
   driverId: string;
@@ -25,6 +27,12 @@ export type OnlineDriver = {
   vehicleModel: string;
   /** Driver→pickup at match time, when the match query computed it. */
   distanceKm?: number;
+  /**
+   * They are still carrying a passenger, and were matched because this pickup
+   * is near where they are dropping off. Their app labels the card so nobody
+   * abandons a rider for it; distanceKm is measured from that drop-off.
+   */
+  afterCurrentTrip?: boolean;
 };
 
 export type RideGpsState = {
@@ -93,6 +101,17 @@ export type PendingRideMatch = {
   counterOfferDrivers: Map<string, CounterOfferDriverInfo>;
   /** Only set for group rides. */
   group?: PendingRideGroupInfo;
+  /**
+   * When this search closes (epoch ms) — set with its bid timeout. Every offer
+   * of this ride carries it, so a re-send (a reconnect, a nudge, a rebuild)
+   * shows the same countdown instead of starting the clock over.
+   */
+  closesAt?: number;
+  /**
+   * Drivers an operator sent this ride to (admin nudge). They get it however
+   * far away they are: at once when online, the moment they go online if not.
+   */
+  directedDriverIds?: Set<string>;
 };
 
 export type RideParticipantState = {
@@ -119,6 +138,8 @@ export type RideServiceState = {
   gpsByRideId: Map<string, RideGpsState>;
   routeByRideId: Map<string, RideRouteStopState[]>;
   pendingMatchesByRideId: Map<string, PendingRideMatch>;
+  /** `${rideId}:${driverId}` of an assignment announced half-way (the publish threw): the lifecycle handler must not book it. */
+  reopenedAssignments?: Set<string>;
 };
 
 const SERVICE_ID = 'ride-service';
@@ -130,6 +151,7 @@ bootstrap().catch((err) => {
 
 async function bootstrap(): Promise<void> {
   loadWorkspaceEnv();
+  startAlerts();
   process.env['NODE_ENV'] ??= 'development';
   process.env['KAFKA_CLIENT_ID'] ??= SERVICE_ID;
   // Default local Kafka broker for host-managed development.
@@ -137,8 +159,24 @@ async function bootstrap(): Promise<void> {
   process.env['DATABASE_URL'] ??= 'postgresql://postgres:postgres@localhost:5432/wheelers';
   process.env['REDIS_URL'] ??= 'redis://localhost:6379';
 
+  // The pricing settings owners save in the admin: offer limits and fares here follow them, reloaded every minute.
+  await pricingClient.startSync();
+
   validateSharedEnv();
   const rideEnv = validateRideEnv();
+
+  // Matching asks Redis who is near a pickup and heard from lately (see
+  // driver-presence in @wheleers/db). ioredis reconnects by itself; commands
+  // fail fast while it is away, and matching falls back to Postgres.
+  const presenceRedis = new IORedis(process.env['REDIS_URL']!, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    lazyConnect: false,
+  });
+  presenceRedis.on('error', (error) => {
+    console.warn(`[${SERVICE_ID}] presence redis: ${error.message}`);
+  });
+  driverPresence.configure((command, ...args) => presenceRedis.call(command, ...args));
 
   const producer = await createProducer({ serviceId: SERVICE_ID });
   const consumer = await createConsumer({ groupId: SERVICE_ID, concurrency: 1 });
@@ -154,6 +192,7 @@ async function bootstrap(): Promise<void> {
     gpsByRideId: new Map(),
     routeByRideId: new Map(),
     pendingMatchesByRideId: new Map(),
+    reopenedAssignments: new Set(),
   };
 
   const rideEventsProducer = createRideEventsProducer(producer);
@@ -191,11 +230,14 @@ async function bootstrap(): Promise<void> {
           driver.lat,
           driver.lng,
         );
-        if (dist <= radiusKm) {
+        // In range, or sent to this driver by an operator (however far).
+        if (dist <= radiusKm || pending.directedDriverIds?.has(event.driverId)) {
           if (!pending.candidates.some((c) => c.driverId === event.driverId)) {
             pending.candidates.push(driver);
           }
-          const expiresAt = new Date(Date.now() + RIDE.OFFER_TTL_SECONDS * 1000);
+          // The search's own clock: a driver coming back online sees the time
+          // actually left, not a fresh half hour.
+          const expiresAt = new Date(pending.closesAt ?? Date.now() + RIDE.OFFER_TTL_SECONDS * 1000);
           await rideEventsProducer.broadcastRideOffer({
             drivers: [driver],
             rideRequested: pending.rideRequested,
@@ -256,6 +298,11 @@ async function bootstrap(): Promise<void> {
     },
   );
 
+  // A deploy mid-search must not lose the auction: rebuild every open one from the database.
+  void rideRequestedConsumer.rehydrate().catch((err) => {
+    console.error(`[${SERVICE_ID}] rehydrating open searches failed`, (err as any)?.message ?? err);
+  });
+
   startGpsMonitor({
     state,
     rideEnv,
@@ -272,6 +319,7 @@ async function bootstrap(): Promise<void> {
   });
 
   onShutdown(async () => {
+    presenceRedis.disconnect();
     staleRideSweep.stop();
     await dispatcher.shutdown();
     await consumer.disconnect();

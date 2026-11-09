@@ -74,7 +74,7 @@ for (const dup of dups) {
   const keeper = [...enriched].sort((a, b) => b.score - a.score)[0];
   const activeCount = enriched.filter((e) => e.active).length;
 
-  console.log(`\n═══ ${dup.email} (${users.length} accounts)${activeCount > 1 ? '  ⚠ NEEDS-MANUAL-MERGE (multiple active)' : ''}`);
+  console.log(`\n═══ ${dup.email} (${users.length} accounts)${activeCount > 1 ? 'NEEDS-MANUAL-MERGE (multiple active)' : ''}`);
   for (const e of enriched) {
     const mark = e.u.id === keeper.u.id ? 'KEEP ' : e.active ? 'HOLD ' : 'PARK ';
     console.log(

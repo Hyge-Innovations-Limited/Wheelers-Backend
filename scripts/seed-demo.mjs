@@ -1046,51 +1046,81 @@ async function main() {
       });
       const ids = seeded.map((u) => u.id);
       console.log(`  ${ids.length} seeded users found`);
-      const walletIds = (
-        await prisma.wallet.findMany({ where: { userId: { in: ids } }, select: { id: true } })
-      ).map((w) => w.id);
 
-      // SafetyAlert holds a foreign key to User, and activity rows outlive the
-      // rides they describe — both would strand the delete or leave orphans.
-      await prisma.safetyAlert.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.userActivityEvent.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.chatMessage.deleteMany({ where: { ride: { riderId: { in: ids } } } });
-      await prisma.transaction.deleteMany({ where: { walletId: { in: walletIds } } });
-      await prisma.transaction.deleteMany({ where: { metadata: { path: ['seed'], equals: true } } });
+      // One transaction: either every seeded row goes, or nothing does. A
+      // foreign key nobody anticipated would otherwise abort the run halfway
+      // and leave orphan rides and fee rows behind — fake metrics that survive
+      // the purge and need a second script to untangle.
+      const chunks = (arr, size = 1000) => {
+        const out = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      };
+      await prisma.$transaction(
+        async (tx) => {
+          const walletIds = (
+            await tx.wallet.findMany({ where: { userId: { in: ids } }, select: { id: true } })
+          ).map((w) => w.id);
+          const seededRideIds = (
+            await tx.ride.findMany({ where: { riderId: { in: ids } }, select: { id: true } })
+          ).map((r) => r.id);
+          const driverIds = (
+            await tx.driver.findMany({ where: { userId: { in: ids } }, select: { id: true } })
+          ).map((d) => d.id);
 
-      // The platform wallet is not a seeded user, so its fee rows survive the
-      // two deletes above — every PLATFORM_FEE references a ride by id, and
-      // leaving them behind would inflate platform revenue on the next seed.
-      const seededRideIds = (
-        await prisma.ride.findMany({ where: { riderId: { in: ids } }, select: { id: true } })
-      ).map((r) => r.id);
-      for (let i = 0; i < seededRideIds.length; i += 1000) {
-        await prisma.transaction.deleteMany({
-          where: { referenceId: { in: seededRideIds.slice(i, i + 1000) } },
-        });
-      }
-      await prisma.withdrawalRequest.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.walletReservation.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.groupRideFaceVerification.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.groupRideMatchRequest.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.interstateBooking.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.rideHold.deleteMany({ where: { riderId: { in: ids } } });
-      await prisma.rideStop.deleteMany({ where: { ride: { riderId: { in: ids } } } });
-      await prisma.ride.deleteMany({ where: { riderId: { in: ids } } });
-      // Driver has three dependants of its own — the KYC rows it was approved
-      // on, and any interstate departure it was assigned to drive.
-      const driverIds = (
-        await prisma.driver.findMany({ where: { userId: { in: ids } }, select: { id: true } })
-      ).map((d) => d.id);
-      await prisma.driverKycReview.deleteMany({ where: { driverId: { in: driverIds } } });
-      await prisma.driverKycSubmission.deleteMany({ where: { driverId: { in: driverIds } } });
-      await prisma.interstateDeparture.updateMany({
-        where: { driverId: { in: driverIds } },
-        data: { driverId: null },
-      });
-      await prisma.driver.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.wallet.deleteMany({ where: { userId: { in: ids } } });
-      await prisma.user.deleteMany({ where: { id: { in: ids } } });
+          // Rows hanging directly off the user.
+          await tx.safetyAlert.deleteMany({ where: { userId: { in: ids } } });
+          await tx.userActivityEvent.deleteMany({ where: { userId: { in: ids } } });
+          await tx.notification.deleteMany({ where: { userId: { in: ids } } });
+          await tx.userConsent.deleteMany({ where: { userId: { in: ids } } });
+          await tx.riderKycAttempt.deleteMany({ where: { userId: { in: ids } } });
+
+          // Rows hanging off seeded rides. Demo drivers bid, chatted and drove
+          // on them; GPS traces and disputes would block the ride delete. The
+          // platform wallet's PLATFORM_FEE rows reference the ride id, not a
+          // seeded wallet — leaving them would inflate revenue on the next seed.
+          for (const chunk of chunks(seededRideIds)) {
+            await tx.chatMessage.deleteMany({ where: { rideId: { in: chunk } } });
+            await tx.driverBid.deleteMany({ where: { rideId: { in: chunk } } });
+            await tx.gpsLog.deleteMany({ where: { rideId: { in: chunk } } });
+            await tx.dispute.deleteMany({ where: { rideId: { in: chunk } } });
+            await tx.rideStop.deleteMany({ where: { rideId: { in: chunk } } });
+            await tx.transaction.deleteMany({ where: { referenceId: { in: chunk } } });
+          }
+
+          // Money rows.
+          await tx.transaction.deleteMany({ where: { walletId: { in: walletIds } } });
+          await tx.transaction.deleteMany({ where: { metadata: { path: ['seed'], equals: true } } });
+          await tx.withdrawalRequest.deleteMany({ where: { userId: { in: ids } } });
+          await tx.walletReservation.deleteMany({ where: { userId: { in: ids } } });
+          await tx.rideHold.deleteMany({ where: { riderId: { in: ids } } });
+
+          await tx.groupRideFaceVerification.deleteMany({ where: { userId: { in: ids } } });
+          await tx.groupRideMatchRequest.deleteMany({ where: { userId: { in: ids } } });
+          await tx.interstateBooking.deleteMany({ where: { userId: { in: ids } } });
+          await tx.ride.deleteMany({ where: { riderId: { in: ids } } });
+
+          // A seeded driver may have bid on, or been assigned to, a REAL
+          // rider's ride. Those rides stay; they just lose the fake driver.
+          await tx.driverBid.deleteMany({ where: { driverId: { in: driverIds } } });
+          await tx.ride.updateMany({
+            where: { driverId: { in: driverIds } },
+            data: { driverId: null },
+          });
+          await tx.driverKycReview.deleteMany({ where: { driverId: { in: driverIds } } });
+          await tx.driverKycSubmission.deleteMany({ where: { driverId: { in: driverIds } } });
+          await tx.interstateDeparture.updateMany({
+            where: { driverId: { in: driverIds } },
+            data: { driverId: null },
+          });
+          await tx.driver.deleteMany({ where: { userId: { in: ids } } });
+
+          await tx.virtualAccount.deleteMany({ where: { userId: { in: ids } } });
+          await tx.wallet.deleteMany({ where: { userId: { in: ids } } });
+          await tx.user.deleteMany({ where: { id: { in: ids } } });
+        },
+        { timeout: 30 * 60_000, maxWait: 60_000 },
+      );
 
       // The platform wallet survives, so its balance has to come back down by
       // the fees that just went away. It only ever moves by transaction, so

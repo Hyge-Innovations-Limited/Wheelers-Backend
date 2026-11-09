@@ -9,7 +9,7 @@ import type {
 } from '@wheleers/config';
 import type { GroupRideMatchCancelledEvent } from '@wheleers/kafka-schemas';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
-import { GroqClient } from '../LLM/groq.client';
+import { createLlm } from '../LLM/llm';
 import { verifySelfiePhoto } from '../LLM/face-check';
 import { authenticateHttpUser } from './authenticate';
 import { runIdempotentJsonRequest } from './idempotency';
@@ -17,7 +17,9 @@ import { readJsonBody, sendJson } from './utils';
 import { getNumber, getRecord, getString, isRecord } from '../utils/object';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { GroupRideFaceStorage } from '../storage/group-ride-face-storage';
+import { overLimit } from '../trip-chat/limits';
 import type { RedisClient } from '../redis/client';
+import { assertInServiceArea } from '../utils/service-area';
 
 interface GroupRideRouteDeps {
   jwtSecret: string;
@@ -275,6 +277,11 @@ export async function handleCreateGroupRideMatchRequestRoute(
 ): Promise<void> {
   try {
     const user = await authenticateHttpUser(req, deps.jwtSecret);
+    // Each request starts a route plan: a few a minute per rider.
+    if (await overLimit(deps.redisClient, `group-ride-create:${user.id}`, 10, 60)) {
+      sendJson(res, 429, { error: 'Too many requests. Try again in a minute.' });
+      return;
+    }
     const rawBody = await readJsonBody(req);
     if (!isRecord(rawBody)) {
       sendJson(res, 400, { error: 'Body must be a JSON object' });
@@ -291,6 +298,7 @@ export async function handleCreateGroupRideMatchRequestRoute(
         const pickup = parseWaypoint(rawBody, 'pickup');
         const destination = parseWaypoint(rawBody, 'destination');
         const stops = parseStops(rawBody, 'stops');
+        assertInServiceArea([pickup, destination, ...stops]);
         const plannedRoute = await deps.routePlanner.planRoute({
           origin: pickup,
           stops,
@@ -460,11 +468,7 @@ export async function handleGroupRideFaceCheckRoute(
       return;
     }
 
-    const groq = new GroqClient({
-      apiKey: deps.groqApiKey,
-      model: deps.groqModel,
-      timeoutMs: deps.groqTimeoutMs,
-    });
+    const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
     const verdict = await verifySelfiePhoto(groq, buffer, mimeType);
 
     sendJson(res, 200, {
@@ -600,11 +604,7 @@ export async function handleCompleteGroupRideFaceUploadRoute(
     // Look at the photo. Confirming the bytes exist says nothing about whether
     // they show a person — the same guardrail the WhatsApp flow applies has to
     // apply here, or the app is the way around it.
-    const groq = new GroqClient({
-      apiKey: deps.groqApiKey,
-      model: deps.groqModel,
-      timeoutMs: deps.groqTimeoutMs,
-    });
+    const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
     const download = await storage.download({
       bucket: request.faceVerification.bucket,
       objectKey: request.faceVerification.objectKey,

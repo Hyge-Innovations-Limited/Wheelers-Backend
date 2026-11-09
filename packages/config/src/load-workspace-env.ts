@@ -18,7 +18,7 @@ function stripMatchingQuotes(value: string): string {
   return value;
 }
 
-function parseWorkspaceEnv(content: string): Map<string, string> {
+export function parseWorkspaceEnv(content: string): Map<string, string> {
   const values = new Map<string, string>();
   const lines = content.split(/\r?\n/);
 
@@ -36,7 +36,12 @@ function parseWorkspaceEnv(content: string): Map<string, string> {
     }
 
     const key = line.slice(0, separatorIndex).trim();
-    let value = line.slice(separatorIndex + 1);
+    // Trimmed, as the scripts' loader (scripts/run-with-env.cjs) does. A stray
+    // space after a value used to reach the services but not the scripts: an
+    // account id with a space on the end is refused by the provider ("invalid
+    // username") while `npm run sms status`, reading the same line, said all
+    // was well.
+    let value = line.slice(separatorIndex + 1).trim();
 
     if (value.startsWith('-----BEGIN ') && !value.includes('-----END ')) {
       while (index + 1 < lines.length) {

@@ -1,13 +1,23 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { GoogleMapsRoutePlanner, validateRiderOffer } from '@wheleers/config';
-import { walletClient, virtualAccountClient, driverClient } from '@wheleers/db';
-import { RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
+import { walletClient, virtualAccountClient, driverClient, rideClient } from '@wheleers/db';
+import { RideOfferAcceptedEvent, RideRequestedEvent, RideRiderCounterOfferEvent } from '@wheleers/kafka-schemas';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { RedisClient } from '../redis/client';
 import { readRawBody, sendJson } from '../http/utils';
 import { decryptFlowRequest, encryptFlowResponse, verifyFlowToken } from './encryption';
+import { sendFlowOffersMessage } from './whatsapp-notifier';
+import { handleEditTripFlow } from './edit-trip-flow';
+import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
+import { handleWelcomeFlow } from './welcome-flow';
+import { recordFormStep } from '../whatsapp/transcript';
+import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
+import type { WhatsappNotifierDeps } from './whatsapp-notifier';
+import type { DecryptedFlowRequest } from './encryption';
 import type { FlowRequestBody } from './encryption';
+import { actionFor } from './flow-dispatch';
 import { geocodeAddress } from '../LLM/geocoding';
 import {
   getBids,
@@ -16,8 +26,15 @@ import {
   setRideState,
   getActiveRide,
   setActiveRide,
+  clearActiveRide,
   storeWhatsappRide,
   getPendingLocation,
+  storeFlowEstimate,
+  getFlowEstimate,
+  clearFlowEstimate,
+  storeFlowPendingAccept,
+  getFlowPendingAccept,
+  clearFlowPendingAccept,
   clearPendingLocation,
   clearBids,
   removeBid,
@@ -25,7 +42,7 @@ import {
   storeAcceptedBid,
   getAcceptedBid,
 } from './bid-state';
-import type { WhatsappBid } from './bid-state';
+import type { FlowEstimate, WhatsappBid } from './bid-state';
 import {
   buildBidListData,
   buildConfirmationData,
@@ -33,9 +50,13 @@ import {
   buildPaymentData,
   buildErrorData,
   buildRideSetupData,
+  buildFareConfirmData,
+  buildTopUpData,
   buildNotifyExitData,
 } from './flow-screens';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
+import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 
 export interface WhatsappFlowEndpointDeps {
   redisClient: RedisClient;
@@ -45,7 +66,29 @@ export interface WhatsappFlowEndpointDeps {
   googleMapsApiKey: string;
   routePlanner: GoogleMapsRoutePlanner;
   kycStorage?: DriverKycStorage;
+  /** When set, Find Drivers drops a 'Check offers' re-entry button in chat. */
+  notifier?: WhatsappNotifierDeps;
+  /** The original booking + offers flows. Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
+  legacyFlowsEnabled?: boolean;
+  /** The offers form confirmed a ride / found the wallet short: tell the chat what the rider must keep. */
+  onRideConfirmed?: OffersFormDeps['onRideConfirmed'];
+  onWalletShort?: OffersFormDeps['onWalletShort'];
+  onSearchCancelled?: OffersFormDeps['onSearchCancelled'];
+  /** Quick Actions form: where support points, the Withdraw button, opening an account number. */
+  supportContact?: QuickActionsFlowDeps['supportContact'];
+  onWithdraw?: QuickActionsFlowDeps['onWithdraw'];
+  ensureDepositAccount?: QuickActionsFlowDeps['ensureDepositAccount'];
+  onBookInChat?: QuickActionsFlowDeps['onBookInChat'];
+  /** Book a ride on the ride page: the chat gets its one Book a ride button (createQuickActionsChatHooks). */
+  onBookOnPage?: QuickActionsFlowDeps['onBookOnPage'];
+  /** A bid placed in the Edit-trip or Quick Actions form: the chat gets the See driver offers button. */
+  onBidPlaced?: QuickActionsFlowDeps['onBidPlaced'];
+  /** The Welcome form agreed for the first time: the chat says "You're all set." and carries on (createQuickActionsChatHooks). */
+  onWelcomeAgreed?: (userId: string) => Promise<void>;
 }
+
+/** The one Continue button on each screen of the two original flows. */
+const LEGACY_FLOW_ACTIONS = { RIDE_SETUP: 'estimate_fare', FARE_CONFIRM: 'find_drivers', BID_LIST: 'bid_action', TOP_UP: 'topup_check', RIDE_CONFIRMED: 'view_driver_profile', DRIVER_PROFILE: 'view_payment' } as const;
 
 const POLL_INTERVAL_MS = 1_000;
 const POLL_MAX_MS = 4_000;
@@ -58,8 +101,9 @@ async function pollForBids(
   redis: RedisClient,
   rideId: string,
   knownCount: number,
+  maxMs: number = POLL_MAX_MS,
 ): Promise<WhatsappBid[]> {
-  const deadline = Date.now() + POLL_MAX_MS;
+  const deadline = Date.now() + maxMs;
 
   while (Date.now() < deadline) {
     const bids = await getBids(redis, rideId);
@@ -152,7 +196,8 @@ async function resolveScreen(
 
 // ── Main flow action handler ───────────────────────────────────────────────
 
-async function handleFlowAction(
+/** Exported for the tests that drive a form request without Meta's encryption. */
+export async function handleFlowAction(
   body: FlowRequestBody,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
@@ -166,10 +211,61 @@ async function handleFlowAction(
   }
 
   const { rideId, userId } = tokenData;
+  // The rider's transcript: every step in a form, as it happens (admin reads it with the chat).
+  void recordFormStep(userId, rideId, body);
+
+  // ── The Edit-trip form (token `edit:<userId>`) is its own small flow ───
+  if (rideId === 'edit') {
+    return handleEditTripFlow(body, userId, {
+      redisClient: deps.redisClient,
+      googleMapsApiKey: deps.googleMapsApiKey,
+      routePlanner: deps.routePlanner,
+      publisher: deps.publisher,
+      onBidPlaced: deps.onBidPlaced,
+    });
+  }
+
+  // ── The offers form (token `bids:<userId>`): accept / change price / decline all / cancel ──
+  if (rideId === 'bids') {
+    return handleOffersFormFlow(body, userId, {
+      redisClient: deps.redisClient,
+      publisher: deps.publisher,
+      onRideConfirmed: deps.onRideConfirmed,
+      onWalletShort: deps.onWalletShort,
+      onSearchCancelled: deps.onSearchCancelled,
+    });
+  }
+
+  // ── The Welcome form (token `welcome:<userId>`): email, privacy policy, terms. Handled whatever the switch says. ──
+  if (rideId === 'welcome') {
+    return handleWelcomeFlow(body, userId, { redisClient: deps.redisClient, onWelcomeAgreed: deps.onWelcomeAgreed });
+  }
+
+  // ── Quick Actions (token `menu:<userId>`): the menu and everything behind it ──
+  if (rideId === 'menu') {
+    return handleQuickActionsFlow(body, userId, {
+      redisClient: deps.redisClient,
+      publisher: deps.publisher,
+      googleMapsApiKey: deps.googleMapsApiKey,
+      routePlanner: deps.routePlanner,
+      supportContact: deps.supportContact,
+      onRideConfirmed: deps.onRideConfirmed,
+      onWalletShort: deps.onWalletShort,
+      onSearchCancelled: deps.onSearchCancelled,
+      onWithdraw: deps.onWithdraw,
+      ensureDepositAccount: deps.ensureDepositAccount,
+      onBookInChat: deps.onBookInChat,
+      onBookOnPage: deps.onBookOnPage,
+      onBidPlaced: deps.onBidPlaced,
+    });
+  }
 
   // ── INIT — show appropriate screen based on ride state ────────────────
 
   if (body.action === 'INIT') {
+    if (rideId === 'offers') {
+      return await handleOffersInit(userId, deps);
+    }
     if (rideId === 'new') {
       return await handleRideSetupInit(userId, deps);
     }
@@ -179,6 +275,9 @@ async function handleFlowAction(
   // ── BACK — return to appropriate screen ───────────────────────────────
 
   if (body.action === 'BACK') {
+    if (rideId === 'offers') {
+      return await handleOffersInit(userId, deps);
+    }
     if (rideId === 'new') {
       return await handleRideSetupInit(userId, deps);
     }
@@ -189,16 +288,25 @@ async function handleFlowAction(
 
   if (body.action === 'data_exchange') {
     const data = body.data ?? {};
-    const action = data.action as string | undefined;
+    const action = actionFor(body, LEGACY_FLOW_ACTIONS) ?? undefined;
 
-    // ── RIDE_SETUP: find drivers ────────────────────────────────────────
+    // ── RIDE_SETUP: estimate fare, show FARE_CONFIRM ────────────────────
+    if (action === 'estimate_fare') {
+      return await handleEstimateFare(userId, data, deps);
+    }
+
+    // ── FARE_CONFIRM: find drivers ──────────────────────────────────────
     if (action === 'find_drivers') {
       return await handleFindDrivers(userId, data, deps);
     }
 
-    // Need a valid ride from here on
-    const meta = await getRideMeta(deps.redisClient, rideId);
-    if (!meta) {
+    // Need a valid ride from here on. The booking flow runs on a
+    // 'new:<user>' token — the ride it created is only reachable through
+    // the active-ride pointer, never through the token itself.
+    const sessionRideId =
+      rideId === 'new' || rideId === 'offers' ? await getActiveRide(deps.redisClient, userId) : rideId;
+    const meta = sessionRideId ? await getRideMeta(deps.redisClient, sessionRideId) : null;
+    if (!sessionRideId || !meta) {
       return { screen: 'SUCCESS', data: buildErrorData('This ride request has expired. Send a new message to book a ride.') };
     }
 
@@ -208,28 +316,62 @@ async function handleFlowAction(
       const selectedBid = data.selected_bid as string | undefined;
       const adjustAmount = Number(data.adjust_amount);
 
-      // If rider filled in adjust amount, update their offer in Redis
-      if (!isNaN(adjustAmount) && adjustAmount >= 100) {
+      // Empty selections mean the rider is on the no-offers-yet screen and
+      // tapped the button to refresh — wait briefly for fresh bids.
+      if (!selectedBid || !bidAction) {
+        const bids = await pollForBids(deps.redisClient, sessionRideId, 0);
+        return { screen: 'BID_LIST', data: buildBidListData(meta, bids) };
+      }
+
+      // A changed adjust amount is a COUNTER-OFFER, not an accept at the
+      // driver's price — publish it so every candidate driver sees the new
+      // number, and keep the rider on the offers page.
+      if (!isNaN(adjustAmount) && adjustAmount >= 100 && adjustAmount !== meta.offerNgn) {
+        // The old form never asks about auto-booking: a yes given elsewhere does not carry over.
+        await autoAcceptOffForChatPrice(deps.redisClient, sessionRideId).catch(() => undefined);
         meta.offerNgn = adjustAmount;
         await deps.redisClient.set(
-          `whatsapp:ride:${rideId}:meta`,
+          `whatsapp:ride:${sessionRideId}:meta`,
           JSON.stringify(meta),
           900,
         );
+        const counterEvent = RideRiderCounterOfferEvent.parse({
+          eventType: 'RIDE_RIDER_COUNTER_OFFER',
+          rideId: sessionRideId,
+          riderId: userId,
+          counterOfferNgn: adjustAmount,
+          timestamp: new Date().toISOString(),
+        });
+        await deps.publisher.publishRideEvent(counterEvent);
+        console.info('[whatsapp-flow] rider counter-offer sent', { rideId: sessionRideId, counterOfferNgn: adjustAmount });
+        const bids = await getBids(deps.redisClient, sessionRideId);
+        return {
+          screen: 'BID_LIST',
+          data: buildBidListData(
+            meta,
+            bids,
+            `Your new offer of ₦${adjustAmount.toLocaleString()} was sent to the drivers — updated responses will arrive shortly.`,
+          ),
+        };
       }
 
-      if (bidAction === 'accept' && selectedBid) {
-        return await handleAcceptBid(rideId, userId, selectedBid, meta, deps);
+      if (bidAction === 'accept') {
+        return await handleAcceptBid(sessionRideId, userId, selectedBid, meta, deps);
       }
 
-      if (bidAction === 'decline' && selectedBid) {
-        return await handleDeclineBid(rideId, userId, selectedBid, meta, deps);
+      if (bidAction === 'decline') {
+        return await handleDeclineBid(sessionRideId, userId, selectedBid, meta, deps);
       }
+    }
+
+    // ── TOP_UP: rider says they've transferred — re-check and book ──
+    if (action === 'topup_check') {
+      return await handleTopUpCheck(sessionRideId, userId, meta, deps);
     }
 
     // ── RIDE_CONFIRMED: view driver profile ─────────────────────────
     if (action === 'view_driver_profile') {
-      return await handleViewDriverProfile(rideId, deps);
+      return await handleViewDriverProfile(sessionRideId, deps);
     }
 
     // ── DRIVER_PROFILE: view payment ─────────────────────────────────
@@ -238,7 +380,7 @@ async function handleFlowAction(
     }
 
     // Default: resolve based on state
-    return await resolveScreen(rideId, userId, deps);
+    return await resolveScreen(sessionRideId, userId, deps);
   }
 
   return { screen: 'SUCCESS', data: buildErrorData('Something went wrong. Please try again.') };
@@ -246,6 +388,14 @@ async function handleFlowAction(
 
 // ── Accept selected driver ──────────────────────────────────────────────
 
+/** "bid-<driverId>@<price shown>" (older forms: "bid-<driverId>", or an index). */
+function parseSelectedBid(selected: string): { key: string; shownNgn?: number } {
+  const [key, shown] = selected.replace('bid-', '').split('@');
+  const shownNgn = shown !== undefined ? Number(shown) : NaN;
+  return { key: key ?? '', ...(Number.isFinite(shownNgn) ? { shownNgn } : {}) };
+}
+
+/** The old form's accept, under the ride's one booking lock (rides/booking-lock.ts) like every other door. */
 async function handleAcceptBid(
   rideId: string,
   userId: string,
@@ -253,12 +403,147 @@ async function handleAcceptBid(
   meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
+  const guarded = await acceptBidGuarded(rideId, userId, selectedBid, meta, deps);
+  if (guarded === 'busy') return { screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your ride is being booked — one moment.') };
+  if (guarded === 'booked') return { screen: 'BID_LIST', data: buildBidListData(meta, await getBids(deps.redisClient, rideId), 'Your ride is already booked.') };
+  return guarded;
+}
+
+/** The accept under the lock: 'busy' (a booking is going through), 'booked' (one went out already), or the form's next screen. */
+async function acceptBidGuarded(
+  rideId: string,
+  userId: string,
+  selectedBid: string,
+  meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<'busy' | 'booked' | { screen: string; data: Record<string, unknown> }> {
+  const lock = await takeBookingLock(deps.redisClient, rideId, BOOKING_LOCK_WAIT_MS);
+  if (!lock) return 'busy';
+  try {
+    const state = await getRideState(deps.redisClient, rideId).catch(() => null);
+    if (state === 'confirmed' || state === 'in_progress' || (await acceptSentFor(deps.redisClient, rideId))) return 'booked';
+    // Money held for another driver: a booking in flight ('busy'), unless it is stale (an accept that failed) and let go.
+    const bids = await getBids(deps.redisClient, rideId);
+    const { key } = parseSelectedBid(selectedBid);
+    const chosen = bids.find((b) => b.driverId === key) ?? bids[parseInt(key, 10)];
+    if (chosen && (await releaseStaleHoldForOther(deps.redisClient, rideId, chosen.driverUserId)) === 'blocked') return 'busy';
+    return await acceptBidOnce(rideId, userId, selectedBid, meta, deps);
+  } finally {
+    await releaseBookingLock(deps.redisClient, lock);
+  }
+}
+
+async function acceptBidOnce(
+  rideId: string,
+  userId: string,
+  selectedBid: string,
+  meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<{ screen: string; data: Record<string, unknown> }> {
   const bids = await getBids(deps.redisClient, rideId);
-  const bidIndex = parseInt(selectedBid.replace('bid-', ''), 10);
-  const bid = bids[bidIndex];
+  const { key, shownNgn } = parseSelectedBid(selectedBid);
+  const bid = bids.find((b) => b.driverId === key) ?? bids[parseInt(key, 10)];
 
   if (!bid) {
     return { screen: 'BID_LIST', data: buildBidListData(meta, bids) };
+  }
+  // Never at a price the rider did not see.
+  if (shownNgn !== undefined && Math.abs(bid.counterOfferNgn - shownNgn) >= 0.5) {
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, `${bid.driverName} changed their price to ₦${bid.counterOfferNgn.toLocaleString()}. Nothing was charged.`) };
+  }
+
+  // ── The moment of commitment — SAME guards as the chat pay path and the
+  // app's ride:accept_offer. This used to publish the accept blind, which
+  // is exactly the class of bug (driver sold twice, unsecured rides) the
+  // marketplace overhaul removed. The flow must never be a way around it.
+  const driver = await driverClient.findById(bid.driverId).catch(() => null);
+  const driverFresh =
+    driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
+  const driverBusy = driver
+    ? await rideClient.findActiveByDriver(bid.driverId).catch(() => null)
+    : null;
+  if (!driver || driver.status !== 'ONLINE' || !driverFresh || driverBusy) {
+    console.info('[whatsapp-flow] accept blocked: driver unavailable', {
+      rideId,
+      driverId: bid.driverId,
+      found: !!driver,
+      status: driver?.status ?? null,
+      fresh: driverFresh,
+      busyRideId: driverBusy?.id ?? null,
+    });
+    const remaining = await removeBid(deps.redisClient, rideId, bid.driverId);
+    if (remaining.length > 0) {
+      return { screen: 'BID_LIST', data: buildBidListData(meta, remaining) };
+    }
+    await setRideState(deps.redisClient, rideId, 'searching');
+    return {
+      screen: 'BID_LIST',
+      data: buildBidListData(
+        meta,
+        remaining,
+        `${bid.driverName} just became unavailable — your money has not moved. New offers will arrive here.`,
+      ),
+    };
+  }
+
+  // No hold, no match — the fare is locked before the accept is published.
+  const wallet = await walletClient.findByUserId(userId).catch(() => null);
+  const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
+  if (!wallet || balanceNgn < bid.counterOfferNgn) {
+    console.info('[whatsapp-flow] accept blocked: wallet short', {
+      rideId,
+      balanceNgn,
+      fareNgn: bid.counterOfferNgn,
+    });
+    const { virtualAccount } = await getWalletInfo(userId);
+    await storeFlowPendingAccept(deps.redisClient, userId, { rideId, driverId: bid.driverId, fareNgn: bid.counterOfferNgn });
+    return {
+      screen: 'TOP_UP',
+      data: buildTopUpData({
+        fareNgn: bid.counterOfferNgn,
+        balanceNgn,
+        virtualAccount,
+      }),
+    };
+  }
+  // One driver, one rider: the same claim every other accept takes.
+  const claimKey = `whatsapp:driver:${bid.driverId}:accepting`;
+  const claimed = await deps.redisClient.setIfNotExists(claimKey, rideId, 60).catch(() => true);
+  const claimOwner = claimed ? rideId : await deps.redisClient.get(claimKey).catch(() => null);
+  if (!claimed && claimOwner !== rideId) {
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, `Another rider is confirming ${bid.driverName} right now — your money has not moved. Pick another driver.`) };
+  }
+  const releaseClaim = () => deps.redisClient.del(claimKey).catch(() => undefined);
+  try {
+    const hold = await walletClient.createRideHold({
+      rideId,
+      walletId: wallet.id,
+      riderId: userId,
+      driverUserId: bid.driverUserId,
+      amountNgn: bid.counterOfferNgn,
+    });
+    if (!hold.applied) {
+      // Money already held on the ride must be this driver's; then at this fare.
+      const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
+      if (existing?.status === 'ACTIVE' && existing.driverUserId && existing.driverUserId !== bid.driverUserId) {
+        await releaseClaim();
+        return { screen: 'BID_LIST', data: buildBidListData(meta, bids, 'Your ride is being booked — one moment.') };
+      }
+      if (hold.holdAmountNgn !== bid.counterOfferNgn) {
+        const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: bid.counterOfferNgn });
+        if (!adjusted || (!adjusted.applied && adjusted.holdAmountNgn !== bid.counterOfferNgn)) throw new Error('hold could not be adjusted');
+      }
+    }
+  } catch (holdError) {
+    console.warn('[whatsapp-flow] accept blocked: hold failed', {
+      rideId,
+      error: holdError instanceof Error ? holdError.message : String(holdError),
+    });
+    await releaseClaim();
+    return {
+      screen: 'BID_LIST',
+      data: buildBidListData(meta, bids, 'Could not lock funds in your wallet. Please try again.'),
+    };
   }
 
   const acceptEvent = RideOfferAcceptedEvent.parse({
@@ -267,11 +552,26 @@ async function handleAcceptBid(
     riderId: userId,
     driverId: bid.driverId,
     driverUserId: bid.driverUserId,
+    bidId: bid.bidId,
     agreedFareNgn: bid.counterOfferNgn,
+    paymentMethod: 'WALLET',
     timestamp: new Date().toISOString(),
   });
-  await deps.publisher.publishRideEvent(acceptEvent);
+  await notePublishing(deps.redisClient, rideId, bid.driverUserId);
+  try {
+    await deps.publisher.publishRideEvent(acceptEvent);
+  } catch {
+    // Not sent: neither the claim nor the money stays.
+    await clearPublishing(deps.redisClient, rideId);
+    await releaseClaim();
+    await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
+    return { screen: 'BID_LIST', data: buildBidListData(meta, bids, 'Could not confirm just now — nothing was charged. Try again.') };
+  }
+  await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
+  await clearPublishing(deps.redisClient, rideId);
   await setRideState(deps.redisClient, rideId, 'confirmed');
+  await clearFlowPendingAccept(deps.redisClient, userId).catch(() => undefined);
+  console.info('[whatsapp-flow] accept confirmed', { rideId, driverId: bid.driverId, fareNgn: bid.counterOfferNgn });
 
   // Fetch driver details for profile flow
   let driverPhone = '';
@@ -312,6 +612,72 @@ async function handleAcceptBid(
   };
 }
 
+// ── TOP_UP re-check — book the reserved driver once money landed ────────
+
+async function handleTopUpCheck(
+  rideId: string,
+  userId: string,
+  meta: NonNullable<Awaited<ReturnType<typeof getRideMeta>>>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<{ screen: string; data: Record<string, unknown> }> {
+  const pending = await getFlowPendingAccept(deps.redisClient, userId);
+  if (!pending || pending.rideId !== rideId) {
+    return {
+      screen: 'SUCCESS',
+      data: buildNotifyExitData("This booking session has expired. Send 'hi' to book again — your money has not moved."),
+    };
+  }
+
+  const bids = await getBids(deps.redisClient, rideId);
+  const bid = bids.find((b) => b.driverId === pending.driverId);
+  if (!bid) {
+    await clearFlowPendingAccept(deps.redisClient, userId);
+    return {
+      screen: 'SUCCESS',
+      data: buildNotifyExitData('That driver became unavailable — your money has not moved. New offers will arrive as messages in the chat.'),
+    };
+  }
+
+  const wallet = await walletClient.findByUserId(userId).catch(() => null);
+  const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
+  if (balanceNgn < bid.counterOfferNgn) {
+    const { virtualAccount } = await getWalletInfo(userId);
+    return {
+      screen: 'TOP_UP',
+      data: buildTopUpData({
+        fareNgn: bid.counterOfferNgn,
+        balanceNgn,
+        virtualAccount,
+        status: `No new credit yet (wallet: ₦${balanceNgn.toLocaleString()}). Transfers usually land within a minute — tap again shortly.`,
+      }),
+    };
+  }
+
+  // Funded — run the same guarded accept. From TOP_UP the routing model
+  // cannot go back to BID_LIST, so a driver-side failure exits via SUCCESS.
+  const result = await acceptBidGuarded(rideId, userId, `bid-${pending.driverId}${pending.fareNgn !== undefined ? `@${pending.fareNgn}` : ''}`, meta, deps);
+  // A booking going through right now: the choice stays, and the button asks again shortly.
+  if (result === 'busy') {
+    const { virtualAccount } = await getWalletInfo(userId);
+    return {
+      screen: 'TOP_UP',
+      data: buildTopUpData({ fareNgn: bid.counterOfferNgn, balanceNgn, virtualAccount, status: 'Your ride is being booked — tap again in a moment.' }),
+    };
+  }
+  if (result === 'booked') {
+    await clearFlowPendingAccept(deps.redisClient, userId);
+    return { screen: 'SUCCESS', data: buildNotifyExitData('Your ride is already booked.') };
+  }
+  if (result.screen === 'BID_LIST') {
+    await clearFlowPendingAccept(deps.redisClient, userId);
+    return {
+      screen: 'SUCCESS',
+      data: buildNotifyExitData('That driver became unavailable — your money has not moved. New offers will arrive as messages in the chat.'),
+    };
+  }
+  return result;
+}
+
 // ── Decline selected driver ─────────────────────────────────────────────
 
 async function handleDeclineBid(
@@ -322,8 +688,8 @@ async function handleDeclineBid(
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
   const bids = await getBids(deps.redisClient, rideId);
-  const bidIndex = parseInt(selectedBid.replace('bid-', ''), 10);
-  const bid = bids[bidIndex];
+  const declineKey = parseSelectedBid(selectedBid).key;
+  const bid = bids.find((b) => b.driverId === declineKey) ?? bids[parseInt(declineKey, 10)];
 
   if (bid) {
     const remaining = await removeBid(deps.redisClient, rideId, bid.driverId);
@@ -420,7 +786,24 @@ async function handleRideSetupInit(
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
   const existingRideId = await getActiveRide(deps.redisClient, userId);
   if (existingRideId) {
-    return await resolveScreen(existingRideId, userId, deps);
+    const existingMeta = await getRideMeta(deps.redisClient, existingRideId);
+    if (existingMeta) {
+      // Meta only allows a flow to OPEN on the entry screen — answering
+      // INIT with BID_LIST is rejected client-side as an invalid screen
+      // transition. Offers are reachable through the 'View offers'
+      // message (which navigates directly); here we can only inform.
+      return {
+        screen: 'RIDE_SETUP',
+        data: buildRideSetupData({
+          pickupAddress: existingMeta.pickupAddress,
+          destinationAddress: existingMeta.destinationAddress,
+          error:
+            "You have a ride in progress — driver offers arrive as 'View offers' messages in this chat. Say 'cancel ride' in the chat to start over.",
+        }),
+      };
+    }
+    // A pointer to a ride whose data expired must not block booking.
+    await clearActiveRide(deps.redisClient, userId);
   }
 
   const pendingLocation = await getPendingLocation(deps.redisClient, userId);
@@ -430,22 +813,45 @@ async function handleRideSetupInit(
     data: buildRideSetupData({
       pickupAddress: pendingLocation?.address ?? '',
       destinationAddress: '',
-      suggestedFareNgn: 0,
     }),
   };
 }
 
-// ── Find drivers — geocode, plan route, create ride ─────────────────────
+// ── Offers flow INIT — entry screen IS the bid list ─────────────────────
 
-async function handleFindDrivers(
+async function handleOffersInit(
+  userId: string,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<{ screen: string; data: Record<string, unknown> }> {
+  const rideId = await getActiveRide(deps.redisClient, userId);
+  const meta = rideId ? await getRideMeta(deps.redisClient, rideId) : null;
+  if (!rideId || !meta) {
+    return {
+      screen: 'BID_LIST',
+      data: buildBidListData(
+        { riderId: userId, phone: '', pickupAddress: '—', destinationAddress: '—', offerNgn: 0, suggestedFareNgn: 0, paymentMethod: 'WALLET', createdAt: new Date().toISOString() },
+        [],
+        "This request has ended. Send 'hi' in the chat to book a new ride.",
+      ),
+    };
+  }
+  const state = await getRideState(deps.redisClient, rideId);
+  if (state === 'confirmed' || state === 'in_progress' || state === 'completed') {
+    return await resolveScreen(rideId, userId, deps);
+  }
+  const bids = await getBids(deps.redisClient, rideId);
+  return { screen: 'BID_LIST', data: buildBidListData(meta, bids) };
+}
+
+// ── Estimate fare — geocode + plan route, hand off to FARE_CONFIRM ──────
+
+async function handleEstimateFare(
   userId: string,
   data: Record<string, unknown>,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<{ screen: string; data: Record<string, unknown> }> {
   const pickupAddress = (data.pickup_address as string)?.trim();
   const destinationAddress = (data.destination_address as string)?.trim();
-  const offerAmount = Number(data.offer_amount);
-  const paymentMethod = 'WALLET' as const;
 
   if (!pickupAddress || pickupAddress.length < 3) {
     return {
@@ -453,7 +859,6 @@ async function handleFindDrivers(
       data: buildRideSetupData({
         pickupAddress: pickupAddress ?? '',
         destinationAddress: destinationAddress ?? '',
-        suggestedFareNgn: offerAmount || 0,
         error: 'Enter a more specific pickup (street, landmark, bus stop)',
       }),
     };
@@ -465,7 +870,6 @@ async function handleFindDrivers(
       data: buildRideSetupData({
         pickupAddress,
         destinationAddress: destinationAddress ?? '',
-        suggestedFareNgn: offerAmount || 0,
         error: 'Enter a more specific destination (street, landmark, bus stop)',
       }),
     };
@@ -473,21 +877,25 @@ async function handleFindDrivers(
 
   const existingRide = await getActiveRide(deps.redisClient, userId);
   if (existingRide) {
-    return {
-      screen: 'RIDE_SETUP',
-      data: buildRideSetupData({
-        pickupAddress,
-        destinationAddress,
-        suggestedFareNgn: offerAmount || 0,
-        error: "You have an active ride. Say 'cancel ride' on WhatsApp first.",
-      }),
-    };
+    const existingMeta = await getRideMeta(deps.redisClient, existingRide);
+    if (existingMeta) {
+      return {
+        screen: 'RIDE_SETUP',
+        data: buildRideSetupData({
+          pickupAddress,
+          destinationAddress,
+          error: "You have an active ride. Say 'cancel ride' on WhatsApp first.",
+        }),
+      };
+    }
+    await clearActiveRide(deps.redisClient, userId);
   }
 
+  // A location pin shared in chat pre-fills pickup; only trust its coordinates
+  // when the rider kept that exact address.
   const pendingLocation = await getPendingLocation(deps.redisClient, userId);
   let pickupGeo: { lat: number; lng: number; formattedAddress: string } | null = null;
-
-  if (pendingLocation) {
+  if (pendingLocation && pendingLocation.address === pickupAddress) {
     pickupGeo = { lat: pendingLocation.lat, lng: pendingLocation.lng, formattedAddress: pendingLocation.address };
     await clearPendingLocation(deps.redisClient, userId);
   } else {
@@ -500,7 +908,6 @@ async function handleFindDrivers(
       data: buildRideSetupData({
         pickupAddress,
         destinationAddress,
-        suggestedFareNgn: offerAmount || 0,
         error: `Could not find "${pickupAddress}". Try a landmark, bus stop, or street name.`,
       }),
     };
@@ -513,7 +920,6 @@ async function handleFindDrivers(
       data: buildRideSetupData({
         pickupAddress,
         destinationAddress,
-        suggestedFareNgn: offerAmount || 0,
         error: `Could not find "${destinationAddress}". Try a landmark, bus stop, or street name.`,
       }),
     };
@@ -536,44 +942,12 @@ async function handleFindDrivers(
       data: buildRideSetupData({
         pickupAddress,
         destinationAddress,
-        suggestedFareNgn: offerAmount || 0,
         error: 'Could not find a driving route between those two points. Please check the addresses.',
       }),
     };
   }
 
-  const suggestedFareNgn = plannedRoute.suggestedFareNgn;
-  const riderOfferNgn = offerAmount > 0 ? offerAmount : suggestedFareNgn;
-  const validation = validateRiderOffer(riderOfferNgn, suggestedFareNgn);
-  const finalOffer = validation.valid ? riderOfferNgn : suggestedFareNgn;
-
-  const rideId = randomUUID();
-  const phone = await lookupPhoneByUserId(deps.redisClient, userId) ?? '';
-
-  const event = RideRequestedEvent.parse({
-    eventType: 'RIDE_REQUESTED',
-    rideId,
-    riderId: userId,
-    pickup: { lat: pickupGeo.lat, lng: pickupGeo.lng, address: pickupGeo.formattedAddress },
-    destination: { lat: destGeo.lat, lng: destGeo.lng, address: destGeo.formattedAddress },
-    stops: [],
-    plannedDistanceKm: plannedRoute.distanceKm,
-    plannedDurationSeconds: plannedRoute.durationSeconds,
-    fareEstimateNgn: suggestedFareNgn,
-    paymentMethod,
-    riderOfferNgn: finalOffer,
-    suggestedFareNgn,
-    minOfferNgn: plannedRoute.minOfferNgn,
-    ratePerKmNgn: plannedRoute.ratePerKmNgn,
-    route: plannedRoute.geometry,
-    timestamp: new Date().toISOString(),
-  });
-
-  await deps.publisher.publishRideEvent(event);
-
-  await storeWhatsappRide(deps.redisClient, rideId, {
-    riderId: userId,
-    phone,
+  await storeFlowEstimate(deps.redisClient, userId, {
     pickupAddress: pickupGeo.formattedAddress,
     pickupLat: pickupGeo.lat,
     pickupLng: pickupGeo.lng,
@@ -582,39 +956,218 @@ async function handleFindDrivers(
     destinationLng: destGeo.lng,
     distanceKm: plannedRoute.distanceKm,
     durationSeconds: plannedRoute.durationSeconds,
+    suggestedFareNgn: plannedRoute.suggestedFareNgn,
+    minOfferNgn: plannedRoute.minOfferNgn,
+    ratePerKmNgn: plannedRoute.ratePerKmNgn,
+    geometry: plannedRoute.geometry,
+  });
+
+  return {
+    screen: 'FARE_CONFIRM',
+    data: buildFareConfirmData({
+      pickupAddress: pickupGeo.formattedAddress,
+      destinationAddress: destGeo.formattedAddress,
+      suggestedFareNgn: plannedRoute.suggestedFareNgn,
+      minOfferNgn: plannedRoute.minOfferNgn,
+      distanceKm: plannedRoute.distanceKm,
+      durationSeconds: plannedRoute.durationSeconds,
+    }),
+  };
+}
+
+// ── Find drivers — create the ride from the confirmed estimate ──────────
+
+async function handleFindDrivers(
+  userId: string,
+  data: Record<string, unknown>,
+  deps: WhatsappFlowEndpointDeps,
+): Promise<{ screen: string; data: Record<string, unknown> }> {
+  const pickupAddress = (data.pickup_address as string)?.trim();
+  const destinationAddress = (data.destination_address as string)?.trim();
+  const offerAmount = Number(data.offer_amount);
+  const paymentMethod = 'WALLET' as const;
+
+  // Meta's routing model is forward-only, so a failure here cannot send the
+  // rider back to RIDE_SETUP — redisplay FARE_CONFIRM or exit via SUCCESS.
+  if (!pickupAddress || !destinationAddress) {
+    return {
+      screen: 'SUCCESS',
+      data: buildNotifyExitData("Something went wrong with that booking. Send 'hi' to start again."),
+    };
+  }
+
+  const existingRide = await getActiveRide(deps.redisClient, userId);
+  if (existingRide) {
+    const existingMeta = await getRideMeta(deps.redisClient, existingRide);
+    if (existingMeta) {
+      return {
+        screen: 'SUCCESS',
+        data: buildNotifyExitData("You already have an active ride. Say 'cancel ride' in the chat first if you want to rebook."),
+      };
+    }
+    await clearActiveRide(deps.redisClient, userId);
+  }
+
+  // Reuse the geocode + route from the estimate step; recompute only when the
+  // cached estimate expired or no longer matches the addresses on screen.
+  let route: FlowEstimate | null = await getFlowEstimate(deps.redisClient, userId);
+  if (route && (route.pickupAddress !== pickupAddress || route.destinationAddress !== destinationAddress)) {
+    route = null;
+  }
+
+  if (!route) {
+    const pickupGeo = await geocodeAddress(deps.googleMapsApiKey, `${pickupAddress}, Lagos, Nigeria`);
+    const destGeo = pickupGeo
+      ? await geocodeAddress(deps.googleMapsApiKey, `${destinationAddress}, Lagos, Nigeria`)
+      : null;
+    if (!pickupGeo || !destGeo) {
+      return {
+        screen: 'SUCCESS',
+        data: buildNotifyExitData("Your fare estimate expired and we couldn't confirm the route. Send 'hi' to start again."),
+      };
+    }
+
+    let plannedRoute: Awaited<ReturnType<typeof deps.routePlanner.planRoute>>;
+    try {
+      plannedRoute = await deps.routePlanner.planRoute({
+        origin: pickupGeo,
+        destination: destGeo,
+      });
+    } catch (error) {
+      console.warn('[whatsapp-flow] route planning failed', {
+        pickup: pickupGeo.formattedAddress,
+        destination: destGeo.formattedAddress,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        screen: 'SUCCESS',
+        data: buildNotifyExitData("We couldn't map a driving route for that trip. Send 'hi' to try again."),
+      };
+    }
+
+    route = {
+      pickupAddress: pickupGeo.formattedAddress,
+      pickupLat: pickupGeo.lat,
+      pickupLng: pickupGeo.lng,
+      destinationAddress: destGeo.formattedAddress,
+      destinationLat: destGeo.lat,
+      destinationLng: destGeo.lng,
+      distanceKm: plannedRoute.distanceKm,
+      durationSeconds: plannedRoute.durationSeconds,
+      suggestedFareNgn: plannedRoute.suggestedFareNgn,
+      minOfferNgn: plannedRoute.minOfferNgn,
+      ratePerKmNgn: plannedRoute.ratePerKmNgn,
+      geometry: plannedRoute.geometry,
+    };
+  }
+
+  const suggestedFareNgn = route.suggestedFareNgn;
+  const riderOfferNgn = offerAmount > 0 ? offerAmount : suggestedFareNgn;
+  const validation = validateRiderOffer(riderOfferNgn, suggestedFareNgn);
+  if (!validation.valid) {
+    return {
+      screen: 'FARE_CONFIRM',
+      data: buildFareConfirmData({
+        pickupAddress: route.pickupAddress,
+        destinationAddress: route.destinationAddress,
+        suggestedFareNgn,
+        minOfferNgn: route.minOfferNgn,
+        distanceKm: route.distanceKm,
+        durationSeconds: route.durationSeconds,
+        error: validation.reason ?? 'That offer is too low. Try again.',
+      }),
+    };
+  }
+  const finalOffer = riderOfferNgn;
+
+  const rideId = randomUUID();
+  const phone = await lookupPhoneByUserId(deps.redisClient, userId) ?? '';
+
+  const event = RideRequestedEvent.parse({
+    eventType: 'RIDE_REQUESTED',
+    channel: 'WHATSAPP',
+    rideId,
+    riderId: userId,
+    pickup: { lat: route.pickupLat, lng: route.pickupLng, address: route.pickupAddress },
+    destination: { lat: route.destinationLat, lng: route.destinationLng, address: route.destinationAddress },
+    stops: [],
+    plannedDistanceKm: route.distanceKm,
+    plannedDurationSeconds: route.durationSeconds,
+    fareEstimateNgn: suggestedFareNgn,
+    paymentMethod,
+    riderOfferNgn: finalOffer,
+    suggestedFareNgn,
+    minOfferNgn: route.minOfferNgn,
+    ratePerKmNgn: route.ratePerKmNgn,
+    route: route.geometry,
+    ...(await searchTripDetails(deps.redisClient, userId)),
+    timestamp: new Date().toISOString(),
+  });
+
+  await deps.publisher.publishRideEvent(event);
+  await clearSaidTripDetails(deps.redisClient, userId);
+
+  await storeWhatsappRide(deps.redisClient, rideId, {
+    riderId: userId,
+    phone,
+    source: 'flow',
+    pickupAddress: route.pickupAddress,
+    pickupLat: route.pickupLat,
+    pickupLng: route.pickupLng,
+    destinationAddress: route.destinationAddress,
+    destinationLat: route.destinationLat,
+    destinationLng: route.destinationLng,
+    distanceKm: route.distanceKm,
+    durationSeconds: route.durationSeconds,
     offerNgn: finalOffer,
     suggestedFareNgn,
     paymentMethod,
     createdAt: new Date().toISOString(),
   });
   await setActiveRide(deps.redisClient, userId, rideId);
+  await clearFlowEstimate(deps.redisClient, userId);
+  await clearPendingLocation(deps.redisClient, userId).catch(() => undefined);
+  await setRideState(deps.redisClient, rideId, 'bidding');
 
-  // Poll briefly — Meta shows a loading spinner while we wait
-  const bids = await pollForBids(deps.redisClient, rideId, 0);
-
-  if (bids.length > 0) {
-    await setRideState(deps.redisClient, rideId, 'bidding');
-    return {
-      screen: 'BID_LIST',
-      data: buildBidListData(
-        {
-          riderId: userId,
-          phone,
-          pickupAddress: pickupGeo.formattedAddress,
-          destinationAddress: destGeo.formattedAddress,
-          offerNgn: finalOffer,
-          suggestedFareNgn,
-          paymentMethod,
-          createdAt: new Date().toISOString(),
-        },
-        bids,
-      ),
+  // Drop a re-entry button in the chat right away: if the rider closes the
+  // form while we search, tapping it re-opens the offers page any time —
+  // they are never stranded waiting for the first bid.
+  if (deps.legacyFlowsEnabled && deps.notifier && phone) {
+    const entryMeta = {
+      riderId: userId,
+      phone,
+      pickupAddress: route.pickupAddress,
+      destinationAddress: route.destinationAddress,
+      offerNgn: finalOffer,
+      suggestedFareNgn,
+      paymentMethod,
+      createdAt: new Date().toISOString(),
+      source: 'flow' as const,
     };
+    void sendFlowOffersMessage(deps.notifier, phone, userId, entryMeta, []).catch((err) =>
+      console.warn('[whatsapp-flow] re-entry message failed', err),
+    );
   }
 
+  // Stay in the flow: hold up to 8.5s (Meta cuts us off around 10), then land
+  // on the offers page either way — empty state has its own refresh button.
+  const bids = await pollForBids(deps.redisClient, rideId, 0, 8_500);
+
   return {
-    screen: 'SUCCESS',
-    data: buildNotifyExitData("We're finding drivers near you! You'll get a notification as soon as someone is interested."),
+    screen: 'BID_LIST',
+    data: buildBidListData(
+      {
+        riderId: userId,
+        phone,
+        pickupAddress: route.pickupAddress,
+        destinationAddress: route.destinationAddress,
+        offerNgn: finalOffer,
+        suggestedFareNgn,
+        paymentMethod,
+        createdAt: new Date().toISOString(),
+      },
+      bids,
+    ),
   };
 }
 
@@ -625,20 +1178,68 @@ export async function handleWhatsappFlowEndpoint(
   res: ServerResponse,
   deps: WhatsappFlowEndpointDeps,
 ): Promise<void> {
+  let decrypted: DecryptedFlowRequest;
   try {
     const rawBody = await readRawBody(req);
     const envelope = JSON.parse(rawBody.toString('utf8'));
+    decrypted = decryptFlowRequest(envelope, deps.privateKeyPem);
+  } catch (error) {
+    // Meta's spec: a 421 tells WhatsApp our public key changed — it
+    // re-fetches the key and re-encrypts. A 500 here leaves Meta stuck on
+    // a stale cached key forever (exactly the health-check OAEP failure).
+    console.warn('[whatsapp-flow] could not decrypt request — answering 421 so Meta refreshes the key', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.statusCode = 421;
+    res.end();
+    return;
+  }
 
-    const { decryptedBody, aesKey, iv } = decryptFlowRequest(envelope, deps.privateKeyPem);
+  try {
+    const started = Date.now();
+    const body = decrypted.decryptedBody;
+    if (body.action !== 'ping') {
+      console.info('[whatsapp-flow] request', {
+        action: body.action,
+        screen: body.screen ?? null,
+        dataAction: (body.data?.action as string) ?? null,
+        data: JSON.stringify(body.data ?? {}).slice(0, 400),
+        flowToken: body.flow_token?.slice(0, 24),
+      });
+    }
+    const response = await handleFlowAction(body, deps);
+    if (body.action !== 'ping') {
+      console.info('[whatsapp-flow] response', {
+        action: body.action,
+        dataAction: (body.data?.action as string) ?? null,
+        screen: response.screen,
+        durationMs: Date.now() - started,
+      });
+    }
 
-    const response = await handleFlowAction(decryptedBody, deps);
-
-    const encrypted = encryptFlowResponse(response, aesKey, iv);
+    const encrypted = encryptFlowResponse(response, decrypted.aesKey, decrypted.iv);
     res.statusCode = 200;
     res.setHeader('content-type', 'text/plain');
     res.end(encrypted);
   } catch (error) {
+    // A 500 shows the rider a hard error banner and kills the flow. Whatever
+    // broke server-side, hand back a graceful terminal screen instead — the
+    // money paths are guarded transactionally, so exiting is always safe.
     console.error('[whatsapp-flow] Endpoint error', error);
-    sendJson(res, 500, { error: 'Internal error' });
+    try {
+      const fallback = encryptFlowResponse(
+        {
+          screen: 'SUCCESS',
+          data: buildNotifyExitData("Something went wrong on our side — nothing was charged. Send 'hi' to try again."),
+        },
+        decrypted.aesKey,
+        decrypted.iv,
+      );
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/plain');
+      res.end(fallback);
+    } catch {
+      sendJson(res, 500, { error: 'Internal error' });
+    }
   }
 }

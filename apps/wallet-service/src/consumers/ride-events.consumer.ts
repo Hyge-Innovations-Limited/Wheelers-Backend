@@ -1,3 +1,4 @@
+import { rideClient } from '@wheleers/db';
 import type { MessageContext } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 import { calculateRideFees } from '@wheleers/config';
@@ -9,14 +10,11 @@ export function createRideEventsConsumer(params: {
   walletRepository: WalletRepository;
   walletEventsProducer: WalletEventsProducer;
   serviceId?: string;
-  /** Real-money escrow around the ride lifecycle (see cash-settlement.ts). */
-  cashEscrow?: import('../handlers/cash-settlement').CashEscrow;
 }) {
   const {
     walletRepository,
     walletEventsProducer,
     serviceId = 'wallet-service',
-    cashEscrow,
   } = params;
 
   return {
@@ -25,9 +23,10 @@ export function createRideEventsConsumer(params: {
       if (!event) return;
 
       if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
-        // Cash rides skip wallet hold — driver collects cash directly
-        if (event.paymentMethod === 'CASH') {
-          console.info(`[${serviceId}][escrow] hold skipped — cash ride`, {
+        // Only wallet rides hold naira: cash is collected by the driver, and an XLM
+        // ride is paid on Stellar from the rider's XLM balance.
+        if (event.paymentMethod !== 'WALLET') {
+          console.info(`[${serviceId}][escrow] hold skipped — ${event.paymentMethod.toLowerCase()} ride`, {
             rideId: event.rideId,
             riderId: event.riderId,
           });
@@ -82,15 +81,9 @@ export function createRideEventsConsumer(params: {
             reason: 'ride_fare_hold',
           }, { key: event.rideId });
 
-          // Ledger held — now move the REAL cash into escrow so a mid-ride
-          // rider withdrawal can never drain the money backing this trip.
-          if (cashEscrow) {
-            await cashEscrow.escrowRideFunds({
-              rideId: event.rideId,
-              riderId: event.riderId,
-              totalNgn: fees.totalNgn,
-            });
-          }
+          // The ledger hold IS the escrow. All cash sits pooled in one
+          // provider balance, and a held naira cannot be withdrawn, so no
+          // real-money movement is needed to secure the trip.
         } catch (error) {
           // The ride is already matched at this point — it will run with no
           // escrow behind it, and settlement at completion will find no hold.
@@ -112,7 +105,17 @@ export function createRideEventsConsumer(params: {
         }
 
         try {
-          const routeFees = calculateRideFees(event.fareEstimateNgn);
+          // A route change never cuts the driver's agreed fare: no event, priced or not, sets the
+          // hold below it (a priced quote can still raise it). If the ride cannot be read, the
+          // hold stands as it is.
+          const ride = await rideClient.findById(event.rideId).catch(() => null);
+          if (!ride) {
+            console.error(`[${serviceId}][escrow] route hold not adjusted — ride lookup failed`, { rideId: event.rideId });
+            return;
+          }
+          const agreed = ride.agreedFareNgn != null ? Number(ride.agreedFareNgn) : 0;
+          const heldFareNgn = Math.max(event.fareEstimateNgn, agreed);
+          const routeFees = calculateRideFees(heldFareNgn);
           const holdResult = await walletRepository.adjustRideHold({
             rideId: event.rideId,
             targetAmountNgn: routeFees.totalNgn,
@@ -154,9 +157,9 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_COMPLETED') {
-        // Cash rides skip wallet settlement — driver already collected cash
-        if (event.paymentMethod === 'CASH') {
-          console.info(`[${serviceId}][escrow] settlement skipped — cash ride`, {
+        // Only wallet rides settle in naira: cash was collected, XLM is paid on Stellar.
+        if (event.paymentMethod !== 'WALLET') {
+          console.info(`[${serviceId}][escrow] settlement skipped — ${event.paymentMethod.toLowerCase()} ride`, {
             rideId: event.rideId,
             driverUserId: event.driverUserId,
             fareNgn: event.fareNgn,
@@ -165,7 +168,7 @@ export function createRideEventsConsumer(params: {
         }
 
         try {
-          const completionFees = calculateRideFees(event.fareNgn);
+          const completionFees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
 
           const result = await walletRepository.completeRideHoldWithDriverPayout({
             rideId: event.rideId,
@@ -208,17 +211,12 @@ export function createRideEventsConsumer(params: {
             driverBalanceAfterNgn: Number(result.driverWallet.balanceNgn),
           });
 
-          // Ledger settled — release the driver's cut from escrow (or the
-          // rider's VA in direct mode) into the driver's own account. The
-          // platform fee stays in the treasury. Never throws.
-          if (cashEscrow) {
-            await cashEscrow.releaseToDriver({
-              rideId: event.rideId,
-              riderId: event.riderId,
-              driverUserId: event.driverUserId,
-              driverPayoutNgn: completionFees.driverPayoutNgn,
-            });
-          }
+          // NOTE deliberately NO physical transfer here. The ledger credit
+          // above IS the driver's payment; real money stays in the treasury
+          // until the driver withdraws. The old releaseToDriver call pushed
+          // treasury cash to the driver's VA, which bounced back through the
+          // deposit webhook and credited the driver's wallet a SECOND time
+          // (driver earned N3,840, wallet showed N7,680).
 
           // Publish rider debit event (total including tax + levy)
           await walletEventsProducer.publishDebited({
@@ -255,6 +253,9 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_CANCELLED') {
+        // Every cancellation gives the rider their money back, a driver's
+        // included: the re-match takes a fresh hold when the rider accepts
+        // the next driver. (The gateway releases it too; this is idempotent.)
         try {
           const holdResult = await walletRepository.cancelRideHold(event.rideId);
           if (!holdResult) {
@@ -289,14 +290,10 @@ export function createRideEventsConsumer(params: {
             reason: 'ride_cancelled',
           }, { key: event.rideId });
 
-          // Return the escrowed cash to the rider's account.
-          if (cashEscrow) {
-            await cashEscrow.refundToRider({
-              rideId: event.rideId,
-              riderId: holdResult.wallet.userId,
-              amountNgn: holdResult.holdAmountNgn,
-            });
-          }
+          // Deliberately NO cash transfer back to the rider's VA. The ledger
+          // credit above IS the refund; a transfer to their VA comes back
+          // through the deposit webhook and credits the wallet a second time
+          // (the same bounce that removed releaseToDriver at completion).
         } catch (error) {
           console.error(`[${serviceId}][escrow] CRITICAL: cancel release FAILED — rider funds still locked`, {
             rideId: event.rideId,

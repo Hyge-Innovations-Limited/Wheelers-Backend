@@ -17,7 +17,39 @@ model User {
   phone                      String?
   photoUrl                   String?
   email                      String?
-  pouchCustomerId            String?                     @unique
+  providerCustomerId         String?                     @unique
+  /// Wallet PIN (4 digits) — scrypt hash, never the PIN. Required to withdraw.
+  walletPinHash              String?
+  walletPinSetAt             DateTime?
+  /// Consecutive wrong PINs. Lives on the account, so a fresh link cannot reset it.
+  walletPinFailedAttempts    Int                         @default(0)
+  walletPinLockedUntil       DateTime?
+  /// No withdrawal before this moment (24h after an unverified PIN reset, or a
+  /// freeze the user or support asked for).
+  withdrawalsFrozenUntil     DateTime?
+  withdrawalsFrozenReason    String?
+  /// After an unverified reset: until this moment money may only go to a bank
+  /// account this user has already withdrawn to.
+  withdrawalsRestrictedUntil DateTime?
+  /// Only ever receives PIN-reset codes. Never signs anyone in, so it is
+  /// separate from `email` and carries no uniqueness rule.
+  recoveryEmail              String?
+  recoveryEmailVerifiedAt    DateTime?
+  /// Every login made before this moment is refused: an admin signed this
+  /// person out of all their phones. They sign in again as usual.
+  sessionsEndedAt            DateTime?
+  /// WhatsApp riders are asked once, before anything else, to accept the
+  /// privacy policy. Until AGREED nothing about them goes to a third party
+  /// (no bank account is opened) and the bot books nothing.
+  privacyConsent             PrivacyConsent              @default(PENDING)
+  privacyConsentAt           DateTime?
+  /// Typed on WhatsApp, unverified, never used to sign in or link accounts (social-auth.route.ts links by User.email).
+  contactEmail               String?
+  contactEmailAt             DateTime?
+  /// The optional tick on the Welcome form: news and offers by email to contactEmail. Separate from privacyConsent.
+  marketingEmailOptIn        Boolean                     @default(false)
+  /// When the tick was last answered (yes or no).
+  marketingEmailOptInAt      DateTime?
   bvn                        String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
@@ -44,11 +76,14 @@ model User {
   riderKycAttempts           RiderKycAttempt[]
   interstateBookings         InterstateBooking[]
   safetyAlerts               SafetyAlert[]
+  supportConversations       SupportConversation[]
 
   @@index([privyDid])
   @@index([username])
   @@index([email])
-  @@index([pouchCustomerId])
+  @@index([providerCustomerId])
+  /// Passkeys: sign in with Face ID or a fingerprint instead of an SMS code.
+  passkeys                   Passkey[]
 }
 
 model UserConsent {
@@ -72,10 +107,30 @@ model Driver {
   lat                  Float?
   lng                  Float?
   lastSeenAt           DateTime?
+  /// "Nearby ride alerts": a rough position sent while signed in but OFF shift,
+  /// only after the driver switched it on. Kept apart from lat/lng/lastSeenAt on
+  /// purpose — matching reads those as "this driver is available right now".
+  standbyEnabled       Boolean               @default(false)
+  standbyConsentAt     DateTime?
+  standbyLat           Float?
+  standbyLng           Float?
+  standbySeenAt        DateTime?
   vehicleMake          String?
   vehicleModel         String?
   vehiclePlate         String?
   vehicleYear          Int?
+  /// The driver's name as it is on their licence, typed by them (the User's
+  /// name is whatever they signed up as). With the licence's own number and
+  /// the day it runs out.
+  legalName            String?
+  licenceNumber        String?
+  licenceExpiresOn     DateTime?             @db.Date
+  /// The last expiry reminder sent for the licence: 30, 14, 3 (days before) or 0 (it has expired). Cleared when the date changes.
+  licenceRemindedAt    Int?
+  /// The phone number this driver proved is theirs by typing back a code sent
+  /// to it, and when. A different number on the account later is unverified.
+  verifiedPhone        String?
+  phoneVerifiedAt      DateTime?
   licenceCid           String?
   insuranceCid         String?
   selfieHash           String?
@@ -86,12 +141,19 @@ model Driver {
   user                 User                  @relation(fields: [userId], references: [id])
   kycSubmission        DriverKycSubmission?
   kycReviews           DriverKycReview[]
+  documents            DriverDocument[]
+  checks               DriverCheck[]
   rides                Ride[]                @relation("DriverRides")
   bids                 DriverBid[]           @relation("DriverBids")
   interstateDepartures InterstateDeparture[] @relation("DriverInterstateDepartures")
+  locationPoints       DriverLocationPoint[]
+  shifts               DriverShift[]
+  dispatchContacts     DispatchContact[]
 
   @@index([status])
   @@index([kycStatus])
+
+  @@index([verifiedPhone])
 }
 
 model DriverKycSubmission {
@@ -100,6 +162,10 @@ model DriverKycSubmission {
   ninImageKey      String?
   licenceImageKey  String?
   selfieKey        String?
+  /// How the selfie was taken: "passed" (the phone's face check), "skipped"
+  /// (went on without it), "unavailable" (the app or phone could not run it).
+  /// Null: sent from an app made before the check.
+  selfieCheck      String?
   vehicleImageKeys String[]  @default([])
   vehicleMake      String?
   vehicleModel     String?
@@ -149,8 +215,11 @@ model Wallet {
 model VirtualAccount {
   id                    String   @id @default(uuid())
   userId                String   @unique
-  pouchCustomerId       String
-  pouchVirtualAccountId String   @unique
+  /// Which payment provider issued this account. Rows left over from the
+  /// retired Pouch integration say "pouch" and are replaced on next provision.
+  provider              String   @default("paystack")
+  providerCustomerId    String
+  providerAccountId     String   @unique
   bankName              String
   accountNumber         String
   accountName           String
@@ -161,7 +230,7 @@ model VirtualAccount {
   updatedAt             DateTime @updatedAt
   user                  User     @relation(fields: [userId], references: [id])
 
-  @@index([pouchVirtualAccountId])
+  @@index([providerAccountId])
 }
 
 model RideHold {
@@ -225,7 +294,7 @@ model WithdrawalRequest {
   userId             String
   walletId           String
   reservationId      String                  @unique
-  pouchPayoutId      String?                 @unique
+  providerPayoutId   String?                 @unique
   providerReference  String?                 @unique
   status             WithdrawalRequestStatus @default(PENDING)
   requestedAmountNgn Decimal                 @db.Decimal(18, 2)
@@ -233,6 +302,13 @@ model WithdrawalRequest {
   bankAccountNumber  String
   bankAccountName    String
   bankNetworkId      String
+  /// What the provider charged Wheelers for this transfer, booked against the
+  /// platform wallet at settlement.
+  providerFeeNgn     Decimal?                @db.Decimal(18, 2)
+  /// Wheelers' withdrawal fee, taken from the amount. Null on withdrawals made before the fee.
+  feeNgn             Decimal?                @db.Decimal(18, 2)
+  /// What was sent to the bank: the amount less the fee. Null before the fee: then it was the amount.
+  payoutAmountNgn    Decimal?                @db.Decimal(18, 2)
   failureReason      String?
   providerPayload    Json?
   expiresAt          DateTime?
@@ -310,10 +386,26 @@ model GroupRideFaceVerification {
 
 model Ride {
   id                     String            @id @default(uuid())
+  /// The short trip ID people use, shown as WH-01234. Numbered in booking order.
+  tripNumber             Int               @unique @default(autoincrement())
+  /// The 4-digit code the rider gives the driver to start the trip. Issued
+  /// when a driver is assigned and shown only to the rider. Null: none was
+  /// issued (group rides), and none is asked for.
+  tripCode               String?
+  /// When the driver entered the right code.
+  tripCodeVerifiedAt     DateTime?
+  /// Wrong codes entered for this trip.
+  tripCodeWrongTries     Int               @default(0)
+  /// Support started the trip without the code (the rider could not give it): who, and when.
+  tripCodeUnlockedBy     String?
+  tripCodeUnlockedAt     DateTime?
   riderId                String
   driverId               String?
   status                 RideStatus        @default(REQUESTED)
   paymentMethod          RidePaymentMethod @default(WALLET)
+  /// An XLM ride: the naira per XLM it was accepted at, and its fare in XLM at that rate.
+  xlmRateNgn             Decimal?          @db.Decimal(18, 2)
+  fareXlm                Decimal?          @db.Decimal(18, 7)
   pickupLat              Float
   pickupLng              Float
   pickupAddress          String
@@ -325,12 +417,57 @@ model Ride {
   agreedFareNgn          Decimal?          @db.Decimal(18, 2)
   fareFinalNgn           Decimal?          @db.Decimal(18, 2)
   platformFeeNgn         Decimal?          @db.Decimal(18, 2)
+  /// platformFeeNgn, split: the commission (5% of the trip fare; 10% in version 2, 4% of the driver's share in 1),
+  /// the booking fee (serviceFeeNgn, flat), the WhatsApp fee (version 3), VAT (7.5%) and the state levy (owed to Lagos).
+  commissionNgn          Decimal?          @db.Decimal(18, 2)
+  serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
+  vatNgn                 Decimal?          @db.Decimal(18, 2)
+  stateLevyNgn           Decimal?          @db.Decimal(18, 2)
+  /// ₦300 flat on every version 3 and 4 ride. Null on rides settled before it existed.
+  whatsappFeeNgn         Decimal?          @db.Decimal(18, 2)
+  /// Which pricing rules this ride was priced under, and settles by. 1: until
+  /// 2026-10-10 (booking fee, then 4% commission and 7.5% VAT from the
+  /// driver). 2: VAT and the booking fee are in the rider's fare; the driver
+  /// gives up 10% commission and the levy. 3 (from 2026-10-21): as 2, with 5%
+  /// commission and a flat ₦300 WhatsApp fee from the driver. 4 (from
+  /// 2026-11-03): no booking fee; the ₦300 WhatsApp fee off the fare, then
+  /// VAT 7.5%, the levy and 5% commission from the rest. Rides from before the
+  /// column existed are 1; new ones are 4.
+  pricingVersion         Int               @default(4)
+  /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
+  feeSplitEstimated      Boolean           @default(false)
+  /// How the ride was booked.
+  channel                RideChannel       @default(UNKNOWN)
+  /// Launch zone of the pickup and destination (packages/config zones), null = outside every zone.
+  pickupZone             String?
+  destZone               String?
   distanceKm             Float?
+  /// The km of the route the current agreed fare was set for (booking, then each priced route change). Null on older rides.
+  plannedDistanceKm      Float?
+  /// Our own suggested fare for the route at booking: what the agreed fare is measured against (agreed / this = the ride's negotiated rate, kept by every route change). Null on older rides.
+  bookingSuggestedFareNgn Decimal?                   @db.Decimal(18, 2)
+  /// The ride's negotiated rate: the agreed fare at the match / bookingSuggestedFareNgn. Written once, when the driver is matched; no route change ever recomputes it. Null: 1.
+  bargainRate            Float?
+  /// The km of the route as last PRICED (set at booking and by every priced route change, never by an unpriced one): the most an older app's unpriced changes may stretch the trip is 0.5 km past it. Null on older rides.
+  pricedPlannedKm        Float?
   durationSeconds        Int?
   cancelStage            CancelStage?
   cancelReason           String?
+  /// Who ended the ride, written in the same update that sets CANCELLED: 'rider' | 'driver' | 'system'. Null on rides before this column and on rides that were not cancelled. (There is no admin cancel; if one is added it counts as 'system'.) A driver backing out after accept sends the ride back to matching and writes nothing here.
+  cancelledBy            String?
+  /// The rider's first price, set once at creation; riderOfferNgn is overwritten by every counter offer. Null on older rides.
+  firstRiderOfferNgn     Decimal?          @db.Decimal(18, 2)
+  /// How many times the rider changed their price during the search.
+  riderOfferChanges      Int               @default(0)
+  /// What the rider told drivers before they bid: people (1-4), luggage, a pet, a short note (no links or numbers). All null: booked without them (older apps, chat).
+  passengers             Int?
+  hasLuggage             Boolean?
+  hasPet                 Boolean?
+  riderNote              String?
   penaltyNgn             Decimal?          @db.Decimal(18, 2)
   recordingId            String?
+  /// When the driver's phone started recording this trip. Recordings are accepted only after it.
+  recordingStartedAt     DateTime?
   matchedAt              DateTime?
   arrivedAt              DateTime?
   startedAt              DateTime?
@@ -346,10 +483,15 @@ model Ride {
   referralQualifications Referral[]        @relation("ReferralFirstRide")
 
   chatMessages ChatMessage[]
+  tripCalls    TripCall[]
 
   @@index([riderId, createdAt])
   @@index([driverId, status])
   @@index([status])
+  @@index([createdAt])
+  @@index([completedAt])
+  @@index([channel])
+  @@index([pickupZone])
 }
 
 model ChatMessage {
@@ -358,10 +500,38 @@ model ChatMessage {
   senderId   String
   senderRole ChatSenderRole
   content    String
+  /// "text": typed by the rider or driver. "call": written by the call
+  /// service when a call ends ("Missed call", "Call · 3:12"), from the caller.
+  kind       String         @default("text")
   createdAt  DateTime       @default(now())
   ride       Ride           @relation(fields: [rideId], references: [id])
 
   @@index([rideId, createdAt])
+}
+
+/// One Live call between a trip's rider and driver: who rang whom, where the
+/// callee was reached, and how it ended. Written when the call starts and
+/// again when it ends; the ringing itself lives in Redis.
+model TripCall {
+  id              String         @id @default(uuid())
+  rideId          String
+  callerId        String
+  callerRole      ChatSenderRole
+  calleeId        String
+  /// "app" (the phone rang) or "whatsapp" (a WhatsApp message with an Answer link).
+  calleeChannel   String
+  /// RINGING, ACTIVE, COMPLETED, MISSED, DECLINED, CANCELLED, FAILED
+  status          String         @default("RINGING")
+  /// Why it ended, in more detail than the status: "timeout", "hung_up", "too_long", "trip_closed"…
+  endReason       String?
+  createdAt       DateTime       @default(now())
+  answeredAt      DateTime?
+  endedAt         DateTime?
+  durationSeconds Int?
+  ride            Ride           @relation(fields: [rideId], references: [id])
+
+  @@index([rideId, createdAt])
+  @@index([createdAt])
 }
 
 model RideStop {
@@ -402,6 +572,7 @@ model DriverBid {
   driver       Driver          @relation("DriverBids", fields: [driverId], references: [id])
 
   @@unique([rideId, driverId])
+  @@index([rideId, createdAt])
   @@index([driverId, createdAt])
   @@index([rideId, status])
 }
@@ -423,6 +594,10 @@ model ScheduledRide {
   plannedDistanceKm      Float?
   plannedDurationSeconds Int?
   fareEstimateNgn        Decimal?                   @db.Decimal(18, 2)
+  /// Where it was booked: "WHATSAPP" (the ride page); null for the app. Its search goes to the same place.
+  channel                String?
+  /// The rider's trip details ({ passengers, luggage, pet, note? }), sent with its search. Null: none given.
+  tripDetails            Json?
   cancellationReason     String?
   cancelledAt            DateTime?
   dispatchedAt           DateTime?
@@ -607,6 +782,8 @@ model NotificationDevice {
   platform         String?
   deviceName       String?
   appOwnership     String?
+  /// Android notification channel the app created ("rides"); null for apps that did not say.
+  androidChannelId String?
   enabled          Boolean   @default(true)
   lastRegisteredAt DateTime  @default(now())
   lastDeliveredAt  DateTime?
@@ -617,19 +794,133 @@ model NotificationDevice {
   @@index([userId, enabled, updatedAt])
 }
 
+/// Owners (the founders) see everything; staff see the dashboard without the
+/// Excel export or the team pages.
+enum AdminRole {
+  OWNER
+  STAFF
+  /// The support desk: the inbox, people's app activity and trips. No money, bank details or identity documents.
+  SUPPORT
+}
+
 model AdminUser {
-  id           String   @id @default(uuid())
-  username     String   @unique
+  id           String    @id @default(uuid())
+  username     String    @unique
   passwordHash String
   name         String
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         AdminRole @default(STAFF)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([username])
 }
 
+/// Support asking to see one person's wallet balance, for a money issue, and
+/// an owner's answer. Approved, the balance is shown to that admin, for that
+/// person only, until expiresAt.
+model BalanceAccessRequest {
+  id            String    @id @default(uuid())
+  adminId       String
+  adminName     String
+  userId        String
+  /// What the money issue is, in support's words.
+  reason        String
+  /// "PENDING" | "APPROVED" | "DENIED"
+  status        String    @default("PENDING")
+  decidedById   String?
+  decidedByName String?
+  decidedAt     DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([adminId, userId, createdAt])
+}
+
+/// What admins did in the dashboard, for the owners' Team activity page:
+/// sign-ins, pages, searches, records opened, decisions, downloads and
+/// screenshot shortcuts (flagged). adminId is null for the bootstrap key and
+/// for a failed sign-in (adminName then holds the username tried).
+model AdminActivity {
+  id        String   @id @default(uuid())
+  adminId   String?
+  adminName String
+  kind      String
+  page      String?
+  detail    Json?
+  flagged   Boolean  @default(false)
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId, createdAt])
+  @@index([flagged, createdAt])
+}
+
+/// A Stellar TESTNET account Wheelers holds for a rider or driver, or for
+/// Wheelers itself (operations: collects commission, pays every fee). Only
+/// the public address is kept: the secret is derived on the server from one
+/// master secret and this account's derivation index, and never stored.
+model StellarAccount {
+  id              String    @id @default(uuid())
+  /// Null for Wheelers' own operations account.
+  userId          String?   @unique
+  /// "operations" or "user".
+  role            String    @default("user")
+  publicKey       String    @unique
+  /// Which child of the master secret this account is (SEP-0005 path m/44'/148'/index').
+  derivationIndex Int       @unique
+  createdAt       DateTime  @default(now())
+  /// When the account exists on the network.
+  openedAt        DateTime?
+
+  @@index([role])
+}
+
+/// One movement on Stellar Testnet, its own ledger beside the naira one:
+/// opening an account (Friendbot), a trip's fare, its commission, a driver's
+/// withdrawal. Queued, then sent and confirmed by a background job; the
+/// reference makes each happen once.
+model StellarTransfer {
+  id             String    @id @default(uuid())
+  /// ACCOUNT_OPEN, TOPUP, FARE, COMMISSION, WITHDRAWAL
+  kind           String
+  /// "fare:<rideId>", "topup:<transactionId>"…: one transfer per thing, however often it is asked for.
+  reference      String    @unique
+  rideId         String?
+  userId         String?
+  fromPublicKey  String
+  toPublicKey    String
+  amountXlm      Decimal   @db.Decimal(20, 7)
+  /// Its naira equivalent, at the live rate below.
+  amountNgn      Decimal?  @db.Decimal(18, 2)
+  /// Naira per XLM used for this transfer (live market rate), so the evidence adds up.
+  rateNgnPerXlm  Decimal?  @db.Decimal(18, 4)
+  memo           String?
+  /// PENDING, SUBMITTED, CONFIRMED, FAILED, SKIPPED (the rider's account had too little test XLM)
+  status         String    @default("PENDING")
+  /// Known before it is sent, so a send cut short is checked, not repeated.
+  txHash         String?   @unique
+  ledger         Int?
+  attempts       Int       @default(0)
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  submittedAt    DateTime?
+  confirmedAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([rideId])
+  @@index([userId, createdAt])
+}
+
 // ─── Enums ───────────────────────────────────────────────────────
+
+enum PrivacyConsent {
+  PENDING
+  AGREED
+  DECLINED
+}
 
 enum UserRole {
   RIDER
@@ -683,6 +974,12 @@ enum TransactionType {
   PENALTY
   WITHDRAWAL
   PLATFORM_FEE
+  /// A payment-provider charge Wheelers absorbed (deposit cut, transfer fee).
+  /// Always a DEBIT on the platform wallet — never revenue.
+  PROVIDER_FEE
+  /// A manual, documented correction to a wallet (e.g. the pre-launch reset).
+  /// Never written by the running system — only by an operator script.
+  ADJUSTMENT
 }
 
 enum WalletReservationKind {
@@ -769,6 +1066,8 @@ enum DriverBidStatus {
   WITHDRAWN
   EXPIRED
   CANCELLED
+  /// The rider declined every offer on the table; the search goes on.
+  DECLINED
 }
 
 enum RideStopType {
@@ -827,6 +1126,16 @@ enum ChatSenderRole {
 enum RidePaymentMethod {
   CASH
   WALLET
+  /// Paid from the rider's Stellar (testnet) XLM balance; the driver is paid in XLM on Stellar. No naira moves.
+  XLM
+}
+
+/// Where a ride was booked: the Wheelers app, the WhatsApp bot (chat, forms or the ride page), or Claude via the MCP server.
+enum RideChannel {
+  APP
+  WHATSAPP
+  MCP
+  UNKNOWN
 }
 
 enum RiderKycStatus {
@@ -854,6 +1163,42 @@ model RiderKycAttempt {
 // Kafka sink (analytics-worker) plus synchronous logActivity calls in the
 // api-gateway for actions that never touch Kafka. dedupKey makes at-least-once
 // Kafka delivery safe to replay.
+/// Durable WhatsApp transcript, kept for good. The Redis conversation window
+/// keeps the last ten turns for a week; this keeps every turn, so the bot can
+/// be reminded of what a rider said last month, and admin can read the chat.
+/// From 4 Nov 2026 every message the bot sends is written here word for word
+/// (role "assistant"), and the rider's turns as they sent them (role "user").
+model WhatsappMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  role      String
+  content   String
+  /// What it was: text, buttons, list, form, link, image, reaction, template, location.
+  kind      String   @default("text")
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// What we know about a rider, as subject → predicate → object edges: the
+/// rider is the subject, `predicate` is the relation (home, work,
+/// frequent_place, prefers_payment, language, called, note …) and `object`
+/// the value. Repeats raise `weight`; the highest-weighted edge per predicate
+/// is the one we trust.
+model UserMemoryFact {
+  id          String   @id @default(uuid())
+  userId      String
+  predicate   String
+  object      String
+  weight      Int      @default(1)
+  source      String   @default("llm")
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([userId, predicate, object])
+  @@index([userId, predicate])
+}
+
 model UserActivityEvent {
   id         String   @id @default(uuid())
   userId     String
@@ -867,6 +1212,31 @@ model UserActivityEvent {
 
   @@index([userId, createdAt])
   @@index([eventType, createdAt])
+}
+
+/// What a rider does on the WhatsApp ride page, step by step, sent by the page
+/// itself: one row per thing done, numbered (seq) within the visit (sessionId).
+/// Read through the ride_page_events and ride_page_sessions views.
+model RidePageEvent {
+  id        String   @id @default(uuid())
+  sessionId String
+  userId    String
+  rideId    String?
+  /// page_opened, phase_shown, price_changed, find_tapped, offer_received, accept_tapped, cancel_confirmed...
+  event     String
+  /// The page's phase when it happened: price | offers | confirmed | idle.
+  phase     String?
+  seq       Int
+  props     Json?
+  /// The phone's clock (within the visit); createdAt is the server's.
+  clientAt  DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, seq])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([event, createdAt])
+  @@index([rideId])
 }
 
 // ─── Interstate travel ──────────────────────────────────────────────────────
@@ -1064,4 +1434,548 @@ enum SafetyAlertStatus {
   ACKNOWLEDGED
   RESOLVED
   CANCELLED
+}
+
+/// Where a driver has been. One row per meaningful move, not per ping, and
+/// pruned after LOCATION_HISTORY_DAYS — it powers the admin map's trail and
+/// settles "the driver never came" disputes, nothing more.
+model DriverLocationPoint {
+  id         BigInt   @id @default(autoincrement())
+  driverId   String
+  lat        Float
+  lng        Float
+  /// "online" (on shift / on a trip) or "standby" (off shift, alerts on).
+  source     String   @default("online")
+  recordedAt DateTime @default(now())
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, recordedAt])
+  @@index([recordedAt])
+}
+
+/// One row per shift: from going online to going offline. An open shift has no
+/// endedAt. A partial unique index (in the migration; Prisma cannot express it)
+/// allows one open shift per driver.
+model DriverShift {
+  id        String    @id @default(uuid())
+  driverId  String
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  /// manual | app_closed | inactivity | admin | stale
+  endReason String?
+  driver    Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, startedAt])
+  @@index([startedAt])
+  @@index([endedAt])
+}
+
+/// An operator reaching out to a driver from the dispatch panel — a phone call
+/// or a "ride near you" push — and how it went, so two people do not ring the
+/// same driver about the same ride.
+model DispatchContact {
+  id        String   @id @default(uuid())
+  driverId  String
+  rideId    String?
+  adminName String
+  /// "call" | "nudge"
+  kind      String
+  /// "sent" | "accepted" | "declined" | "no_answer" | "unreachable"
+  outcome   String
+  note      String?
+  createdAt DateTime @default(now())
+  driver    Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, createdAt])
+  @@index([rideId, createdAt])
+}
+
+/// The pricing settings owners edit in the admin: one row ("current"). `data`
+/// is PricingSettings from @wheleers/config (the other app's figures, the
+/// premium, the switches, the model). Every service reloads it each minute.
+model PricingSettings {
+  id        String   @id
+  data      Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+/// Every price shown to a rider, with what it was made from: the other app's
+/// fare, the floor, the rules' fare, the model's (even while it only watches)
+/// and which of them set the price. Matched to rides by place and time, this
+/// is what the model is trained on and what the weekly check reads.
+model PricingQuote {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now())
+  originLat        Float
+  originLng        Float
+  destLat          Float
+  destLng          Float
+  pickupZone       String?
+  distanceKm       Float
+  durationSeconds  Int
+  trafficRatio     Float?
+  demandFactor     Float    @default(1)
+  rush             Boolean  @default(false)
+  marketFareNgn    Decimal? @db.Decimal(12, 2)
+  floorFareNgn     Decimal? @db.Decimal(12, 2)
+  rulesFareNgn     Decimal  @db.Decimal(12, 2)
+  modelFareNgn     Decimal? @db.Decimal(12, 2)
+  suggestedFareNgn Decimal  @db.Decimal(12, 2)
+  minOfferNgn      Decimal  @db.Decimal(12, 2)
+  /// "floor" | "rules" | "model"
+  setBy            String
+  /// The trip's ends and the half hour: what matches this price to the ride it became.
+  tripKey          String?
+  /// The premium over the other app the floor carried, where in the part of the day's range it sat (0–1), and the part of the day.
+  premiumNgn       Decimal? @db.Decimal(12, 2)
+  premiumPosition  Float?
+  dayPeriod        String?
+  /// The hour's multiplier on the other app's quiet-hour figures (null: the curve was off), and the live surge applied (1: none).
+  hourFactor       Float?
+  surgeFactor      Float    @default(1)
+  /// Rain at the pickup when priced ("none", "light", "heavy"; null: before rain was read), and the lift it gave.
+  rain             String?
+  rainFactor       Float    @default(1)
+
+  @@index([createdAt])
+  @@index([tripKey])
+}
+
+/// The weather at a launch zone, read every 15 minutes (apps/api-gateway
+/// pricing/weather.ts): what prices rain, and what tells the nightly learning
+/// which prices were seen in the rain.
+model WeatherReading {
+  id          String   @id @default(uuid())
+  zone        String
+  at          DateTime @default(now())
+  /// "none", "light" or "heavy".
+  rain        String
+  /// Rain over the last hour, when the provider says.
+  mm          Float?
+  /// The provider's own words: "LIGHT_RAIN", "THUNDERSTORM"…
+  condition   String?
+
+  @@index([at])
+  @@index([zone, at])
+}
+
+/// A price someone read off another app by hand, for a trip of a known
+/// length and time: what the other app's figures on the Pricing page are
+/// fitted from (npm run pricing sample / fit).
+model MarketSample {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  /// Which app: "indrive" unless told otherwise.
+  app       String   @default("indrive")
+  km        Float
+  minutes   Float
+  priceNgn  Decimal  @db.Decimal(12, 2)
+  /// Taken in rush hours (weekdays 07-10 and 16-20, Lagos time)?
+  rush      Boolean
+  takenAt   DateTime
+  addedBy   String?
+  /// The outer area the trip started in (ikorodu, epe, ibeju-lekki, badagry), when it was one: priced against the area factor, kept out of the city-wide fit.
+  area      String?
+
+  @@index([takenAt])
+}
+
+enum DriverDocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// One of the papers a driver keeps for their car (hackney permit, insurance,
+/// roadworthiness...): the types are DRIVER_PAPERS in @wheleers/config. One
+/// row for each type a driver has sent; sending it again replaces the file and
+/// puts it back to PENDING for review.
+model DriverDocument {
+  id              String               @id @default(uuid())
+  driverId        String
+  /// A DriverPaperType.
+  type            String
+  fileKey         String
+  /// "image/jpeg" | "image/png" | "application/pdf"
+  fileType        String
+  /// The number on it, where it has one worth keeping.
+  number          String?
+  /// The day it runs out, for papers that do.
+  expiresOn       DateTime?            @db.Date
+  status          DriverDocumentStatus @default(PENDING)
+  rejectionReason String?
+  uploadedAt      DateTime             @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  /// The last expiry reminder sent for this paper: 30, 14, 3 (days before) or 0 (it has expired). Cleared when it is sent again.
+  remindedAt      Int?
+  driver          Driver               @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, type])
+  @@index([status, uploadedAt])
+  @@index([expiresOn])
+}
+
+/// A check of a driver's licence or car: one Prembly ran from the admin, or
+/// one an admin did by hand on a government site and recorded. Key fields
+/// only: never the licence photo.
+model DriverCheck {
+  id         String   @id @default(uuid())
+  driverId   String
+  /// "licence" | "licenceFace" | "plate" | "insurance" | "manual"
+  kind       String
+  /// The DriverPaperType it is about, when it is about one (insurance, a manual check).
+  paperType  String?
+  /// "prembly" | "autoreg" | "dvis" | "niid" | "other"
+  source     String
+  /// What was checked: the licence number, the plate, the policy number.
+  input      String?
+  /// "verified" | "mismatch" | "not_found" | "failed" | "error"
+  outcome    String
+  /// What did not agree with what the driver gave us, in words.
+  mismatches String[] @default([])
+  /// The key fields that came back (names, dates, make, colour, policy status).
+  found      Json?
+  /// Prembly's reference for the check.
+  reference  String?
+  note       String?
+  byId       String?
+  byName     String
+  createdAt  DateTime @default(now())
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, createdAt])
+  @@index([source, createdAt])
+}
+
+enum SupportConversationStatus {
+  OPEN
+  RESOLVED
+}
+
+enum SupportSender {
+  USER
+  SUPPORT
+}
+
+/// A rider's or driver's chat with Wheelers support. One is open at a time
+/// per person; a message sent after it was resolved starts a new one.
+model SupportConversation {
+  id                 String                    @id @default(uuid())
+  userId             String
+  /// The trip the person was on, or asked about, when they wrote in.
+  rideId             String?
+  /// What they chose in the help list: "Lost item", "Wrong charge".
+  topic              String?
+  status             SupportConversationStatus @default(OPEN)
+  assignedAdminId    String?
+  assignedAdminName  String?
+  lastMessageAt      DateTime                  @default(now())
+  lastMessagePreview String?
+  /// Messages from the person that support has not opened yet.
+  unreadForSupport   Int                       @default(0)
+  /// Replies from support the person has not opened yet.
+  unreadForUser      Int                       @default(0)
+  createdAt          DateTime                  @default(now())
+  resolvedAt         DateTime?
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages           SupportMessage[]
+
+  @@index([userId, status])
+  @@index([status, lastMessageAt])
+}
+
+model SupportMessage {
+  id             String              @id @default(uuid())
+  conversationId String
+  sender         SupportSender
+  /// The support person's name, shown to the rider: "Ada".
+  senderName     String?
+  content        String
+  createdAt      DateTime            @default(now())
+  conversation   SupportConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+/// A passkey: the PUBLIC half of a key kept on the person's phone (synced by
+/// iCloud Keychain or Google Password Manager), unlocked only by their face or
+/// finger. Signing in with it proves the phone holds the private half; nothing
+/// here can be used to sign in by someone who reads this table.
+model Passkey {
+  id           String    @id @default(uuid())
+  userId       String
+  /// The credential's id, base64url, as the phone reports it.
+  credentialId String    @unique
+  publicKey    Bytes
+  /// The phone's own use count: one that goes backwards means a copied key, and is refused.
+  counter      BigInt    @default(0)
+  transports   String[]
+  /// What it was made on, to tell them apart in settings: "iPhone", "Android phone".
+  deviceName   String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ── Mail service (apps/mail-service) ─────────────────────────────────────
+// Our own mail: sent from our own server (signed, queued, retried, paced per
+// provider) and received (an inbox, bounces, complaints, DMARC reports).
+
+enum MailStream {
+  TRANSACTIONAL
+  MARKETING
+}
+
+enum MailPriority {
+  URGENT
+  NORMAL
+}
+
+enum MailDeliveryStatus {
+  QUEUED
+  SENDING
+  DEFERRED
+  DELIVERED
+  BOUNCED
+  SUPPRESSED
+  EXPIRED
+  /// The whole message went out but the server's final answer never came (the line dropped, a crash).
+  /// It most likely arrived; it is not sent again, so nobody gets it twice.
+  UNCONFIRMED
+}
+
+enum MailSuppressionReason {
+  HARD_BOUNCE
+  COMPLAINT
+  UNSUBSCRIBE
+  MANUAL
+}
+
+enum MailInboxKind {
+  MESSAGE
+  BOUNCE
+  COMPLAINT
+  DMARC_REPORT
+}
+
+/// One email we send: built, signed and kept exactly as it goes out, so every
+/// retry sends the same bytes. One MailDelivery per recipient.
+model MailMessage {
+  id              String         @id @default(uuid())
+  stream          MailStream     @default(TRANSACTIONAL)
+  priority        MailPriority   @default(NORMAL)
+  fromAddress     String
+  subject         String
+  /// The Message-ID header, with angle brackets: replies and bounces name it.
+  messageIdHeader String         @unique
+  /// The signed message (RFC 5322), as sent.
+  raw             Bytes
+  sizeBytes       Int
+  /// The caller's key: the same key twice is the same email, sent once.
+  idempotencyKey  String?        @unique
+  /// From, recipients, subject and body, hashed: the same email again within minutes is the first one (a retried call, a double tap).
+  contentHash     String?
+  /// What it is, for counting: "password_reset", "kyc_approved".
+  tag             String?
+  /// The inbox message this answers, when it is a reply from the inbox.
+  inReplyToInboxId String?
+  /// Not delivered by then: given up (a sign-in code is useless after minutes).
+  expiresAt       DateTime
+  createdAt       DateTime       @default(now())
+  deliveries      MailDelivery[]
+  events          MailEvent[]
+
+  @@index([createdAt])
+  @@index([tag, createdAt])
+  @@index([contentHash, createdAt])
+}
+
+/// One recipient of a MailMessage, and how getting it there is going.
+model MailDelivery {
+  id            String             @id @default(uuid())
+  messageId     String
+  /// Lower case.
+  recipient     String
+  domain        String
+  /// Who runs their mail, from the MX: gmail, microsoft, yahoo, apple, zoho, other. Each is paced on its own.
+  provider      String             @default("other")
+  status        MailDeliveryStatus @default(QUEUED)
+  attempts      Int                @default(0)
+  nextAttemptAt DateTime           @default(now())
+  /// While SENDING: a worker holds it until then; a worker that died lets go when it passes.
+  leaseUntil    DateTime?
+  lastAttemptAt DateTime?
+  /// Set the moment the whole message has gone out on the current try. A worker that dies after
+  /// this cannot know whether it arrived: the delivery becomes UNCONFIRMED, never sent twice.
+  bodySentAt    DateTime?
+  /// The receiving server's last answer: 250, 451, 550…, its enhanced code (5.1.1) and text.
+  lastCode      Int?
+  lastEnhanced  String?
+  lastResponse  String?
+  mxHost        String?
+  deliveredAt   DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  message       MailMessage        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  events        MailEvent[]
+
+  @@index([status, nextAttemptAt])
+  @@index([provider, lastAttemptAt])
+  @@index([recipient])
+  @@index([messageId])
+}
+
+/// What happened to a message: queued, each attempt, delivered, deferred, bounced, complained.
+model MailEvent {
+  id         String        @id @default(uuid())
+  messageId  String?
+  deliveryId String?
+  type       String
+  detail     Json?
+  createdAt  DateTime      @default(now())
+  message    MailMessage?  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  delivery   MailDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, createdAt])
+  @@index([deliveryId])
+  @@index([type, createdAt])
+}
+
+/// Addresses we never send to again: they bounced for good, complained, or
+/// unsubscribed. `stream` ALL, TRANSACTIONAL or MARKETING.
+model MailSuppression {
+  id        String                @id @default(uuid())
+  address   String
+  stream    String                @default("ALL")
+  reason    MailSuppressionReason
+  detail    String?
+  createdAt DateTime              @default(now())
+
+  @@unique([address, stream])
+}
+
+/// A provider that told us to slow down (Gmail 421 4.7.28, Yahoo TSS04): nothing goes to it until then.
+model MailProviderPause {
+  provider  String   @id
+  until     DateTime
+  reason    String
+  updatedAt DateTime @updatedAt
+}
+
+/// An address that receives mail into the inbox: support@, hello@.
+model MailMailbox {
+  address   String   @id
+  name      String?
+  createdAt DateTime @default(now())
+}
+
+/// One email we received, for one mailbox, parsed; also bounces, complaints
+/// and DMARC reports (kind), kept for the record.
+model MailInboxMessage {
+  id              String           @id @default(uuid())
+  mailbox         String
+  kind            MailInboxKind    @default(MESSAGE)
+  fromAddress     String?
+  fromName        String?
+  toAddresses     String[]
+  ccAddresses     String[]
+  subject         String
+  messageIdHeader String?
+  inReplyTo       String?
+  references      String[]
+  /// Messages of one conversation share it: replies find it from In-Reply-To and References.
+  threadId        String
+  sentAt          DateTime?
+  text            String?
+  html            String?
+  snippet         String
+  sizeBytes       Int
+  /// SPF, DKIM and DMARC, as checked on arrival.
+  auth            Json?
+  /// Failed DMARC, or SPF failed with no DKIM to vouch for it.
+  suspicious      Boolean          @default(false)
+  remoteIp        String?
+  helo            String?
+  mailFrom        String?
+  readAt          DateTime?
+  archivedAt      DateTime?
+  deletedAt       DateTime?
+  receivedAt      DateTime         @default(now())
+  raw             MailInboxRaw?
+  attachments     MailAttachment[]
+
+  @@index([mailbox, kind, receivedAt])
+  @@index([threadId])
+  @@index([messageIdHeader])
+}
+
+/// The message as it arrived, apart so lists never load it.
+model MailInboxRaw {
+  inboxMessageId String           @id
+  raw            Bytes
+  message        MailInboxMessage @relation(fields: [inboxMessageId], references: [id], onDelete: Cascade)
+}
+
+model MailAttachment {
+  id             String           @id @default(uuid())
+  inboxMessageId String
+  filename       String?
+  contentType    String
+  sizeBytes      Int
+  /// For pictures shown inside the message (cid:).
+  contentId      String?
+  content        Bytes
+  message        MailInboxMessage @relation(fields: [inboxMessageId], references: [id], onDelete: Cascade)
+
+  @@index([inboxMessageId])
+}
+
+/// A message being written in the inbox. Saved again and again (each save a
+/// new version); sent only when asked, and only the version the person saw;
+/// sent once, however often "send" is pressed or retried.
+model MailDraft {
+  id               String    @id @default(uuid())
+  /// The mailbox it is sent from: support@…
+  mailbox          String
+  toAddresses      String[]
+  ccAddresses      String[]
+  subject          String    @default("")
+  text             String?
+  html             String?
+  /// Answering this inbox message: threaded with it when sent.
+  inReplyToInboxId String?
+  version          Int       @default(1)
+  sentMessageId    String?
+  sentAt           DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([mailbox, updatedAt])
+}
+
+/// A piece of a trip's voice recording, made on the driver's phone in 5-minute
+/// segments and uploaded to its own R2 bucket. Only support and owners can
+/// listen (each listen is logged); kept 30 days, then the object and the row
+/// go. No foreign key: the ride may be archived while its recording is kept.
+model TripRecording {
+  id           String    @id @default(uuid())
+  rideId       String
+  driverId     String
+  segmentIndex Int
+  objectKey    String
+  bytes        Int
+  durationSec  Int?
+  /// The object's ETag when it was recorded: a later listen that finds a different one shows the file changed.
+  etag         String?
+  uploadedAt   DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  @@unique([rideId, segmentIndex])
+  @@index([rideId])
+  @@index([createdAt])
 }

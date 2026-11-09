@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="origin">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#FEFAEF">
+<meta name="format-detection" content="telephone=no">
+<link rel="preload" href="../shared/fonts/BricolageGrotesque_800ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="ride.css">
+<title>Your ride · Wheelers</title>
+</head>
+<body>
+<div class="shell">
+  <section data-view="loading">
+    <div class="skeleton short"></div><div class="skeleton tall"></div><div class="skeleton"></div><div class="skeleton"></div>
+  </section>
+
+  <section data-view="fatal" hidden>
+    <div class="note"><h1>Link problem</h1><p id="fatal-message"></p></div>
+    <p class="foot">Go back to WhatsApp and send any message for a fresh link.</p>
+  </section>
+
+  <!-- the link's six hours are up: one line, one way back -->
+  <section data-view="expired" class="expired" hidden>
+    <h1 class="title center">This link has expired</h1>
+    <a class="btn primary" id="expired-back" href="#" hidden>Back to WhatsApp</a>
+  </section>
+
+  <!-- 0 · home, as the app's app/rider/index.tsx: the map, and a sheet that slides up and down -->
+  <section data-view="idle" hidden>
+    <div class="home-map" id="home-map-wrap" hidden><div id="home-map" class="map" aria-label="Map"></div></div>
+    <div class="home-sheet" id="home-sheet">
+      <div class="home-peek" id="home-peek">
+        <button class="handle-btn" type="button" id="home-handle" aria-label="Swipe down to see the map" aria-expanded="true"><span class="handle"></span></button>
+        <div class="ink-note" id="home-ended" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"/></svg>
+          <div class="ink-note-words"><strong id="home-ended-title">Trip ended</strong></div>
+          <a class="ink-note-act" id="idle-back" href="#" hidden>Open chat</a>
+        </div>
+        <div class="ink-note" id="home-notice" role="status" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.4"/></svg>
+          <div class="ink-note-words"><strong id="home-notice-text"></strong></div>
+          <button class="ink-note-close" type="button" id="home-notice-close" aria-label="Dismiss"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+        <button class="ink-note" type="button" id="loc-off" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>
+          <span class="ink-note-words"><strong>Location is off</strong><span>Turn it on to set your pickup for you. Or type it.</span></span>
+          <span class="ink-note-act">Turn on</span>
+        </button>
+        <div class="ink-note" id="not-area" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5L9 4zM9 4v13.5M15 6.5V20"/></svg>
+          <div class="ink-note-words"><strong>Not in your area yet</strong><span>Wheelers is only in Lagos for now.</span></div>
+        </div>
+        <h1 class="title">Where are you going?</h1>
+        <div class="search-row">
+          <button class="home-search" type="button" id="home-search" aria-label="Search destination">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
+            <span>Search destination</span>
+          </button>
+          <button class="later" type="button" id="home-later" aria-label="Later: schedule a ride" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3"/><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z"/><path d="M4 10h16"/></svg><span>Later</span></button>
+        </div>
+      </div>
+      <div class="home-body" id="home-body">
+        <div class="home-stack">
+          <button class="sched-card" type="button" id="home-scheduled" hidden>
+            <span class="sched-words"><strong id="home-scheduled-when"></strong><span id="home-scheduled-route"></span></span>
+            <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <div class="chips-row" id="home-saved" hidden>
+            <div class="chips" id="home-chips"></div>
+            <button class="add-chip" type="button" id="home-places" aria-label="Saved places"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          </div>
+          <button class="add-place" type="button" id="home-add-place" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add a place</button>
+          <div class="result-list" id="home-recents"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 0b · plan your trip, as the app's app/destination-search.tsx -->
+  <section data-view="plan" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="plan-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title plan-title" id="plan-title">Plan your trip</h1>
+    </div>
+    <div class="plan-card">
+      <div class="plan-field" data-plan="pickup">
+        <span class="plan-mark dot" aria-hidden="true"></span>
+        <span class="plan-label" aria-hidden="true">FROM</span>
+        <input id="plan-from" data-plan-input="pickup" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Search pickup" aria-label="From">
+        <button class="plan-clear" type="button" data-plan-clear="pickup" aria-label="Clear pickup" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="plan-line" data-plan-line="pickup"></div>
+      <div id="plan-stops"></div>
+      <div class="plan-field" data-plan="destination">
+        <span class="plan-mark square" aria-hidden="true"></span>
+        <span class="plan-label" aria-hidden="true">TO</span>
+        <input id="plan-to" data-plan-input="destination" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Where are you going?" aria-label="To">
+        <button class="plan-clear" type="button" data-plan-clear="destination" aria-label="Clear destination" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="plan-line last" data-plan-line="destination"></div>
+    </div>
+    <div class="list-head"><span class="label-caps" id="plan-heading"></span><span class="spinner orange" id="plan-spin" hidden></span><button class="add-stop" type="button" id="plan-add-stop" aria-label="Add stop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Add stop</span></button></div>
+    <div class="result-list plan-list" id="plan-list" role="listbox" aria-label="Places"></div>
+    <div class="notice bad" id="plan-err" hidden></div>
+    <div class="plan-foot">
+      <button class="btn primary" type="button" id="plan-go">Continue</button>
+    </div>
+  </section>
+
+  <!-- Later: as the app's app/schedule-ride.tsx -->
+  <section data-view="schedule" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="sch-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Schedule a ride</h1>
+    </div>
+    <div class="group">
+      <span class="label-caps">Day</span>
+      <div class="days" id="sch-days" role="group" aria-label="Day"></div>
+    </div>
+    <div class="group">
+      <span class="label-caps">Pickup time</span>
+      <div class="times" id="sch-times" role="group" aria-label="Pickup time"></div>
+      <p class="small muted" id="sch-none" hidden>No times left today. Choose another day.</p>
+      <button class="rlink underline" type="button" id="sch-another">Choose another time</button>
+    </div>
+    <div class="summary-ink">
+      <span class="small on-ink-muted">Pickup</span>
+      <strong class="summary-when" id="sch-when" aria-live="polite"></strong>
+    </div>
+    <p class="small muted">You are charged only after a driver accepts.</p>
+    <div class="grow"></div>
+    <div class="notice bad" id="sch-err" hidden></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="sch-go">Continue</button></div>
+  </section>
+
+  <!-- the trip for later, priced: as the app's ride-selection.tsx with a pickup time -->
+  <section data-view="schedule-confirm" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="sr-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Schedule ride</h1>
+    </div>
+    <div class="card route-card">
+      <div class="route-rows" id="sr-rows"></div>
+      <button class="rlink orange route-edit" type="button" id="sr-edit" aria-label="Edit route">Edit</button>
+    </div>
+    <div class="tint-chips"><span class="tint-chip" id="sr-km"></span><span class="tint-chip" id="sr-min"></span></div>
+    <!-- People, luggage, pet and a note: drivers see them before they bid (as the app's Set your price) -->
+    <div class="trip-box" role="group" aria-label="Trip details">
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18.5 14.3c1.8.8 3 2.9 3 5.7"/></svg><span class="trip-label">People</span><div class="trip-count"><button class="trip-step" type="button" data-trip="minus" aria-label="One less person"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button><output class="trip-num" data-trip="count" aria-live="polite">1</output><button class="trip-step plus" type="button" data-trip="plus" aria-label="One more person"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div></div>
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="2.5"/><path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/><path d="M8 11v5M16 11v5"/></svg><span class="trip-label">Luggage</span><div class="trip-seg" role="group" aria-label="Luggage"><button type="button" data-trip="luggage" data-val="no" aria-label="Luggage: No" aria-pressed="false">No</button><button type="button" data-trip="luggage" data-val="yes" aria-label="Luggage: Yes" aria-pressed="true">Yes</button></div></div>
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="6" cy="10" rx="1.8" ry="2.3"/><ellipse cx="10" cy="6" rx="1.8" ry="2.3"/><ellipse cx="14" cy="6" rx="1.8" ry="2.3"/><ellipse cx="18" cy="10" rx="1.8" ry="2.3"/><path d="M12 12c-2.6 0-5 3-5 5.4C7 19 8.2 20 9.6 20c1 0 1.6-.5 2.4-.5s1.4.5 2.4.5c1.4 0 2.6-1 2.6-2.6C17 15 14.6 12 12 12z"/></svg><span class="trip-label">Pet</span><div class="trip-seg" role="group" aria-label="Pet"><button type="button" data-trip="pet" data-val="no" aria-label="Pet: No" aria-pressed="false">No</button><button type="button" data-trip="pet" data-val="yes" aria-label="Pet: Yes" aria-pressed="true">Yes</button></div></div>
+      <label class="trip-row trip-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg><input data-trip="note" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="Note for driver (optional)" aria-label="Note for driver"></label>
+    </div>
+    <div class="card estimate-card"><span class="small muted">Suggested price</span><strong class="estimate-figure" id="sr-price"></strong></div>
+    <div class="card info-card"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3"/><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z"/><path d="M4 10h16"/></svg><span class="info-words"><strong>Pickup time</strong><span class="small muted" id="sr-when"></span></span></div>
+    <div class="grow"></div>
+    <div class="notice bad" id="sr-err" hidden></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="sr-go">Schedule ride</button></div>
+  </section>
+
+  <!-- saved places: as the app's app/saved-places.tsx (kept on this phone) -->
+  <section data-view="places" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="places-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title">Saved places</h1>
+    </div>
+    <div class="saved-list" id="places-list"></div>
+    <p class="small muted" id="places-full" hidden>You can save up to 8 places. Remove one to add another.</p>
+    <button class="btn ghost" type="button" id="places-add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add a place</button>
+  </section>
+
+  <section data-view="place-edit" class="screen" hidden>
+    <div class="screen-head">
+      <button class="rback" type="button" id="pe-back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <h1 class="title head-title" id="pe-title">Add a place</h1>
+    </div>
+    <div class="group" id="pe-name-group">
+      <span class="label-caps">Name</span>
+      <div class="choices" id="pe-choices" role="radiogroup" aria-label="Name"></div>
+      <label class="field" id="pe-other" hidden>
+        <span class="field-label">Name of this place</span>
+        <input class="text-input" id="pe-name" maxlength="24" autocomplete="off" autocapitalize="words" placeholder="Mum, Gym, School">
+      </label>
+      <p class="field-error" id="pe-name-err" hidden></p>
+    </div>
+    <div class="group">
+      <span class="label-caps">Address</span>
+      <div class="picked" id="pe-picked" hidden>
+        <span class="result-icon saved" id="pe-picked-icon"></span>
+        <strong class="picked-text" id="pe-picked-text"></strong>
+        <button class="plan-clear" type="button" id="pe-clear" aria-label="Clear address"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 9l6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <div class="group" id="pe-search">
+        <input class="text-input" id="pe-query" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Search address" aria-label="Search address">
+        <p class="small muted" id="pe-now" hidden></p>
+        <div class="notice bad" id="pe-err" hidden></div>
+        <span class="spinner orange" id="pe-spin" hidden></span>
+        <div class="result-list" id="pe-results" role="listbox" aria-label="Places"></div>
+      </div>
+    </div>
+    <div class="grow"></div>
+    <div class="plan-foot"><button class="btn primary" type="button" id="pe-save" disabled>Save place</button></div>
+  </section>
+
+  <!-- after a search nobody took, as the app's "No driver accepted" (app/matching.tsx) -->
+  <section data-view="nodriver" hidden>
+    <button class="rback" type="button" id="nd-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <div class="steps" role="progressbar" aria-label="Step 2 of 4: Drivers reply"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text current">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+    <svg class="nd-art" viewBox="0 0 350 110" aria-hidden="true"><path class="nd-road" d="M0 96h350"/><circle class="nd-ink" cx="60" cy="74" r="16"/><path class="nd-pole" d="M60 58v-22"/><circle class="nd-orange" cx="60" cy="30" r="7"/><path class="nd-car" d="M212 88h92c4 0 7-3 7-7v-5c0-4-3-6-7-7l-14-3-10-11c-2-2-5-3-7-3h-29c-3 0-6 2-8 4l-7 10-12 3c-4 1-6 4-6 7v5c0 4 3 7 7 7z"/></svg>
+    <div class="heading">
+      <h1 class="nd-title" id="nd-title">No driver accepted your offer</h1>
+      <p class="muted">You have not been charged.</p>
+    </div>
+    <div class="card trip-card" id="nd-trip" hidden><strong id="nd-route"></strong><span class="small muted" id="nd-line"></span></div>
+    <div class="retry-card" id="nd-retry" hidden>
+      <span class="retry-label">Try a higher price</span>
+      <div class="retry-row" id="nd-options"></div>
+      <button class="rlink orange-on-ink" type="button" id="nd-other">Enter another amount</button>
+    </div>
+    <div class="notice bad" id="nd-err" hidden></div>
+    <div class="actions tight">
+      <button class="btn primary" type="button" id="nd-again-up" hidden></button>
+      <button class="btn ghost" type="button" id="nd-again"></button>
+    </div>
+  </section>
+
+  <!-- 1 · set your price — as the app's price screen (app/ride-selection.tsx) -->
+  <section data-view="price" hidden>
+    <div class="screen-head">
+      <a class="rback" id="price-back" href="#" aria-label="Back to WhatsApp" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></a>
+      <h1 class="title head-title">Set your price</h1>
+    </div>
+    <div class="steps" role="progressbar" aria-label="Step 1 of 4: Your price"><div class="step on"><span class="bar"></span><span class="step-text current">Your price</span></div><div class="step"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+
+    <div class="card route-card" id="price-route">
+      <div class="route-rows">
+        <div class="route-row stop" data-edit="pickup"><span class="rail"><span class="dot from"></span><span class="rail-line"></span></span><div class="route-text"><span class="route-label">Pickup</span><span class="route-value where" data-route="pickup"></span></div></div>
+        <div class="route-row stop" data-edit="destination"><span class="rail"><span class="dot to"></span></span><div class="route-text"><span class="route-label">Destination</span><span class="route-value where" data-route="dest"></span></div></div>
+      </div>
+      <button class="rlink orange route-edit" type="button" id="route-edit" aria-label="Edit route" hidden>Edit</button>
+    </div>
+
+    <div class="tint-chips"><span class="tint-chip" data-route="distance"></span><span class="tint-chip" data-route="time"></span></div>
+
+    <!-- People, luggage, pet and a note: drivers see them before they bid (as the app's Set your price) -->
+    <div class="trip-box" role="group" aria-label="Trip details">
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18.5 14.3c1.8.8 3 2.9 3 5.7"/></svg><span class="trip-label">People</span><div class="trip-count"><button class="trip-step" type="button" data-trip="minus" aria-label="One less person"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button><output class="trip-num" data-trip="count" aria-live="polite">1</output><button class="trip-step plus" type="button" data-trip="plus" aria-label="One more person"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div></div>
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="2.5"/><path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/><path d="M8 11v5M16 11v5"/></svg><span class="trip-label">Luggage</span><div class="trip-seg" role="group" aria-label="Luggage"><button type="button" data-trip="luggage" data-val="no" aria-label="Luggage: No" aria-pressed="false">No</button><button type="button" data-trip="luggage" data-val="yes" aria-label="Luggage: Yes" aria-pressed="true">Yes</button></div></div>
+      <div class="trip-row"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="6" cy="10" rx="1.8" ry="2.3"/><ellipse cx="10" cy="6" rx="1.8" ry="2.3"/><ellipse cx="14" cy="6" rx="1.8" ry="2.3"/><ellipse cx="18" cy="10" rx="1.8" ry="2.3"/><path d="M12 12c-2.6 0-5 3-5 5.4C7 19 8.2 20 9.6 20c1 0 1.6-.5 2.4-.5s1.4.5 2.4.5c1.4 0 2.6-1 2.6-2.6C17 15 14.6 12 12 12z"/></svg><span class="trip-label">Pet</span><div class="trip-seg" role="group" aria-label="Pet"><button type="button" data-trip="pet" data-val="no" aria-label="Pet: No" aria-pressed="false">No</button><button type="button" data-trip="pet" data-val="yes" aria-label="Pet: Yes" aria-pressed="true">Yes</button></div></div>
+      <label class="trip-row trip-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg><input data-trip="note" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="Note for driver (optional)" aria-label="Note for driver"></label>
+    </div>
+
+    <div class="price-card">
+      <div class="price-top"><span class="price-label">Your offer</span><span class="price-side">Suggested price <strong id="price-suggested"></strong></span></div>
+      <div class="stepper">
+        <button class="round minus" type="button" id="price-down" aria-label="Lower by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        <output class="figure tappable" tabindex="0" role="button" aria-label="Type your offer in naira" id="price-figure" aria-live="polite"></output>
+        <input class="figure figure-edit" id="price-type" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="Type your offer in naira" hidden>
+        <button class="round plus" type="button" id="price-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <input type="hidden" id="price-input">
+      <p class="price-reason" id="price-reason" hidden></p>
+      <p class="price-note" id="price-hint"></p>
+      <p class="price-note low" id="price-low" role="status" hidden></p>
+    </div>
+    <div class="notice bad" id="price-err" hidden></div>
+
+    <div class="actions plan-foot">
+      <button class="btn primary" type="button" id="find" disabled>Find drivers</button>
+    </div>
+  </section>
+
+  <!-- 2 · finding drivers, then their offers — as the app's app/matching.tsx -->
+  <section data-view="offers" hidden>
+    <div class="find-map" id="find-map-wrap" hidden>
+      <div id="find-map" class="map" aria-label="Map of your trip"></div>
+      <div class="pulse" aria-hidden="true"><span class="ring outer"></span><span class="ring inner"></span><span class="pulse-dot"><svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg></span></div>
+    </div>
+    <button class="rback" type="button" id="offers-back" aria-label="Back to your trip, to change it"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <div id="offers-steps-2"><div class="steps" role="progressbar" aria-label="Step 2 of 4: Drivers reply, in progress"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on working"><span class="bar"></span><span class="step-text current">Drivers reply</span></div><div class="step"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
+    <div id="offers-steps-3" hidden><div class="steps" role="progressbar" aria-label="Step 3 of 4: You choose"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div></div>
+    <div class="heading">
+      <h1 class="title" id="offers-title">Finding drivers</h1>
+      <div class="offers-sub" id="offers-sub">
+        <p class="small muted"><span id="offers-route"></span><span id="offers-yours"> · your offer <strong id="my-offer"></strong></span></p>
+        <p class="caption" id="offers-suggested" hidden></p>
+      </div>
+    </div>
+
+    <div class="finding" id="searching">
+      <div class="offer-ink">
+        <div class="offer-ink-top">
+          <div class="offer-ink-text"><span class="offer-ink-label">Your offer</span><span class="offer-ink-route" id="finding-route"></span></div>
+          <strong class="offer-ink-figure" id="finding-offer"></strong>
+        </div>
+        <span class="offer-ink-caption" id="finding-suggested" hidden></span>
+        <span class="offer-ink-caption reason-line" id="finding-reason" hidden></span>
+      </div>
+      <div class="search-stats" id="search-stats" hidden>
+        <span class="saw" id="drivers-saw" hidden></span>
+        <span class="countdown" id="countdown" hidden></span>
+      </div>
+      <p class="auto-line" id="auto-line" hidden></p>
+      <div class="raise" id="raise">
+        <span class="label-caps" id="raise-label">Raise your offer</span>
+        <div class="raise-row">
+          <button class="btn ghost" type="button" data-raise="200" aria-label="Raise your offer by 200 naira">+ ₦200</button>
+          <button class="btn ghost" type="button" data-raise="500" aria-label="Raise your offer by 500 naira">+ ₦500</button>
+          <button class="btn ghost" type="button" data-raise="0" aria-label="Set another price">Other</button>
+        </div>
+      </div>
+      <div class="waiting-box">Waiting for the first offer</div>
+    </div>
+
+    <div class="offer-list" id="offer-list" aria-live="polite"></div>
+
+    <div class="offers-foot-wrap">
+      <div class="offers-foot" id="offers-foot">
+        <button class="btn ghost" type="button" id="change-offer">Change my price</button>
+        <button class="btn ghost" type="button" id="decline-all" hidden>Decline all</button>
+      </div>
+      <a class="btn quiet" id="back-to-chat" href="#" hidden>Back to WhatsApp</a>
+      <button class="btn quiet danger-link" type="button" id="cancel-search">Cancel search</button>
+    </div>
+  </section>
+
+  <!-- between Pay and the trip: as the app's "Confirming your driver" (app/matching.tsx) -->
+  <section data-view="confirming" hidden>
+    <div class="steps" role="progressbar" aria-label="Step 3 of 4: You choose"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text current">You choose</span></div><div class="step"><span class="bar"></span><span class="step-text">Ride</span></div></div>
+    <div class="confirming" role="status">
+      <span class="spinner big"></span>
+      <h1 class="title center">Confirming your driver</h1>
+      <p class="muted center" id="cf-who"></p>
+    </div>
+    <button class="btn quiet danger-link" type="button" id="cf-cancel">Cancel search</button>
+  </section>
+
+  <!-- the driver is confirmed: as the app's app/driver-found.tsx -->
+  <section data-view="found" hidden>
+    <div class="steps" role="progressbar" aria-label="Step 4 of 4: Ride"><div class="step on"><span class="bar"></span><span class="step-text">Your price</span></div><div class="step on"><span class="bar"></span><span class="step-text">Drivers reply</span></div><div class="step on"><span class="bar"></span><span class="step-text">You choose</span></div><div class="step on"><span class="bar"></span><span class="step-text current">Ride</span></div></div>
+    <div class="found-hero">
+      <span class="pill green"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"/></svg>Driver confirmed</span>
+      <div class="avatar found-avatar" id="fd-initial"></div>
+      <h1 class="found-title" id="fd-title"></h1>
+      <p class="muted" id="fd-rating" hidden></p>
+    </div>
+    <div class="found-price" id="fd-price" hidden>
+      <div class="found-price-text"><span class="on-ink-muted">Agreed price</span><span class="on-ink-soft" id="fd-paid">Paid from your wallet</span></div>
+      <strong class="found-figure" id="fd-fare"></strong>
+    </div>
+    <div class="card detail-card" id="fd-details" hidden></div>
+    <button class="btn primary" type="button" id="fd-track">Track your driver</button>
+    <button class="btn quiet danger-link" type="button" id="fd-cancel" hidden>Cancel ride</button>
+  </section>
+
+  <!-- 3 · the trip — as the app's trip screen (app/rider/active-trip.tsx) -->
+  <section data-view="confirmed" hidden>
+    <div class="map-card" id="map-card" hidden>
+      <div id="map" class="map" aria-label="Live map of your trip"></div>
+      <div class="map-badge" id="map-eta" hidden></div>
+      <button class="map-recentre" type="button" id="map-recentre" aria-label="Centre the map on your driver">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+      </button>
+    </div>
+    <div class="headline">
+      <span class="visually-hidden" id="trip-eyebrow"></span>
+      <h1 class="trip-title" id="trip-title">Your driver is on the way</h1>
+      <p class="trip-sub" id="map-stale" hidden></p>
+    </div>
+    <div class="trip-track" id="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" hidden><span class="trip-fill" id="d-progress-fill"></span></div>
+
+    <div class="driver-row">
+      <div class="avatar ink" id="d-initial"></div>
+      <div class="driver-text"><strong id="d-name"></strong><span id="d-vehicle"></span></div>
+      <span class="plate big-plate" id="d-plate"></span>
+    </div>
+
+    <div class="code-card" id="d-code-box" hidden>
+      <div class="code-text"><span class="code-label">Your trip code</span><span class="code-note">Give this code to your driver when you get in.</span></div>
+      <strong class="code-digits" id="d-code"></strong>
+    </div>
+
+    <div class="trip-actions">
+      <a class="action" id="d-call" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg>Call
+      </a>
+      <a class="action" id="d-chat" href="#" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C6.5 3 2 6.9 2 11.6c0 2.5 1.3 4.8 3.4 6.3L4.6 21l3.6-1.9c1.2.4 2.5.6 3.8.6 5.5 0 10-3.9 10-8.6S17.5 3 12 3zm-4 9.9a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm4 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm4 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6z"/></svg>Chat
+      </a>
+    </div>
+
+    <div class="agreed">
+      <div class="agreed-text"><span class="agreed-label">Agreed price</span><strong class="agreed-to">To <span data-route="dest"></span></strong></div>
+      <strong class="agreed-amount" id="d-fare"></strong>
+    </div>
+    <button class="stops-row" type="button" id="d-stops" aria-label="Add or change stop" hidden>
+      <svg class="stops-add" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+      <span class="stops-words"><strong>Add or change stop</strong><span id="d-stops-count"></span></span>
+      <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <p class="foot" id="d-foot" hidden></p>
+    <div class="trip-foot" id="d-trip-foot">
+      <button class="rlink danger" type="button" id="d-cancel" hidden>Cancel ride</button>
+      <a class="rlink" id="d-support" href="#" hidden>Support</a>
+      <button class="sos-btn" type="button" id="d-sos" aria-label="Emergency" hidden><svg class="sos-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><text x="12" y="15.2" text-anchor="middle">SOS</text></svg><svg class="live-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z"/></svg><span id="d-sos-text">Emergency</span></button>
+    </div>
+  </section>
+</div>
+
+<!-- sheets -->
+<div class="overlay" id="overlay" hidden></div>
+
+<div class="sheet" id="sheet-offer" hidden role="dialog" aria-modal="true" aria-labelledby="so-title">
+  <h2 id="so-title">Change your price</h2>
+  <div class="price-card">
+    <div class="price-top"><span class="price-label">New offer</span><span class="price-side">Current <strong id="offer-current"></strong></span></div>
+    <div class="stepper">
+      <button class="round minus" type="button" id="offer-down" aria-label="Lower by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+      <output class="figure tappable" tabindex="0" role="button" aria-label="Type your new offer in naira" id="offer-figure" aria-live="polite"></output>
+      <input class="figure figure-edit" id="offer-type" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="Type your new offer in naira" hidden>
+      <button class="round plus" type="button" id="offer-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
+    <input type="hidden" id="offer-input">
+    <div class="ink-chips">
+      <button class="ink-chip" type="button" data-add="200" aria-label="Add 200 naira">+ ₦200</button>
+      <button class="ink-chip" type="button" data-add="500" aria-label="Add 500 naira">+ ₦500</button>
+      <button class="ink-chip" type="button" id="offer-reset" aria-label="Reset to your current offer">Reset</button>
+    </div>
+    <p class="price-note strong" id="offer-suggested" hidden></p>
+    <p class="price-note" id="offer-min"></p>
+    <p class="price-note low" id="offer-low" role="status" hidden></p>
+  </div>
+  <div class="notice bad" id="offer-err" hidden></div>
+  <button class="btn primary" type="button" id="offer-save">Update price</button>
+  <button class="btn quiet" type="button" id="offer-keep" data-close>Keep my price</button>
+</div>
+
+<!-- Accept → pay: as the app's pay sheet. Naira or XLM when there is a Stellar wallet; short, the account to send to -->
+<div class="sheet" id="sheet-pay" hidden role="dialog" aria-modal="true" aria-labelledby="pay-title">
+  <div class="sheet-part" id="pay-ask">
+    <h2 id="pay-title"></h2>
+    <p class="sub">Held now, paid at the end. Refunded if cancelled.</p>
+    <div class="pay-options" id="pay-options" role="radiogroup" aria-label="Pay with" hidden>
+      <button class="pay-option on" type="button" id="pw-ngn" role="radio" aria-checked="true">
+        <span class="pay-icon naira" aria-hidden="true">₦</span>
+        <span class="pay-text"><strong>Naira wallet</strong><span id="pw-ngn-balance"></span></span>
+        <span class="pay-figure" id="pw-ngn-amount"></span>
+      </button>
+      <button class="pay-option" type="button" id="pw-xlm" role="radio" aria-checked="false">
+        <span class="pay-icon xlm" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 15.5l16-7M4 9.5c2-4 6-6 10-5M20 14.5c-2 4-6 6-10 5"/></svg></span>
+        <span class="pay-text"><strong>Stellar wallet <span class="tag">Testnet</span></strong><span id="pw-xlm-balance"></span></span>
+        <span class="pay-figure" id="pw-xlm-amount"></span>
+      </button>
+    </div>
+    <p class="hint" id="pw-rate" hidden></p>
+    <button class="btn primary" type="button" id="pay-go"></button>
+    <button class="btn quiet" type="button" data-close>Back</button>
+  </div>
+  <div class="sheet-part" id="pay-add" hidden>
+    <h2 id="add-title"></h2>
+    <p class="sub" id="add-sub"></p>
+    <div class="pay-card account" id="pay-account">
+      <div class="account-wait" id="pay-loading" role="status" aria-label="Getting your account number"><span class="spinner big"></span></div>
+      <div id="pay-details" hidden>
+        <span class="bank" id="pay-bank"></span>
+        <strong class="number" id="pay-number"></strong>
+        <span class="holder" id="pay-name"></span>
+        <button class="btn small dark" type="button" id="pay-copy">Copy</button>
+      </div>
+      <p class="account-note" id="pay-failed" hidden>Could not get your account number. Trying again.</p>
+    </div>
+    <div class="waiting" id="pay-waiting" hidden>
+      <span class="spinner orange"></span>
+      <span>Waiting for your transfer…</span>
+    </div>
+    <button class="btn quiet" type="button" data-close>Back</button>
+  </div>
+</div>
+
+<!-- as the app's app/rider-cancel.tsx -->
+<div class="sheet" id="sheet-cancel" hidden role="dialog" aria-modal="true" aria-labelledby="cx-title">
+  <h2 id="cx-title">Stop looking for a driver?</h2>
+  <p class="sub" id="cx-sub" hidden></p>
+  <span class="label-caps" id="cx-label">Why are you cancelling?</span>
+  <div class="reasons" id="cancel-reasons" role="radiogroup" aria-labelledby="cx-label"></div>
+  <label class="field" id="cancel-other-field" hidden>
+    <span class="field-label">Tell us what happened (optional)</span>
+    <textarea class="other-words" id="cancel-other" rows="2" maxlength="140" autocomplete="off" placeholder="A few words help us fix it"></textarea>
+  </label>
+  <p class="free-note">Cancelling is free. You will not be charged.</p>
+  <div class="notice bad" id="cancel-err" hidden></div>
+  <button class="btn primary" type="button" data-close>Keep ride</button>
+  <button class="btn danger" type="button" id="cancel-yes" disabled>Choose a reason</button>
+</div>
+
+<div class="sheet" id="sheet-confirm" hidden role="alertdialog" aria-modal="true" aria-labelledby="sc-title" aria-describedby="sc-text">
+  <h2 id="sc-title"></h2>
+  <p class="sub" id="sc-text"></p>
+  <button class="btn primary" type="button" id="sc-no"></button>
+  <button class="btn danger" type="button" id="sc-yes"></button>
+</div>
+
+<!-- Choose another time: as the app's TimePicker (app/schedule-ride.tsx) -->
+<div class="sheet" id="sheet-time" hidden role="dialog" aria-modal="true" aria-labelledby="tp-title">
+  <div class="sheet-title"><h2 id="tp-title">Choose a time</h2><p class="small muted" id="tp-day"></p></div>
+  <div class="dials">
+    <div class="dial">
+      <button class="dial-btn" type="button" id="tp-hour-up" aria-label="Hour up"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+      <output class="dial-value" id="tp-hour"></output>
+      <button class="dial-btn" type="button" id="tp-hour-down" aria-label="Hour down"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      <span class="caption muted">Hour</span>
+    </div>
+    <span class="dial-colon" aria-hidden="true">:</span>
+    <div class="dial">
+      <button class="dial-btn" type="button" id="tp-min-up" aria-label="Minute up"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+      <output class="dial-value" id="tp-min"></output>
+      <button class="dial-btn" type="button" id="tp-min-down" aria-label="Minute down"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+      <span class="caption muted">Minute</span>
+    </div>
+    <div class="halves">
+      <button class="half" type="button" id="tp-am" aria-label="a.m.">am</button>
+      <button class="half" type="button" id="tp-pm" aria-label="p.m.">pm</button>
+    </div>
+  </div>
+  <p class="small bad-text center" id="tp-soon" hidden></p>
+  <button class="btn primary" type="button" id="tp-set"></button>
+  <button class="btn quiet" type="button" data-close>Cancel</button>
+</div>
+
+<!-- a ride for later, from Home: as the app's app/scheduled-ride.tsx -->
+<div class="sheet" id="sheet-scheduled" hidden role="dialog" aria-modal="true" aria-labelledby="ss-title">
+  <h2 id="ss-title">Scheduled ride</h2>
+  <div class="summary-ink">
+    <span class="small on-ink-muted">Pickup</span>
+    <strong class="summary-when" id="ss-when"></strong>
+    <div class="summary-route"><span id="ss-route"></span><strong id="ss-price"></strong></div>
+  </div>
+  <div class="notice bad" id="ss-err" hidden></div>
+  <button class="btn primary" type="button" data-close>Done</button>
+  <button class="btn danger" type="button" id="ss-cancel">Cancel scheduled ride</button>
+</div>
+
+<!-- Emergency: as the app's components/emergency-button.tsx -->
+<div class="sheet" id="sheet-sos" hidden role="dialog" aria-modal="true" aria-labelledby="sos-title">
+  <h2 id="sos-title">Get help now</h2>
+  <p class="sub" id="sos-sub" hidden></p>
+  <a class="sos-call" id="sos-call" href="tel:112">
+    <span class="sos-call-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg></span>
+    <span class="sos-call-words"><strong>Call 112</strong><span>Nigeria's emergency line — police, fire, ambulance</span></span>
+    <svg class="result-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+  </a>
+  <div class="sos-kinds" id="sos-kinds"></div>
+  <div class="sos-sent" id="sos-sent" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16.5 9.5"/></svg><span id="sos-sent-text"></span></div>
+  <button class="rlink muted-link" type="button" id="sos-cancel" hidden>It was a false alarm. Cancel my alert</button>
+  <div class="notice bad" id="sos-err" hidden></div>
+  <button class="btn ghost" type="button" id="sos-close" data-close>Close</button>
+</div>
+
+<!-- Find drivers with the wallet covering the price: auto-book the first driver at it? (asked once per search) -->
+<div class="sheet" id="sheet-auto" hidden role="dialog" aria-modal="true" aria-labelledby="au-title" aria-describedby="au-text">
+  <h2 id="au-title"></h2>
+  <p class="sub" id="au-text"></p>
+  <button class="btn primary" type="button" id="au-yes">Yes, auto-book</button>
+  <button class="btn quiet" type="button" id="au-no">No, I'll choose</button>
+</div>
+
+<!-- Change your route, when the fare changes: asked before any money moves -->
+<div class="sheet" id="sheet-route-price" hidden role="dialog" aria-modal="true" aria-labelledby="rp-title" aria-describedby="rp-text">
+  <h2 id="rp-title"></h2>
+  <p class="sub" id="rp-text"></p>
+  <button class="btn primary" type="button" id="rp-yes">Update route</button>
+  <button class="btn quiet" type="button" id="rp-no">Keep my trip</button>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<div id="toast" hidden></div>
+<script src="../wallet/common.js"></script>
+<script src="ride.js"></script>
+</body>
+</html>

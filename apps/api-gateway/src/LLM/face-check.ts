@@ -1,4 +1,4 @@
-import type { GroqClient } from './groq.client';
+import type { LlmClient } from './llm';
 
 export interface SelfieVerdict {
   accepted: boolean;
@@ -25,7 +25,7 @@ Return ONLY a JSON object:
  * block every group ride — with a warning log so the gap is visible.
  */
 export async function verifySelfiePhoto(
-  groq: GroqClient,
+  groq: LlmClient,
   imageBuffer: Buffer,
   mimeType: string,
 ): Promise<SelfieVerdict> {

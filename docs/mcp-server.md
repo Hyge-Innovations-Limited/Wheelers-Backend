@@ -47,7 +47,7 @@ Claude, connected. No password, no app install.
 user in this order: (1) the WhatsApp identity `whatsapp:<phone>` — the account
 the bot has been using; (2) an app account that verified that number;
 (3) otherwise create the WhatsApp identity via the same `onboardWhatsappUser()`
-a first WhatsApp message would (wallet, Pouch VA, USER_CREATED event). The
+a first WhatsApp message would (wallet, deposit account, USER_CREATED event). The
 route then issues the standard 30-day gateway JWT. Codes are hashed in Redis,
 expire after `WHATSAPP_OTP_TTL_SECONDS`, allow 5 attempts, and at most 5 delivered sends
 per number per 10 minutes (failed deliveries don't count). Delivery goes over

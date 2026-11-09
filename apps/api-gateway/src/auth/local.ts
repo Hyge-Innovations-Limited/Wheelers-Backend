@@ -4,7 +4,12 @@ import { isRecord } from '../utils/object';
 
 const scrypt = promisify(scryptCallback);
 const TOKEN_TYPE = 'wheelers.local.auth';
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+/**
+ * A login lasts a year. The app swaps it for a fresh one whenever it is opened
+ * with a login over a day old, so the year starts again each time: someone is
+ * signed out only by signing out, or by not opening the app for a whole year.
+ */
+export const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 365;
 
 interface LocalTokenPayload {
   sub: string;
@@ -79,7 +84,7 @@ export async function verifyPassword(password: string, storedHash: string | null
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export function createLocalAccessToken(userId: string, jwtSecret: string | undefined): string {
+export function createLocalAccessToken(userId: string, jwtSecret: string | undefined, ttlSeconds = TOKEN_TTL_SECONDS): string {
   const secret = requireSecret(jwtSecret);
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -87,7 +92,7 @@ export function createLocalAccessToken(userId: string, jwtSecret: string | undef
     sub: userId,
     typ: TOKEN_TYPE,
     iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
+    exp: now + ttlSeconds,
   } satisfies LocalTokenPayload));
   const unsigned = `${header}.${payload}`;
 
@@ -119,4 +124,124 @@ export function verifyLocalAccessToken(token: string, jwtSecret: string | undefi
   }
 
   return parsed;
+}
+
+/* ── Scoped page tokens ───────────────────────────────────────────────────
+ * A link sent into a chat can be forwarded, screenshotted, or left open on a
+ * shared phone, so it must be worth very little: it names ONE purpose, lives
+ * for minutes, and — because its `typ` differs — can never be accepted where a
+ * login token is expected (nor the reverse).
+ */
+const PAGE_TOKEN_TYPE = 'wheelers.wallet.page';
+
+/**
+ * 'ride' opens the bidding page for the rider's current booking: name a price,
+ * watch offers, accept one. It can move money only INTO a hold for that ride,
+ * from the rider's own wallet — never out — so it carries no PIN and may live
+ * as long as a booking does.
+ */
+export type WalletPageScope = 'deposit' | 'withdraw' | 'ride' | 'trip';
+
+/**
+ * 'trip' opens the Trip chat page for ONE ride: the chat with the driver, and
+ * Live call. The ride is named in the link (`rid`), and the page is refused
+ * the moment that trip's chat closes, whatever the link's own lifetime says.
+ * It moves no money.
+ */
+export const TRIP_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+
+/**
+ * A search for drivers can outlast 15 minutes, and the rider comes back to
+ * the same link from the chat for the trip, the next booking and a ride for
+ * later: six hours. Past that the page says so, with the way back to WhatsApp.
+ */
+export const RIDE_PAGE_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+
+/** A genuine page link (its signature checks) whose time is up: told apart from a bad link. */
+export class PageLinkExpiredError extends Error {
+  constructor() {
+    super('This link has expired.');
+    this.name = 'PageLinkExpiredError';
+  }
+}
+
+interface WalletPageTokenPayload {
+  sub: string;
+  typ: typeof PAGE_TOKEN_TYPE;
+  scope: WalletPageScope;
+  /** The ride a 'trip' link is for. */
+  rid?: string;
+  iat: number;
+  exp: number;
+}
+
+/**
+ * Money links live 30 minutes. Fifteen expired mid-payment: open a bank app,
+ * find the account, type an amount, wait for the transfer. A withdrawal is
+ * the same trip in the other direction, and its PIN is asked for on the page
+ * itself — the link's lifetime is not what protects it.
+ */
+export const WALLET_PAGE_TOKEN_TTL_SECONDS = 30 * 60;
+export const DEPOSIT_PAGE_TOKEN_TTL_SECONDS = WALLET_PAGE_TOKEN_TTL_SECONDS;
+
+export function createWalletPageToken(
+  userId: string,
+  scope: WalletPageScope,
+  jwtSecret: string | undefined,
+  ttlSeconds: number = WALLET_PAGE_TOKEN_TTL_SECONDS,
+  rideId?: string,
+): string {
+  const secret = requireSecret(jwtSecret);
+  if (scope === 'trip' && !rideId) throw new Error('A trip page link must name its ride.');
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = base64UrlEncode(JSON.stringify({
+    sub: userId,
+    typ: PAGE_TOKEN_TYPE,
+    scope,
+    ...(rideId ? { rid: rideId } : {}),
+    iat: now,
+    exp: now + ttlSeconds,
+  } satisfies WalletPageTokenPayload));
+  const unsigned = `${header}.${payload}`;
+  return `${unsigned}.${sign(unsigned, secret)}`;
+}
+
+export function verifyWalletPageToken(
+  token: string,
+  jwtSecret: string | undefined,
+): { userId: string; scope: WalletPageScope; rideId?: string } {
+  const secret = requireSecret(jwtSecret);
+  const [header, payload, signature] = token.split('.');
+  if (!header || !payload || !signature) {
+    throw new Error('Invalid page token format.');
+  }
+  const unsigned = `${header}.${payload}`;
+  const expectedBuffer = Buffer.from(sign(unsigned, secret));
+  const signatureBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== signatureBuffer.length || !timingSafeEqual(expectedBuffer, signatureBuffer)) {
+    throw new Error('Page token signature verification failed.');
+  }
+
+  const parsed: unknown = JSON.parse(base64UrlDecode(payload).toString('utf8'));
+  if (!isRecord(parsed) || parsed.typ !== PAGE_TOKEN_TYPE) {
+    throw new Error('Page token type is invalid.');
+  }
+  const { sub, scope, exp, rid } = parsed;
+  if (typeof sub !== 'string' || sub.length === 0) {
+    throw new Error('Page token is missing subject.');
+  }
+  if (scope !== 'deposit' && scope !== 'withdraw' && scope !== 'ride' && scope !== 'trip') {
+    throw new Error('Page token scope is invalid.');
+  }
+  if (scope === 'trip' && (typeof rid !== 'string' || rid.length === 0)) {
+    throw new Error('Page token is missing its ride.');
+  }
+  if (typeof exp !== 'number') {
+    throw new Error('Page token expiry is invalid.');
+  }
+  if (exp <= Math.floor(Date.now() / 1000)) {
+    throw new PageLinkExpiredError();
+  }
+  return { userId: sub, scope, ...(scope === 'trip' ? { rideId: rid as string } : {}) };
 }

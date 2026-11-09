@@ -1,4 +1,4 @@
-import { calculateSuggestedFare, type SuggestedFare } from './pricing';
+import { calculateSuggestedFare, priceReasonOf, trafficFactorOn, type PriceReason, type SuggestedFare } from './pricing';
 
 export type RouteWaypoint = {
   lat: number;
@@ -23,7 +23,14 @@ export type PlannedRouteMetrics = {
   ratePerKmNgn: number;
   fareEstimateNgn: number;
   ridePrice: SuggestedFare;
+  /** Why the price is up (busy area, rain, rush hour) and by how much; null when nothing notable lifted it. */
+  priceReason?: PriceReason | null;
   geometry: PlannedRouteGeometry;
+  /**
+   * Travel time now ÷ travel time on an empty road, when the traffic factor
+   * is on (PRICING_TRAFFIC_FACTOR=on). Absent otherwise.
+   */
+  trafficRatio?: number;
 };
 
 export class RoutePlanningError extends Error {
@@ -48,6 +55,7 @@ export class GoogleMapsRoutePlanner {
     stops?: RouteWaypoint[];
     destination: RouteWaypoint;
   }): Promise<PlannedRouteMetrics> {
+    const traffic = trafficFactorOn();
     const response = await fetch(
       new URL('directions/v2:computeRoutes', this.normalizedBaseUrl),
       {
@@ -55,8 +63,11 @@ export class GoogleMapsRoutePlanner {
         headers: {
           'content-type': 'application/json',
           'x-goog-api-key': this.apiKey,
-          'x-goog-fieldmask':
-            'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,routes.viewport',
+          // With the traffic factor on, Google is asked for the time now AND
+          // the time on an empty road; their ratio is what moves the price.
+          'x-goog-fieldmask': traffic
+            ? 'routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,routes.viewport'
+            : 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,routes.viewport',
         },
         body: JSON.stringify({
           origin: buildWaypoint(params.origin),
@@ -65,7 +76,7 @@ export class GoogleMapsRoutePlanner {
             ? { intermediates: params.stops.map((stop) => buildWaypoint(stop)) }
             : {}),
           travelMode: 'DRIVE',
-          routingPreference: 'TRAFFIC_UNAWARE',
+          routingPreference: traffic ? 'TRAFFIC_AWARE' : 'TRAFFIC_UNAWARE',
           computeAlternativeRoutes: false,
           languageCode: 'en-US',
           units: 'METRIC',
@@ -95,7 +106,9 @@ export class GoogleMapsRoutePlanner {
     const route = extractPrimaryRoute(payload);
     const distanceKm = round3(route.distanceMeters / 1000);
     const durationSeconds = Math.max(0, Math.round(route.durationSeconds));
-    const ridePrice = calculateSuggestedFare(distanceKm);
+    const trafficRatio = traffic ? trafficRatioOf(payload, route.durationSeconds) : undefined;
+    const priceFactors = { trafficRatio, durationSeconds, origin: params.origin, destination: params.destination };
+    const ridePrice = calculateSuggestedFare(distanceKm, priceFactors);
 
     return {
       distanceKm,
@@ -105,12 +118,22 @@ export class GoogleMapsRoutePlanner {
       ratePerKmNgn: ridePrice.ratePerKmNgn,
       fareEstimateNgn: ridePrice.suggestedFareNgn,
       ridePrice,
+      priceReason: priceReasonOf(distanceKm, priceFactors, ridePrice),
       geometry: {
         coordinates: route.coordinates,
         bounds: route.bounds,
       },
+      ...(trafficRatio !== undefined ? { trafficRatio } : {}),
     };
   }
+}
+
+/** Time now ÷ time on an empty road for the first route, or undefined when Google did not say. */
+function trafficRatioOf(payload: unknown, durationSeconds: number): number | undefined {
+  const first = (payload as { routes?: Array<{ staticDuration?: unknown }> } | null)?.routes?.[0];
+  const raw = typeof first?.staticDuration === 'string' ? Number.parseFloat(first.staticDuration) : NaN;
+  if (!Number.isFinite(raw) || raw <= 0 || !(durationSeconds > 0)) return undefined;
+  return Math.max(1, Math.round((durationSeconds / raw) * 100) / 100);
 }
 
 function normalizeGoogleMapsBaseUrl(baseUrl: string): URL {

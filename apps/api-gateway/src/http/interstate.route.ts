@@ -6,6 +6,7 @@ import {
   RATE_PER_KM_NGN,
   VEHICLE_CLASSES,
   priceForBooking,
+  takeFromBalance,
   minimumOfferNgn,
   type InterstateVehicleType,
 } from '@wheleers/db';
@@ -45,7 +46,7 @@ function fail(res: ServerResponse, error: unknown, fallback: string): void {
             error.code === 'DEPARTURE_ALREADY_CLAIMED' ||
             error.code === 'DEPARTURE_WRONG_STATE'
           ? 409
-          : error.code === 'DEPARTURE_NOT_YOURS' || error.code === 'NOT_A_DRIVER'
+          : error.code === 'DEPARTURE_NOT_YOURS' || error.code === 'NOT_A_DRIVER' || error.code === 'KYC_REQUIRED'
             ? 403
             : 400;
     sendJson(res, status, { error: error.message, code: error.code, ...(error.details ?? {}) });
@@ -86,10 +87,11 @@ function walletCharge(userId: string) {
       );
     }
 
-    const updated = await tx.wallet.update({
-      where: { id: wallet.id },
-      data: { balanceNgn: { decrement: amountNgn } },
-    });
+    // Checked again as it is taken: a payment in the same instant may have spent it.
+    const updated = await takeFromBalance(tx, wallet.id, amountNgn);
+    if (!updated) {
+      throw new InterstateError('Insufficient balance. Your wallet changed while booking; check it and try again.', 'INSUFFICIENT_BALANCE', { requiredNgn: amountNgn, balanceNgn: Number(wallet.balanceNgn) });
+    }
     await tx.transaction.create({
       data: {
         walletId: wallet.id,
@@ -740,6 +742,9 @@ async function requireDriver(req: IncomingMessage, jwtSecret: string) {
       'Finish your driver sign-up before taking interstate trips.',
       'NOT_A_DRIVER',
     );
+  }
+  if (driver.kycStatus !== 'APPROVED') {
+    throw new InterstateError('Finish your verification (KYC) before taking interstate trips.', 'KYC_REQUIRED');
   }
 
   return { user, driver };

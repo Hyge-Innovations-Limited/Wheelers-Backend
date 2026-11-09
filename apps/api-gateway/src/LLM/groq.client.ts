@@ -58,9 +58,10 @@ export class GroqClient {
   ): Promise<Record<string, unknown> | null> {
     if (!this.config.apiKey) return null;
 
-    // Default verified against the live account (2026-08): qwen3.6-27b is the
-    // multimodal model this key has access to — llama-4 vision returns 404.
-    const visionModel = (process.env['GROQ_VISION_MODEL'] ?? 'qwen/qwen3.6-27b').trim();
+    // Default verified against the live account (2026-10-21): qwen3.8-27b is the
+    // multimodal model this key has access to. qwen3.6-27b was retired (404),
+    // as llama-4 vision was before it: `GET /openai/v1/models` lists what is live.
+    const visionModel = (process.env['GROQ_VISION_MODEL'] ?? 'qwen/qwen3.8-27b').trim();
     const dataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
 
     const controller = new AbortController();
@@ -112,7 +113,23 @@ export class GroqClient {
     }
   }
 
+  /**
+   * One polite retry on a rate limit. Groq says exactly how long to wait
+   * ("try again in 269ms"); when that is short, waiting beats falling back to
+   * a dumber answer. A long wait is not worth holding a rider's reply for.
+   */
   private async chat(messages: LlmChatMessage[], jsonMode: boolean): Promise<string | null> {
+    try {
+      return await this.chatOnce(messages, jsonMode);
+    } catch (error) {
+      const wait = rateLimitWaitMs(error);
+      if (wait === null || wait > 2_500) throw error;
+      await new Promise((resolve) => setTimeout(resolve, wait + 150));
+      return this.chatOnce(messages, jsonMode);
+    }
+  }
+
+  private async chatOnce(messages: LlmChatMessage[], jsonMode: boolean): Promise<string | null> {
     if (!this.config.apiKey) {
       return null;
     }
@@ -166,3 +183,13 @@ export class GroqClient {
   }
 }
 
+
+/** "…Please try again in 269.99ms." / "…in 3.2s." → milliseconds, or null if this is not a rate limit. */
+export function rateLimitWaitMs(error: unknown): number | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/rate limit/i.test(message)) return null;
+  const match = /try again in ([\d.]+)\s*(ms|s)\b/i.exec(message);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? Math.ceil(match[2].toLowerCase() === 's' ? value * 1000 : value) : null;
+}

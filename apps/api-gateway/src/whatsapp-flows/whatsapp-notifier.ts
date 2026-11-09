@@ -1,15 +1,314 @@
-// COMMENTED OUT: Flow-based encryption imports — using pure chat-based messaging
-// import { signFlowToken } from './encryption';
-
+import { signFlowToken } from './encryption';
 import { calculateRideFees } from '@wheleers/config';
-import type { WhatsappBid } from './bid-state';
+import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
+import { tripLines } from './trip-text';
 
 export interface WhatsappNotifierDeps {
   metaAccessToken: string;
   metaPhoneNumberId: string;
+  /** When set, bid updates for flow rides go out as a tappable flow message. */
+  offersFlowId?: string;
+  flowTokenSecret?: string;
+  /** Published offers FORM (offers-form-flow.ts). With it, offers are one message with one button. */
+  offersFormFlowId?: string;
+  /** Published Quick Actions form (quick-actions-flow.ts): every plain message carries its button instead of the list. */
+  quickActionsFlowId?: string;
+  /** The form's token names the rider; a message knows only the phone. */
+  riderIdFor?: (phone: string) => Promise<string | null>;
+  /** The original "Driver Offers" flow (offersFlowId). Off unless WHATSAPP_LEGACY_FLOWS_ENABLED says so. */
+  legacyFlowsEnabled?: boolean;
+  /** Live call on (LIVE_CALL_ENABLED): the trip page where the rider chats with or calls the driver. No number is shown then. */
+  liveCallPageUrl?: (riderId: string, rideId: string) => string | null;
 }
 
-async function sendMetaWhatsappMessage(
+/* ── offers, in the chat, as things to TAP ─────────────────────────────── */
+
+/** What a tapped offer sends back: `offer:<price shown>:<offer key>`. */
+const OFFER_REPLY = /^offer:(\d+):(.+)$/;
+export const CHANGE_PRICE_REPLY_ID = 'offers_change_price';
+export const CANCEL_SEARCH_REPLY_ID = 'offers_cancel';
+export const CHANGE_PRICE_TITLE = 'Change my price';
+export const CANCEL_SEARCH_TITLE = 'Cancel search';
+/** WhatsApp allows ten rows in a list; two are "change my price" and "cancel". */
+const MAX_OFFER_ROWS = 8;
+
+/** Same handle the bidding page uses: the durable bid id when there is one. */
+function keyOf(bid: WhatsappBid): string {
+  return bid.bidId ?? `driver:${bid.driverId}`;
+}
+
+/**
+ * The price rides in the id on purpose. A chat message cannot be edited, so an
+ * old one may still show ₦2,800 after the driver has moved to ₦3,200 — and a tap
+ * on it must never hold a fare the rider did not see.
+ */
+export function offerReplyId(bid: WhatsappBid): string {
+  return `offer:${bid.counterOfferNgn}:${keyOf(bid)}`;
+}
+
+export function parseOfferReplyId(id: string | undefined): { shownPriceNgn: number; key: string } | null {
+  const match = OFFER_REPLY.exec(id ?? '');
+  return match ? { shownPriceNgn: Number(match[1]), key: match[2]! } : null;
+}
+
+/** Cheapest first, nearest breaking a tie — the order shown, and the order "1" means. */
+export function sortOffers(bids: WhatsappBid[]): WhatsappBid[] {
+  return [...bids].sort((a, b) => (a.counterOfferNgn - b.counterOfferNgn) || (a.etaSeconds - b.etaSeconds));
+}
+
+function offerFacts(bid: WhatsappBid): string {
+  const etaMin = Math.max(1, Math.ceil(bid.etaSeconds / 60));
+  return [bid.vehicleModel, bid.vehiclePlate, `${bid.driverRating.toFixed(1)}★`, `${etaMin} min away`].filter(Boolean).join(' · ');
+}
+
+function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] || 'Driver';
+}
+
+/** The interactive message for the offers on the table. Exported for tests. */
+export function buildOffersMessage(
+  bids: WhatsappBid[],
+  riderOfferNgn: number,
+  changes?: string[],
+): Record<string, unknown> | null {
+  const offers = sortOffers(bids);
+  if (offers.length === 0) return null;
+  const news = changes && changes.length > 0 ? `${changes.join('\n')}\n\n` : '';
+
+  if (offers.length === 1) {
+    const bid = offers[0]!;
+    return {
+      type: 'button',
+      body: {
+        text: `${news}*${bid.driverName}* offers *₦${bid.counterOfferNgn.toLocaleString()}*\n${offerFacts(bid)}\n\nYour price: ₦${riderOfferNgn.toLocaleString()}`.slice(0, 1024),
+      },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: offerReplyId(bid), title: `Accept ₦${bid.counterOfferNgn.toLocaleString()}`.slice(0, 20) } },
+          { type: 'reply', reply: { id: CHANGE_PRICE_REPLY_ID, title: CHANGE_PRICE_TITLE } },
+          { type: 'reply', reply: { id: CANCEL_SEARCH_REPLY_ID, title: CANCEL_SEARCH_TITLE } },
+        ],
+      },
+    };
+  }
+
+  const shown = offers.slice(0, MAX_OFFER_ROWS);
+  const lines = shown.map((bid) => `*₦${bid.counterOfferNgn.toLocaleString()}* — ${bid.driverName}\n${offerFacts(bid)}`);
+  const hidden = offers.length - shown.length;
+  return {
+    type: 'list',
+    body: {
+      text: [
+        `${news}*${offers.length} drivers have made offers* · your price ₦${riderOfferNgn.toLocaleString()}`,
+        '',
+        lines.join('\n\n'),
+        ...(hidden > 0 ? ['', `…and ${hidden} more at higher prices.`] : []),
+        '',
+        'Tap *Choose a driver* to take one.',
+      ].join('\n').slice(0, 1024),
+    },
+    action: {
+      button: 'Choose a driver',
+      sections: [
+        {
+          title: 'Offers',
+          rows: shown.map((bid) => ({
+            id: offerReplyId(bid),
+            title: `₦${bid.counterOfferNgn.toLocaleString()} · ${firstName(bid.driverName)}`.slice(0, 24),
+            description: offerFacts(bid).slice(0, 72),
+          })),
+        },
+        {
+          title: 'Something else',
+          rows: [
+            { id: CHANGE_PRICE_REPLY_ID, title: CHANGE_PRICE_TITLE, description: 'Offer drivers a different amount' },
+            { id: CANCEL_SEARCH_REPLY_ID, title: CANCEL_SEARCH_TITLE, description: 'Stop looking — nothing is charged' },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Offers go to the chat as things to tap: one offer is an "Accept ₦X" button,
+ * several are a "Choose a driver" list. No "reply 1–3" instructions — the tap IS
+ * the reply. Returns false when WhatsApp refuses the message, so the caller can
+ * fall back to the numbered text list (the one case where numbers are still the
+ * only way to answer).
+ */
+export async function sendOffersInChat(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  bids: WhatsappBid[],
+  riderOfferNgn: number,
+  changes?: string[],
+  /** Whose offers these are. With it and a published form, the message's one button opens the offers form. */
+  riderId?: string,
+): Promise<'form' | 'buttons' | false> {
+  const buttons = buildOffersMessage(bids, riderOfferNgn, changes);
+  if (!buttons) return false;
+
+  // WhatsApp allows reply buttons OR one form button. The form wins when there is
+  // one: accepting, changing the price, declining and cancelling all happen inside
+  // it, so none of them costs another chat message.
+  //
+  // Its message says HOW MANY drivers, never who or how much: it is not sent again
+  // while it sits unopened (see announceOffers), so anything more specific would go
+  // stale. The form shows the live list the moment it opens.
+  const form = riderId && deps.offersFormFlowId && deps.flowTokenSecret
+    ? {
+        type: 'flow',
+        body: {
+          text: [
+            `*${bids.length === 1 ? '1 driver found' : `${bids.length} drivers found`}* for your ₦${riderOfferNgn.toLocaleString()} offer.`,
+            '',
+            'Tap below to see who — accept one, decline them all, change your price or cancel. More drivers may have answered by the time you open it.',
+          ].join('\n'),
+        },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_id: deps.offersFormFlowId,
+            flow_token: signFlowToken(`bids:${riderId}`, deps.flowTokenSecret),
+            flow_cta: 'See driver offers',
+            flow_action: 'data_exchange',
+          },
+        },
+      }
+    : null;
+  if (form && await postInteractive(deps, phone, form)) return 'form';
+  return (await postInteractive(deps, phone, buttons)) ? 'buttons' : false;
+}
+
+/**
+ * The ONE message a search gets with the offers form: sent the moment the bid is
+ * in. Its button opens the form, which shows the offers as they come and has its
+ * own "Check for more offers" row — so no "N drivers found" message ever follows.
+ * False when the form is not published: the caller sends its older message.
+ */
+export async function sendBidPlacedMessage(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  riderId: string,
+  trip: { pickupAddress: string; destAddress: string; stopAddresses?: string[]; offerNgn: number },
+): Promise<boolean> {
+  if (!offersFormIsOn(deps)) return false;
+  const text = [
+    `*Your bid of ₦${trip.offerNgn.toLocaleString()} is in*`,
+    '',
+    ...tripLines({ pickupAddress: trip.pickupAddress, destAddress: trip.destAddress, stops: (trip.stopAddresses ?? []).map((address) => ({ address })) }),
+    '',
+    'Drivers near you can see it now. Tap below to see their offers as they come in. Accept one, change your price, or cancel the search, all in one place.',
+  ].join('\n');
+  return postInteractive(deps, phone, {
+    type: 'flow',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: deps.offersFormFlowId,
+        flow_token: signFlowToken(`bids:${riderId}`, deps.flowTokenSecret!),
+        flow_cta: 'See driver offers',
+        flow_action: 'data_exchange',
+      },
+    },
+  });
+}
+
+/** True when offers go out as the form message (one button) rather than reply buttons. */
+export function offersFormIsOn(deps: WhatsappNotifierDeps): boolean {
+  return Boolean(deps.offersFormFlowId && deps.flowTokenSecret);
+}
+
+async function postInteractive(deps: WhatsappNotifierDeps, phone: string, interactive: Record<string, unknown>): Promise<boolean> {
+
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone.replace(/^\+/, ''),
+      type: 'interactive',
+      interactive,
+    }),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    console.error('[whatsapp-notifier] tappable offers failed — falling back to the numbered list', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Any plain text, with the Quick Actions button under it.
+ *
+ * WhatsApp gives a bot no permanent menu, so the menu rides on every message
+ * that is only words — greetings, receipts, confirmations, cancellations,
+ * wallet news. It is the last thing on screen after every turn. Messages that
+ * already carry their own thing to tap (a form, Track/SOS, a picker, a photo)
+ * cannot have it; WhatsApp allows one kind of button per message.
+ *
+ * The rows are fixed here on purpose: the picker's one job is to be the same
+ * everywhere. What each row DOES is decided when it is tapped (whatsapp.route
+ * handleQuickAction) — mid-search, Book is refused and Your current trip is
+ * what they need — so a stale menu on an old message can never do harm.
+ */
+export const QUICK_ACTIONS_BUTTON = 'Quick Actions';
+
+/** The same words with the Quick Actions FORM's button under them (quick-actions-flow.ts). */
+export function withQuickActionsForm(text: string, flowId: string, riderId: string, tokenSecret: string): Record<string, unknown> {
+  return {
+    type: 'flow',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: flowId,
+        flow_token: signFlowToken(`menu:${riderId}`, tokenSecret),
+        flow_cta: QUICK_ACTIONS_BUTTON,
+        // data_exchange: opening calls our endpoint, so the menu is built for right now.
+        flow_action: 'data_exchange',
+      },
+    },
+  };
+}
+
+export function withQuickActions(text: string): Record<string, unknown> {
+  return {
+    type: 'list',
+    body: { text: text.slice(0, 1024) },
+    action: {
+      button: QUICK_ACTIONS_BUTTON,
+      sections: [
+        { title: 'Ride', rows: [
+          { id: 'qa_book', title: 'Book a ride', description: 'Pickup, destination and your price' },
+          { id: 'qa_repeat', title: 'Repeat last ride', description: 'Your last trip again' },
+          { id: 'qa_reverse', title: 'Reverse last ride', description: 'Your last trip, back the other way' },
+          { id: 'qa_history', title: 'Ride history', description: 'Book a past trip again' },
+          { id: 'qa_current', title: 'Your current trip', description: 'See where your ride is' },
+        ] },
+        { title: 'Wallet', rows: [
+          { id: 'qa_deposit', title: 'Add money', description: 'Your account number for transfers' },
+          { id: 'qa_withdraw', title: 'Withdraw', description: 'Send money to your bank' },
+        ] },
+        { title: 'Help', rows: [
+          { id: 'qa_support', title: 'Contact support', description: 'Talk to a person' },
+        ] },
+      ],
+    },
+  };
+}
+
+export async function sendMetaWhatsappMessage(
   deps: WhatsappNotifierDeps,
   to: string,
   body: string,
@@ -18,25 +317,99 @@ async function sendMetaWhatsappMessage(
   const recipient = to.replace(/^\+/, '');
   const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
 
-  const response = await fetch(endpoint, {
+  const post = (message: Record<string, unknown>) => fetch(endpoint, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${deps.metaAccessToken}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: recipient,
-      type: 'text',
-      text: { body },
-    }),
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: recipient, ...message }),
   });
 
+  // Words + the Quick Actions button: the form's when it is published and the
+  // rider is known, else the list. If WhatsApp refuses both (an old phone, a
+  // client that cannot show it), the words go on their own.
+  if (deps.quickActionsFlowId && deps.flowTokenSecret && deps.riderIdFor) {
+    const riderId = await deps.riderIdFor(recipient).catch(() => null);
+    if (riderId) {
+      const asForm = await post({ type: 'interactive', interactive: withQuickActionsForm(body, deps.quickActionsFlowId, riderId, deps.flowTokenSecret) }).catch(() => null);
+      if (asForm?.ok) return;
+    }
+  }
+  const asList = await post({ type: 'interactive', interactive: withQuickActions(body) }).catch(() => null);
+  if (asList?.ok) return;
+  const response = await post({ type: 'text', text: { body } });
   if (!response.ok) {
     const payload = await response.text();
     console.error('[whatsapp-notifier] Meta send failed', { status: response.status, payload });
   }
+}
+
+/**
+ * Words with one button that opens a link (Meta's "cta_url"). If WhatsApp
+ * refuses the button, the words go as text with the link at the end, so the
+ * way in is never lost. No Quick Actions: the button IS the action.
+ */
+export async function sendMetaLinkMessage(
+  deps: WhatsappNotifierDeps,
+  to: string,
+  body: string,
+  buttonText: string,
+  url: string,
+): Promise<void> {
+  const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
+  const post = (message: Record<string, unknown>) => fetch(endpoint, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: to.replace(/^\+/, ''), ...message }),
+  });
+  const asButton = await post({
+    type: 'interactive',
+    interactive: {
+      type: 'cta_url',
+      body: { text: body.slice(0, 1024) },
+      action: { name: 'cta_url', parameters: { display_text: buttonText.slice(0, 20), url } },
+    },
+  }).catch(() => null);
+  if (asButton?.ok) return;
+  console.error('[whatsapp-notifier] link button failed — sending the link as text', {
+    status: asButton?.status ?? null,
+    payload: asButton ? await asButton.text().catch(() => '') : 'network error',
+  });
+  const asText = await post({ type: 'text', text: { body: `${body}\n\n${buttonText}: ${url}`.slice(0, 4096), preview_url: false } }).catch(() => null);
+  if (!asText?.ok) {
+    console.error('[whatsapp-notifier] Meta send failed', { status: asText?.status ?? null });
+  }
+}
+
+/**
+ * An emoji reaction on a message already in the chat, or none ("" removes
+ * it). WhatsApp keeps one reaction per sender per message, so a new one
+ * replaces the old: a status light, with no new message. False when Meta
+ * refuses it.
+ */
+export async function sendMetaReaction(
+  deps: Pick<WhatsappNotifierDeps, 'metaAccessToken' | 'metaPhoneNumberId'>,
+  to: string,
+  messageId: string,
+  emoji: string,
+): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: to.replace(/^\+/, ''),
+      type: 'reaction',
+      reaction: { message_id: messageId, emoji },
+    }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] reaction refused', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 // ── Build a single message listing all driver bids ────────────────────────
@@ -60,8 +433,8 @@ function formatBidList(
   // An update reads as a change to one conversation, not a fresh fanfare —
   // "1 driver found!" four times about the same man read as spam.
   const header = changes && changes.length > 0
-    ? `🔔 *Offer update*\n${changes.map((c) => `• ${c}`).join('\n')}\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`
-    : `🚗 *${count} driver offer${count === 1 ? '' : 's'}*\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`;
+    ? `*Offer update*\n${changes.map((c) => `• ${c}`).join('\n')}\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`
+    : `*${count} driver offer${count === 1 ? '' : 's'}*\n\nYour offer: ₦${riderOfferNgn.toLocaleString()}\n`;
 
   const lines = bids.map((bid, i) => {
     const num = i + 1;
@@ -91,6 +464,72 @@ function formatBidList(
 
 export { formatBidList };
 
+/**
+ * Flow-booked rides keep bidding on the screen. WhatsApp cannot push into an
+ * open flow, so each debounced bid batch sends a message with a 'View offers'
+ * button — tapping it re-opens the flow, whose INIT loads the CURRENT bids.
+ * Chat-text fallback when the flow id/secret are not wired.
+ */
+export async function sendFlowOffersMessage(
+  deps: WhatsappNotifierDeps,
+  to: string,
+  riderId: string,
+  meta: WhatsappRideMeta,
+  bids: WhatsappBid[],
+): Promise<void> {
+  const count = bids.length;
+  const body =
+    count > 0
+      ? `${count} driver offer${count === 1 ? '' : 's'} on your ₦${meta.offerNgn.toLocaleString()} request!\nLowest: ₦${Math.min(...bids.map((b) => b.counterOfferNgn)).toLocaleString()}. Tap below to view and accept.`
+      : `We're finding drivers for your ₦${meta.offerNgn.toLocaleString()} request!\nOffers land right here — tap below anytime to check them.`;
+
+  if (!deps.legacyFlowsEnabled || !deps.offersFlowId || !deps.flowTokenSecret) {
+    await sendMetaWhatsappMessage(deps, to, body);
+    return;
+  }
+
+  const recipient = to.replace(/^\+/, '');
+  const endpoint = `https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${deps.metaAccessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: recipient,
+      type: 'interactive',
+      interactive: {
+        type: 'flow',
+        header: { type: 'text', text: 'Driver offers' },
+        body: { text: body },
+        footer: { text: 'Wheelers' },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            // The OFFERS flow's entry screen IS the bid list — the booking
+            // flow may only open on RIDE_SETUP, so it cannot show offers on
+            // open. INIT here loads the live bid list every time.
+            flow_id: deps.offersFlowId,
+            flow_token: signFlowToken(`offers:${riderId}`, deps.flowTokenSecret),
+            flow_cta: count > 0 ? 'View offers' : 'Check offers',
+            flow_action: 'data_exchange',
+          },
+        },
+      },
+    }),
+  });
+  if (!response.ok) {
+    const payload = await response.text();
+    console.error('[whatsapp-notifier] flow offers message failed', { status: response.status, payload });
+    // Never leave the rider unaware of money on the table.
+    await sendMetaWhatsappMessage(deps, to, body);
+  }
+}
+
 // ── Send batched bid notification (1 message with all drivers) ────────────
 
 export async function sendBidNotification(
@@ -118,7 +557,7 @@ export async function sendRideMatchedNotification(
   const etaMin = Math.ceil(etaSeconds / 60);
   const fees = calculateRideFees(fareNgn);
   const msg = [
-    `✅ *Ride confirmed!*`,
+    `*Ride confirmed!*`,
     ``,
     `Driver: *${driverName}*`,
     `Vehicle: ${vehicleModel} (${vehiclePlate})`,
@@ -126,7 +565,7 @@ export async function sendRideMatchedNotification(
     `Fare: ₦${fees.totalNgn.toLocaleString()}`,
     ...(formatTappablePhone(driverPhone) ? [`Call your driver: ${formatTappablePhone(driverPhone)}`] : []),
     ``,
-    `🚗 ${driverName} is on the way — they'll be with you in ~${etaMin} min.`,
+    `${driverName} is on the way — they'll be with you in ~${etaMin} min.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -140,26 +579,122 @@ export async function sendDriverArrivedNotification(
     vehicleModel?: string;
     vehiclePlate?: string;
     driverPhone?: string | null;
+    /** The car's own photo. THIS is the moment for it — the rider is looking for it. */
+    carPhotoUrl?: string | null;
+    /** The 4 digits the rider gives the driver to start the trip — right here, when they need them. */
+    tripCode?: string | null;
+    /** With Live call on: whose trip, so the card's button opens its Chat or call page. */
+    riderId?: string;
+    rideId?: string;
   },
 ): Promise<void> {
   // Chat messages can't be edited, so each one stands alone: the rider must
   // never scroll back through the auction to learn which car to look for.
   const car = details?.vehicleModel
-    ? ` — look for the *${details.vehicleModel}*${details.vehiclePlate ? ` (${details.vehiclePlate})` : ''}`
+    ? ` Look for the *${details.vehicleModel}*${details.vehiclePlate ? `, plate *${details.vehiclePlate}*` : ''}.`
     : '';
   const call = formatTappablePhone(details?.driverPhone);
-  const lines = [
-    `✅ *${details?.driverName ?? 'Your driver'} has arrived*${car}.`,
-    ...(call ? [``, `Can't see them? Call: ${call}`] : []),
+  const head = [
+    `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
+    ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
   ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+  const text = [...head, ...(call ? [``, `Can't find them? Call ${call}`] : [])].join('\n');
+
+  // Live call on: no number — the card's one button is Chat or call (the trip page, where the call is).
+  // If WhatsApp refuses that card, the one below (with the number) goes instead: the driver is always reachable.
+  const chatOrCall = details?.riderId && details.rideId ? deps.liveCallPageUrl?.(details.riderId, details.rideId) ?? null : null;
+  if (chatOrCall) {
+    const liveText = [...head, ``, `Can't find them? Tap *Chat or call*.`].join('\n');
+    if (await postInteractiveCard(deps, phone, {
+      type: 'cta_url',
+      ...(details?.carPhotoUrl ? { header: { type: 'image', image: { link: details.carPhotoUrl } } } : {}),
+      body: { text: liveText.slice(0, 1024) },
+      action: { name: 'cta_url', parameters: { display_text: 'Chat or call', url: chatOrCall } },
+    })) return;
+  }
+
+  // ONE message: the car on top, all of that under it, and the Quick Actions
+  // button. WhatsApp refuses that shape → the car with the words as its caption
+  // → the words on their own (with the button). "Your driver is outside" is
+  // never lost.
+  if (details?.carPhotoUrl && await postImageWithQuickActions(deps, phone, details.carPhotoUrl, text)) return;
+  if (details?.carPhotoUrl && await postImage(deps, phone, details.carPhotoUrl, text)) return;
+  await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** One interactive message. False when Meta refuses it, so the caller can fall back. */
+async function postInteractiveCard(deps: WhatsappNotifierDeps, phone: string, interactive: Record<string, unknown>): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: phone.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] arrived card with Chat or call refused — sending the card with the number', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
+/** A picture on top, the words, and the Quick Actions form button. False when it cannot go that way. */
+async function postImageWithQuickActions(deps: WhatsappNotifierDeps, phone: string, link: string, text: string): Promise<boolean> {
+  if (!deps.quickActionsFlowId || !deps.flowTokenSecret || !deps.riderIdFor) return false;
+  const riderId = await deps.riderIdFor(phone.replace(/^\+/, '')).catch(() => null);
+  if (!riderId) return false;
+  const interactive = { header: { type: 'image', image: { link } }, ...withQuickActionsForm(text, deps.quickActionsFlowId, riderId, deps.flowTokenSecret) };
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: phone.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.warn('[whatsapp-notifier] arrived card with Quick Actions refused — sending the picture with a caption', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
+}
+
+/** One picture with a caption. False when Meta refuses it, so the caller can fall back to text. */
+async function postImage(deps: WhatsappNotifierDeps, phone: string, link: string, caption: string): Promise<boolean> {
+  const response = await fetch(`https://graph.facebook.com/v21.0/${deps.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deps.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone.replace(/^\+/, ''),
+      type: 'image',
+      image: { link, caption: caption.slice(0, 1024) },
+    }),
+  }).catch(() => null);
+  if (!response?.ok) {
+    console.error('[whatsapp-notifier] image failed — sending the words on their own', {
+      status: response?.status ?? null,
+      payload: response ? await response.text().catch(() => '') : 'network error',
+    });
+    return false;
+  }
+  return true;
 }
 
 export async function sendRideStartedNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
+  /** The short trip ID, e.g. WH-01234: what the rider quotes if they need help. */
+  tripId?: string | null,
 ): Promise<void> {
-  await sendMetaWhatsappMessage(deps, phone, 'Your ride has started! Stay safe. 🚗');
+  await sendMetaWhatsappMessage(deps, phone, [
+    // No trip ID in the chat: riders never need it (admin and the Excel keep it).
+    `*Trip started*`,
+    ``,
+    `Sit back and enjoy the ride. Your receipt comes here when you arrive.`,
+  ].join('\n'));
 }
 
 export { sendRideCompletedNotification };
@@ -170,18 +705,84 @@ async function sendRideCompletedNotification(
   fareNgn: number,
   distanceKm: number,
   balanceNgn?: number,
+  /** The trip just finished (kept for callers; the receipt's one button is Quick Actions, where repeat and reverse are). */
+  _rideId?: string,
+  tripId?: string | null,
+  /** Paid from the rider's Stellar (testnet) balance: the XLM it cost. Their naira wallet was not touched. */
+  paidXlm?: string | null,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
-  const lines = [
-    `🏁 *Trip complete!*`,
+  const text = [
+    `*You've arrived*`,
     ``,
-    `Distance: ${distanceKm.toFixed(1)} km`,
-    `Fare: ₦${fees.totalNgn.toLocaleString()} — paid from your wallet`,
-    ...(balanceNgn !== undefined ? [`Balance: ₦${balanceNgn.toLocaleString()}`] : []),
+    paidXlm
+      ? `${distanceKm.toFixed(1)} km · *${paidXlm} XLM* (₦${fees.totalNgn.toLocaleString()}) paid from your Stellar wallet`
+      : `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
+    ...(balanceNgn !== undefined && !paidXlm ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
-    `How was your driver? Reply *1–5* to rate them ⭐`,
-  ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+    `How was your driver? Reply *1* to *5* to rate them.`,
+  ].join('\n');
+
+  // One Quick Actions button (Timi, 3 Nov 2026): repeat and reverse are already
+  // inside it, so the receipt no longer carries its own two buttons.
+  await sendMetaWhatsappMessage(deps, phone, text);
+}
+
+/** A rider's completed group seat lives in Redis under the anchor ride; a normal ride has no such entry. */
+async function isGroupRideId(rideId: string): Promise<boolean> {
+  return groupRideChecker ? groupRideChecker(rideId) : false;
+}
+let groupRideChecker: ((rideId: string) => Promise<boolean>) | null = null;
+/** Lets the consumer (which has Redis) answer "was this a group seat?" without the notifier holding a client. */
+export function setGroupRideChecker(check: (rideId: string) => Promise<boolean>): void {
+  groupRideChecker = check;
+}
+
+export interface RideCancelledDetails {
+  /** Raw machine reason (e.g. driver_cancelled) — never shown verbatim. */
+  reason?: string;
+  cancelledBy?: 'rider' | 'driver' | 'system';
+  /** Money that was held for this ride and is now back in the wallet. */
+  refundedNgn?: number;
+  balanceNgn?: number;
+  /** The rider's own reason, when they cancelled in the chat: it leads the message. */
+  riderReason?: string;
+  /** The driver cancelled and the search goes on: say so, not "book another ride". */
+  searchingAgain?: boolean;
+}
+
+/**
+ * What the rider reads when a ride is cancelled. `withOffersButton`: this very
+ * message carries "See driver offers" (the search goes on after a driver bailed),
+ * so it points at the button below, not at an older message.
+ */
+export function rideCancelledText(details: RideCancelledDetails, options: { withOffersButton?: boolean } = {}): string {
+  // A rider must never see a raw enum, and after paying they must be told —
+  // in the same breath — that their money is back. "driver_cancelled" with
+  // no refund line reads like a scam.
+  const who =
+    details.cancelledBy === 'driver' || details.reason === 'driver_cancelled' || details.reason === 'rider_no_show'
+      ? '*Your driver had to cancel.* Sorry about that.'
+      : details.cancelledBy === 'system'
+        ? '*This ride was cancelled.*'
+        : '*Your ride was cancelled.*';
+
+  const lines = details.riderReason ? ['*Ride cancelled*', `Reason: ${details.riderReason}`] : [`${who}`];
+  if (details.refundedNgn && details.refundedNgn > 0) {
+    lines.push(
+      '',
+      `Your ₦${details.refundedNgn.toLocaleString()} is back in your wallet` +
+        (details.balanceNgn !== undefined
+          ? ` (balance ₦${details.balanceNgn.toLocaleString()}).`
+          : '.'),
+    );
+  }
+  lines.push('', details.searchingAgain
+    ? options.withOffersButton
+      ? "We're finding you another driver. Tap *See driver offers* below — new offers show up there, and the number on this message counts them."
+      : "We're finding you another driver. Tap *See driver offers* on your bid message to watch the offers come in."
+    : 'Need another ride? Send your trip anytime.');
+  return lines.join('\n');
 }
 
 export async function sendRideCancelledNotification(
@@ -194,30 +795,31 @@ export async function sendRideCancelledNotification(
     /** Money that was held for this ride and is now back in the wallet. */
     refundedNgn?: number;
     balanceNgn?: number;
+    /** The rider's own reason, when they cancelled in the chat: it leads the message. */
+    riderReason?: string;
+    /** The driver cancelled and the search goes on: say so, not "book another ride". */
+    searchingAgain?: boolean;
   },
 ): Promise<void> {
-  // A rider must never see a raw enum, and after paying they must be told —
-  // in the same breath — that their money is back. "driver_cancelled" with
-  // no refund line reads like a scam.
-  const who =
-    details.cancelledBy === 'driver' || details.reason === 'driver_cancelled' || details.reason === 'rider_no_show'
-      ? 'Your driver had to cancel the trip. Sorry about that!'
-      : details.cancelledBy === 'system'
-        ? 'This ride was cancelled.'
-        : 'Your ride has been cancelled.';
+  await sendMetaWhatsappMessage(deps, phone, rideCancelledText(details));
+}
 
-  const lines = [`❌ ${who}`];
-  if (details.refundedNgn && details.refundedNgn > 0) {
-    lines.push(
-      '',
-      `💰 Your ₦${details.refundedNgn.toLocaleString()} is back in your wallet` +
-        (details.balanceNgn !== undefined
-          ? ` — balance: ₦${details.balanceNgn.toLocaleString()}.`
-          : '.'),
-    );
-  }
-  lines.push('', 'Book another ride anytime — just send your route. 🚗');
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
+/** A driver whose offer was on the rider's list is no longer available. */
+export async function sendOfferWithdrawnNotification(
+  deps: WhatsappNotifierDeps,
+  phone: string,
+  driverName: string | undefined,
+  remaining: number,
+): Promise<void> {
+  const who = driverName ? `*${driverName}*` : 'One driver';
+  const next = remaining > 0
+    ? `Here ${remaining === 1 ? 'is the offer' : `are the ${remaining} offers`} still on the table`
+    : 'New offers will come in as drivers answer.';
+  await sendMetaWhatsappMessage(deps, phone, [
+    `${who} isn't available any more, so their offer is gone.`,
+    ``,
+    next,
+  ].join('\n'));
 }
 
 export async function sendBidTimeoutNotification(
@@ -229,14 +831,12 @@ export async function sendBidTimeoutNotification(
   // forward, in order of what actually works.
   const lines = [
     offerNgn
-      ? `😕 No driver took ₦${offerNgn.toLocaleString()} this time.`
-      : '😕 No driver accepted this request.',
+      ? `No driver took ₦${offerNgn.toLocaleString()} this time. Nothing was charged.`
+      : 'No driver took this trip this time. Nothing was charged.',
     '',
-    'Two ways forward:',
-    `• Reply *search again* — same route, fresh search`,
     offerNgn
-      ? `• Send a higher offer (e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*) — usually gets drivers moving`
-      : '• Send a higher offer — usually gets drivers moving',
+      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*.`
+      : 'Reply *search again* to try again, or send a higher price.',
   ];
   await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
@@ -249,7 +849,11 @@ export async function sendRiderPaidNotification(
   await sendMetaWhatsappMessage(
     deps,
     phone,
-    `Payment received! Your wallet balance is now ₦${newBalanceNgn.toLocaleString()}. Your driver has been notified and is on the way.`,
+    [
+      `*Payment received*`,
+      ``,
+      `Wallet balance ₦${newBalanceNgn.toLocaleString()}. Your driver knows, and they're on the way.`,
+    ].join('\n'),
   );
 }
 
@@ -260,12 +864,9 @@ export async function sendDepositConfirmation(
   newBalanceNgn: number,
 ): Promise<void> {
   const msg = [
-    `Deposit received!`,
+    `*₦${amountNgn.toLocaleString()} received*`,
     ``,
-    `Amount: NGN ${amountNgn.toLocaleString()}`,
-    `Wallet balance: NGN ${newBalanceNgn.toLocaleString()}`,
-    ``,
-    `Your wallet is ready. Book a ride anytime!`,
+    `Your wallet balance is ₦${newBalanceNgn.toLocaleString()}. You're ready to ride.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -281,15 +882,15 @@ export async function sendSearchingNotification(
 ): Promise<void> {
   const payLabel = paymentMethod === 'WALLET' ? 'Wallet' : 'Cash';
   const msg = [
-    `🔍 *Looking for drivers!*`,
+    `*Looking for drivers!*`,
     ``,
-    `📍 ${pickupAddress}`,
-    `📍 ${destAddress}`,
+    `From: ${pickupAddress}`,
+    `To: ${destAddress}`,
     ``,
     `Offer: ₦${offerNgn.toLocaleString()}`,
     `Payment: ${payLabel}`,
     ``,
-    `I'll message you when drivers respond! 🚗`,
+    `I'll message you when drivers respond!`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -304,12 +905,12 @@ export async function sendGroupRideGroupedNotification(
 ): Promise<void> {
   const durationMin = Math.max(1, Math.ceil(totalDurationSeconds / 60));
   const msg = [
-    `🎉 *Group found!*`,
+    `*Group found!*`,
     ``,
     `You've been matched with ${riderCount - 1} other rider${riderCount - 1 === 1 ? '' : 's'} heading your way.`,
     `Shared route: ${totalDistanceKm.toFixed(1)} km · ~${durationMin} min`,
     ``,
-    `We're finding a driver for your group now — I'll message you the moment one accepts. 🚗`,
+    `We're finding a driver for your group now — I'll message you the moment one accepts.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -326,13 +927,13 @@ export async function sendGroupRideDriverAssignedNotification(
 ): Promise<void> {
   const etaMin = Math.max(1, Math.ceil(etaSeconds / 60));
   const msg = [
-    `✅ *Driver found for your group ride!*`,
+    `*Driver found for your group ride!*`,
     ``,
     `Driver: *${driverName}*`,
     `Vehicle: ${vehicleModel}${vehiclePlate ? ` (${vehiclePlate})` : ''}`,
     `Rating: ${driverRating.toFixed(1)}★`,
     ``,
-    `🚗 ${driverName} is on the way — they'll reach the first pickup in ~${etaMin} min.`,
+    `${driverName} is on the way — they'll reach the first pickup in ~${etaMin} min.`,
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -344,7 +945,7 @@ export async function sendGroupRideDispatchNotification(
   seatOfferNgn: number,
 ): Promise<void> {
   const msg = [
-    `🚗 *Drivers are seeing your group ride now!*`,
+    `*Drivers are seeing your group ride now!*`,
     ``,
     `Your seat is offered at *₦${seatOfferNgn.toLocaleString()}* — driver offers for YOUR seat will land here as a numbered list.`,
     ``,
@@ -360,7 +961,7 @@ export async function sendGroupRideWaitNudge(
   waitedMinutes: number,
 ): Promise<void> {
   const msg = [
-    `⏳ *Still looking for co-riders* — it's been ~${waitedMinutes} minutes with no group yet.`,
+    `*Still looking for co-riders* — it's been ~${waitedMinutes} minutes with no group yet.`,
     ``,
     `Reply:`,
     `• *normal* — book this trip as a normal ride right now`,

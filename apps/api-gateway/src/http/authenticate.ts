@@ -49,5 +49,32 @@ export async function authenticateHttpUser(
     );
   }
 
-  return await userClient.findById(localToken.sub);
+  const user = await userClient.findById(localToken.sub);
+  // An admin signed this person out everywhere: logins from before that moment
+  // are over. (A token's time is whole seconds, so the last second is theirs.)
+  if (user.sessionsEndedAt && localToken.iat * 1000 + 999 < user.sessionsEndedAt.getTime()) {
+    throw new HttpAuthError('You were signed out. Please sign in again.');
+  }
+  return user;
+}
+
+/**
+ * Who is asking, from the token alone: no database read. For endpoints called
+ * constantly by the same signed-in phone (the driver heartbeat), where looking
+ * the user up on every call was most of the cost of the call. The token is
+ * still verified in full; what is skipped is re-reading a user row that the
+ * endpoint does not need.
+ */
+export function authenticateHttpToken(req: IncomingMessage, jwtSecret: string): { userId: string } {
+  const authorization =
+    typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined;
+  const token = extractBearerToken(authorization);
+  if (!token) {
+    throw new HttpAuthError('Authorization bearer token is required');
+  }
+  try {
+    return { userId: verifyLocalAccessToken(token, jwtSecret).sub };
+  } catch (error) {
+    throw new HttpAuthError(error instanceof Error ? error.message : 'Invalid access token.');
+  }
 }

@@ -1,11 +1,8 @@
 import type { MessageContext } from '@wheleers/kafka-client';
-import type { TransactionType } from '@prisma/client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 
 import type { WalletRepository } from '../types';
 import type { WalletEventsProducer } from '../producers/wallet-events.producer';
-
-const DEPOSIT_TYPE = 'DEPOSIT' as TransactionType;
 
 export function createPaymentEventsConsumer(params: {
   walletRepository: WalletRepository;
@@ -31,13 +28,15 @@ export function createPaymentEventsConsumer(params: {
             return;
           }
 
-          const creditResult = await walletRepository.credit({
+          // Wheelers' flat deposit fee and the provider's cut are split out
+          // here, atomically, so the ledger gains exactly the cash that landed.
+          const creditResult = await walletRepository.creditDeposit({
             walletId: wallet.id,
             amountNgn: event.amountNgn,
-            type: DEPOSIT_TYPE,
+            providerFeeNgn: event.providerFeeNgn ?? 0,
             referenceId: event.providerReference,
             metadata: {
-              pouchVirtualAccountId: event.pouchVirtualAccountId,
+              providerAccountId: event.providerAccountId,
               bankName: event.bankName,
               senderAccountNumber: event.senderAccountNumber,
               senderAccountName: event.senderAccountName,
@@ -51,7 +50,8 @@ export function createPaymentEventsConsumer(params: {
           await walletEventsProducer.publishCredited({
             walletId: creditResult.wallet.id,
             userId: creditResult.wallet.userId,
-            amountNgn: event.amountNgn,
+            // What actually reached the user's wallet, after the deposit fee.
+            amountNgn: creditResult.split.userCreditNgn,
             newBalanceNgn: Number(creditResult.wallet.balanceNgn),
             creditType: 'deposit',
             referenceId: event.providerReference,
@@ -67,7 +67,7 @@ export function createPaymentEventsConsumer(params: {
       if (event.eventType === 'PAYOUT_COMPLETED') {
         console.log(
           `[${serviceId}] PAYOUT_COMPLETED for user ${event.userId}, ` +
-          `pouchPayoutId=${event.pouchPayoutId} — already settled by webhook handler`,
+          `payoutId=${event.providerPayoutId} — already settled by webhook handler`,
         );
         return;
       }
@@ -75,7 +75,7 @@ export function createPaymentEventsConsumer(params: {
       if (event.eventType === 'PAYOUT_FAILED') {
         console.log(
           `[${serviceId}] PAYOUT_FAILED for user ${event.userId}, ` +
-          `pouchPayoutId=${event.pouchPayoutId}, reason=${event.failureReason} — ` +
+          `payoutId=${event.providerPayoutId}, reason=${event.failureReason} — ` +
           `already handled by webhook handler`,
         );
         return;

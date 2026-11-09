@@ -1,0 +1,566 @@
+import { randomUUID } from 'crypto';
+import { openPaying, payingStatusEnabled, withinPayingRate } from './paying-status';
+import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
+import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
+import type { TripDetails } from '@wheleers/config';
+import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
+import type { RedisClient } from '../redis/client';
+import type { GatewayPublisher } from '../websocket/publisher';
+import {
+  clearActiveRide,
+  clearBids,
+  clearBookingStage,
+  clearPendingAccept,
+  clearPendingRoute,
+  cleanupRideKeys,
+  getBids,
+  getPendingAccept,
+  getRideMeta,
+  getRideState,
+  removeBid,
+  setActiveRide,
+  setRideState,
+  storeAcceptedBid,
+  storeLastBatch,
+  storeLastRoute,
+  storeRiderOfferChange,
+  storeWhatsappRide,
+  clearSearchTimedOut,
+} from '../whatsapp-flows/bid-state';
+import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state';
+import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
+import { startSearchClock } from './search-status';
+import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+
+/**
+ * What a WhatsApp rider can DO to their booking, as plain functions with plain
+ * results — no chat replies in here.
+ *
+ * The chat used to be the only door, so these steps lived inside its message
+ * handler, tangled with the text of each reply. The bidding page is a second
+ * door onto the same booking: it needs the same rules (the minimum fare, the
+ * driver-still-there checks, one rider per driver, hold before confirm) without
+ * the chat's wording. Both doors read and write the same Redis state, so a
+ * rider can start in one and finish in the other.
+ */
+
+export interface RideServiceDeps {
+  redisClient: RedisClient;
+  publisher: GatewayPublisher;
+}
+
+/** The handle the page uses for an offer: the durable bid id when there is one. */
+export function offerKey(bid: WhatsappBid): string {
+  return bid.bidId ?? `driver:${bid.driverId}`;
+}
+
+/* ── start the search ───────────────────────────────────────────────────── */
+
+export type PublishResult =
+  | { ok: true; rideId: string }
+  | { ok: false; code: 'BELOW_MINIMUM'; minOfferNgn: number }
+  | { ok: false; code: 'ALREADY_PUBLISHING' | 'PUBLISH_FAILED' };
+
+/** Name a price → the ride goes out to drivers. */
+export async function publishWhatsappRide(
+  deps: RideServiceDeps,
+  rider: { id: string; phone: string },
+  pendingRoute: PendingRouteData,
+  offerNgn: number,
+  /** People, luggage, pet and a note, from the ride page. Absent: not asked (chat). */
+  tripDetails?: TripDetails,
+): Promise<PublishResult> {
+  if (!(offerNgn >= pendingRoute.minOfferNgn)) {
+    return { ok: false, code: 'BELOW_MINIMUM', minOfferNgn: pendingRoute.minOfferNgn };
+  }
+
+  // Two taps, or a tap and a typed price in the same second, must not become two rides.
+  const claimKey = `whatsapp:user:${rider.id}:publishing`;
+  const claimed = await deps.redisClient.setIfNotExists(claimKey, '1', 30).catch(() => true);
+  if (!claimed) return { ok: false, code: 'ALREADY_PUBLISHING' };
+
+  const rideId = randomUUID();
+  // The ride page's box, else what the rider said in the chat ("3 of us", "with my dog"),
+  // else the trip's own (searching a last trip again).
+  const details = await searchTripDetails(deps.redisClient, rider.id, tripDetails, pendingRoute.tripDetails);
+  const event = RideRequestedEvent.parse({
+    eventType: 'RIDE_REQUESTED',
+    channel: 'WHATSAPP',
+    rideId,
+    riderId: rider.id,
+    pickup: { lat: pendingRoute.pickupLat, lng: pendingRoute.pickupLng, address: pendingRoute.pickupAddress },
+    destination: { lat: pendingRoute.destLat, lng: pendingRoute.destLng, address: pendingRoute.destAddress },
+    stops: pendingRoute.stops ?? [],
+    plannedDistanceKm: pendingRoute.distanceKm,
+    plannedDurationSeconds: pendingRoute.durationSeconds,
+    fareEstimateNgn: offerNgn,
+    paymentMethod: 'WALLET',
+    riderOfferNgn: offerNgn,
+    suggestedFareNgn: pendingRoute.suggestedFareNgn,
+    minOfferNgn: pendingRoute.minOfferNgn,
+    ratePerKmNgn: pendingRoute.ratePerKmNgn,
+    route: pendingRoute.route,
+    ...details,
+    timestamp: new Date().toISOString(),
+  });
+
+  try {
+    await deps.publisher.publishRideEvent(event);
+  } catch (error) {
+    console.error('[ride-service] ride publish FAILED — quote kept', {
+      rideId,
+      riderId: rider.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await deps.redisClient.del(claimKey).catch(() => undefined);
+    return { ok: false, code: 'PUBLISH_FAILED' };
+  }
+
+  await clearPendingRoute(deps.redisClient, rider.id);
+  await clearBookingStage(deps.redisClient, rider.id);
+  await storeWhatsappRide(deps.redisClient, rideId, {
+    riderId: rider.id,
+    phone: rider.phone,
+    pickupAddress: pendingRoute.pickupAddress,
+    pickupLat: pendingRoute.pickupLat,
+    pickupLng: pendingRoute.pickupLng,
+    destinationAddress: pendingRoute.destAddress,
+    destinationLat: pendingRoute.destLat,
+    destinationLng: pendingRoute.destLng,
+    stops: pendingRoute.stops,
+    distanceKm: pendingRoute.distanceKm,
+    durationSeconds: pendingRoute.durationSeconds,
+    offerNgn,
+    suggestedFareNgn: pendingRoute.suggestedFareNgn,
+    priceReason: pendingRoute.priceReason ?? null,
+    paymentMethod: 'WALLET',
+    createdAt: new Date().toISOString(),
+  });
+  await setActiveRide(deps.redisClient, rider.id, rideId);
+  // The waiting screen's countdown, until the ride service sends its own clock with the first offer.
+  await startSearchClock(deps.redisClient, rideId);
+  await storeLastRoute(deps.redisClient, rider.id, { ...pendingRoute, offerNgn, ...details });
+  // What the chat said went with this search: a different trip next starts fresh.
+  await clearSaidTripDetails(deps.redisClient, rider.id);
+  await clearSearchTimedOut(deps.redisClient, rider.id);
+  // The claim only had to cover the moment of publishing. Left to expire on its
+  // own it blocked a rider who cancelled and searched again within 30 seconds;
+  // a late second tap is harmless now — the quote it needs is already spent.
+  await deps.redisClient.del(claimKey).catch(() => undefined);
+  return { ok: true, rideId };
+}
+
+/* ── change the bid ─────────────────────────────────────────────────────── */
+
+export type ChangeOfferResult =
+  | { ok: true; offerNgn: number }
+  | { ok: false; code: 'RIDE_GONE' }
+  | { ok: false; code: 'BELOW_MINIMUM'; minOfferNgn: number };
+
+/** A new price from the rider, shown to every driver looking at the request. */
+export async function changeRiderOffer(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  amountNgn: number,
+): Promise<ChangeOfferResult> {
+  const meta = await getRideMeta(deps.redisClient, rideId);
+  if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+
+  // The first offer cleared the minimum fare; a later one has to as well, or
+  // the floor is bypassed by simply lowering the price once bidding starts.
+  const validation = validateRiderOffer(amountNgn, meta.suggestedFareNgn);
+  if (!validation.valid) return { ok: false, code: 'BELOW_MINIMUM', minOfferNgn: validation.minOfferNgn };
+
+  await storeRiderOfferChange(deps.redisClient, rideId, meta, amountNgn);
+  // A new price restarts the search's clock (the ride service does the same).
+  await startSearchClock(deps.redisClient, rideId);
+  await deps.publisher.publishRideEvent({
+    eventType: 'RIDE_RIDER_COUNTER_OFFER',
+    rideId,
+    riderId,
+    counterOfferNgn: amountNgn,
+    timestamp: new Date().toISOString(),
+  });
+  return { ok: true, offerNgn: amountNgn };
+}
+
+/* ── decline every offer ─────────────────────────────────────────────────── */
+
+/**
+ * The rider declined every offer on the table. The search goes on (new
+ * offers still come in); the offers declined are DECLINED for good and each
+ * driver is told at once — their card turns red — instead of waiting on a
+ * rider who has said no. The WhatsApp form and the offers page both use this.
+ */
+export async function declineAllOffers(deps: RideServiceDeps, riderId: string, rideId: string): Promise<{ declined: number }> {
+  await clearBids(deps.redisClient, rideId);
+  await storeLastBatch(deps.redisClient, rideId, []).catch(() => undefined);
+  await clearPendingAccept(deps.redisClient, riderId).catch(() => undefined);
+  await setRideState(deps.redisClient, rideId, 'searching').catch(() => undefined);
+  const declined = await driverBidClient.declineOpen(rideId).catch(() => []);
+  // Always: the drivers declined (maybe none) are told, and the offer count
+  // on the rider's "Your bid is in" message goes back to nothing.
+  await deps.publisher.publishRideEvent({
+    eventType: 'RIDE_BIDS_DECLINED',
+    rideId,
+    riderId,
+    driverUserIds: declined.map((bid) => bid.driverUserId),
+    timestamp: new Date().toISOString(),
+  });
+  return { declined: declined.length };
+}
+
+/**
+ * The rider declined one driver's offer. That driver is told at once ("Offer
+ * declined") and can send a new price; the other offers and the search stay.
+ * The app and the offers page both use this.
+ */
+export async function declineOneOffer(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  driverId: string,
+): Promise<{ declined: boolean }> {
+  const bids = await getBids(deps.redisClient, rideId).catch(() => []);
+  let remaining = bids;
+  if (bids.some((bid) => bid.driverId === driverId)) {
+    remaining = await removeBid(deps.redisClient, rideId, driverId).catch(() => bids);
+    await storeLastBatch(deps.redisClient, rideId, remaining).catch(() => undefined);
+  }
+  // Paying for this very driver (adding money)? That payment no longer books them.
+  const paying = await getPendingAccept(deps.redisClient, riderId).catch(() => null);
+  if (paying?.rideId === rideId && paying.driverId === driverId) await clearPendingAccept(deps.redisClient, riderId).catch(() => undefined);
+  const declined = await driverBidClient.declineOne(rideId, driverId).catch(() => null);
+  if (!declined) return { declined: false };
+  await deps.publisher.publishRideEvent({
+    eventType: 'RIDE_BIDS_DECLINED',
+    rideId,
+    riderId,
+    driverUserIds: [declined.driverUserId],
+    remainingOffers: remaining.length,
+    timestamp: new Date().toISOString(),
+  });
+  return { declined: true };
+}
+
+/* ── accept an offer ────────────────────────────────────────────────────── */
+
+/** "A rider wants to book you" — once a minute at most, however often the rider taps. */
+async function pingAwayDriver(deps: RideServiceDeps, rideId: string, driverUserId: string): Promise<void> {
+  const first = await deps.redisClient.setIfNotExists(`ride:${rideId}:pinged:${driverUserId}`, '1', 60).catch(() => true);
+  if (!first) return;
+  await deps.publisher.publishNotificationEvent({
+    eventType: 'PUSH_SEND',
+    notificationId: randomUUID(),
+    userId: driverUserId,
+    title: 'A rider wants to book you',
+    body: 'They tapped Accept on your offer. Open Wheelers now so they can confirm you.',
+    data: { type: 'rider_waiting', rideId },
+    priority: 'high',
+    timestamp: new Date().toISOString(),
+  }).catch(() => undefined);
+}
+
+export interface ConfirmedRide {
+  rideId: string;
+  fareNgn: number;
+  driverId: string;
+  driverName: string;
+  driverPhone: string;
+  driverRating: number;
+  totalRides: number;
+  vehicleModel: string;
+  vehiclePlate: string;
+  etaSeconds: number;
+  pickupAddress: string;
+  destAddress: string;
+  stopAddresses: string[];
+  /** Paid from the rider's XLM balance: the fare in XLM and the rate it was accepted at. */
+  paidWithXlm?: { amountXlm: string; ngnPerXlm: number };
+}
+
+/** How the rider pays: naira from the wallet (held now, paid at the end), or XLM from their Stellar balance. */
+export type PayMethod = 'NGN' | 'XLM';
+
+/** The part of the Stellar service accepting with XLM needs. */
+export interface XlmPayer {
+  quoteRidePayment(userId: string, fareNgn: number): Promise<{
+    rate: { ngnPerXlm: number }; amountXlm: string; balanceXlm: number; spendableXlm: number; enough: boolean;
+  } | null>;
+}
+
+export type ConfirmResult =
+  | { ok: true; ride: ConfirmedRide }
+  /** ALREADY_CONFIRMING: a booking is going through right now. ALREADY_BOOKED: the ride is booked (or an acceptance went out), maybe with another driver. */
+  | { ok: false; code: 'RIDE_GONE' | 'OFFER_GONE' | 'DRIVER_UNAVAILABLE' | 'DRIVER_AWAY' | 'DRIVER_TAKEN' | 'HOLD_FAILED' | 'CONFIRM_FAILED' | 'ALREADY_CONFIRMING' | 'ALREADY_BOOKED' }
+  | { ok: false; code: 'WALLET_SHORT'; balanceNgn: number; fareNgn: number; shortNgn: number; sendNgn: number }
+  /** The driver's price is no longer the one the rider saw (expectedFareNgn): nothing held, nothing booked. */
+  | { ok: false; code: 'OFFER_CHANGED'; fareNgn: number }
+  /** No Stellar account yet, or no XLM price to be had right now: pay in naira instead. */
+  | { ok: false; code: 'XLM_UNAVAILABLE' }
+  | { ok: false; code: 'XLM_SHORT'; fareNgn: number; amountXlm: string; spendableXlm: number };
+
+/**
+ * Accept one driver's offer: hold the fare, then tell everyone.
+ *
+ * The order is the whole point, and it is the chat's order: the wallet is
+ * checked FIRST (a rider who cannot pay must hear "add money", not "driver
+ * unavailable"); the driver must still be online, fresh and free; one rider
+ * per driver; the hold is taken BEFORE the acceptance is published, so a ride
+ * is never confirmed on money that is not there.
+ */
+export async function confirmRideWithOffer(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  key: string,
+  options: ConfirmOptions = {},
+): Promise<ConfirmResult> {
+  // One booking at a time per ride, whichever door it came through (the app's
+  // accept and auto-accept take the same lock: rides/booking-lock.ts). A deposit
+  // landing can finish the ride in the same second the rider taps Accept again;
+  // without this both would publish the acceptance.
+  const lock = await takeBookingLock(deps.redisClient, rideId, BOOKING_LOCK_WAIT_MS);
+  if (!lock) return { ok: false, code: 'ALREADY_CONFIRMING' };
+  try {
+    return await confirmOnce(deps, riderId, rideId, key, options);
+  } finally {
+    await releaseBookingLock(deps.redisClient, lock);
+  }
+}
+
+export interface ConfirmOptions {
+  method?: PayMethod;
+  xlm?: XlmPayer | null;
+  /**
+   * Auto-accept, not a person: nobody tapped Accept, so the driver is not
+   * pinged "A rider wants to book you", their card never says "Rider is
+   * paying…", and an acceptance that does not go out lets go of the hold.
+   */
+  auto?: boolean;
+  /** The price the rider saw for this offer. When given and the driver's price is different now, nothing is booked. */
+  expectedFareNgn?: number;
+}
+
+async function confirmOnce(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  key: string,
+  options: ConfirmOptions = {},
+): Promise<ConfirmResult> {
+  const meta = await getRideMeta(deps.redisClient, rideId);
+  if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  // The database decides whose ride this is, not the chat's own memory of it.
+  const owned = await rideClient.findStanding(rideId).catch(() => null);
+  if (!owned || owned.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  // Auto-accept on a search the rider has just ended (cancelled while it waited for the lock): nothing.
+  if (options.auto && await isSearchEnded(deps.redisClient, rideId)) return { ok: false, code: 'RIDE_GONE' };
+  // Booked already (inside the lock, so not by a booking still on its way): never a second driver.
+  const state = await getRideState(deps.redisClient, rideId).catch(() => null);
+  if (state === 'confirmed' || state === 'in_progress') return { ok: false, code: 'ALREADY_BOOKED' };
+  // An acceptance already went out on this ride (the app, or auto-accept): not a second one.
+  if (await acceptSentFor(deps.redisClient, rideId)) return { ok: false, code: 'ALREADY_BOOKED' };
+
+  const bid = (await getBids(deps.redisClient, rideId)).find((candidate) => offerKey(candidate) === key);
+  if (!bid) return { ok: false, code: 'OFFER_GONE' };
+  // Every time: the offer must be a real, still-pending bid by this driver on this ride.
+  const pendingBid = (await driverBidClient.findByRide(rideId).catch(() => []))
+    .some((row) => row.driverId === bid.driverId && row.status === 'PENDING');
+  if (!pendingBid) return { ok: false, code: 'OFFER_GONE' };
+  const fareNgn = bid.counterOfferNgn;
+  if (options.expectedFareNgn !== undefined && Math.abs(fareNgn - options.expectedFareNgn) >= 0.5) return { ok: false, code: 'OFFER_CHANGED', fareNgn };
+  const payWithXlm = options.method === 'XLM';
+
+  // XLM: the fare at the current rate (asked for again every 30 minutes) must
+  // fit the rider's spendable XLM. No naira is touched. Checked first, like the
+  // wallet: a rider who cannot pay hears that, not "driver unavailable".
+  let xlmQuote: Awaited<ReturnType<XlmPayer['quoteRidePayment']>> = null;
+  if (payWithXlm) {
+    xlmQuote = options.xlm ? await options.xlm.quoteRidePayment(riderId, fareNgn).catch(() => null) : null;
+    if (!xlmQuote) return { ok: false, code: 'XLM_UNAVAILABLE' };
+    if (!xlmQuote.enough) return { ok: false, code: 'XLM_SHORT', fareNgn, amountXlm: xlmQuote.amountXlm, spendableXlm: xlmQuote.spendableXlm };
+  }
+
+  const wallet = payWithXlm ? null : await walletClient.findByUserId(riderId);
+  const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
+  if (!payWithXlm && (!wallet || balanceNgn < fareNgn)) {
+    const shortNgn = Math.ceil(fareNgn - balanceNgn);
+    // The rider chose this driver and is adding money: their card says "Rider is paying…".
+    // (Not for auto-accept: nobody chose them, nobody is paying.)
+    if (!options.auto) {
+      if (payingStatusEnabled()) {
+        // Kept as state (one driver per ride), so a reconnect restores the card and a close ends it.
+        // Over the rate limit: only the signal to the driver is skipped; the answer to the rider is the same.
+        if (await withinPayingRate(deps.redisClient, riderId).catch(() => true)) await openPaying(deps, rideId, riderId, bid.driverUserId).catch(() => undefined);
+      } else {
+        await deps.publisher.publishRideEvent({
+          eventType: 'RIDE_RIDER_PAYING', rideId, riderId, driverUserId: bid.driverUserId, timestamp: new Date().toISOString(),
+        }).catch(() => undefined);
+      }
+    }
+    return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
+  }
+
+  const driver = await driverClient.findById(bid.driverId).catch(() => null);
+  const fresh = driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
+  const busy = driver ? await rideClient.findActiveByDriver(bid.driverId).catch(() => null) : null;
+  if (!driver || busy) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
+  if (driver.status !== 'ONLINE' || !fresh) {
+    // Stepped away (another app, phone in a pocket) with their bid still held:
+    // nothing is lost — they are pinged, and the rider can try again in a
+    // moment or pick someone else. A bid that was withdrawn is really gone.
+    const held = (await driverBidClient.findByRide(rideId).catch(() => []))
+      .some((row) => row.driverId === bid.driverId && row.status === 'PENDING');
+    if (!held) return { ok: false, code: 'DRIVER_UNAVAILABLE' };
+    // "They tapped Accept on your offer": only when somebody did.
+    if (!options.auto) await pingAwayDriver(deps, rideId, bid.driverUserId);
+    return { ok: false, code: 'DRIVER_AWAY' };
+  }
+
+  // Redis is only the fast path and fails open on purpose (a blip must not stop every booking):
+  // the guarantee is in the database (the ride service writes the assignment under a lock on the driver before announcing it).
+  const driverClaimKey = `whatsapp:driver:${bid.driverId}:accepting`;
+  const claimed = await deps.redisClient.setIfNotExists(driverClaimKey, rideId, 60).catch(() => true);
+  const claimOwner = claimed ? rideId : await deps.redisClient.get(driverClaimKey).catch(() => null);
+  if (!claimed && claimOwner !== rideId) return { ok: false, code: 'DRIVER_TAKEN' };
+
+  // Money held on this ride for ANOTHER driver is another booking: never adjusted onto this one.
+  const heldForOther = async () => {
+    const existing = await walletClient.rideHoldOf(rideId).catch(() => null);
+    return existing?.status === 'ACTIVE' && Boolean(existing.driverUserId) && existing.driverUserId !== bid.driverUserId;
+  };
+  // A stale one (an accept that failed: no acceptance sent, older than the lock) is let go so the search goes on.
+  if (await heldForOther() && (await releaseStaleHoldForOther(deps.redisClient, rideId, bid.driverUserId)) === 'blocked') {
+    await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    return { ok: false, code: 'ALREADY_BOOKED' };
+  }
+
+  if (wallet) try {
+    const hold = await walletClient.createRideHold({
+      rideId,
+      walletId: wallet.id,
+      riderId,
+      driverUserId: bid.driverUserId,
+      amountNgn: fareNgn,
+    });
+    if (!hold.applied && await heldForOther()) {
+      await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+      return { ok: false, code: 'ALREADY_BOOKED' };
+    }
+    // A hold left by an earlier attempt on this ride (this driver's) may carry a different fare.
+    if (!hold.applied && hold.holdAmountNgn !== fareNgn) {
+      const adjusted = await walletClient.adjustRideHold({ rideId, targetAmountNgn: fareNgn });
+      if (!adjusted || (!adjusted.applied && adjusted.holdAmountNgn !== fareNgn)) throw new Error(`existing hold of ₦${hold.holdAmountNgn} could not be adjusted to ₦${fareNgn}`);
+    }
+  } catch (error) {
+    console.error('[ride-service] ride hold FAILED — rider could not pay', {
+      rideId, riderId, fareNgn, balanceNgn,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    return { ok: false, code: 'HOLD_FAILED' };
+  }
+
+  // Being published: a slow Kafka must not make this hold look stale to another accept.
+  await notePublishing(deps.redisClient, rideId, bid.driverUserId);
+  try {
+    // How this ride is paid, on the ride itself: settlement and receipts read it.
+    await rideClient.setPayment(rideId, payWithXlm && xlmQuote
+      ? { method: 'XLM', xlmRateNgn: xlmQuote.rate.ngnPerXlm, fareXlm: xlmQuote.amountXlm }
+      : { method: 'WALLET' });
+    await deps.publisher.publishRideEvent(RideOfferAcceptedEvent.parse({
+      eventType: 'RIDE_OFFER_ACCEPTED',
+      rideId,
+      riderId,
+      driverId: bid.driverId,
+      driverUserId: bid.driverUserId,
+      bidId: bid.bidId,
+      agreedFareNgn: fareNgn,
+      paymentMethod: payWithXlm ? 'XLM' : 'WALLET',
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (error) {
+    // A tap: the hold stays — accepting again adopts it, and a cancel releases it.
+    // Auto-accept: nobody is there to accept again, so the money goes back.
+    console.error('[ride-service] accept publish FAILED — hold kept', {
+      rideId, riderId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await deps.redisClient.del(driverClaimKey).catch(() => undefined);
+    await clearPublishing(deps.redisClient, rideId);
+    if (options.auto && wallet) await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
+    return { ok: false, code: 'CONFIRM_FAILED' };
+  }
+  await noteAcceptSent(deps.redisClient, rideId, bid.driverUserId);
+  await clearPublishing(deps.redisClient, rideId);
+
+  const ride: ConfirmedRide = {
+    rideId,
+    fareNgn,
+    driverId: bid.driverId,
+    driverName: bid.driverName,
+    driverPhone: driver.user?.phone ?? '',
+    driverRating: bid.driverRating,
+    totalRides: driver.totalRides ?? 0,
+    vehicleModel: bid.vehicleModel,
+    vehiclePlate: bid.vehiclePlate,
+    etaSeconds: bid.etaSeconds,
+    pickupAddress: meta.pickupAddress,
+    destAddress: meta.destinationAddress,
+    stopAddresses: (meta.stops ?? []).map((stop) => stop.address),
+    ...(payWithXlm && xlmQuote ? { paidWithXlm: { amountXlm: xlmQuote.amountXlm, ngnPerXlm: xlmQuote.rate.ngnPerXlm } } : {}),
+  };
+  await clearPendingAccept(deps.redisClient, riderId);
+  await setRideState(deps.redisClient, rideId, 'confirmed');
+  await storeAcceptedBid(deps.redisClient, rideId, {
+    driverName: ride.driverName,
+    driverPhone: ride.driverPhone,
+    driverUserId: bid.driverUserId,
+    vehicleModel: ride.vehicleModel,
+    vehiclePlate: ride.vehiclePlate,
+    vehicleColor: '',
+    driverRating: ride.driverRating,
+    totalRides: ride.totalRides,
+    etaSeconds: ride.etaSeconds,
+    fareNgn,
+  });
+  return { ok: true, ride };
+}
+
+/* ── give up the search ─────────────────────────────────────────────────── */
+
+/** Cancel before a driver is assigned. Anything held for the ride is released downstream. */
+export async function cancelWhatsappRide(
+  deps: RideServiceDeps,
+  riderId: string,
+  rideId: string,
+  reason: string,
+): Promise<{ ok: boolean }> {
+  const meta = await getRideMeta(deps.redisClient, rideId);
+  if (meta && meta.riderId !== riderId) return { ok: false };
+
+  const ride = await rideClient.findById(rideId).catch(() => null);
+  // Over in the gateway's eyes now, before the ride service writes the row: auto-accept stays off it.
+  await markSearchEnded(deps.redisClient, rideId);
+  try {
+    await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
+      eventType: 'RIDE_CANCELLED',
+      rideId,
+      riderId,
+      driverId: ride?.driverId ?? undefined,
+      cancelledBy: 'rider',
+      reason,
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (error) {
+    // Not cancelled: the search goes on, and may still be booked.
+    await clearSearchEnded(deps.redisClient, rideId);
+    throw error;
+  }
+  await clearActiveRide(deps.redisClient, riderId);
+  await cleanupRideKeys(deps.redisClient, rideId);
+  await clearPendingAccept(deps.redisClient, riderId);
+  return { ok: true };
+}

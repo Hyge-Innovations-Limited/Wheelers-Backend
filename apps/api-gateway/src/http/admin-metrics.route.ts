@@ -1,7 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { activityClient, adminMetricsClient, safetyAlertClient } from '@wheleers/db';
+import type { RedisClient } from '../redis/client';
+import { serviceUsage } from '../usage/service-usage';
+import { activityClient, adminMetricsClient, safetyAlertClient, userClient, walletSecurityClient } from '@wheleers/db';
 import type { SafetyAlertWithPeople } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
+import { kept60s } from '../admin/dashboard-cache';
 import { readJsonBody, sendJson } from './utils';
 import { isRecord } from '../utils/object';
 
@@ -99,8 +102,24 @@ export async function handleAdminGetUserRoute(
       .listByUser(userId, { limit: 40 })
       .catch(() => ({ items: [], nextCursor: null }));
 
+    // Never the hash — only whether a PIN exists and what is blocking withdrawals.
+    const security = await walletSecurityClient.getState(userId).catch(() => null);
+    const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
+    const active = (value: Date | null | undefined) => Boolean(value && value.getTime() > Date.now());
+
     sendJson(res, 200, {
       ...detail,
+      security: security
+        ? {
+            hasPin: Boolean(security.walletPinHash),
+            withdrawalsFrozen: active(security.withdrawalsFrozenUntil),
+            withdrawalsRestricted: active(security.withdrawalsRestrictedUntil),
+            pinLockedUntil: iso(security.walletPinLockedUntil),
+            withdrawalsFrozenUntil: iso(security.withdrawalsFrozenUntil),
+            withdrawalsFrozenReason: security.withdrawalsFrozenReason,
+            withdrawalsRestrictedUntil: iso(security.withdrawalsRestrictedUntil),
+          }
+        : null,
       activity: {
         items: activity.items.map((row) => ({
           id: row.id,
@@ -127,7 +146,7 @@ export async function handleAdminOverviewRoute(
   if (!(await requireAdmin(req, res, deps))) return;
 
   try {
-    sendJson(res, 200, await adminMetricsClient.overview());
+    sendJson(res, 200, await kept60s('/admin/metrics/overview', () => adminMetricsClient.overview()));
   } catch (error) {
     fail(res, error, 'could not load overview');
   }
@@ -144,7 +163,7 @@ export async function handleAdminTimeseriesRoute(
 
   try {
     const days = intParam(url, 'days', 30);
-    sendJson(res, 200, { days, points: await adminMetricsClient.timeseries(days) });
+    sendJson(res, 200, { days, points: await kept60s(`/admin/metrics/timeseries?days=${days}`, () => adminMetricsClient.timeseries(days)) });
   } catch (error) {
     fail(res, error, 'could not load timeseries');
   }
@@ -174,7 +193,7 @@ export async function handleAdminGroupRideMetricsRoute(
   if (!(await requireAdmin(req, res, deps))) return;
 
   try {
-    sendJson(res, 200, await adminMetricsClient.groupRideMetrics());
+    sendJson(res, 200, await kept60s('/admin/metrics/group-rides', () => adminMetricsClient.groupRideMetrics()));
   } catch (error) {
     fail(res, error, 'could not load group ride metrics');
   }
@@ -358,5 +377,88 @@ export async function handleAdminResolveAlertRoute(
     sendJson(res, 200, { alert: serializeAdminAlert(alert) });
   } catch (error) {
     fail(res, error, 'could not resolve alert');
+  }
+}
+
+/**
+ * POST /admin/users/:id/withdrawals/freeze   — lock every withdrawal
+ * POST /admin/users/:id/withdrawals/unfreeze — lift a freeze AND any post-reset
+ *                                              destination restriction
+ *
+ * For the call that starts "my phone was stolen". A user can freeze themselves
+ * (replying FREEZE in chat); only an admin can undo it.
+ */
+export async function handleAdminWithdrawalFreezeRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps,
+  userId: string,
+  action: 'freeze' | 'unfreeze',
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+
+  try {
+    if (action === 'freeze') {
+      await walletSecurityClient.freezeWithdrawals(userId, new Date('2099-12-31T00:00:00Z'), 'admin_freeze');
+    } else {
+      await walletSecurityClient.unfreezeWithdrawals(userId);
+    }
+    const state = await walletSecurityClient.getState(userId);
+    console.info('[admin] withdrawals ' + action, { userId });
+    sendJson(res, 200, {
+      userId,
+      withdrawalsFrozenUntil: state.withdrawalsFrozenUntil?.toISOString() ?? null,
+      withdrawalsFrozenReason: state.withdrawalsFrozenReason,
+    });
+  } catch (error) {
+    fail(res, error, 'Could not change the withdrawal freeze');
+  }
+}
+
+/**
+ * POST /admin/users/:id/sign-out — sign this person out of every phone. Every
+ * login they hold stops working at once; they sign in again as usual and land
+ * where their account belongs (a driver who has not finished verification, on
+ * verification). A driver is also taken offline.
+ */
+export async function handleAdminSignOutUserRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps,
+  userId: string,
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+
+  try {
+    const endedAt = await userClient.endSessions(userId);
+    if (!endedAt) {
+      sendJson(res, 404, { error: 'User not found' });
+      return;
+    }
+    console.info('[admin] signed a user out everywhere', { userId });
+    sendJson(res, 200, { userId, sessionsEndedAt: endedAt.toISOString() });
+  } catch (error) {
+    fail(res, error, 'Could not sign this person out');
+  }
+}
+
+/**
+ * GET /admin/usage/services?days=30 — every outside service the gateway
+ * calls, counted per day: calls, failures, average latency. The vendors' own
+ * consoles hold the bills; this is the one place to see, before the bill,
+ * that something started calling Google ten times as often on Tuesday.
+ */
+export async function handleAdminServiceUsageRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: MetricsDeps & { redisClient: RedisClient },
+  url: URL,
+): Promise<void> {
+  if (!(await requireAdmin(req, res, deps))) return;
+  try {
+    const days = Math.min(90, Math.max(1, intParam(url, 'days', 30)));
+    sendJson(res, 200, { days, services: await serviceUsage(deps.redisClient, days) });
+  } catch (error) {
+    fail(res, error, 'could not load service usage');
   }
 }

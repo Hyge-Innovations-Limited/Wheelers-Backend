@@ -9,12 +9,12 @@ import {
   virtualAccountClient,
   walletClient,
 } from '@wheleers/db';
-import type { PouchLiquifiaClient } from '@wheleers/pouch-client';
+import { PaymentsApiError, bankNameParts, type PaymentsClient } from '@wheleers/payments';
 import type { GatewayPublisher } from '../websocket/publisher';
 
 export interface UserOnboardingDeps {
   publisher: GatewayPublisher;
-  pouchLiquifiaClient: PouchLiquifiaClient;
+  paymentsClient: PaymentsClient;
   jwtSecret: string;
 }
 
@@ -68,84 +68,110 @@ async function ensureFiatWallet(userId: string): Promise<void> {
   });
 }
 
-export async function provisionPouchAccount(
-  pouch: PouchLiquifiaClient,
+export type DepositAccountStatus = 'ready' | 'exists' | 'pending' | 'needs_phone';
+
+/**
+ * Give the user a bank account number they can fund their wallet through.
+ * Safe to call any number of times: a live account short-circuits, and every
+ * provider call underneath is idempotent (the customer is keyed by a synthetic
+ * email derived from the user id, and a customer has exactly one account).
+ *
+ * The bank will not open an account for a customer with no phone number, so a
+ * user without one gets NOTHING created — not even the customer — and
+ * `needs_phone` comes back. Verifying a phone calls this again. A customer
+ * that already exists is always sent the current name and phone first:
+ * without that, someone who signed up by email and added a phone later would
+ * be refused forever, because the bank still held their phoneless record.
+ *
+ * The display name keeps its emoji; the provider only ever sees the
+ * letters-only version.
+ */
+export async function provisionDepositAccount(
+  payments: PaymentsClient,
   userId: string,
   name: string | undefined,
   phone?: string,
-): Promise<void> {
-  const existingVirtualAccount = await virtualAccountClient.findByUserId(userId);
-  if (existingVirtualAccount) {
-    return;
+): Promise<DepositAccountStatus> {
+  const existing = await virtualAccountClient.findByUserId(userId);
+  if (existing) {
+    return 'exists';
   }
 
   const user = await userClient.findById(userId);
-  const nameParts = (name ?? user.name ?? 'Wheelers User').trim().split(/\s+/);
-  const firstName = nameParts[0] ?? 'Wheelers';
-  const lastName = nameParts.slice(1).join(' ') || 'User';
+  if (user.privyDid.startsWith('deleted:')) {
+    return 'needs_phone'; // a deleted account never gets a bank account
+  }
+  const contactPhone = (phone ?? user.phone ?? '').trim();
+  if (!contactPhone) {
+    return 'needs_phone';
+  }
+  const { firstName, lastName } = bankNameParts(name ?? user.name);
 
-  let pouchCustomerId = user.pouchCustomerId ?? undefined;
-  if (!pouchCustomerId) {
-    try {
-      const customer = await pouch.createCustomer({
-        customerReference: userId,
-        firstName,
-        lastName,
-        phoneNumber: phone ?? user.phone ?? undefined,
-        email: user.email ?? undefined,
-      });
-      pouchCustomerId = customer.id;
-    } catch (error) {
-      // If customer already exists on Pouch, fetch by reference
-      const isDuplicate = error instanceof Error && error.message.includes('DUPLICATE_CUSTOMER_REFERENCE');
-      if (!isDuplicate) throw error;
-
-      const existing = await pouch.findCustomerByReference(userId);
-      if (!existing) throw error;
-      pouchCustomerId = existing.id;
-
-      // Patch missing contact info so virtual account creation succeeds
-      const needsEmail = !existing.email && user.email;
-      const needsPhone = !existing.phone_number && (phone ?? user.phone);
-      if (needsEmail || needsPhone) {
-        await pouch.updateCustomer(pouchCustomerId, {
-          email: needsEmail ? (user.email ?? undefined) : undefined,
-          phoneNumber: needsPhone ? (phone ?? user.phone ?? undefined) : undefined,
-        });
-      }
-    }
-
-    await userClient.updatePouchCustomerId(userId, pouchCustomerId);
+  let customerId = user.providerCustomerId ?? undefined;
+  if (customerId) {
+    await payments.updateCustomer(customerId, { firstName, lastName, phoneNumber: contactPhone });
+  } else {
+    const customer = await payments.createCustomer({
+      customerReference: userId,
+      firstName,
+      lastName,
+      phoneNumber: contactPhone,
+    });
+    customerId = customer.id;
+    await userClient.updateProviderCustomerId(userId, customerId);
   }
 
-  const va = await pouch.createVirtualAccount(pouchCustomerId, {
-    country: 'NG',
-    currency: 'NGN',
-    idempotencyKey: `va-provision-${userId}-${Date.now()}`,
-  });
-
-  await virtualAccountClient.create({
-    userId,
-    pouchCustomerId,
-    pouchVirtualAccountId: va.id,
-    bankName: va.bank_name,
-    accountNumber: va.account_number,
-    accountName: va.account_name,
-    currency: va.currency,
-    country: va.country,
-  }).catch((error) => {
-    if (isUniqueConstraintError(error)) {
-      return;
+  let account;
+  try {
+    account = await payments.createVirtualAccount(customerId);
+  } catch (error) {
+    // The provider may assign the account a moment later and announce it by
+    // webhook (dedicatedaccount.assign.success), which saves it then.
+    if (error instanceof PaymentsApiError && error.code === 'ACCOUNT_PENDING') {
+      console.info('[onboarding] deposit account assignment pending', { userId, customerId });
+      return 'pending';
     }
-
     throw error;
+  }
+
+  await virtualAccountClient.upsertForUser(userId, {
+    providerCustomerId: customerId,
+    providerAccountId: account.id,
+    bankName: account.bank_name,
+    accountNumber: account.account_number,
+    accountName: account.account_name,
+    currency: account.currency,
+    country: account.country,
   });
 
-  console.info('[onboarding] pouch provisioning complete', {
+  console.info('[onboarding] deposit account ready', {
     userId,
-    pouchCustomerId,
-    accountNumber: va.account_number,
+    customerId,
+    bank: account.bank_name,
+    accountNumber: account.account_number,
   });
+  return 'ready';
+}
+
+/**
+ * Opens a rider's deposit account as soon as everything it needs is there,
+ * wherever they joined: the app or WhatsApp. It needs their agreement to the
+ * privacy policy (their name and number go to the payment provider), a phone
+ * number, and their own name (without one the bank would name the account
+ * "Wheelers User" for good). Called whenever one of those may have just
+ * arrived: signing in, giving a name, accepting the terms. Until then, and
+ * for an account that already exists, it does nothing. Never throws.
+ */
+export async function openDepositAccountWhenReady(payments: PaymentsClient, userId: string): Promise<void> {
+  try {
+    const user = await userClient.findById(userId);
+    if (user.role === 'DRIVER' || user.privyDid.startsWith('deleted:')) return;
+    if (user.privacyConsent !== 'AGREED' || !user.name?.trim() || !user.phone?.trim()) return;
+    if (await virtualAccountClient.findByUserId(userId)) return;
+    await provisionDepositAccount(payments, userId, user.name, user.phone);
+  } catch (error) {
+    console.warn('[onboarding] deposit account not opened (non-blocking)', { userId, error: getErrorMessage(error) });
+  }
 }
 
 async function requestCryptoWalletCreation(
@@ -178,13 +204,15 @@ export async function onboardWhatsappUser(params: {
       });
     });
 
-    void provisionPouchAccount(
-      params.deps.pouchLiquifiaClient,
+    // Opening a bank account sends their name and phone to the payment
+    // provider — not before they have accepted the privacy policy.
+    if (existing.privacyConsent === 'AGREED') void provisionDepositAccount(
+      params.deps.paymentsClient,
       existing.id,
       existing.name ?? name,
       existing.phone ?? params.phone,
     ).catch((error) => {
-      console.warn('[onboarding] pouch repair failed (non-blocking)', {
+      console.warn('[onboarding] deposit account repair failed (non-blocking)', {
         userId: existing.id,
         error: getErrorMessage(error),
       });
@@ -257,17 +285,8 @@ export async function onboardWhatsappUser(params: {
     });
   });
 
-  void provisionPouchAccount(
-    params.deps.pouchLiquifiaClient,
-    created.id,
-    created.name ?? undefined,
-    created.phone ?? undefined,
-  ).catch((error) => {
-    console.warn('[onboarding] pouch provisioning failed (non-blocking)', {
-      userId: created.id,
-      error: getErrorMessage(error),
-    });
-  });
+  // No deposit account yet: a brand-new rider has not seen the privacy policy.
+  // The WhatsApp consent step opens it the moment they tap Continue.
 
   return {
     id: created.id,

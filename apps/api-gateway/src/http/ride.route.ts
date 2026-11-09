@@ -4,8 +4,9 @@ import {
   referralClient,
   scheduledRideClient,
   rideClient,
+  tripCodeClient,
 } from "@wheleers/db";
-import { GoogleMapsRoutePlanner } from "@wheleers/config";
+import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, tripDetailsBoxOn, tripDetailsFromRequest, tripDetailsFromRow } from "@wheleers/config";
 import { Queue } from "bullmq";
 import { authenticateHttpUser, HttpAuthError } from "./authenticate";
 import { runIdempotentJsonRequest } from "./idempotency";
@@ -14,6 +15,9 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
+import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
+import { assertInServiceArea, refusalCode } from "../utils/service-area";
+import { autoAcceptStatus } from "../rides/auto-accept";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -22,6 +26,10 @@ interface RideRouteDeps {
 
 interface RideHistoryRouteDeps {
   jwtSecret: string;
+  /** Auto-accept's record for an open search (GET /rides/active). Absent: reported off. */
+  redisClient?: RedisClient;
+  /** DRIVER_PHOTO_ENABLED: driverPhotoUrl / driverPhotoKey on the driver and the offers. Absent: as before. */
+  driverPhoto?: DriverPhotoResolver;
 }
 
 interface ScheduledRideRouteDeps {
@@ -38,7 +46,7 @@ type LatLngAddress = {
   address: string;
 };
 
-function buildScheduledRideJobId(scheduledRideId: string): string {
+export function buildScheduledRideJobId(scheduledRideId: string): string {
   return `scheduled-ride-${scheduledRideId}`;
 }
 
@@ -139,7 +147,11 @@ function resolveNetFareNgn(params: {
   return Math.max(0, params.grossFareNgn - params.discountNgn);
 }
 
-function parseScheduledFor(value: unknown): Date {
+const SCHEDULE_MIN_AHEAD_MS = 10 * 60 * 1000;
+/** Seven days, and an hour for a rider who chose the last slot and took their time. */
+const SCHEDULE_MAX_AHEAD_MS = (7 * 24 + 1) * 60 * 60 * 1000;
+
+export function parseScheduledFor(value: unknown): Date {
   if (typeof value !== "string") {
     throw new Error("scheduledFor must be an ISO datetime string");
   }
@@ -149,13 +161,26 @@ function parseScheduledFor(value: unknown): Date {
     throw new Error("scheduledFor must be a valid ISO datetime string");
   }
 
+  // The search starts a few minutes before the pickup time, so a time that
+  // close (or already gone) cannot be honoured; nor is a ride held for weeks.
+  const ahead = parsed.getTime() - Date.now();
+  if (ahead < SCHEDULE_MIN_AHEAD_MS) {
+    throw new Error("Pick a pickup time at least 10 minutes from now.");
+  }
+  if (ahead > SCHEDULE_MAX_AHEAD_MS) {
+    throw new Error("A ride can be scheduled up to 7 days ahead.");
+  }
+
   return parsed;
 }
 
 function mapScheduledRideItem(
   ride: Awaited<ReturnType<typeof scheduledRideClient.findByRider>>[number],
 ) {
-  const pricing = buildRideEstimatePricing(ride.plannedDistanceKm ?? null);
+  const pricing = buildRideEstimatePricing(ride.plannedDistanceKm ?? null, ride.plannedDurationSeconds ?? null, {
+    origin: { lat: ride.pickupLat, lng: ride.pickupLng },
+    destination: { lat: ride.destLat, lng: ride.destLng },
+  });
   return {
     id: ride.id,
     status: ride.status,
@@ -190,16 +215,25 @@ export async function handleRideEstimateRoute(
     const pickup = parseWaypoint(rawBody, "pickup");
     const destination = parseWaypoint(rawBody, "destination");
     const stops = parseStops(rawBody, "stops");
+    assertInServiceArea([pickup, destination, ...stops]);
     const plannedRoute = await deps.routePlanner.planRoute({
       origin: pickup,
       stops,
       destination,
     });
 
+    // For analytics: an app rider shown a price (the app's ride_quoted); with the ride that follows, where they stopped.
     logActivity({
       userId: user.id,
       eventType: "ride_estimate_requested",
-      metadata: { distanceKm: plannedRoute.distanceKm },
+      source: "app",
+      metadata: {
+        distanceKm: plannedRoute.distanceKm,
+        suggestedFareNgn: plannedRoute.suggestedFareNgn,
+        minOfferNgn: plannedRoute.minOfferNgn,
+        stops: stops.length,
+        pickupZone: zoneFor(pickup.lat, pickup.lng) ?? "outside",
+      },
     });
 
     sendJson(res, 200, {
@@ -211,10 +245,12 @@ export async function handleRideEstimateRoute(
       plannedDurationSeconds: plannedRoute.durationSeconds,
       suggestedFareNgn: plannedRoute.suggestedFareNgn,
       minOfferNgn: plannedRoute.minOfferNgn,
-      ratePerKmNgn: plannedRoute.ratePerKmNgn,
+      ratePerKmNgn: plannedRoute.ratePerKmNgn, priceReason: plannedRoute.priceReason ?? null,
       fareEstimateNgn: plannedRoute.suggestedFareNgn,
       pricingCurrency: "NGN",
       pricingBreakdown: plannedRoute.ridePrice,
+      // Set your price shows the trip details box (TRIP_DETAILS_BOX=on). Older servers: absent, no box.
+      tripDetailsBox: tripDetailsBoxOn(),
     });
   } catch (error) {
     sendJson(res, 400, {
@@ -222,6 +258,7 @@ export async function handleRideEstimateRoute(
         error instanceof Error
           ? error.message
           : "Could not estimate ride route",
+      ...(refusalCode(error) ? { code: refusalCode(error) } : {}),
     });
   }
 }
@@ -241,6 +278,7 @@ export async function handleRiderRideHistoryRoute(
     sendJson(res, 200, {
       items: rides.map((ride) => ({
         id: ride.id,
+        tripId: formatTripId(ride.tripNumber),
         status: ride.status,
         pickupAddress: ride.pickupAddress,
         destAddress: ride.destAddress,
@@ -291,6 +329,7 @@ export async function handleCreateScheduledRideRoute(
         const pickup = parseWaypoint(rawBody, "pickup");
         const destination = parseWaypoint(rawBody, "destination");
         const stops = parseStops(rawBody, "stops");
+        assertInServiceArea([pickup, destination, ...stops]);
         const plannedRoute = await deps.routePlanner.planRoute({
           origin: pickup,
           stops,
@@ -336,6 +375,7 @@ export async function handleCreateScheduledRideRoute(
             plannedDistanceKm: plannedRoute.distanceKm,
             plannedDurationSeconds: plannedRoute.durationSeconds,
             fareEstimateNgn,
+            tripDetails: tripDetailsFromRequest(rawBody["tripDetails"]),
           })
           .catch(async (error) => {
             if (referralCashbackAppliedNgn > 0) {
@@ -498,6 +538,7 @@ type RideWithDriver = Awaited<ReturnType<typeof rideClient.findWithDriver>>;
 function serializeRideDetail(ride: RideWithDriver) {
   return {
     id: ride.id,
+    tripId: formatTripId(ride.tripNumber),
     status: ride.status,
     riderId: ride.riderId,
     driverId: ride.driverId ?? null,
@@ -518,6 +559,7 @@ function serializeRideDetail(ride: RideWithDriver) {
     agreedFareNgn: decimalToNumber(ride.agreedFareNgn),
     fareFinalNgn: decimalToNumber(ride.fareFinalNgn),
     platformFeeNgn: decimalToNumber(ride.platformFeeNgn),
+    pricingVersion: ride.pricingVersion,
     penaltyNgn: decimalToNumber(ride.penaltyNgn),
     distanceKm: ride.distanceKm ?? null,
     durationSeconds: ride.durationSeconds ?? null,
@@ -530,6 +572,8 @@ function serializeRideDetail(ride: RideWithDriver) {
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),
+    // People, luggage, pet and a note: search again from a restored search sends them again.
+    ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
     driver: ride.driver
       ? {
           id: ride.driver.id,
@@ -593,7 +637,42 @@ export async function handleActiveRideRoute(
       return;
     }
     const ride = await rideClient.findWithDriver(active.id);
-    sendJson(res, 200, { ride: serializeRideDetail(ride) });
+    // The rider's own trip code, until the driver has used it. Only here: this
+    // route answers the rider about their own ride, never a driver.
+    const code = await tripCodeClient.state(active.id).catch(() => null);
+    const tripCode = code?.tripCode && !code.tripCodeVerifiedAt && !code.tripCodeUnlockedAt && ride.status !== "IN_PROGRESS" ? code.tripCode : null;
+    // A search still open comes back with its offers, so a rider who closed
+    // the app finds the drivers who answered still there. It closes 5 minutes
+    // after the rider last set a price (ride-service restarts the clock then).
+    const searching = ride.status === "REQUESTED" || ride.status === "MATCHING";
+    // Whether the rider said yes to auto-booking for this search (and at what price), so a restored search shows it.
+    const autoAccept = searching && deps.redisClient
+      ? await autoAcceptStatus(deps.redisClient, active.id).catch(() => ({ on: false, priceNgn: null }))
+      : { on: false, priceNgn: null };
+    const search = searching
+      ? {
+          autoAccept: autoAccept.on,
+          autoAcceptPriceNgn: autoAccept.priceNgn,
+          bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
+          offers: await Promise.all((await rideClient.pendingBids(active.id).catch(() => [])).map(async (bid) => ({
+            bidId: bid.id,
+            driverId: bid.driverId,
+            driverUserId: bid.driverUserId,
+            counterOfferNgn: decimalToNumber(bid.amountNgn) ?? 0,
+            driverName: bid.driver.user.name ?? "Driver",
+            driverRating: bid.driver.rating ?? null,
+            vehiclePlate: bid.driver.vehiclePlate ?? "",
+            vehicleModel: [bid.driver.vehicleMake, bid.driver.vehicleModel].filter(Boolean).join(" "),
+            etaSeconds: bid.etaSeconds,
+            distanceKm: bid.distanceKm,
+            receivedAt: bid.createdAt.toISOString(),
+            ...(await driverPhotoFields(deps.driverPhoto, bid.driverId, { riderId: user.id })),
+          }))),
+        }
+      : null;
+    const detail = serializeRideDetail(ride);
+    const driverPhoto = detail.driver ? await driverPhotoFields(deps.driverPhoto, detail.driver.id) : {};
+    sendJson(res, 200, { ride: { ...detail, ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}), tripCode, search } });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }

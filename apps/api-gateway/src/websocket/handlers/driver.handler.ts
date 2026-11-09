@@ -1,9 +1,10 @@
-import { driverClient } from '@wheleers/db';
+import { driverClient, driverLocationClient, pinnedPosition } from '@wheleers/db';
 import {
   DriverOfflineEvent,
   DriverOnlineEvent,
   GpsUpdateEvent,
 } from '@wheleers/kafka-schemas';
+import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import type { GatewayAuthContext } from '../../types';
 import { getNumber, getString } from '../../utils/object';
 import type { GatewayPublisher } from '../publisher';
@@ -46,14 +47,22 @@ export async function handleDriverMessage(
   const timestamp = new Date().toISOString();
 
   if (type === 'driver:online') {
+    // Not approved (KYC not done, in review or rejected): never on shift.
+    await assertDriverApproved(auth.userId);
+    // The car comes from the driver's profile when the app does not send it.
+    // It used to default to "UNKNOWN", which rode all the way to the rider's
+    // "Driver is here. Look for the UNKNOWN, plate UNKNOWN."
+    const sentPlate = getString(payload, 'vehiclePlate');
+    const sentModel = getString(payload, 'vehicleModel');
+    const profile = sentPlate && sentModel ? null : await driverClient.findByUserId(auth.userId).catch(() => null);
     const event = DriverOnlineEvent.parse({
       eventType: 'DRIVER_ONLINE',
       driverId: resolveDriverId(payload, auth),
       userId: auth.userId,
-      lat: requireNumber(payload, 'lat'),
-      lng: requireNumber(payload, 'lng'),
-      vehiclePlate: getString(payload, 'vehiclePlate') ?? 'UNKNOWN',
-      vehicleModel: getString(payload, 'vehicleModel') ?? 'UNKNOWN',
+      // A test driver held at a spot (DRIVER_TEST_PINS) goes online there.
+      ...pinnedPosition(resolveDriverId(payload, auth), requireNumber(payload, 'lat'), requireNumber(payload, 'lng')),
+      vehiclePlate: sentPlate ?? profile?.vehiclePlate ?? '',
+      vehicleModel: sentModel ?? profile?.vehicleModel ?? '',
       timestamp,
     });
 
@@ -123,6 +132,8 @@ export async function handleDriverMessage(
     });
 
     await publisher.publishGpsEvent(event);
+    // Keep the driver's own row and trail current too — see noteTripPosition.
+    void driverLocationClient.noteTripPosition(driverId, lat, lng);
 
     return {
       type: 'driver:gps:accepted',

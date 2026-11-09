@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#FEFAEF">
+<meta name="format-detection" content="telephone=no">
+<link rel="preload" href="../shared/fonts/BricolageGrotesque_800ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="wallet.css">
+<title>Withdraw · Wheelers</title>
+</head>
+<body>
+<!-- The app's Withdraw screen, its bank account and confirm sheets, and the
+     wallet PIN sheet (Wheelersapp app/rider-withdraw.tsx, components/wallet-pin-sheet.tsx). -->
+<div class="shell">
+  <button class="back" id="back" type="button" hidden aria-label="Back"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="48" d="M328 112L184 256l144 144"/></svg></button>
+
+  <section data-view="loading">
+    <div class="head"><h1 class="title">Withdraw</h1></div>
+    <p class="body muted">Send money from your wallet to your bank account.</p>
+    <div class="card ink feature"><div class="state-box"><span class="spinner"></span></div></div>
+  </section>
+
+  <section data-view="fatal" hidden>
+    <div class="outcome">
+      <div class="outcome-icon bad"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="44" d="M256 120v170"/><circle cx="256" cy="376" r="28" fill="currentColor"/></svg></div>
+      <h1 class="title center">Link problem</h1>
+      <p class="body muted center" id="fatal-message"></p>
+      <p class="small muted center">Go back to WhatsApp and ask to withdraw again for a fresh link.</p>
+    </div>
+  </section>
+
+  <!-- 1 · the Withdraw screen: amount, and where it goes -->
+  <section data-view="amount" hidden>
+    <div class="head"><h1 class="title">Withdraw</h1></div>
+    <p class="body muted">Send money from your wallet to your bank account.</p>
+
+    <div class="card soft notice" id="frozen-notice" role="status" hidden>
+      <p class="body-bold" id="frozen-title">Withdrawals are paused</p>
+      <p class="small muted" id="frozen-text"></p>
+    </div>
+
+    <div class="card ink feature">
+      <div class="amount-top">
+        <span class="small on-ink-muted">Amount</span>
+        <span class="balance">Balance <b id="balance">₦—</b></span>
+      </div>
+      <label class="amount-row" id="amount-row" for="amount"><span class="amount-figure" aria-hidden="true">₦</span><input id="amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Amount to withdraw, in naira"></label>
+      <div class="quick" id="quick" hidden></div>
+      <p class="small on-ink-soft" id="fee-line" aria-live="polite" hidden></p>
+    </div>
+
+    <div class="section">
+      <p class="label">BANK ACCOUNT</p>
+      <div class="card outline row-card">
+        <span class="icon-dot"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M176 416v64M80 32h192a32 32 0 0132 32v412a4 4 0 01-4 4H48V64a32 32 0 0132-32zM320 192h112a32 32 0 0132 32v256H320V192z"/><g fill="currentColor"><circle cx="112" cy="112" r="16"/><circle cx="176" cy="112" r="16"/><circle cx="240" cy="112" r="16"/><circle cx="112" cy="192" r="16"/><circle cx="176" cy="192" r="16"/><circle cx="240" cy="192" r="16"/><circle cx="112" cy="272" r="16"/><circle cx="176" cy="272" r="16"/><circle cx="240" cy="272" r="16"/><circle cx="112" cy="352" r="16"/><circle cx="240" cy="352" r="16"/><circle cx="392" cy="272" r="16"/><circle cx="392" cy="352" r="16"/></g></svg></span>
+        <div class="row-copy">
+          <p class="body-bold one-line" id="payee-title">No bank account yet</p>
+          <p class="small muted one-line" id="payee-sub">Choose where the money goes.</p>
+        </div>
+        <button class="text-btn" type="button" id="payee-change" aria-label="Add a bank account">Add</button>
+      </div>
+    </div>
+
+    <p class="small muted" id="amount-hint" aria-live="polite" hidden></p>
+
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="to-bank" disabled>Withdraw</button>
+    <p class="caption center">Transfers usually arrive within a few minutes.</p>
+  </section>
+
+  <!-- 2 · Bank account: pick the bank, type the number, the bank names the owner -->
+  <section data-view="bank" hidden>
+    <div class="head"><h1 class="title">Bank account</h1></div>
+
+    <div class="section" id="bank-search">
+      <input class="input" id="bank-q" autocomplete="off" autocapitalize="words" spellcheck="false" placeholder="Search bank" aria-label="Search bank">
+      <div class="bank-list" id="banklist"></div>
+    </div>
+
+    <div class="card row-card" id="bank-picked" hidden>
+      <span class="icon-dot sm"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M176 416v64M80 32h192a32 32 0 0132 32v412a4 4 0 01-4 4H48V64a32 32 0 0132-32zM320 192h112a32 32 0 0132 32v256H320V192z"/><g fill="currentColor"><circle cx="112" cy="112" r="16"/><circle cx="176" cy="112" r="16"/><circle cx="240" cy="112" r="16"/><circle cx="112" cy="192" r="16"/><circle cx="176" cy="192" r="16"/><circle cx="240" cy="192" r="16"/><circle cx="112" cy="272" r="16"/><circle cx="176" cy="272" r="16"/><circle cx="240" cy="272" r="16"/><circle cx="112" cy="352" r="16"/><circle cx="240" cy="352" r="16"/><circle cx="392" cy="272" r="16"/><circle cx="392" cy="352" r="16"/></g></svg></span>
+      <div class="row-copy">
+        <p class="small muted">Bank</p>
+        <p class="body-bold" id="bank-name"></p>
+      </div>
+      <button class="text-btn" type="button" id="bank-change" aria-label="Choose a different bank">Change</button>
+    </div>
+
+    <div class="field" id="acct-field" hidden>
+      <label class="field-label" for="acct">Account number</label>
+      <div class="input-wrap">
+        <input class="input num" id="acct" inputmode="numeric" maxlength="10" autocomplete="off" placeholder="0123456789">
+        <span class="input-tick" id="acct-tick" aria-label="Looks good" hidden><svg viewBox="0 0 512 512"><path fill="currentColor" d="M256 48C141.31 48 48 141.31 48 256s93.31 208 208 208 208-93.31 208-208S370.69 48 256 48zm108.25 138.29l-134.4 160a16 16 0 01-12 5.71h-.27a16 16 0 01-11.89-5.3l-57.6-64a16 16 0 1123.78-21.4l45.29 50.32 122.59-145.91a16 16 0 0124.5 20.58z"/></svg></span>
+      </div>
+      <p class="field-hint" id="resolved" aria-live="polite">We check the name on the account before any money moves.</p>
+    </div>
+
+    <button class="btn dark" type="button" id="to-confirm" hidden disabled>Check account</button>
+  </section>
+
+  <!-- 3 · Confirm withdrawal: what leaves the wallet, the fee, what the bank receives, and where -->
+  <section data-view="confirm" hidden>
+    <div class="head"><h1 class="title">Confirm withdrawal</h1></div>
+    <p class="body muted">Check the account details before you continue.</p>
+
+    <div class="card ink receive">
+      <p class="small on-ink-muted">You receive</p>
+      <p class="receive-figure" id="c-total"></p>
+    </div>
+
+    <div class="card details">
+      <div class="detail-row"><span class="k">Amount</span><span class="v" id="c-amount"></span></div>
+      <div class="detail-row" id="c-fee-row"><span class="k">Withdrawal fee</span><span class="v" id="c-fee"></span></div>
+      <div class="detail-row"><span class="k">Bank name</span><span class="v" id="c-bank"></span></div>
+      <div class="detail-row"><span class="k">Account number</span><span class="v" id="c-acct"></span></div>
+      <div class="detail-row"><span class="k">Account name</span><span class="v" id="c-name"></span></div>
+    </div>
+
+    <div class="spacer"></div>
+    <button class="btn" type="button" id="confirm-go" aria-label="Confirm withdrawal">Confirm</button>
+    <button class="link" type="button" data-back="amount">Back</button>
+  </section>
+
+  <!-- the wallet PIN: enter it -->
+  <section data-view="pin" hidden>
+    <div class="pin-head"><span class="pin-label">WALLET PIN</span><button class="pin-cancel" type="button" data-back="confirm" aria-label="Close">Cancel</button></div>
+    <div class="pin-copy"><h1 class="pin-title">Enter your wallet PIN</h1><p class="pin-body">To send this withdrawal.</p></div>
+    <div class="dots" id="pin-dots"><i></i><i></i><i></i><i></i></div>
+    <p class="pinmsg" id="pin-msg" aria-live="polite"></p>
+    <div class="pad" data-pad="pin"></div>
+    <button class="forgot" type="button" id="forgot">Forgot PIN?</button>
+  </section>
+
+  <!-- the wallet PIN: choose one (first withdrawal, or after a reset) -->
+  <section data-view="create-pin" hidden>
+    <div class="pin-head"><span class="pin-label">WALLET PIN</span><button class="pin-cancel" type="button" data-back="confirm" aria-label="Close">Cancel</button></div>
+    <div class="pin-copy"><h1 class="pin-title" id="create-title">Create your wallet PIN</h1><p class="pin-body" id="create-lede">Four digits. You’ll enter it every time you withdraw, so nobody else can move your money.</p></div>
+    <div class="dots" id="create-dots"><i></i><i></i><i></i><i></i></div>
+    <p class="pinmsg" id="create-msg" aria-live="polite"></p>
+    <div class="pad" data-pad="create"></div>
+  </section>
+
+  <!-- optional recovery email, right after a first PIN -->
+  <section data-view="email" hidden>
+    <div class="pin-head"><span class="pin-label">OPTIONAL</span></div>
+    <div class="pin-copy"><h1 class="pin-title">Add a recovery email?</h1><p class="pin-body">Forget your PIN and we’ll email a code so you can reset it at once. Without one, a reset pauses withdrawals for 24 hours.</p></div>
+    <div class="field">
+      <label class="field-label" for="email">Email address</label>
+      <input class="input" id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com">
+      <p class="field-hint error" id="email-err" role="alert" hidden></p>
+    </div>
+    <button class="btn dark md" type="button" id="email-send">Send me a code</button>
+    <button class="link" type="button" id="email-skip">Skip for now</button>
+  </section>
+  <section data-view="email-code" hidden>
+    <div class="pin-head"><span class="pin-label">RECOVERY EMAIL</span></div>
+    <div class="pin-copy"><h1 class="pin-title">Check your email</h1><p class="pin-body" id="email-code-lede"></p></div>
+    <input class="input code-input num" id="email-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" aria-label="6-digit code">
+    <p class="field-hint error center" id="email-code-err" role="alert" hidden></p>
+    <button class="btn dark md" type="button" id="email-verify">Confirm email</button>
+    <button class="link" type="button" id="email-skip-2">Skip for now</button>
+  </section>
+
+  <!-- forgot PIN -->
+  <section data-view="reset-warn" hidden>
+    <div class="pin-head"><span class="pin-label">WALLET PIN</span><button class="pin-cancel" type="button" data-back="confirm" aria-label="Close">Cancel</button></div>
+    <div class="pin-copy"><h1 class="pin-title">Reset your PIN</h1></div>
+    <div class="warn-box"><b>Withdrawals pause for 24 hours</b><span>There’s no email on your account, so to keep your money safe we pause withdrawals for a day after a reset. Deposits and rides keep working, and we’ll tell you on WhatsApp.</span></div>
+    <button class="btn dark md" type="button" id="reset-go">I understand — reset my PIN</button>
+  </section>
+  <section data-view="reset-code" hidden>
+    <div class="pin-head"><span class="pin-label">WALLET PIN</span><button class="pin-cancel" type="button" data-back="confirm" aria-label="Close">Cancel</button></div>
+    <div class="pin-copy"><h1 class="pin-title">Check your email</h1><p class="pin-body" id="reset-code-lede"></p></div>
+    <input class="input code-input num" id="reset-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" aria-label="6-digit code">
+    <p class="field-hint error center" id="reset-code-err" role="alert" hidden></p>
+    <button class="btn dark md" type="button" id="reset-code-next" disabled>Continue</button>
+  </section>
+
+  <section data-view="sending" hidden>
+    <div class="loader" aria-live="polite">
+      <span class="spinner lg"></span>
+      <p class="heading center">Sending your money…</p>
+      <p class="small muted center">Don’t close this page.</p>
+    </div>
+  </section>
+
+  <section data-view="result" hidden>
+    <div class="outcome" aria-live="polite">
+      <div class="outcome-icon" id="result-icon">
+        <span class="icon-slot" id="icon-check"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="44" d="M416 128L192 384l-96-96"/></svg></span>
+        <span class="icon-slot" id="icon-time" hidden><svg viewBox="0 0 512 512" aria-hidden="true"><circle cx="256" cy="256" r="192" fill="none" stroke="currentColor" stroke-width="36"/><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="36" d="M256 128v144h96"/></svg></span>
+        <span class="icon-slot" id="icon-alert" hidden><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="44" d="M256 120v170"/><circle cx="256" cy="376" r="28" fill="currentColor"/></svg></span>
+      </div>
+      <h1 class="title center" id="result-title"></h1>
+      <p class="body muted center" id="result-text"></p>
+      <p class="small muted center" id="result-detail" hidden></p>
+    </div>
+    <button class="btn dark" type="button" id="result-again" hidden>Try again</button>
+    <p class="small muted center" id="result-foot">We’ll message you on WhatsApp as it moves. You can close this page.</p>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="common.js"></script>
+<script src="withdraw.js"></script>
+</body>
+</html>

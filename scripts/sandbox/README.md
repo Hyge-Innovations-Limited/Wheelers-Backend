@@ -1,6 +1,6 @@
 # Wheelers sandbox
 
-A full local Wheelers stack for end-to-end testing. Real-money (Pouch), email
+A full local Wheelers stack for end-to-end testing. Real-money (Paystack), email
 and storage integrations are stubbed or inert; WhatsApp/Twilio are never
 reached by the app-rider flow. State lives in its own database
 (`wheelers_sandbox`) and Redis db 1 — it never touches production or your

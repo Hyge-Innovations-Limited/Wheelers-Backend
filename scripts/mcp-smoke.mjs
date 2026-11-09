@@ -12,7 +12,7 @@ if (!base) {
 
 let failures = 0;
 function check(label, ok, detail = '') {
-  console.log(`${ok ? '✔' : '✖'} ${label}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures += 1;
 }
 

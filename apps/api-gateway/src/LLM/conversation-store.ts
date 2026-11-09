@@ -1,8 +1,26 @@
+import { userClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
 import type { WhatsappConversationMessage } from './types';
 
 const CONVERSATION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const MAX_MESSAGES = 10;
+
+/**
+ * phone → userId, so the durable transcript (whatsapp/transcript.ts, which
+ * writes both sides as they happen) is keyed by user without a database
+ * round-trip per message. A WhatsApp user's id never changes.
+ */
+const userIdByPhone = new Map<string, string>();
+
+export async function resolveUserId(phone: string): Promise<string | null> {
+  const cached = userIdByPhone.get(phone);
+  if (cached) return cached;
+  const user = await userClient.findByPrivyDid(`whatsapp:${phone}`).catch(() => null);
+  if (!user) return null;
+  if (userIdByPhone.size > 5_000) userIdByPhone.clear();
+  userIdByPhone.set(phone, user.id);
+  return user.id;
+}
 
 function getConversationKey(phone: string): string {
   return `whatsapp:conversation:${phone}`;

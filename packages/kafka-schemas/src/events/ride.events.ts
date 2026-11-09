@@ -34,7 +34,16 @@ const RideStopSnapshot = LatLng.extend({
   completedAt: z.string().datetime().optional(),
 });
 
-const PaymentMethod = z.enum(['CASH', 'WALLET']);
+// What the rider told drivers about the trip (people, luggage, pet, a note). Absent: not asked.
+const TripDetails = z.object({
+  passengers: z.number().int().min(1).max(4),
+  luggage:    z.boolean(),
+  pet:        z.boolean(),
+  note:       z.string().max(60).optional(),
+});
+
+// XLM: paid from the rider's Stellar (testnet) balance — no naira moves, the driver is paid in XLM.
+const PaymentMethod = z.enum(['CASH', 'WALLET', 'XLM']);
 
 // Fired by api-gateway when rider submits a ride request via WebSocket.
 // Consumed by: ride-service (broadcast to nearby drivers for bidding).
@@ -55,6 +64,12 @@ export const RideRequestedEvent = BaseRideEvent.extend({
   fareBeforeCashbackNgn: z.number().optional(),
   referralCashbackAppliedNgn: z.number().optional(),
   route:            RouteGeometry.optional(),
+  // Where the ride was booked; stored on the ride for analytics. Absent on older publishers.
+  channel:          z.enum(['APP', 'WHATSAPP', 'MCP']).optional(),
+  // Started by the scheduler for a ride booked for later, not by the rider
+  // just now: the rider is not looking at the app and has to be told.
+  scheduled:        z.boolean().optional(),
+  tripDetails:      TripDetails.optional(),
 });
 
 export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
@@ -66,7 +81,17 @@ export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
   plannedDistanceKm: z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
+  /** The fare the rider ACCEPTED for this route (server quote): becomes the ride's agreed fare. Absent: older app. */
+  acceptedFareNgn:  z.number().optional(),
+  /** With acceptedFareNgn (STOP_FIXED_PRICE_ENABLED): the km that fare was set for, stored as Ride.plannedDistanceKm. */
+  plannedTotalKm:   z.number().optional(),
+  /** What the price was set against: the change applies only if the ride still looks like this (a stale change is skipped). */
+  baseAgreedFareNgn: z.number().optional(),
+  basePlannedKm:    z.number().nullable().optional(),
+  baseDoneStops:    z.number().int().optional(),
   route:            RouteGeometry.optional(),
+  // True only when the rider accepted this route's quoted price; otherwise the change moves no money.
+  priced:           z.boolean().optional(),
   updatedBy:        z.enum(['rider', 'driver', 'system']),
 });
 
@@ -91,6 +116,9 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
   paymentMethod:         PaymentMethod,
   riderOfferNgn:         z.number(),
   suggestedFareNgn:      z.number(),
+  // The lowest bid the server will accept on this trip. Without it the driver
+  // app could only guess: a bid under the floor was typed, sent, and bounced.
+  minOfferNgn:           z.number().optional(),
   ratePerKmNgn:          z.number(),
   plannedDistanceKm:     z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
@@ -98,6 +126,13 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
   // live "to pickup" card (the app recomputes from its own GPS after that).
   pickupDistanceKm:      z.number().optional(),
   pickupEtaSeconds:      z.number().int().optional(),
+  // This driver is still carrying a passenger and was matched because the
+  // pickup is near their drop-off. Their app labels the card so nobody
+  // abandons the rider they have; the distances above are from that drop-off.
+  afterCurrentTrip:      z.boolean().optional(),
+  // The rider changed their price: this re-sends the offer to a driver who had it.
+  // The gateway pushes "New price ₦X" to a driver whose app is not connected.
+  repriced:              z.boolean().optional(),
   expiresAt:             z.string().datetime(),
   // One auction clock for every surface — apps render it, chat enforces it.
   bidsCloseAt:           z.string().datetime().optional(),
@@ -125,6 +160,8 @@ export const RideOfferSentEvent = BaseRideEvent.extend({
     dropoff: LatLng,
     offerNgn: z.number().nonnegative(),
   })).max(5).optional(),
+  // People, luggage, pet and the rider's note: seen before the driver bids.
+  tripDetails:           TripDetails.optional(),
 });
 
 // Fired by api-gateway when driver sends a counter-offer via WebSocket.
@@ -176,6 +213,8 @@ export const RideDriverAssignedEvent = BaseRideEvent.extend({
   agreedFareNgn:  z.number(),
   lockedFareNgn:  z.number(),
   paymentMethod:  PaymentMethod,
+  /** Every driver this request was offered to (users), so each can be told it is taken. */
+  offeredDriverUserIds: z.array(z.string().uuid()).optional(),
 });
 
 export const RideRouteUpdatedEvent = BaseRideEvent.extend({
@@ -187,7 +226,13 @@ export const RideRouteUpdatedEvent = BaseRideEvent.extend({
   plannedDistanceKm: z.number().optional(),
   plannedDurationSeconds: z.number().int().optional(),
   fareEstimateNgn:  z.number().optional(),
+  /** The trip's agreed fare after a priced change (the driver's new fare). Absent: the change was not priced. */
+  agreedFareNgn:    z.number().optional(),
+  change:           z.enum(['stop_added', 'stop_removed', 'destination_changed', 'route_changed']).optional(),
+  /** A priced change was NOT made (the ride moved on): this is the route as it stands, so screens and the hold go back to it. */
+  reverted:         z.boolean().optional(),
   route:            RouteGeometry.optional(),
+  priced:           z.boolean().optional(),
   updatedBy:        z.enum(['rider', 'driver', 'system']),
 });
 
@@ -269,11 +314,87 @@ export const RideRiderCounterOfferEvent = BaseRideEvent.extend({
   counterOfferNgn:  z.number(),
 });
 
+// Fired by api-gateway when an operator nudges a driver about one ride (admin
+// live map). That driver gets the ride's offer however far they are: now if
+// online, the moment they go online if not.
+// Consumed by: ride-service.
+export const RideDispatchDirectedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_DISPATCH_DIRECTED'),
+  driverId:     z.string().uuid(),
+  driverUserId: z.string().uuid(),
+});
+
+// Fired by api-gateway when the rider declines one offer or every offer on the table.
+// The search goes on. Consumed by: api-gateway (tell each driver: ride:bid_declined).
+export const RideBidsDeclinedEvent = BaseRideEvent.extend({
+  eventType:     z.literal('RIDE_BIDS_DECLINED'),
+  riderId:       z.string().uuid(),
+  driverUserIds: z.array(z.string().uuid()),
+  // Declining one offer leaves the others: the count on the rider's chat message. Absent: none left.
+  remainingOffers: z.number().int().nonnegative().optional(),
+});
+
+// Fired by api-gateway when the rider chose a driver but must add money first.
+// Consumed by: api-gateway (tell that driver: ride:rider_paying).
+export const RideRiderPayingEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_RIDER_PAYING'),
+  riderId:      z.string().uuid(),
+  driverUserId: z.string().uuid(),
+  // DRIVER_PAYING_STATUS_ENABLED: when the payment began and when the driver's card stops waiting on it.
+  payingSince:  z.string().datetime().optional(),
+  payingUntil:  z.string().datetime().optional(),
+});
+
+// The rider is no longer paying for this driver (closed the sheet, declined, chose another,
+// cancelled, the search ended). Consumed by: api-gateway (tell that driver: ride:rider_paying_ended).
+export const RideRiderPayingEndedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_RIDER_PAYING_ENDED'),
+  driverUserId: z.string().uuid(),
+  reason:       z.enum(['closed', 'declined', 'other_chosen', 'switched', 'cancelled', 'search_ended', 'failed']),
+});
+
+// Fired by ride-service when a driver the rider chose cannot be given the
+// ride: already on another trip (driver_busy: the search goes on, the rider
+// picks again), or the ride ended while the assignment was on its way
+// (ride_closed). Consumed by: api-gateway (release the hold, tell the driver,
+// put the rider back to choosing).
+export const RideAssignmentFailedEvent = BaseRideEvent.extend({
+  eventType:    z.literal('RIDE_ASSIGNMENT_FAILED'),
+  riderId:      z.string().uuid(),
+  driverId:     z.string().uuid(),
+  driverUserId: z.string().uuid(),
+  reason:       z.enum(['driver_busy', 'ride_closed']),
+});
+
 // Fired by ride-service after 3 minutes with no counter-offers.
 // Consumed by: api-gateway (relay to rider as ride:bid_timeout).
 export const RideBidTimeoutEvent = BaseRideEvent.extend({
   eventType: z.literal('RIDE_BID_TIMEOUT'),
   riderId:   z.string().uuid(),
+});
+
+// Fired by ride-service's scheduler when a ride for later booked on WhatsApp is due
+// while the rider is busy (searching, being confirmed, on a trip): it waits and
+// starts when they are free. rideId is the ScheduledRide's id (no ride exists yet).
+// Consumed by: api-gateway (one short WhatsApp message, held while on the ride page).
+export const ScheduledRideHeldEvent = BaseRideEvent.extend({
+  eventType:     z.literal('SCHEDULED_RIDE_HELD'),
+  riderId:       z.string().uuid(),
+  scheduledFor:  z.string().datetime(),
+  pickupAddress: z.string(),
+});
+
+// Fired by ride-service's scheduler when it gives up on a ride for later booked on
+// WhatsApp: its start could not reach the rider (their 24 h window closed, no
+// template), or it waited for a busy rider until an hour past its time. It is
+// cancelled; rideId is the ScheduledRide's id. Consumed by: api-gateway (the
+// rider is told once: in the chat when it can reach them, else on the ride page's Home and the app).
+export const ScheduledRideGaveUpEvent = BaseRideEvent.extend({
+  eventType:     z.literal('SCHEDULED_RIDE_GAVE_UP'),
+  riderId:       z.string().uuid(),
+  scheduledFor:  z.string().datetime(),
+  pickupAddress: z.string(),
+  reason:        z.enum(['window_closed', 'waited_too_long']),
 });
 
 // Fired by api-gateway when a rider or driver sends a chat message during a ride.
@@ -284,6 +405,8 @@ export const ChatMessageSentEvent = BaseRideEvent.extend({
   senderId:   z.string().uuid(),
   senderRole: z.enum(['RIDER', 'DRIVER']),
   content:    z.string().min(1).max(1000),
+  // 'call': a line the call service wrote ("Missed call"). Absent = typed text.
+  kind:       z.enum(['text', 'call']).optional(),
 });
 
 export const RideEvent = z.discriminatedUnion('eventType', [
@@ -293,6 +416,11 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideOfferSentEvent,
   RideCounterOfferEvent,
   RideRiderCounterOfferEvent,
+  RideDispatchDirectedEvent,
+  RideBidsDeclinedEvent,
+  RideRiderPayingEvent,
+  RideRiderPayingEndedEvent,
+  RideAssignmentFailedEvent,
   RideOfferAcceptedEvent,
   RideDriverAssignedEvent,
   RideRouteUpdatedEvent,
@@ -304,6 +432,8 @@ export const RideEvent = z.discriminatedUnion('eventType', [
   RideDriverRejectedEvent,
   RideBidTimeoutEvent,
   ChatMessageSentEvent,
+  ScheduledRideHeldEvent,
+  ScheduledRideGaveUpEvent,
 ]);
 
 export type RideRequestedEvent       = z.infer<typeof RideRequestedEvent>;
@@ -321,6 +451,13 @@ export type RideCompletedEvent       = z.infer<typeof RideCompletedEvent>;
 export type RideCancelledEvent       = z.infer<typeof RideCancelledEvent>;
 export type RideDriverRejectedEvent  = z.infer<typeof RideDriverRejectedEvent>;
 export type RideRiderCounterOfferEvent = z.infer<typeof RideRiderCounterOfferEvent>;
+export type RideDispatchDirectedEvent = z.infer<typeof RideDispatchDirectedEvent>;
+export type RideBidsDeclinedEvent = z.infer<typeof RideBidsDeclinedEvent>;
+export type RideRiderPayingEvent = z.infer<typeof RideRiderPayingEvent>;
+export type RideRiderPayingEndedEvent = z.infer<typeof RideRiderPayingEndedEvent>;
+export type RideAssignmentFailedEvent = z.infer<typeof RideAssignmentFailedEvent>;
 export type RideBidTimeoutEvent      = z.infer<typeof RideBidTimeoutEvent>;
+export type ScheduledRideHeldEvent   = z.infer<typeof ScheduledRideHeldEvent>;
+export type ScheduledRideGaveUpEvent = z.infer<typeof ScheduledRideGaveUpEvent>;
 export type ChatMessageSentEvent     = z.infer<typeof ChatMessageSentEvent>;
 export type RideEvent                = z.infer<typeof RideEvent>;

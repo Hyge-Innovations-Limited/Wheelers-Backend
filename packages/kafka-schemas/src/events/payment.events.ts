@@ -5,24 +5,28 @@ const BasePaymentEvent = z.object({
   timestamp: z.string().datetime(),
 });
 
-// Fired by api-gateway webhook handler when a Pouch Liquifia virtual account
-// receives a bank transfer deposit.
-// Consumed by: wallet-service (credit user's internal NGN balance).
+// Fired by the api-gateway webhook handler when a user's dedicated deposit
+// account receives a bank transfer. Both figures were read back from the
+// provider, never taken from the webhook body.
+// Consumed by: wallet-service (split the deposit and credit the ledger).
 export const VirtualAccountCreditedEvent = BasePaymentEvent.extend({
   eventType:              z.literal('VIRTUAL_ACCOUNT_CREDITED'),
-  pouchVirtualAccountId:  z.string(),
+  providerAccountId:      z.string(),
+  /** Gross amount the sender transferred. */
   amountNgn:              z.number(),
+  /** What the provider kept before the cash reached our balance. */
+  providerFeeNgn:         z.number().nonnegative().default(0),
   bankName:               z.string().optional(),
   senderAccountNumber:    z.string().optional(),
   senderAccountName:      z.string().optional(),
   providerReference:      z.string(),
 });
 
-// Fired by api-gateway when a Pouch payout is created for a user withdrawal.
+// Fired by api-gateway when a provider transfer is created for a user withdrawal.
 // Consumed by: payment-service (track payout lifecycle).
 export const PayoutCreatedEvent = BasePaymentEvent.extend({
   eventType:         z.literal('PAYOUT_CREATED'),
-  pouchPayoutId:     z.string(),
+  providerPayoutId:    z.string(),
   withdrawalId:      z.string().uuid(),
   amountNgn:         z.number(),
   bankAccountNumber: z.string(),
@@ -30,20 +34,20 @@ export const PayoutCreatedEvent = BasePaymentEvent.extend({
   bankNetworkId:     z.string(),
 });
 
-// Fired by webhook handler when Pouch confirms payout success.
+// Fired by webhook handler when the provider confirms payout success.
 // Consumed by: wallet-service (settle withdrawal, create transaction).
 export const PayoutCompletedEvent = BasePaymentEvent.extend({
   eventType:          z.literal('PAYOUT_COMPLETED'),
-  pouchPayoutId:      z.string(),
+  providerPayoutId:     z.string(),
   providerReference:  z.string(),
   amountNgn:          z.number(),
 });
 
-// Fired by webhook handler when Pouch reports payout failure.
+// Fired by webhook handler when the provider reports payout failure.
 // Consumed by: wallet-service (release reserved funds back to user).
 export const PayoutFailedEvent = BasePaymentEvent.extend({
   eventType:          z.literal('PAYOUT_FAILED'),
-  pouchPayoutId:      z.string(),
+  providerPayoutId:     z.string(),
   providerReference:  z.string(),
   failureReason:      z.string(),
 });

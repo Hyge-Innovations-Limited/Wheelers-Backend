@@ -1,0 +1,229 @@
+import { withdrawalClient } from '@wheleers/db';
+import { MIN_WITHDRAWAL_REQUEST_NGN, sendAlert, withdrawalBreakdown, type WithdrawalBreakdown } from '@wheleers/config';
+import {
+  OTP_REQUIRED_MESSAGE,
+  classifyPayoutStatus,
+  isOtpRequired,
+  type PaymentsClient,
+} from '@wheleers/payments';
+import type { PayoutCreatedEvent } from '@wheleers/kafka-schemas';
+import type { GatewayPublisher } from '../websocket/publisher';
+import { assertMayWithdraw, type PinPolicy } from '../wallet-security/wallet-pin';
+
+const TAG = '[api-gateway][withdrawal]';
+
+export type WithdrawalErrorCode =
+  | 'BELOW_MINIMUM'
+  | 'PAYOUTS_NOT_ENABLED'
+  | 'PAYOUT_REJECTED'
+  | 'FLOAT_SHORT'
+  | 'PENDING_CONFIRMATION'
+  | 'WITHDRAWAL_FAILED';
+
+/** A withdrawal failure whose message is safe to show the user as-is. */
+export class WithdrawalError extends Error {
+  constructor(
+    message: string,
+    readonly code: WithdrawalErrorCode,
+    /** True when the user's money is STILL reserved (the payout may exist). */
+    readonly fundsStillReserved = false,
+  ) {
+    super(message);
+    this.name = 'WithdrawalError';
+  }
+}
+
+/** Paystack refusing a transfer because Wheelers' own balance there cannot cover it. */
+const FLOAT_TOO_LOW = /balance is not enough|insufficient (?:account )?balance|not enough balance/i;
+
+export const FLOAT_SHORT_MESSAGE = 'Withdrawals are paused for a short while. Your money is back in your wallet. Try again later.';
+
+/** The Paystack top-up alert: at most once in this long (every refused withdrawal would otherwise send one). */
+const FLOAT_ALERT_EVERY_MS = 30 * 60 * 1000;
+let lastFloatAlertAt = 0;
+
+/** "Top up Paystack", unless it was said in the last half hour (across gateway processes when Redis is given). */
+async function alertFloatShort(payoutNgn: number, redis?: { setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> }): Promise<void> {
+  const now = Date.now();
+  if (now - lastFloatAlertAt < FLOAT_ALERT_EVERY_MS) return;
+  if (redis) {
+    const first = await redis.setIfNotExists('alerts:paystack-float-short', String(now), FLOAT_ALERT_EVERY_MS / 1000).catch(() => true);
+    if (!first) { lastFloatAlertAt = now; return; }
+  }
+  lastFloatAlertAt = now;
+  await sendAlert('Paystack balance too low for withdrawals', `A ₦${payoutNgn.toLocaleString()} withdrawal was refused and returned to the wallet. Top up the Paystack balance.`).catch(() => false);
+}
+
+export const WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE =
+  'Your withdrawal was submitted but the bank has not confirmed it yet. Your money stays reserved until it does, and your wallet balance is safe.';
+
+export interface SubmitWithdrawalInput {
+  userId: string;
+  walletId: string;
+  amountNgn: number;
+  bankCode: string;
+  accountNumber: string;
+  accountName: string;
+  /** The wallet PIN as typed. Never logged, never stored. */
+  pin?: unknown;
+  /** Defaults to 'required': a caller must opt OUT of the PIN, never into it. */
+  pinPolicy?: PinPolicy;
+}
+
+/**
+ * The one place a withdrawal moves money — the app route and the WhatsApp
+ * flow both end here, so they cannot drift apart again.
+ *
+ *   reserve funds → create transfer (reference = request id) → record it
+ *
+ * Failure handling turns on one question: could the transfer exist?
+ *   • No  (a clear 4xx, a rejected status)      → release the reservation.
+ *   • Maybe (timeout, 5xx, dropped connection)  → KEEP it reserved. The
+ *     reconciler asks the provider by reference and settles or releases.
+ *     Releasing on a maybe is how a user gets paid twice.
+ */
+export async function submitWithdrawal(
+  deps: { paymentsClient: PaymentsClient; publisher: GatewayPublisher; redis?: { setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> } },
+  input: SubmitWithdrawalInput,
+): Promise<{ requestId: string; breakdown: WithdrawalBreakdown }> {
+  const { paymentsClient, publisher } = deps;
+  const { userId, walletId, amountNgn, bankCode, accountNumber, accountName } = input;
+
+  // The fee comes out of the amount: the wallet gives up amountNgn, the bank gets payoutNgn.
+  const breakdown = withdrawalBreakdown(amountNgn);
+  if (!(amountNgn > 0) || amountNgn < MIN_WITHDRAWAL_REQUEST_NGN) {
+    throw new WithdrawalError(
+      `The smallest amount you can withdraw is ₦${MIN_WITHDRAWAL_REQUEST_NGN.toLocaleString('en-NG')}: ` +
+        `₦${breakdown.feeNgn.toLocaleString('en-NG')} withdrawal fee, and the bank needs the rest to be at least ₦${(MIN_WITHDRAWAL_REQUEST_NGN - breakdown.feeNgn).toLocaleString('en-NG')}.`,
+      'BELOW_MINIMUM',
+    );
+  }
+
+  // PIN, freeze and destination rules — checked here, inside the executor, so
+  // no route (present or future) can reach the money around them. A refusal
+  // throws WalletSecurityError before anything is reserved.
+  await assertMayWithdraw({
+    userId,
+    pin: input.pin,
+    policy: input.pinPolicy ?? 'required',
+    bankCode,
+    accountNumber,
+  });
+
+  // The transfer draws on Wheelers' Paystack balance, where riders' deposits settle
+  // (Titan). Nothing is pre-checked: the transfer is sent, and if Paystack refuses it
+  // for any reason the reservation is released and the rider told, below.
+
+  const reserved = await withdrawalClient.reserve({
+    userId,
+    walletId,
+    amountNgn,
+    bankAccountNumber: accountNumber,
+    bankAccountName: accountName,
+    bankNetworkId: bankCode,
+    feeNgn: breakdown.feeNgn,
+  });
+  const requestId = reserved.request.id;
+
+  /** True when the reservation went back to the wallet. */
+  const release = async (reason: string): Promise<boolean> => {
+    return withdrawalClient
+      .releaseFailedRequest({ withdrawalRequestId: requestId, failureReason: reason, status: 'FAILED' })
+      .then(() => true)
+      .catch((releaseError) => {
+        console.error(`${TAG} CRITICAL: could not release reservation`, {
+          requestId,
+          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+        });
+        return false;
+      });
+  };
+
+  let payout;
+  try {
+    payout = await paymentsClient.createPayout({
+      reference: requestId,
+      amountNgn: breakdown.payoutNgn,
+      accountNumber,
+      bankCode,
+      accountName,
+      narration: 'Wheelers withdrawal',
+    });
+  } catch (error) {
+    const status = (error as { status?: unknown })?.status;
+    const ambiguous = typeof status !== 'number' || status >= 500 || status === 408 || status === 429;
+    if (ambiguous) {
+      console.error(`${TAG} transfer outcome unknown — reservation kept for reconciliation`, {
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new WithdrawalError(WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE, 'PENDING_CONFIRMATION', true);
+    }
+    const reason = error instanceof Error ? error.message : 'Transfer could not be created';
+    const released = await release(reason);
+    console.warn(`${TAG} transfer refused by provider`, { requestId, reason, code: (error as { code?: string })?.code ?? null });
+    // Wheelers' Paystack balance is too low to send it: nothing is wrong with
+    // their account, so do not tell them to check it; tell us to top up.
+    if (FLOAT_TOO_LOW.test(reason)) {
+      void alertFloatShort(breakdown.payoutNgn, deps.redis);
+      // "Back in your wallet" only when it is: otherwise it is still reserved, and the reconciler returns it.
+      if (!released) throw new WithdrawalError(WITHDRAWAL_PENDING_CONFIRMATION_MESSAGE, 'PENDING_CONFIRMATION', true);
+      throw new WithdrawalError(FLOAT_SHORT_MESSAGE, 'FLOAT_SHORT');
+    }
+    throw new WithdrawalError(
+      `${reason}. Your balance has not been deducted — please check the account details and try again.`,
+      'PAYOUT_REJECTED',
+    );
+  }
+
+  if (classifyPayoutStatus(payout.status) === 'failed') {
+    const otp = isOtpRequired(payout.status);
+    if (otp) {
+      console.error(
+        `${TAG} CRITICAL: Paystack wants an OTP for every transfer. Turn OFF "Confirm transfers before sending" ` +
+        '(Paystack dashboard → Settings → Preferences). Do NOT finalise this transfer by hand — its funds were released.',
+        { requestId, transferId: payout.id },
+      );
+    }
+    await release(otp ? 'Provider requires manual OTP confirmation' : `Transfer ${payout.status}`);
+    throw new WithdrawalError(
+      otp
+        ? OTP_REQUIRED_MESSAGE
+        : `The bank transfer was rejected (${payout.status}). Your balance has not been deducted — please check the account details and try again.`,
+      otp ? 'PAYOUTS_NOT_ENABLED' : 'PAYOUT_REJECTED',
+    );
+  }
+
+  // From here the transfer EXISTS. Nothing below may release the funds.
+  try {
+    await withdrawalClient.attachPayout({
+      withdrawalRequestId: requestId,
+      providerPayoutId: payout.id,
+      providerReference: payout.reference,
+    });
+
+    const event: PayoutCreatedEvent = {
+      eventType: 'PAYOUT_CREATED',
+      userId,
+      providerPayoutId: payout.id,
+      withdrawalId: requestId,
+      amountNgn: breakdown.payoutNgn,
+      bankAccountNumber: accountNumber,
+      bankAccountName: accountName,
+      bankNetworkId: bankCode,
+      timestamp: new Date().toISOString(),
+    };
+    await publisher.publishPaymentEvent(event);
+  } catch (error) {
+    // Bookkeeping failed after the money started moving. The reconciler
+    // finds the row by reference (= request id) and finishes the job.
+    console.error(`${TAG} transfer created but could not be recorded — reconciler will pick it up`, {
+      requestId,
+      transferId: payout.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  console.log(`${TAG} transfer created`, { requestId, transferId: payout.id, ...breakdown, status: payout.status });
+  return { requestId, breakdown };
+}
