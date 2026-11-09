@@ -15,7 +15,7 @@ import {
   WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn } from '@wheleers/config';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
@@ -136,6 +136,12 @@ export interface StartGatewayConsumerDeps {
 interface RideParticipantState {
   riderId: string;
   driverUserId?: string;
+}
+
+function withoutNote(details: { note?: string } | undefined) {
+  if (!details) return details;
+  const { note: _note, ...rest } = details;
+  return rest;
 }
 
 /** The most a driver may ask on a trip, as a fare and as rates per km. Empty when there is nothing to measure against. */
@@ -1064,8 +1070,9 @@ export async function handleRideEvent(
       riderCount: event.riderCount ?? 1,
       stopKinds: event.stopKinds ?? [],
       groupMembers: event.groupMembers ?? [],
-      // People, luggage, pet. Never the note before the match, whatever the event carries.
-      ...(event.tripDetails ? { tripDetails: tripDetailsForOffer(event.tripDetails) } : {}),
+      // People, luggage, pet and the rider's note, as the event carries them.
+      // With the box off, a stored note (chat search again, a ride for later, a row rebuild) goes to no bidder.
+      ...(event.tripDetails ? { tripDetails: tripDetailsBoxOn() ? tripDetailsForOffer(event.tripDetails) : withoutNote(tripDetailsForOffer(event.tripDetails)) } : {}),
     });
     // The rider's waiting screen: drivers who saw the price, and the search's clock.
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
@@ -1373,6 +1380,15 @@ export async function handleRideEvent(
 
   // The driver the rider chose could not be given the ride (ride-service).
   if (event.eventType === 'RIDE_ASSIGNMENT_FAILED') {
+    // The driver is not booked on this ride: let go of their 60-second claim (if it is this ride's), so
+    // another rider can book them now.
+    const claimKey = `whatsapp:driver:${event.driverId}:accepting`;
+    // Compare-and-delete in one step (Lua) so a claim another ride has just taken is never deleted;
+    // a client that cannot run it falls back to read-then-delete.
+    const released = await deps.redisClient
+      .send('EVAL', "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", '1', claimKey, event.rideId)
+      .catch(() => null);
+    if (typeof released !== 'number' && await deps.redisClient.get(claimKey).catch(() => null) === event.rideId) await deps.redisClient.del(claimKey).catch(() => undefined);
     // The driver the rider was paying for cannot be booked: their card stops saying so.
     if (payingStatusEnabled()) await closePaying(deps, event.rideId, 'failed', event.driverUserId).catch(() => false);
     if (event.reason === 'ride_closed') {

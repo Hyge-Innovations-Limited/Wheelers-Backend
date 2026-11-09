@@ -29,14 +29,57 @@ export function tripDetailsFromRequest(value: unknown): TripDetails | undefined 
   return tripDetailsBoxOn() ? readTripDetails(value) : undefined;
 }
 
+const NUMBER_WORDS: Record<string, string> = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9' };
+
+/** The note as a screen would read it: look-alike letters, words and styled digits turned into plain digits. */
+function readableNote(note: string): string {
+  let text = note.normalize('NFKC')
+    // Hidden characters, keycap marks and emoji (also the ones put between digits to break a number).
+    .replace(/[\u00AD\u200B-\u200F\u2060\uFEFF\uFE0E\uFE0F\u20E3]/gu, '')
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine)\b/giu, (word) => NUMBER_WORDS[word.toLowerCase()] ?? word);
+  // O and o for 0, I, l and | for 1, but only touching a digit (so "I'm at the gate" stays).
+  for (let pass = 0; pass < 12; pass += 1) {
+    const next = text
+      .replace(/(?<=\p{Nd})[Oo](?![\p{L}])|(?<![\p{L}])[Oo](?=\p{Nd})/gu, '0')
+      .replace(/(?<=\p{Nd})[Il|](?![\p{L}])|(?<![\p{L}])[Il|](?=\p{Nd})/gu, '1');
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
 /**
- * What drivers bidding on the request see: people, luggage, pet. The note is
- * only for the driver who gets the ride (it can hold a gate code or a flat
- * number, and that driver already has the rider's phone).
+ * True when the note could pass a way to reach the rider outside the app: seven or more digits in all
+ * (however written or split up), an @handle, or a web address (wa.me, t . me, example dot com).
+ */
+function carriesContact(note: string): boolean {
+  const text = readableNote(note);
+  // Seven or more digits in one number-like run: only non-letters (up to three) between the digits, so
+  // "Gate 12, House 34, Flat 567" (words between) is an address and "0803 123 | 4567" is a number.
+  if (/\p{Nd}(?:[^\p{L}:]{0,3}\p{Nd}){6,}/u.test(text)) return true;
+  if (/@\w/u.test(text)) return true;
+  // A web address: the dot touches the word before it ("wa.me"); the spaced trick has a space before the dot
+  // ("wa . me"); or the dot is spelled ("wa dot me"). "gate. To the left" has no space before the dot.
+  if (/\w\.(?:me|com|ng|ly|to|co|io|link)\b|\w\s+\.\s*(?:me|com|ng|ly|to|co|io|link)\b|\bdot\s*(?:me|com|ng|ly|to|co|io|link)\b/iu.test(text)) return true;
+  return false;
+}
+
+/**
+ * What every driver who gets the request sees: people, luggage, pet and the
+ * rider's cleaned note (as on inDrive). The note goes to every bidder, and only the matched driver
+ * gets it whole: a note that carries a way to reach the rider (a phone number however it is written,
+ * an @handle, a web address) is left off for bidders altogether.
  */
 export function tripDetailsForOffer(details: TripDetails | undefined): TripDetails | undefined {
   if (!details) return undefined;
-  return { passengers: details.passengers, luggage: details.luggage, pet: details.pet };
+  const note = details.note && !carriesContact(details.note) ? details.note : undefined;
+  return {
+    passengers: details.passengers,
+    luggage: details.luggage,
+    pet: details.pet,
+    ...(note ? { note } : {}),
+  };
 }
 
 // A link in the note is spam or a trap for the driver: written without spaces, as links are.

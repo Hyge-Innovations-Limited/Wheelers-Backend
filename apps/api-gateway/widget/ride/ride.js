@@ -23,6 +23,7 @@
 
   var state = null;          // the last thing the server told us
   var shownView = null;      // the view on screen
+  var clearPriceTyping = null;   // closes the price box's typing (set below)
   var seenOffers = null;     // how many offers there were at the last look — null until the first
   var paying = null;         // the offer being paid for: { key, driverName } — its card stays green
   var declined = null;       // { offers, until }: the offers just declined, shown red for a moment
@@ -306,13 +307,67 @@
     var text = W.naira(amount);
     var figure = W.$(id);
     figure.textContent = text;
-    figure.className = 'figure len-' + Math.min(13, Math.max(2, text.length));
+    figure.className = 'figure tappable len-' + Math.min(13, Math.max(2, text.length));
+    // The amount is read out, and the figure says it can be typed.
+    figure.setAttribute('aria-label', text + ', tap to type your ' + (id === 'price-figure' ? 'offer' : 'new offer'));
   }
   /** The app's minus and plus (components/rider/price-card.tsx): to the next ₦100, never under the floor. */
   function stepDown(price, floor) { return Math.max(floor, price - (price % 100 || 100)); }
   function stepUp(price) { return price + (100 - (price % 100)); }
   /** "Ilemere Rd, Ikorodu" → "Ilemere Rd". */
   function shortPlace(address) { return String(address || '').split(',')[0].trim(); }
+
+  /**
+   * Tap the amount to type it. Done (blur or Enter): to the nearest ₦50; under the lowest → the lowest
+   * with one line "Lowest is ₦X".
+   */
+  function typedAmount(raw, floor) {
+    var typed = W.parseAmount(raw);
+    if (!(typed > 0)) return null;
+    var amount = Math.round(typed / 50) * 50;
+    if (amount < 50) return null;
+    var low = false;
+    if (floor > 0 && amount < floor) { amount = floor; low = true; }
+    return { amount: amount, low: low };
+  }
+  function wireTyping(o) {
+    var figure = W.$(o.figure), field = W.$(o.type), store = W.$(o.input), line = W.$(o.low), hint = W.$(o.hint);
+    function open() {
+      if (!o.ready()) return;
+      restore();   // the old "Lowest is" line goes, the hint is back
+      field.className = figure.className.replace('tappable', '').trim() + ' figure-edit';   // the figure's own size
+      field.value = String(W.parseAmount(store.value) || '');
+      W.show(figure, false);
+      W.show(field, true);
+      field.focus();
+      if (field.select) field.select();
+      // The keyboard must not cover the button under the amount.
+      setTimeout(function () { if (field.scrollIntoView) field.scrollIntoView({ block: 'center' }); }, 300);
+    }
+    function done() {
+      if (field.hidden) return;
+      var got = typedAmount(field.value, o.floor());
+      W.show(field, false);
+      W.show(figure, true);
+      if (got) {
+        store.value = Number(got.amount).toLocaleString('en-NG');
+        line.textContent = got.low ? 'Lowest is ' + W.naira(got.amount) : '';
+        o.sync();
+        W.show(line, got.low);
+        W.show(hint, !got.low && (o.hintOn ? o.hintOn() : true));   // one line, not two
+        if (o.after) o.after(got.amount);
+      }
+    }
+    figure.addEventListener('click', open);
+    figure.addEventListener('keydown', function (event) { if (event && (event.key === 'Enter' || event.key === ' ')) { if (event.preventDefault) event.preventDefault(); open(); } });
+    field.addEventListener('blur', done);
+    field.addEventListener('keydown', function (event) { if (event && event.key === 'Enter') { if (event.preventDefault) event.preventDefault(); done(); } });
+    // The minus and plus, and a fresh start, clear the line.
+    function restore() { W.show(line, false); W.show(hint, o.hintOn ? o.hintOn() : true); }
+    function clear() { restore(); W.show(field, false); W.show(figure, true); }
+    clear.commit = done;   // an action that reads the price finishes the typing first (a tap may not blur the box)
+    return clear;
+  }
 
   /* ── analytics: what the rider does here, step by step ─────────────────── */
 
@@ -2608,6 +2663,7 @@
       // The trip changed while they were here: the box starts again from the new suggested price.
       var changed = priceDrawnFor !== null;
       priceDrawnFor = signature;
+      if (clearPriceTyping) clearPriceTyping();   // a fresh quote closes an open typing box: its stale amount is never committed
       W.$('price-suggested').textContent = W.naira(s.route.suggestedFareNgn);
       if (!W.$('price-input').value || changed) {
         // Back from a search: the price they had named. Otherwise the suggested one.
@@ -2643,12 +2699,21 @@
   // Minus and plus move the price to the next ₦100, as in the app; never under the lowest.
   function stepPrice(up) {
     if (!state || state.phase !== 'price') return;
+    clearPriceTyping.commit();
     var amount = W.parseAmount(W.$('price-input').value) || state.route.suggestedFareNgn;
     var next = up ? stepUp(amount) : stepDown(amount, state.minOfferNgn);
+    clearPriceTyping();
     W.$('price-input').value = Number(next).toLocaleString('en-NG');
     syncPrice();
     track('price_changed', { method: up ? 'plus' : 'minus', amountNgn: next });
   }
+  clearPriceTyping = wireTyping({
+    figure: 'price-figure', type: 'price-type', input: 'price-input', low: 'price-low', hint: 'price-hint',
+    ready: function () { return Boolean(state && state.phase === 'price'); },
+    floor: function () { return state ? state.minOfferNgn || 0 : 0; },
+    sync: function () { syncPrice(); },
+    after: function (amount) { track('price_changed', { method: 'typed', amountNgn: amount }); }
+  });
   W.$('price-down').addEventListener('click', function () { stepPrice(false); });
   W.$('price-up').addEventListener('click', function () { stepPrice(true); });
   W.$('price-back').addEventListener('click', function (event) {
@@ -2693,6 +2758,7 @@
 
   W.$('find').addEventListener('click', function () {
     var button = this;
+    clearPriceTyping.commit();
     if (busy || askingAuto) return;
     var amount = W.parseAmount(W.$('price-input').value);
     askAutoBook(amount).then(function (autoAccept) {
@@ -2747,7 +2813,8 @@
     noteEndedOffers(s);
 
     // Declined one by one on this page, as in the app: off the list here, the search goes on.
-    var offers = (s.offers || []).filter(function (offer) { return !dismissed[offer.key]; });
+    forgetDismissed(s.offers);
+    var offers = (s.offers || []).filter(function (offer) { return !isDismissed(offer); });
     var showingDeclined = declined && Date.now() < declined.until;
     if (!showingDeclined) declined = null;
     var list = showingDeclined ? declined.offers : offers;
@@ -2843,14 +2910,15 @@
    */
   function noteEndedOffers(s) {
     var now = {};
-    (s.offers || []).forEach(function (offer) { now[offer.key] = offer.driverName || ''; });
+    var times = {};
+    (s.offers || []).forEach(function (offer) { now[offer.key] = offer.driverName || ''; times[offer.key] = offer.receivedAt; });
     var before = offerSnapshot;
-    offerSnapshot = { rideId: s.rideId, offerNgn: s.offerNgn, offers: now };
+    offerSnapshot = { rideId: s.rideId, offerNgn: s.offerNgn, offers: now, times: times };
     if (!before || before.rideId !== s.rideId || before.offerNgn !== s.offerNgn) return;
     if (busy || paying || declined || local.confirming) return;
     var names = Object.keys(now).map(function (key) { return norm(now[key]); });
     Object.keys(before.offers).forEach(function (key) {
-      if (key in now || dismissed[key]) return;
+      if (key in now || isDismissed({ key: key, receivedAt: before.times && before.times[key] })) return;
       var name = before.offers[key];
       if (names.indexOf(norm(name)) >= 0) return;
       say((firstName(name) || 'A driver') + '’s offer ended');
@@ -2946,7 +3014,20 @@
   // changed, and slide in only the offers not seen before.
   var drawnOffers = null;
   var shownKeys = {};
+  // key -> the bid's time (receivedAt) when declined. One driver's bids on a ride share a key, so a
+  // later bid (same price or not) has a later time and shows as new; an older answer still holding
+  // the declined bid stays hidden. Without a time (true): hidden until the server's list drops the key.
   var dismissed = {};
+  function isDismissed(offer) {
+    var mark = dismissed[offer.key];
+    if (!mark) return false;
+    return mark === true || !offer.receivedAt || mark === offer.receivedAt;
+  }
+  function forgetDismissed(list) {
+    var now = {};
+    (list || []).forEach(function (offer) { now[offer.key] = true; });
+    Object.keys(dismissed).forEach(function (key) { if (dismissed[key] === true && !now[key]) delete dismissed[key]; });
+  }
 
   function drawOffers(offers, asDeclined, yoursNgn) {
     var holder = W.$('offer-list');
@@ -2956,8 +3037,9 @@
     holder.innerHTML = '';
     offers.forEach(function (offer, index) {
       var isPaying = paying && paying.key === offer.key;
-      var isNew = !shownKeys[offer.key];
-      shownKeys[offer.key] = true;
+      var shownId = offer.key + '|' + (offer.receivedAt || '');
+      var isNew = !shownKeys[shownId];
+      shownKeys[shownId] = true;
       // The first card is the dark one, as in the app.
       var card = el('div', 'offer' + (index === 0 && !asDeclined && !isPaying ? ' featured' : '') + (isNew ? ' in' : '') + (asDeclined ? ' declined' : isPaying ? ' paying' : paying ? ' muted' : ''));
       var top = el('div', 'offer-top');
@@ -3003,7 +3085,7 @@
         decline.disabled = Boolean(paying) || busy;
         decline.addEventListener('click', function () {
           track('offer_declined', { priceNgn: offer.priceNgn, rank: index + 1 });
-          dismissed[offer.key] = true;
+          dismissed[offer.key] = offer.receivedAt || true;
           drawnOffers = null;
           if (state && state.phase === 'offers') drawSent(state);
           // The driver is told and can send a new price (a new offer, a new key).
@@ -3216,6 +3298,7 @@
   }
   function fillOfferSheet(start) {
     var base = sheetBase();
+    if (clearOfferTyping) clearOfferTyping();
     W.$('offer-input').value = Number(start).toLocaleString('en-NG');
     W.$('offer-current').textContent = W.naira(base);
     W.$('offer-keep').textContent = 'Keep ' + W.naira(base);
@@ -3239,10 +3322,20 @@
   }
   function stepOffer(up) {
     if (!state) return;
+    clearOfferTyping.commit();
     var amount = W.parseAmount(W.$('offer-input').value) || sheetBase();
+    clearOfferTyping();
     W.$('offer-input').value = Number(up ? stepUp(amount) : stepDown(amount, sheetFloor())).toLocaleString('en-NG');
     syncOfferSheet();
   }
+  var clearOfferTyping = wireTyping({
+    figure: 'offer-figure', type: 'offer-type', input: 'offer-input', low: 'offer-low', hint: 'offer-min',
+    hintOn: function () { return sheetFloor() > 0; },
+    ready: function () { return Boolean(state); },
+    floor: function () { return sheetFloor(); },
+    sync: function () { syncOfferSheet(); },
+    after: function (amount) { track('price_changed', { method: 'typed', amountNgn: amount }); }
+  });
   W.$('offer-down').addEventListener('click', function () { stepOffer(false); });
   W.$('offer-up').addEventListener('click', function () { stepOffer(true); });
   W.$('change-offer').addEventListener('click', function () { track('price_sheet_opened', { from: 'change_my_price' }); openChangePrice(0); });
@@ -3255,19 +3348,23 @@
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function (button) {
     button.addEventListener('click', function () {
+      clearOfferTyping.commit();
       var amount = W.parseAmount(W.$('offer-input').value) || sheetBase();
+      clearOfferTyping();
       W.$('offer-input').value = Number(amount + Number(button.getAttribute('data-add'))).toLocaleString('en-NG');
       syncOfferSheet();
     });
   });
   W.$('offer-reset').addEventListener('click', function () {
     if (!state) return;
+    clearOfferTyping();
     W.$('offer-input').value = Number(Math.max(sheetFloor(), sheetBase())).toLocaleString('en-NG');
     syncOfferSheet();
   });
 
   W.$('offer-save').addEventListener('click', function () {
     var button = this;
+    clearOfferTyping.commit();
     var amount = W.parseAmount(W.$('offer-input').value);
     if (busy) return;
     if (offerMode === 'restart') return searchAgain(amount, true);

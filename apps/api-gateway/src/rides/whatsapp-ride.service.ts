@@ -419,6 +419,8 @@ async function confirmOnce(
     return { ok: false, code: 'DRIVER_AWAY' };
   }
 
+  // Redis is only the fast path and fails open on purpose (a blip must not stop every booking):
+  // the guarantee is in the database (the ride service writes the assignment under a lock on the driver before announcing it).
   const driverClaimKey = `whatsapp:driver:${bid.driverId}:accepting`;
   const claimed = await deps.redisClient.setIfNotExists(driverClaimKey, rideId, 60).catch(() => true);
   const claimOwner = claimed ? rideId : await deps.redisClient.get(driverClaimKey).catch(() => null);

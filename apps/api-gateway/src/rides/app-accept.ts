@@ -85,6 +85,10 @@ async function acceptOnce(
       return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'busy', message: 'Try again.' } };
     }
     if (!groupMember) throw new Error('This ride is not yours.');
+    // A match request that is no longer looking (booked, expired, cancelled) takes no driver.
+    if (!['MATCHING', 'GROUPED'].includes((groupMember as { status?: string }).status ?? '')) {
+      return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'search_ended', message: 'This search has ended.' } };
+    }
   }
   if (acceptingRide && acceptingRide.riderId !== riderId) {
     throw new Error('This ride is not yours.');
@@ -186,9 +190,9 @@ async function acceptOnce(
     const bids = await driverBidClient.findByRide(rideId).catch(() => []);
     const theirs = bids.filter((b) => b.driverId === driverId);
     const open = theirs.find((b) => b.status === 'PENDING');
-    // A ride with a row needs that driver's open bid: no bid, no booking at a price the app names.
-    // (A group seat's ride has no row and keeps the app's price.)
-    if ((theirs.length > 0 || acceptingRide) && !open) {
+    // No open bid from this driver, no booking at a price the app names (a ride with no row too: a group
+    // match request cannot be used to book any online driver at the rider's own price).
+    if (!open) {
       return {
         type: 'ride:accept_offer:rejected',
         payload: { rideId, driverId, reason: 'offer_changed', message: 'That offer is no longer open.' },
@@ -230,6 +234,8 @@ async function acceptOnce(
   // ── One driver, one rider: the same claim the WhatsApp accept takes, so
   // two riders (app or chat) cannot book the same driver at the same moment.
   // Let go of it whenever this accept does not go through.
+  // Redis is only the fast path and fails open on purpose (a Redis blip must not stop every booking):
+  // the guarantee is in the database (the ride service writes the assignment under a lock on the driver before announcing it).
   const claimKey = `whatsapp:driver:${driverId}:accepting`;
   let claimedNow = false;
   const releaseClaim = async () => { if (claimedNow && redis) await redis.del(claimKey).catch(() => undefined); };

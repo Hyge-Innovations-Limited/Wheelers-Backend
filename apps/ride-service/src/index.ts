@@ -138,6 +138,8 @@ export type RideServiceState = {
   gpsByRideId: Map<string, RideGpsState>;
   routeByRideId: Map<string, RideRouteStopState[]>;
   pendingMatchesByRideId: Map<string, PendingRideMatch>;
+  /** `${rideId}:${driverId}` of an assignment announced half-way (the publish threw): the lifecycle handler must not book it. */
+  reopenedAssignments?: Set<string>;
 };
 
 const SERVICE_ID = 'ride-service';
@@ -190,6 +192,7 @@ async function bootstrap(): Promise<void> {
     gpsByRideId: new Map(),
     routeByRideId: new Map(),
     pendingMatchesByRideId: new Map(),
+    reopenedAssignments: new Set(),
   };
 
   const rideEventsProducer = createRideEventsProducer(producer);

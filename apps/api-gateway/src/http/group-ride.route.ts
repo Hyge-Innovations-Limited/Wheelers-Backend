@@ -17,6 +17,7 @@ import { readJsonBody, sendJson } from './utils';
 import { getNumber, getRecord, getString, isRecord } from '../utils/object';
 import type { GatewayPublisher } from '../websocket/publisher';
 import type { GroupRideFaceStorage } from '../storage/group-ride-face-storage';
+import { overLimit } from '../trip-chat/limits';
 import type { RedisClient } from '../redis/client';
 import { assertInServiceArea } from '../utils/service-area';
 
@@ -276,6 +277,11 @@ export async function handleCreateGroupRideMatchRequestRoute(
 ): Promise<void> {
   try {
     const user = await authenticateHttpUser(req, deps.jwtSecret);
+    // Each request starts a route plan: a few a minute per rider.
+    if (await overLimit(deps.redisClient, `group-ride-create:${user.id}`, 10, 60)) {
+      sendJson(res, 429, { error: 'Too many requests. Try again in a minute.' });
+      return;
+    }
     const rawBody = await readJsonBody(req);
     if (!isRecord(rawBody)) {
       sendJson(res, 400, { error: 'Body must be a JSON object' });

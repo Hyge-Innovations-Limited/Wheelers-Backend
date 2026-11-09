@@ -158,7 +158,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
           // clock now. Sent under its own name so clients state intent.
           bidsCloseAt: expiresAt.toISOString(),
           route: rideRequested.route,
-          // People, luggage, pet only: the note is for the driver who gets the ride.
+          // People, luggage, pet and the rider's note: every driver who gets the request sees them.
           ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
           timestamp,
           ...(group
@@ -253,7 +253,7 @@ export function createRideEventsProducer(producer: WheelersProducer): RideEvents
         // (it knows who is connected; this service does not). It used to push to every driver here.
         repriced: true,
         route: rideRequested.route,
-        // People, luggage, pet only: the note is for the driver who gets the ride.
+        // People, luggage, pet and the rider's note: every driver who gets the request sees them.
         ...(rideRequested.tripDetails ? { tripDetails: tripDetailsForOffer(rideRequested.tripDetails) } : {}),
         timestamp,
         // A re-price replaces the offer card in the driver app. Omitting these

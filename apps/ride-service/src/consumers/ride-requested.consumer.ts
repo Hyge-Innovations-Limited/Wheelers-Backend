@@ -1,4 +1,4 @@
-import { driverClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { driverClient, groupRideClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor, tripDetailsColumns, tripDetailsFromRow } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
@@ -9,6 +9,7 @@ import {
   type RideCounterOfferEvent,
   type RideRiderCounterOfferEvent,
   type RideDispatchDirectedEvent,
+  type RideDriverAssignedEvent,
   type RideDriverRejectedEvent,
   type RideOfferAcceptedEvent,
   type RideRouteUpdateRequestedEvent,
@@ -43,9 +44,12 @@ const SCHEDULED_RACE_MS = 20_000;
 export function createRideRequestedConsumer(params: {
   state: RideServiceState;
   rideEnv: RideEnv;
+  /** Waits between the retries of the assignment write (tests make them short). */
+  assignRetryDelaysMs?: number[];
   rideEventsProducer: RideEventsProducer;
 }): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number> } {
   const { state, rideEnv, rideEventsProducer } = params;
+  const assignRetryDelaysMs = params.assignRetryDelaysMs ?? [250, 1_000, 3_000];
 
   return {
     rehydrate: rehydrateOpenSearches,
@@ -423,11 +427,17 @@ export function createRideRequestedConsumer(params: {
     // on the old one while the rider's form said "Bid updated".
     const pending = findPendingForRideId(event.rideId) ?? await rebuildPending(event.rideId);
     if (!pending) return;
+    // Only the ride's own rider (or, in a group, one of its members) moves its price.
+    const owners = new Set<string>([pending.rideRequested.riderId, ...(pending.group?.riderIds ?? [])]);
+    if (!owners.has(event.riderId)) {
+      console.warn('[ride-service] price change by someone who is not the ride\'s rider — ignored', { rideId: event.rideId, userId: event.riderId });
+      return;
+    }
 
     // The ride keeps the price the rider is offering NOW: the gateway checks a
     // driver's acceptance against it, and a search rebuilt after a restart
     // re-offers it. It used to stay at the first price.
-    await rideClient.updateRiderOffer(event.rideId, event.counterOfferNgn).catch((err) => {
+    await rideClient.updateRiderOffer(event.rideId, event.counterOfferNgn, event.riderId).catch((err) => {
       console.warn('[ride-service] could not save the rider\'s new price', { rideId: event.rideId, error: (err as any)?.message ?? err });
     });
 
@@ -513,36 +523,6 @@ export function createRideRequestedConsumer(params: {
       return;
     }
 
-    // One driver, one trip. Two riders accepting the same driver inside the
-    // Kafka lag both passed the gateway's busy check; the second assignment
-    // used to go through and overwrite the first on the driver's app.
-    const busyWith = await rideClient.findActiveByDriver(event.driverId).catch(() => null);
-    if (busyWith && busyWith.id !== event.rideId) {
-      // The rider's search goes on: they pick another offer. Cancelling the
-      // whole ride here threw away every other driver's offer for one who
-      // had just been taken.
-      console.warn('[ride-service] offer accepted for a driver already on a trip — back to choosing', {
-        rideId: event.rideId,
-        driverId: event.driverId,
-        busyRideId: busyWith.id,
-      });
-      await rideEventsProducer.rideAssignmentFailed({
-        eventType: 'RIDE_ASSIGNMENT_FAILED',
-        rideId: event.rideId,
-        riderId: event.riderId,
-        driverId: event.driverId,
-        driverUserId: event.driverUserId,
-        reason: 'driver_busy',
-        timestamp: new Date().toISOString(),
-      }).catch((err) => {
-        console.error('[ride-service] could not report a failed assignment', {
-          rideId: event.rideId,
-          error: (err as any)?.message ?? err,
-        });
-      });
-      return;
-    }
-
     // The ride may have ended (the rider cancelled while the accept was in
     // flight) or gone to another driver: no assignment then. Assigning anyway
     // re-armed the rider's released hold on a cancelled ride.
@@ -579,6 +559,102 @@ export function createRideRequestedConsumer(params: {
       return;
     }
 
+    // One driver, one trip, decided here and before anyone is told. The assignment is written now,
+    // under a lock on the driver (rideClient.assignDriver), so two riders who picked the same driver
+    // inside the Kafka lag cannot both get "Driver found": the second is refused before RIDE_DRIVER_ASSIGNED
+    // is published and its search goes on. The same driver already on THIS ride (a redelivery of the
+    // accept, after a write whose announcement did not go out) is not a refusal: it goes on to announce.
+    const failAssignment = async (reason: 'driver_busy' | 'ride_closed') => {
+      await rideEventsProducer.rideAssignmentFailed({
+        eventType: 'RIDE_ASSIGNMENT_FAILED',
+        rideId: event.rideId,
+        riderId: event.riderId,
+        driverId: event.driverId,
+        driverUserId: event.driverUserId,
+        reason,
+        timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        console.error('[ride-service] could not report a failed assignment', {
+          rideId: event.rideId,
+          error: (err as any)?.message ?? err,
+        });
+      });
+    };
+    // A database error is retried (this service never sees the event again: a throw ends in the dead-letter
+    // queue). Still failing, nothing is announced and the rider is told the driver is no longer available.
+    // Only a database that is briefly unreachable or busy is worth retrying (connection, timeout, pool, deadlock),
+    // and never past a total of about 8 seconds.
+    const TRANSIENT = new Set(['P1001', 'P1008', 'P1017', 'P2024', 'P2028', 'P2034']);
+    const startedAt = Date.now();
+    const withRetries = async <T>(work: () => Promise<T>): Promise<T> => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await work();
+        } catch (err) {
+          const wait = assignRetryDelaysMs[attempt];
+          if (!TRANSIENT.has((err as { code?: string })?.code ?? '') || wait === undefined || Date.now() - startedAt + wait > 8_000) throw err;
+          console.warn('[ride-service] driver assignment write failed, retrying', { rideId: event.rideId, driverId: event.driverId, attempt: attempt + 1, error: (err as any)?.message ?? err });
+          await new Promise((resolve) => setTimeout(resolve, wait));
+        }
+      }
+    };
+    try {
+      const assigned = await withRetries(() => rideClient.assignDriver(event.rideId, event.driverId, {
+        agreedFareNgn: event.agreedFareNgn,
+        paymentMethod: event.paymentMethod,
+        riderId: event.riderId,
+      }));
+      if (assigned.busy) {
+        // The rider's search goes on: they pick another offer. Cancelling the whole ride here threw
+        // away every other driver's offer for one who had just been taken.
+        console.warn('[ride-service] offer accepted for a driver already on a trip — back to choosing', {
+          rideId: event.rideId,
+          driverId: event.driverId,
+        });
+        await failAssignment('driver_busy');
+        return;
+      }
+      if (assigned.count === 0) {
+        // A failed read is retried like a failed write; a ride with no row at all (a group anchor) announces.
+        // findById throws P2025 for a ride with no row: that is an answer (null), not a failure.
+        const now = await withRetries(() => rideClient.findById(event.rideId).catch((err) => {
+          if ((err as { code?: string })?.code === 'P2025') return null;
+          throw err;
+        }));
+        // A group's last seat after a restart (the group is only in memory): its match request says it is grouped.
+        const groupedRequest = !now && !pending?.group
+          ? await withRetries(() => groupRideClient.findMatchRequestById(event.rideId))
+          : null;
+        if (!now && !pending?.group && !(groupedRequest?.status === 'GROUPED' && groupedRequest.groupId)) {
+          // No ride row and no group anchor held here: nothing to assign this driver to.
+          console.warn('[ride-service] offer accepted for a ride this service does not know — not assigned', { rideId: event.rideId, driverId: event.driverId });
+          await failAssignment('ride_closed');
+          return;
+        }
+        if (now && now.driverId !== event.driverId) {
+          console.warn('[ride-service] offer accepted for a ride that is closed or taken — not assigned', {
+            rideId: event.rideId,
+            driverId: event.driverId,
+            status: now.status,
+            actualDriverId: now.driverId,
+          });
+          if (pending?.timeout && now.status === 'CANCELLED') clearTimeout(pending.timeout);
+          await failAssignment('ride_closed');
+          return;
+        }
+      }
+    } catch (err) {
+      // The database could not say, even after the retries: nothing is announced (an announcement
+      // here is what the lock exists to prevent). The rider is told the driver is no longer available
+      // and their search and other offers go on.
+      console.error('[ride-service] driver assignment could not be written — not announced', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        error: (err as any)?.message ?? err,
+      });
+      await failAssignment('driver_busy');
+      return;
+    }
     // Pending match state is in-memory only, so a restart or a consumer-group
     // rebalance between RIDE_REQUESTED and the rider accepting wipes it. This
     // used to `return` silently — and on the WhatsApp path the rider's fare is
@@ -592,9 +668,6 @@ export function createRideRequestedConsumer(params: {
         driverId: event.driverId,
       });
     }
-
-    // Clear timeout
-    if (pending?.timeout) clearTimeout(pending.timeout);
 
     // Look up stored counter-offer driver info, fallback to in-memory pool for vehicle details
     const counterOfferInfo = pending?.counterOfferDrivers.get(event.driverId);
@@ -611,8 +684,10 @@ export function createRideRequestedConsumer(params: {
       return null;
     });
 
-    // Publish RIDE_DRIVER_ASSIGNED
-    await rideEventsProducer.rideDriverAssigned({
+    // Publish RIDE_DRIVER_ASSIGNED. The write above is already saved: if this fails and nothing undoes
+    // it, the ride stays DRIVER_ASSIGNED with nobody told (the driver then refuses every bid, the rider
+    // every new ride). So it is put back to matching, the search ends by its own rules, and the error goes on.
+    const assignedEvent: RideDriverAssignedEvent = {
       eventType: 'RIDE_DRIVER_ASSIGNED',
       rideId: event.rideId,
       riderId: event.riderId,
@@ -630,7 +705,33 @@ export function createRideRequestedConsumer(params: {
       offeredDriverUserIds: [...new Set((pending?.candidates ?? []).map((driver) => driver.userId))]
         .filter((userId) => userId !== event.driverUserId),
       timestamp: new Date().toISOString(),
-    });
+    };
+    try {
+      await rideEventsProducer.rideDriverAssigned(assignedEvent);
+      // Announced: the search's clock is over. (Not before: a failed announcement leaves the clock to end the search.)
+      if (pending?.timeout) clearTimeout(pending.timeout);
+    } catch (err) {
+      console.error('[ride-service] RIDE_DRIVER_ASSIGNED could not be published — ride put back to matching', {
+        rideId: event.rideId,
+        driverId: event.driverId,
+        error: (err as any)?.message ?? err,
+      });
+      await rideClient.reopenForMatching(event.rideId, event.driverId).catch((reopenErr) => {
+        console.error('[ride-service] CRITICAL: could not put the ride back to matching', { rideId: event.rideId, error: (reopenErr as any)?.message ?? reopenErr });
+      });
+      // The publish may have reached Kafka although it threw: the lifecycle handler would then book the
+      // ride again, while the failure below releases the hold. Marked, it skips that event, so the outcome
+      // is always "not booked, hold released".
+      // Keyed on this announcement's own timestamp, so a later, legitimate booking of the same driver on the same
+      // ride is never skipped; and forgotten after ten minutes if that announcement never arrives.
+      const marker = `${event.rideId}:${event.driverId}:${assignedEvent.timestamp}`;
+      const reopenedSet = (state.reopenedAssignments ??= new Set());
+      reopenedSet.add(marker);
+      setTimeout(() => reopenedSet.delete(marker), 10 * 60_000).unref();
+      // So the gateway lets go of this driver's hold and acceptance mark; the search's clock (still running) ends it.
+      await failAssignment('driver_busy');
+      throw err;
+    }
 
     // Group rides: the solo RIDE_DRIVER_ASSIGNED above is keyed to the anchor
     // rideId only, so the other members would never hear a driver was found.

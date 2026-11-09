@@ -361,11 +361,13 @@ export const rideClient = {
    * CURRENT price, so every check (and a search rebuilt after a restart) uses
    * it, never the first one. Only while the search is open.
    */
-  updateRiderOffer: (rideId: string, riderOfferNgn: number) =>
+  updateRiderOffer: (rideId: string, riderOfferNgn: number, riderId?: string) =>
     prisma.ride.updateMany({
       // A same-price offer or a redelivered event is not a change: nothing is written or counted.
+      // Only the ride's own rider changes it.
       where: {
         id: rideId,
+        ...(riderId !== undefined ? { riderId } : {}),
         status: { in: ['REQUESTED', 'MATCHING'] },
         OR: [{ riderOfferNgn: null }, { riderOfferNgn: { not: new Prisma.Decimal(riderOfferNgn) } }],
       },
@@ -429,28 +431,40 @@ export const rideClient = {
       if (row?.bargainRate != null && row.bargainRate > 0) bargainRate = row.bargainRate;
       else if (suggested > 0) bargainRate = opts.agreedFareNgn / suggested;
     }
-    return prisma.ride.updateMany({
-      where: {
-        id: rideId,
-        ...(opts?.riderId !== undefined ? { riderId: opts.riderId } : {}),
-        OR: [
-          { status: { in: ['REQUESTED', 'MATCHING'] } },
-          { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: SEARCH_TIMED_OUT_REASON },
-        ],
-      },
-      data: {
-        driverId,
-        status:    'DRIVER_ASSIGNED',
-        matchedAt: new Date(),
-        cancelStage: null,
-        cancelReason: null,
-        cancelledAt: null,
-        cancelledBy: null,
-        ...(opts?.agreedFareNgn !== undefined ? { agreedFareNgn: opts.agreedFareNgn } : {}),
-        ...(bargainRate !== null ? { bargainRate } : {}),
-        ...(opts?.paymentMethod !== undefined ? { paymentMethod: opts.paymentMethod } : {}),
-      },
-    });
+    // One driver, one live ride, enforced here and not by a check made earlier: the Driver
+    // row is locked for the length of this transaction, so two assignments of the same
+    // driver to two rides run one after the other, and the second sees the first.
+    // `busy` tells the caller why nothing was written.
+    return prisma.$transaction(async (tx): Promise<{ count: number; busy?: true }> => {
+      await tx.$queryRaw`SELECT id FROM "Driver" WHERE id = ${driverId} FOR UPDATE`;
+      const other = await tx.ride.findFirst({
+        where: { driverId, id: { not: rideId }, status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] } },
+        select: { id: true },
+      });
+      if (other) return { count: 0, busy: true };
+      return tx.ride.updateMany({
+        where: {
+          id: rideId,
+          ...(opts?.riderId !== undefined ? { riderId: opts.riderId } : {}),
+          OR: [
+            { status: { in: ['REQUESTED', 'MATCHING'] } },
+            { status: 'CANCELLED', cancelStage: 'BEFORE_MATCH', cancelReason: SEARCH_TIMED_OUT_REASON },
+          ],
+        },
+        data: {
+          driverId,
+          status:    'DRIVER_ASSIGNED',
+          matchedAt: new Date(),
+          cancelStage: null,
+          cancelReason: null,
+          cancelledAt: null,
+          cancelledBy: null,
+          ...(opts?.agreedFareNgn !== undefined ? { agreedFareNgn: opts.agreedFareNgn } : {}),
+          ...(bargainRate !== null ? { bargainRate } : {}),
+          ...(opts?.paymentMethod !== undefined ? { paymentMethod: opts.paymentMethod } : {}),
+        },
+      });
+    }, { maxWait: 10_000, timeout: 10_000 });
   })(),
 
   markDriverEnRoute: (rideId: string) =>

@@ -5,6 +5,8 @@
 // golden/old-apps.json was captured from main:  REGRESSION_CAPTURE=1 REGRESSION_ROOT=<built checkout of main> ...
 //   node scripts/run-with-env.cjs node --test --test-force-exit tests/regression/old-apps-flags-off.test.js
 
+// The golden was captured with the bot's number set: the page's "back to WhatsApp" link reads it at load.
+process.env.WHATSAPP_BOT_NUMBER = process.env.WHATSAPP_BOT_NUMBER || '2348141979106';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -36,6 +38,25 @@ const clients = []; const servers = []; const made = { users: [], rides: [], dri
 const realConsole = { ...console };
 test.beforeEach(() => { console.log = console.info = console.warn = console.error = () => {}; });
 test.afterEach(() => { Object.assign(console, realConsole); payingMod?.setPayingStatusEnabled(false); });
+
+/** Old apps ignore fields they do not know: every field in the golden must be present and equal; extra (add-only) fields are fine. */
+function assertSameOrMore(now, golden, message, where = '') {
+  if (golden !== null && typeof golden === 'object') {
+    assert.ok(now !== null && typeof now === 'object', `${message}: ${where || 'value'} is not an object`);
+    if (Array.isArray(golden)) {
+      assert.ok(Array.isArray(now), `${message}: ${where} is not a list`);
+      assert.equal(now.length, golden.length, `${message}: ${where} list length`);
+      golden.forEach((item, i) => assertSameOrMore(now[i], item, message, `${where}[${i}]`));
+      return;
+    }
+    for (const key of Object.keys(golden)) {
+      assert.ok(key in now, `${message}: ${where}.${key} is missing`);
+      assertSameOrMore(now[key], golden[key], message, `${where}.${key}`);
+    }
+    return;
+  }
+  assert.equal(now, golden, `${message}: ${where}`);
+}
 
 const published = [];
 const publisher = { publishRideEvent: async (e) => { published.push(e); }, publishDriverEvent: async () => {}, publishNotificationEvent: async () => {} };
@@ -145,14 +166,14 @@ if (process.env.REGRESSION_CAPTURE) {
   test('flags OFF: an old driver app and an old rider app get main\'s answers', async () => {
     const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
     const now = await collect(false);
-    assert.deepEqual(now.bids, golden.bids, 'GET /drivers/me/bids');
-    assert.deepEqual(now.register, golden.register, 'POST push token (no androidChannel)');
+    assertSameOrMore(now.bids, golden.bids, 'GET /drivers/me/bids');
+    assertSameOrMore(now.register, golden.register, 'POST push token (no androidChannel)');
     const { payingRoute: nowPaying, ...nowWs } = now.walletShort; const { payingRoute: oldPaying, ...goldenWs } = golden.walletShort;
-    assert.deepEqual(nowWs, goldenWs, 'ride page accept/decline + WALLET_SHORT events');
+    assertSameOrMore(nowWs, goldenWs, 'ride page accept/decline + WALLET_SHORT events');
     // main does not know /ride-page/paying (the handler passes, the server answers 404); flag off answers 404 itself
     assert.equal(oldPaying.body, null);
     assert.equal(nowPaying.status, 404);
-    assert.deepEqual(now.rider_ws, golden.rider_ws, 'rider ws messages');
+    assertSameOrMore(now.rider_ws, golden.rider_ws, 'rider ws messages');
   });
   test('flags ON: an old app that sends none of the new messages still gets the old shapes', async () => {
     if (!payingMod) return;

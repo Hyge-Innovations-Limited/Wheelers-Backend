@@ -32,6 +32,14 @@ export function createTripLifecycleHandler(params?: {
       if (!event) return;
 
       if (event.eventType === 'RIDE_DRIVER_ASSIGNED') {
+        // An announcement that went out half-way (the ride service put the ride back to matching and told
+        // the gateway to release the hold): not booked here either.
+        const reopened = `${event.rideId}:${event.driverId}:${event.timestamp}`;
+        if (state?.reopenedAssignments?.has(reopened)) {
+          state.reopenedAssignments.delete(reopened);
+          console.warn('[ride-service] assignment skipped — it was announced half-way and the ride was put back to matching', { rideId: event.rideId, driverId: event.driverId });
+          return;
+        }
         // Merge, never replace — see the note in ride-requested.consumer.ts:
         // replacing drops a group ride's non-anchor riders.
         state?.rideParticipantsByRideId.set(event.rideId, {
@@ -46,6 +54,22 @@ export function createTripLifecycleHandler(params?: {
             paymentMethod: event.paymentMethod,
             riderId: event.riderId,
           });
+          if (assigned.count === 0 && assigned.busy) {
+            // The ride service writes this assignment before announcing it (handleOfferAccepted), so
+            // this is only reached for an event that skipped that (older producers, a failed write there):
+            // the driver is already on another ride. The answer is the same driver_busy.
+            console.warn('[ride-service] assignment refused — the driver is already on a trip', { rideId: event.rideId, driverId: event.driverId });
+            await rideEventsProducer?.rideAssignmentFailed({
+              eventType: 'RIDE_ASSIGNMENT_FAILED',
+              rideId: event.rideId,
+              riderId: event.riderId,
+              driverId: event.driverId,
+              driverUserId: event.driverUserId,
+              reason: 'driver_busy',
+              timestamp: new Date().toISOString(),
+            }).catch(() => undefined);
+            return;
+          }
           if (assigned.count === 0) {
             // We did not write it. Either another driver won the race — they
             // keep the trip and this one must NOT be marked ON_RIDE — or this

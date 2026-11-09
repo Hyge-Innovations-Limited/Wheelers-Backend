@@ -375,6 +375,21 @@ export async function handleRideMessage(
         return refuse('Could not start the search. Please try again.');
       }
     }
+    // One trip at a time: a rider whose driver is booked, on the way or driving does not start another
+    // (the app's ride page refuses the same way). A search still looking for a driver, or one that ended
+    // or was cancelled, is not a trip: search again and a new search go through.
+    // Fails closed: a lookup that errors refuses with a retry message instead of letting a second ride through.
+    let trip: Awaited<ReturnType<typeof rideClient.findActiveByRider>>;
+    try {
+      trip = await rideClient.findActiveByRider(auth.userId);
+    } catch {
+      throw new Error('Could not check your rides. Try again in a moment.');
+    }
+    if (trip && trip.driverId && ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'].includes(trip.status)) {
+      console.warn('[ride:request] refused: the rider is on a trip', { rideId, userId: auth.userId, activeRideId: trip.id });
+      // Thrown, not answered with ride:request:rejected: the app shows an error frame and has no handler for the rejection.
+      throw new Error('You already have a ride in progress. To book a new one, cancel it first.');
+    }
     const pickup = parseLatLng(payload, 'pickup');
     const destination = parseLatLng(payload, 'destination');
     const stops = parseStopList(payload, 'stops');
@@ -610,6 +625,19 @@ export async function handleRideMessage(
       counterOfferNgn: requireNumber(payload, 'counterOfferNgn'),
       timestamp,
     });
+
+    // Only the ride's own rider changes its price (a driver or any other user is refused). A group seat
+    // has no ride row of its own until it is booked: its owner is the member who made the match request.
+    let owned: boolean;
+    try {
+      const row = await rideClient.findStanding(event.rideId);
+      owned = row
+        ? row.riderId === auth.userId
+        : Boolean(await groupRideClient.findMatchRequestByIdForUser(event.rideId, auth.userId));
+    } catch {
+      throw new Error('Could not check this ride. Try again.');
+    }
+    if (!owned) throw new Error('This ride is not yours.');
 
     await assertOfferWithinBand(event.rideId, event.counterOfferNgn, 'rider');
 

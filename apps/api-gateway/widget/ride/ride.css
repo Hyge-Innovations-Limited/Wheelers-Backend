@@ -195,6 +195,9 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 22px; line-height
 .stepper > .figure.len-11 { font-size: 26px; font-size: min(40px, calc((100cqw - 116px) / 6.82)); }
 .stepper > .figure.len-12 { font-size: 23px; font-size: min(40px, calc((100cqw - 116px) / 7.44)); }
 .stepper > .figure.len-13 { font-size: 22px; font-size: min(40px, calc((100cqw - 116px) / 8.06)); }
+.figure.tappable { min-height: 44px; cursor: text; }
+.figure-edit { width: 100%; border: 0; outline: none; background: transparent; padding: 0; margin: 0; min-height: 44px; border-radius: 8px; box-shadow: inset 0 -2px 0 var(--orange); }
+.price-note.low { color: var(--orange); font-weight: 600; }
 .price-note { font-size: 14px; line-height: 19px; color: var(--on-ink-muted); }
 .price-note.strong { font-weight: 600; color: var(--page); font-variant-numeric: tabular-nums; }
 .ink-chips { display: flex; gap: 8px; }

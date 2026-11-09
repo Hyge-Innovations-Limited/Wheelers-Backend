@@ -123,7 +123,7 @@ test('the note the driver sees: one line, no links or hidden characters, at most
   assert.equal(readTripDetails([1]), undefined);
 });
 
-test('app booking with people, luggage, pet and a note: saved on the ride, on the driver\'s ride:offer, and on the driver\'s trip snapshot', async () => {
+test('app booking with people, luggage, pet and a note: saved on the ride, on every driver\'s ride:offer with the note, and on the driver\'s trip snapshot', async () => {
   const w = world();
   const riderId = await user('RIDER');
   const d = await driver();
@@ -134,8 +134,8 @@ test('app booking with people, luggage, pet and a note: saved on the ride, on th
   assert.equal(sent.type, 'ride:request:accepted', JSON.stringify(sent.payload));
   const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
   const details = { passengers: 3, luggage: true, pet: true, note: 'Small dog in a carrier, see' };
-  // Drivers bidding see people, luggage, pet; the note is for the driver who gets the ride.
-  const forBids = { passengers: 3, luggage: true, pet: true };
+  // Every driver who gets the request sees people, luggage, pet and the note.
+  const forBids = details;
   assert.deepEqual(requested.tripDetails, details);
 
   // The ride service books it (through Kafka: the event as JSON).
@@ -146,16 +146,17 @@ test('app booking with people, luggage, pet and a note: saved on the ride, on th
 
   // Its offer to a driver, then the gateway's ride:offer to the driver's app.
   const offer = await offerFor(requested, d);
-  assert.deepEqual(offer.tripDetails, forBids, 'no note on the offer');
+  assert.deepEqual(offer.tripDetails, forBids, 'the note is on the offer');
   const repriced = [];
   await createRideEventsProducer({ send: async (_topic, value) => { repriced.push(value); }, sendBatch: async (batch) => { repriced.push(...batch.map((m) => m.value)); } })
     .sendUpdatedOfferToDriver({ driver: { driverId: d.id, userId: d.userId, lat: 6.6, lng: 3.35 }, rideRequested: requested, updatedOfferNgn: 5600, expiresAt: new Date(Date.now() + 60_000) });
-  assert.deepEqual(repriced.find((v) => v.eventType === 'RIDE_OFFER_SENT').tripDetails, forBids, 'a new price keeps them, still no note');
+  assert.deepEqual(repriced.find((v) => v.eventType === 'RIDE_OFFER_SENT').tripDetails, forBids, 'a new price keeps them and the note');
   await handleRideEvent(offer, w.deps, new Map());
   const card = w.toApp.find((m) => m.type === 'ride:offer' && m.userId === d.userId);
   assert.deepEqual(card.payload.tripDetails, forBids);
-  // Even an offer event that carries a note (an older ride service) reaches no bidding driver with it.
-  await handleRideEvent({ ...offer, tripDetails: details }, w.deps, new Map());
+  assert.equal(card.payload.tripDetails.note, 'Small dog in a carrier, see', 'the driver\'s ride:offer carries the note');
+  // An offer event from an older ride service (no note) shows none.
+  await handleRideEvent({ ...offer, tripDetails: { passengers: 3, luggage: true, pet: true } }, w.deps, new Map());
   assert.equal(w.toApp.filter((m) => m.type === 'ride:offer').at(-1).payload.tripDetails.note, undefined);
 
   // Through the trip: the driver's snapshot of the ride.
@@ -321,6 +322,58 @@ test('switched off (TRIP_DETAILS_BOX not on): no box on Set your price, and deta
     const scheduled = await prisma.scheduledRide.findFirst({ where: { riderId: appRider } });
     assert.equal(scheduled.tripDetails, null);
     await prisma.scheduledRide.deleteMany({ where: { riderId: appRider } });
+  } finally {
+    process.env.TRIP_DETAILS_BOX = 'on';
+  }
+});
+
+test('the note on an offer has no way to reach the rider (numbers, handles, addresses); the matched driver\'s copy is whole; a note that is only a number is no note', async () => {
+  const { tripDetailsForOffer } = require('../packages/config/dist/index.js');
+  const d = (note) => ({ passengers: 2, luggage: false, pet: false, note });
+  const U = (n) => String.fromCodePoint(n);
+  // A note that carries a way to reach the rider (a number however it is written, a handle, an address) goes to bidders as no note.
+  const leaks = [
+    'Call my brother on 0803 123 4567 at the gate', '+234-803-123-4567, blue gate', 'ring (0803) 123.4567', 'call 0803/123/4567 now', 'call 0803_123_4567 now',
+    'call me 08031234567', 'call 0 8 0 3 1 2 3 4 5 6 7', 'call O8O3l234567', 'call 0803,123,4567', 'call 0803*123*4567', 'call 0803 | 123 | 4567',
+    'call 0803 one two three 4567', 'zero eight zero three one two three four five six seven', 'call ' + [0xff10, 0xff18, 0xff10, 0xff13, 0xff11, 0xff12, 0xff13, 0xff14, 0xff15, 0xff16, 0xff17].map(U).join(''),
+    'call 0\uFE0F\u20E38\uFE0F\u20E30\uFE0F\u20E33\uFE0F\u20E31234567', 'call 080' + U(0x1f642) + '3123' + U(0x1f642) + '4567', 'call 080 3123 456 7 ok', 'call 0803 1234 and later 567',
+    'wa.me/2348031234567', 'wa . me/234', 'wa dot me slash', 'ig @scammer_ng pay cash 2k', 'telegram t . me/x', 'example.to/x', 'bit\u200b.ly/abc',
+  ];
+  for (const note of leaks) assert.equal('note' in tripDetailsForOffer(d(note)), false, `leaks: ${JSON.stringify(note)}`);
+  for (const note of ['2 big bags', 'Flat 4B', 'I\'m at the gate', 'one big bag and two cases', 'Small dog in a carrier', 'Gate 12, House 34, Flat 567',
+    'Wait at the gate. To the left of the bank', 'I am at the mall. Me and my friend', 'Plot 1234 Block 56 Flat 7', 'Pick me 10.30, 2 bags, flat 4, gate 12',
+    'Opposite Shop 12. To the right', 'Meet me at No. 5 Ikeja, Lagos. Co-op building']) {
+    assert.equal(tripDetailsForOffer(d(note)).note, note, `kept: ${note}`);
+  }
+  assert.deepEqual(tripDetailsForOffer({ passengers: 1, luggage: true, pet: false }), { passengers: 1, luggage: true, pet: false });
+
+  const w = world();
+  const riderId = await user('RIDER');
+  const dr = await driver();
+  await handleRideMessage('ride:request', { ...trip, tripDetails: { passengers: 3, luggage: true, pet: false, note: 'Call my brother on 0803 123 4567 at the gate' } }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
+  const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
+  made.rides.push(requested.rideId);
+  assert.equal(requested.tripDetails.note, 'Call my brother on 0803 123 4567 at the gate', 'the request keeps the whole note');
+  const offer = await offerFor(requested, dr);
+  assert.equal('note' in offer.tripDetails, false, 'a note with a number goes to bidders as no note');
+  await handleRideEvent({ ...offer, tripDetails: requested.tripDetails }, w.deps, new Map());
+  assert.equal('note' in w.toApp.filter((m) => m.type === 'ride:offer').at(-1).payload.tripDetails, false, 'even a full note on the event reaches bidders without it');
+});
+
+test('box off: the gateway\'s ride:offer carries no note even when the event has one', async () => {
+  const w = world();
+  const dr = await driver();
+  const riderId = await user('RIDER');
+  await handleRideMessage('ride:request', { ...trip, tripDetails: { passengers: 3, luggage: true, pet: false, note: 'blue gate' } }, { userId: riderId, role: 'RIDER' }, w.publisher, planner, w.redis);
+  const requested = w.published.find((e) => e.eventType === 'RIDE_REQUESTED');
+  made.rides.push(requested.rideId);
+  const offer = await offerFor(requested, dr);
+  assert.equal(offer.tripDetails.note, 'blue gate');
+  delete process.env.TRIP_DETAILS_BOX;
+  try {
+    await handleRideEvent(offer, w.deps, new Map());
+    const card = w.toApp.filter((m) => m.type === 'ride:offer').at(-1);
+    assert.deepEqual(card.payload.tripDetails, { passengers: 3, luggage: true, pet: false });
   } finally {
     process.env.TRIP_DETAILS_BOX = 'on';
   }

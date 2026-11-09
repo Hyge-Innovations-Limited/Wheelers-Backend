@@ -257,12 +257,14 @@
       <div class="price-top"><span class="price-label">Your offer</span><span class="price-side">Suggested price <strong id="price-suggested"></strong></span></div>
       <div class="stepper">
         <button class="round minus" type="button" id="price-down" aria-label="Lower by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
-        <output class="figure" id="price-figure" aria-live="polite"></output>
+        <output class="figure tappable" tabindex="0" role="button" aria-label="Type your offer in naira" id="price-figure" aria-live="polite"></output>
+        <input class="figure figure-edit" id="price-type" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="Type your offer in naira" hidden>
         <button class="round plus" type="button" id="price-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <input type="hidden" id="price-input">
       <p class="price-reason" id="price-reason" hidden></p>
       <p class="price-note" id="price-hint"></p>
+      <p class="price-note low" id="price-low" role="status" hidden></p>
     </div>
     <div class="notice bad" id="price-err" hidden></div>
 
@@ -417,7 +419,8 @@
     <div class="price-top"><span class="price-label">New offer</span><span class="price-side">Current <strong id="offer-current"></strong></span></div>
     <div class="stepper">
       <button class="round minus" type="button" id="offer-down" aria-label="Lower by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
-      <output class="figure" id="offer-figure" aria-live="polite"></output>
+      <output class="figure tappable" tabindex="0" role="button" aria-label="Type your new offer in naira" id="offer-figure" aria-live="polite"></output>
+      <input class="figure figure-edit" id="offer-type" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="Type your new offer in naira" hidden>
       <button class="round plus" type="button" id="offer-up" aria-label="Raise by 100 naira"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     </div>
     <input type="hidden" id="offer-input">
@@ -428,6 +431,7 @@
     </div>
     <p class="price-note strong" id="offer-suggested" hidden></p>
     <p class="price-note" id="offer-min"></p>
+    <p class="price-note low" id="offer-low" role="status" hidden></p>
   </div>
   <div class="notice bad" id="offer-err" hidden></div>
   <button class="btn primary" type="button" id="offer-save">Update price</button>
