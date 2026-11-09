@@ -12,7 +12,7 @@
 html, body { margin: 0; min-height: 100%; background: var(--page); color: var(--ink); }
 body {
   font-family: var(--text);
-  font-size: 16px;
+  font-size: 15px;
   line-height: 23px;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
@@ -63,12 +63,12 @@ svg { display: block; flex: none; }
 .back:not([hidden]) ~ section .head { padding-left: 56px; }
 
 /* ── RText ────────────────────────────────────────────────────────── */
-.title { flex: 1; min-width: 0; font-family: var(--display); font-weight: 800; font-size: 26px; line-height: 32px; letter-spacing: -0.6px; }
-.heading { font-family: var(--display); font-weight: 800; font-size: 22px; line-height: 26px; letter-spacing: -0.4px; }
-.body { font-size: 16px; line-height: 23px; }
-.body-bold { font-weight: 700; font-size: 16px; line-height: 22px; }
-.small { font-size: 14px; line-height: 20px; }
-.small-bold { font-weight: 700; font-size: 14px; line-height: 20px; }
+.title { flex: 1; min-width: 0; font-family: var(--display); font-weight: 800; font-size: 22px; line-height: 27px; letter-spacing: -0.6px; }
+.heading { font-family: var(--display); font-weight: 800; font-size: 20px; line-height: 24px; letter-spacing: -0.4px; }
+.body { font-size: 15px; line-height: 22px; }
+.body-bold { font-weight: 700; font-size: 15px; line-height: 21px; }
+.small { font-size: 13px; line-height: 19px; }
+.small-bold { font-weight: 700; font-size: 13px; line-height: 19px; }
 .caption { font-weight: 600; font-size: 13px; line-height: 17px; color: var(--muted); }
 .label { font-weight: 700; font-size: 13px; line-height: 17px; letter-spacing: 0.5px; color: var(--muted); }
 .muted { color: var(--muted); }
@@ -85,10 +85,10 @@ svg { display: block; flex: none; }
   width: 100%; height: 60px; padding: 0 18px;
   border: 0; border-radius: var(--r-lg);
   background: var(--orange); color: var(--ink);
-  font-weight: 800; font-size: 18px; line-height: 1;
+  font-weight: 800; font-size: 16px; line-height: 1;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.btn.md { height: 52px; border-radius: var(--r-md); font-weight: 700; font-size: 16px; }
+.btn.md { height: 52px; border-radius: var(--r-md); font-weight: 700; font-size: 15px; }
 .btn.dark { background: var(--ink); color: var(--on-ink); }
 .btn.ghost { background: transparent; border: 2px solid var(--ink); }
 .btn.on-ink { background: transparent; border: 2px solid var(--ink-line); color: var(--on-ink); }
@@ -98,9 +98,9 @@ svg { display: block; flex: none; }
 .btn.busy::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; border: 2.5px solid var(--on-ink); border-right-color: transparent; animation: spin .8s linear infinite; }
 
 /* RLink: a quiet text action. */
-.link { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 6px; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--ink); align-self: center; }
+.link { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 6px; border: 0; background: transparent; font-weight: 600; font-size: 14px; color: var(--ink); align-self: center; }
 /* "Change" / "Add" beside a card's text. */
-.text-btn { flex: none; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 700; font-size: 15px; color: var(--orange-ink); text-decoration: underline; }
+.text-btn { flex: none; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 700; font-size: 14px; color: var(--orange-ink); text-decoration: underline; }
 
 /* ── RCard ────────────────────────────────────────────────────────── */
 .card { border-radius: var(--r-xl); padding: 16px; background: var(--bg); border: 1px solid var(--line); min-width: 0; }
@@ -138,14 +138,14 @@ svg { display: block; flex: none; }
   white-space: nowrap; overflow: hidden; text-overflow: clip;
   user-select: all; -webkit-user-select: all;
 }
-.account-name { font-size: 15px; line-height: 21px; color: #E9E1D4; }
+.account-name { font-size: 14px; line-height: 20px; color: #E9E1D4; }
 .account-actions { display: flex; gap: 10px; }
 .account-actions .btn { flex: 1; min-width: 0; }
 
 /* HOW IT WORKS */
 .steps { display: flex; flex-direction: column; gap: 12px; }
 .step { display: flex; align-items: center; gap: 12px; }
-.step-number { flex: none; width: 32px; height: 32px; border-radius: 16px; background: var(--ink); color: var(--orange); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 800; font-size: 15px; line-height: 1; }
+.step-number { flex: none; width: 32px; height: 32px; border-radius: 16px; background: var(--ink); color: var(--orange); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 800; font-size: 14px; line-height: 1; }
 .step-text { flex: 1; min-width: 0; }
 .step-text b { font-weight: 700; font-variant-numeric: tabular-nums; }
 
@@ -159,25 +159,25 @@ svg { display: block; flex: none; }
 
 /* ── the amount, typed on the ink card ────────────────────────────── */
 .amount-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.balance { font-size: 14px; line-height: 20px; color: var(--on-ink-muted); white-space: nowrap; }
+.balance { font-size: 13px; line-height: 19px; color: var(--on-ink-muted); white-space: nowrap; }
 .balance b { font-weight: 700; color: var(--on-ink); font-variant-numeric: tabular-nums; }
 .amount-row { display: flex; align-items: center; min-height: 64px; min-width: 0; cursor: text; }
 .amount-figure, .amount-row input {
   font-family: var(--display); font-weight: 800;
-  font-size: 54px; line-height: 64px; letter-spacing: -1px;
+  font-size: 46px; line-height: 55px; letter-spacing: -1px;
   color: var(--orange); font-variant-numeric: tabular-nums;
 }
 .amount-row input { flex: 1; min-width: 0; height: 64px; padding: 0; border: 0; outline: 0; background: transparent; caret-color: var(--orange); }
 .amount-row input::placeholder { color: var(--ink-line); opacity: 1; }
 .amount-row input:disabled { opacity: .6; }
-.amount-row.mid .amount-figure, .amount-row.mid input { font-size: 42px; }
-.amount-row.long .amount-figure, .amount-row.long input { font-size: 32px; }
+.amount-row.mid .amount-figure, .amount-row.mid input { font-size: 36px; }
+.amount-row.long .amount-figure, .amount-row.long input { font-size: 28px; }
 
 .quick { display: flex; gap: 10px; }
 .quick button {
   flex: 1; min-width: 0; max-width: 110px; height: 48px; padding: 0 6px;
   border: 2px solid var(--ink-line); border-radius: 14px; background: transparent;
-  color: var(--on-ink); font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums;
+  color: var(--on-ink); font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* Add money offers four round amounts: a little tighter so they fit a 360 px phone. */
@@ -188,12 +188,12 @@ svg { display: block; flex: none; }
 
 /* ── RInput ───────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 8px; }
-.field-label { font-weight: 600; font-size: 14px; line-height: 20px; color: var(--ink); }
+.field-label { font-weight: 600; font-size: 13px; line-height: 19px; color: var(--ink); }
 .input-wrap { position: relative; }
 .input {
   display: block; width: 100%; height: 58px; padding: 0 16px;
   border: 2px solid var(--ink); border-radius: var(--r-md); background: var(--bg);
-  font-weight: 600; font-size: 18px; color: var(--ink); outline: 0;
+  font-weight: 600; font-size: 16px; color: var(--ink); outline: 0;
   -webkit-appearance: none; appearance: none;
 }
 .input::placeholder { color: #8C837A; opacity: 1; }
@@ -201,7 +201,7 @@ svg { display: block; flex: none; }
 .input.valid { border-color: var(--good); padding-right: 48px; }
 .input-tick { position: absolute; right: 14px; top: 0; bottom: 0; display: flex; align-items: center; color: var(--good); pointer-events: none; }
 .input-tick svg { width: 24px; height: 24px; }
-.field-hint { font-size: 14px; line-height: 19px; color: var(--muted); }
+.field-hint { font-size: 13px; line-height: 18px; color: var(--muted); }
 .field-hint.error { font-weight: 600; color: var(--bad); }
 .field-hint.ok { font-weight: 600; color: var(--good); }
 
@@ -210,7 +210,7 @@ svg { display: block; flex: none; }
 .bank-row {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 0;
   border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left;
-  font-weight: 700; font-size: 16px; line-height: 22px; color: var(--ink);
+  font-weight: 700; font-size: 15px; line-height: 21px; color: var(--ink);
 }
 .bank-row-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The bank's logo on a white disc, or its initials */
@@ -218,9 +218,10 @@ svg { display: block; flex: none; }
   flex: none; width: 40px; height: 40px; border-radius: 20px; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   background: #FFFFFF; border: 1px solid var(--line);
-  font-style: normal; font-weight: 800; font-size: 14px; line-height: 1; color: var(--orange-ink);
+  font-style: normal; font-weight: 800; font-size: 13px; line-height: 1; color: var(--orange-ink);
 }
-.bank-mark img { width: 100%; height: 100%; object-fit: contain; }
+/* inset so a square logo's corners are not cut by the circle */
+.bank-mark img { width: 72%; height: 72%; object-fit: contain; }
 .bank-mark.initials { background: var(--orange-soft); border-color: transparent; }
 /* "Popular", then A, B, C… */
 .bank-section {
@@ -232,20 +233,20 @@ svg { display: block; flex: none; }
 
 /* ── confirm: what the bank receives, and the details ─────────────── */
 .receive { display: flex; flex-direction: column; gap: 2px; }
-.receive-figure { font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 46px; letter-spacing: -1px; color: var(--orange); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.receive-figure { font-family: var(--display); font-weight: 800; font-size: 34px; line-height: 39px; letter-spacing: -1px; color: var(--orange); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .details { padding-top: 4px; padding-bottom: 4px; }
 .detail-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .detail-row:last-child { border-bottom: 0; }
-.detail-row .k { flex: none; font-size: 14px; line-height: 20px; color: var(--muted); }
-.detail-row .v { flex: 1; min-width: 0; text-align: right; font-weight: 700; font-size: 14px; line-height: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.detail-row .k { flex: none; font-size: 13px; line-height: 19px; color: var(--muted); }
+.detail-row .v { flex: 1; min-width: 0; text-align: right; font-weight: 700; font-size: 13px; line-height: 19px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
 /* ── the wallet PIN (components/wallet-pin-sheet.tsx) ─────────────── */
 .pin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
-.pin-label { font-weight: 700; font-size: 14px; line-height: 18px; color: var(--orange); }
-.pin-cancel { min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--muted); }
+.pin-label { font-weight: 700; font-size: 13px; line-height: 17px; color: var(--orange); }
+.pin-cancel { min-height: 44px; padding: 0; border: 0; background: transparent; font-weight: 600; font-size: 14px; color: var(--muted); }
 .pin-copy { display: flex; flex-direction: column; gap: 4px; }
-.pin-title { font-family: var(--display); font-weight: 700; font-size: 19px; line-height: 23px; letter-spacing: -0.3px; }
-.pin-body { font-weight: 500; font-size: 15px; line-height: 20px; color: var(--muted); }
+.pin-title { font-family: var(--display); font-weight: 700; font-size: 17px; line-height: 21px; letter-spacing: -0.3px; }
+.pin-body { font-weight: 500; font-size: 14px; line-height: 19px; color: var(--muted); }
 .dots { display: flex; justify-content: center; gap: 14px; margin-top: 8px; }
 .dots i { width: 20px; height: 20px; border: 1.5px solid var(--ink); border-radius: 50%; background: var(--bg); transition: background .1s ease; }
 .dots i.on { background: var(--orange); }
@@ -257,18 +258,18 @@ svg { display: block; flex: none; }
   height: 58px; padding: 0;
   border: 1.5px solid var(--line); border-radius: var(--r-md); background: var(--bg);
   box-shadow: 0 2px 8px rgba(13, 13, 13, 0.05);
-  font-family: var(--display); font-weight: 700; font-size: 19px; color: var(--ink);
+  font-family: var(--display); font-weight: 700; font-size: 17px; color: var(--ink);
   transition: background .08s ease;
 }
 .pad button:active { background: var(--orange-soft); }
-.pad button.fn { background: transparent; border-color: transparent; box-shadow: none; font-family: var(--text); font-weight: 600; font-size: 15px; color: var(--muted); }
+.pad button.fn { background: transparent; border-color: transparent; box-shadow: none; font-family: var(--text); font-weight: 600; font-size: 14px; color: var(--muted); }
 .pad button.fn:active { opacity: .5; }
 .pad button[disabled] { visibility: hidden; }
-.forgot { align-self: center; min-height: 44px; padding: 4px; border: 0; background: transparent; font-weight: 600; font-size: 15px; color: var(--muted); text-decoration: underline; }
+.forgot { align-self: center; min-height: 44px; padding: 4px; border: 0; background: transparent; font-weight: 600; font-size: 14px; color: var(--muted); text-decoration: underline; }
 .warn-box { padding: 16px; border: 1.5px solid var(--ink); border-radius: var(--r-md); background: #FFEFC2; display: flex; flex-direction: column; gap: 4px; }
-.warn-box b { font-weight: 600; font-size: 15px; line-height: 20px; }
+.warn-box b { font-weight: 600; font-size: 14px; line-height: 19px; }
 .warn-box span { font-weight: 500; font-size: 13px; line-height: 18px; color: var(--muted); }
-.code-input { text-align: center; height: 60px; font-size: 28px; letter-spacing: 10px; font-weight: 600; border-width: 1.5px; }
+.code-input { text-align: center; height: 60px; font-size: 24px; letter-spacing: 10px; font-weight: 600; border-width: 1.5px; }
 .code-input::placeholder { color: #B5ACA4; }
 
 /* ── end states: the app's outcome screen ─────────────────────────── */
@@ -284,12 +285,12 @@ svg { display: block; flex: none; }
 
 .notice { display: flex; flex-direction: column; gap: 2px; padding-top: 14px; padding-bottom: 14px; border-radius: var(--r-lg); }
 
-.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); z-index: 10; max-width: calc(100vw - 40px); transform: translate(-50%, 20px); padding: 11px 16px; background: var(--ink); color: var(--on-ink); border-radius: var(--r-sm); font-size: 14px; line-height: 20px; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); z-index: 10; max-width: calc(100vw - 40px); transform: translate(-50%, 20px); padding: 11px 16px; background: var(--ink); color: var(--on-ink); border-radius: var(--r-sm); font-size: 13px; line-height: 19px; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 .offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }
 
 @media (max-width: 359px) {
-  .account-number { font-size: 32px; letter-spacing: 1px; }
+  .account-number { font-size: 28px; letter-spacing: 1px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
