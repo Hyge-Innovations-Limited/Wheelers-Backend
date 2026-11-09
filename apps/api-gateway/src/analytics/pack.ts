@@ -224,6 +224,8 @@ export async function buildAnalyticsPack(f: Pick<AnalyticsFilters, 'from' | 'to'
       diff_vs_rider_price_ngn: riderPrice !== null ? amount - riderPrice : null, diff_vs_rider_price_pct: pct(amount, riderPrice),
       diff_vs_suggested_pct: r ? pct(amount, suggested(r)) : null, offer_status_key: OFFER_STATUS[b.status] ?? '', status_at: at(b.resolvedAt),
       rider_response_sec: b.resolvedAt && (b.status === 'ACCEPTED' || b.status === 'DECLINED') ? secondsBetween(b.createdAt, b.resolvedAt) : null,
+      // Not in the analyst's columns (so not in the files or sheets): for the admin Studio.
+      _ride_id: b.rideId, _driver_id: b.driverId, _distance_km: b.distanceKm,
     };
   });
 

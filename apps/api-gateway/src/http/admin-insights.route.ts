@@ -4,6 +4,7 @@ import { adminAnalyticsClient, isDay, lagosToday, periodDays, RIDE_CHANNELS } fr
 import type { AnalyticsFilters, BreakdownBy, Bucket, FeeKind, RideChannelName, TableQuery, TripStatusFilter } from '@wheleers/db';
 import { buildWorkbook } from '../analytics/workbook';
 import { buildAnalyticsPack } from '../analytics/pack';
+import { buildStudio } from '../analytics/studio';
 import { zipFiles } from '../analytics/zip';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
@@ -31,6 +32,7 @@ import { sendJson } from './utils';
  *   GET /admin/insights/riders?q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/reconcile                each headline total computed two ways
  *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1&raw=0   the Excel workbook (raw=0 leaves out the raw sheets)
+ *   GET /admin/insights/studio?from=&to=   the admin Studio's charts, from the Power BI pack's rows (owners only)
  *       &format=zip   a .zip of that workbook and the Power BI pack (powerbi/: the analyst's 30 files, _relationships.csv, guide, NOTES.md)
  *   GET /admin/fees/summary?bucket=
  *   GET /admin/fees/ledger?kind=&q=&sort=&dir=&limit=&offset=
@@ -157,6 +159,15 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
         // Whether the money adds up is asked when something looks wrong: always worked out fresh.
         sendJson(res, 200, { filters: f, checks: await adminAnalyticsClient.reconcile(f) });
         return true;
+      case '/admin/insights/studio': {
+        // Rider and driver behaviour, row by row in its table: owners only, as the download.
+        if (auth.role !== 'OWNER') {
+          sendJson(res, 403, { error: 'The Studio is not available.' });
+          return true;
+        }
+        sendJson(res, 200, { filters: f, ...(await kept(async () => buildStudio(await buildAnalyticsPack(f)))) });
+        return true;
+      }
       case '/admin/insights/export': {
         const scope = pick<WorkbookScope>(url, 'scope', ['overview', 'fees'], 'overview');
         const bucket = pick(url, 'bucket', BUCKETS, 'day');

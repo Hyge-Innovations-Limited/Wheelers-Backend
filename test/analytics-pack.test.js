@@ -127,3 +127,21 @@ test('the workbook holds the pack too: one sheet per table, named like its file,
   await lean.xlsx.load(await buildWorkbook('overview', f, 'day', false, false));
   assert.equal(lean.getWorksheet('fact_trips'), undefined);
 });
+
+test('the Studio\'s numbers come from the same rows as the download', async () => {
+  const { buildStudio } = require('../apps/api-gateway/dist/analytics/studio.js');
+  const pack = await buildAnalyticsPack({ from: DAY, to: DAY });
+  const studio = buildStudio(pack);
+  const sessions = pack.tables.find((t) => t.name === 'fact_ride_sessions').rows;
+  assert.equal(studio.totals.searches, sessions.length);
+  assert.ok(studio.totals.completed >= 1);
+  const funnel = Object.fromEntries(studio.demand.funnel.map((x) => [x.step, x.count]));
+  assert.ok(funnel['Got an offer'] >= 1 && funnel.Matched >= 1 && funnel.Completed >= 1);
+  assert.ok(funnel.Searched >= funnel['Got an offer'] && funnel['Got an offer'] >= funnel.Completed, 'a funnel only narrows');
+  assert.ok((studio.offers.statusMix.accepted ?? 0) >= 1);
+  assert.equal(studio.demand.byHour.length, 24);
+  assert.equal(studio.demand.byDay.length, 1);
+  assert.ok(studio.money.byDay[0].faresNgn >= 3900);
+  assert.ok(studio.table.some((r) => r.session_id === made.rides[0] && r.agreed_ngn === 3900));
+  assert.equal(JSON.stringify(studio).includes('Adaeze'), false, 'no names');
+});
