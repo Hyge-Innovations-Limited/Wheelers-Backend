@@ -24,7 +24,7 @@ body {
   background: var(--page);
   color: var(--ink);
   font-family: var(--text);
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.45;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
@@ -48,10 +48,10 @@ svg { fill: currentColor; }
   flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
   background: var(--ink); color: var(--orange);
   display: grid; place-items: center;
-  font-family: var(--display); font-weight: 700; font-size: 16px; line-height: 1;
+  font-family: var(--display); font-weight: 700; font-size: 15px; line-height: 1;
 }
 .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.who-name { font-family: var(--display); font-weight: 800; font-size: 20px; line-height: 24px; letter-spacing: -.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-name { font-family: var(--display); font-weight: 800; font-size: 18px; line-height: 22px; letter-spacing: -.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who-meta { font-weight: 600; font-size: 13px; line-height: 17px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .call-btn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: var(--orange); color: var(--ink); display: grid; place-items: center; }
 .call-btn svg { width: 20px; height: 20px; }
@@ -60,11 +60,11 @@ svg { fill: currentColor; }
 
 /* ── loading and link problems ──────────────────────────────────────── */
 .center { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 24px var(--gutter); gap: 14px; }
-.muted { color: var(--muted); text-align: center; font-size: 14px; line-height: 20px; }
+.muted { color: var(--muted); text-align: center; font-size: 13px; line-height: 19px; }
 .card { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-xl); padding: 16px; }
-.card.note h2 { font-family: var(--display); font-size: 22px; line-height: 26px; letter-spacing: -.4px; font-weight: 800; margin-bottom: 8px; }
-.card.note p { color: var(--muted); font-size: 15px; line-height: 21px; }
-.foot { color: var(--muted); font-size: 14px; line-height: 20px; text-align: center; }
+.card.note h2 { font-family: var(--display); font-size: 20px; line-height: 24px; letter-spacing: -.4px; font-weight: 800; margin-bottom: 8px; }
+.card.note p { color: var(--muted); font-size: 14px; line-height: 20px; }
+.foot { color: var(--muted); font-size: 13px; line-height: 19px; text-align: center; }
 
 /* ── the chat ───────────────────────────────────────────────────────── */
 .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -78,9 +78,9 @@ svg { fill: currentColor; }
 .code-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .code-label { font-size: 13px; line-height: 18px; color: var(--on-ink-muted); }
 .code-note { font-size: 13px; line-height: 18px; color: var(--on-ink-soft); }
-.code-digits { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 30px; line-height: 34px; letter-spacing: 4px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.code-digits { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 26px; line-height: 29px; letter-spacing: 4px; color: var(--orange); font-variant-numeric: tabular-nums; }
 
-.empty { flex: 0 0 auto; padding: 30px calc(var(--gutter) + 16px) 0; color: var(--muted); font-size: 14px; line-height: 20px; text-align: center; }
+.empty { flex: 0 0 auto; padding: 30px calc(var(--gutter) + 16px) 0; color: var(--muted); font-size: 13px; line-height: 19px; text-align: center; }
 .thread {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; list-style: none; margin: 0;
   padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain;
@@ -90,7 +90,7 @@ svg { fill: currentColor; }
 .row { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; }
 .row.mine { align-items: flex-end; }
 .row.theirs { align-items: flex-start; }
-.bubble { max-width: 80%; padding: 10px 14px; font-size: 15px; line-height: 21px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble { max-width: 80%; padding: 10px 14px; font-size: 14px; line-height: 20px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
 .row.mine .bubble { background: var(--orange); font-weight: 500; border-radius: 18px 4px 18px 18px; }
 .row.theirs .bubble { background: var(--bg); border: 1px solid var(--line); border-radius: 4px 18px 18px 18px; }
 .row .time { font-weight: 600; font-size: 12px; line-height: 15px; color: var(--muted); }
@@ -102,7 +102,7 @@ svg { fill: currentColor; }
 /* A call, as a line in the thread. */
 .line { flex: 0 0 auto; align-self: center; padding: 5px 12px; border-radius: 999px; background: var(--soft); color: var(--muted); font-weight: 600; font-size: 13px; line-height: 17px; text-align: center; }
 
-.banner { flex: 0 0 auto; padding: 8px var(--gutter); color: var(--muted); font-size: 14px; line-height: 20px; text-align: center; }
+.banner { flex: 0 0 auto; padding: 8px var(--gutter); color: var(--muted); font-size: 13px; line-height: 19px; text-align: center; }
 
 /* Quick replies: one tap sends. */
 .quick {
@@ -112,7 +112,7 @@ svg { fill: currentColor; }
 .quick::-webkit-scrollbar { display: none; }
 .chip {
   flex: 0 0 auto; height: 44px; padding: 0 14px; border-radius: 999px; border: 2px solid var(--ink);
-  font-weight: 600; font-size: 14px; line-height: 19px; white-space: nowrap; color: var(--ink);
+  font-weight: 600; font-size: 13px; line-height: 18px; white-space: nowrap; color: var(--ink);
 }
 
 .composer {
@@ -138,9 +138,9 @@ svg { fill: currentColor; }
   background: var(--call-bg); color: #FFFFFF;
 }
 .call-body { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
-.avatar { width: 96px; height: 96px; margin-bottom: 6px; border-radius: 50%; background: var(--orange); color: #FFFFFF; display: grid; place-items: center; font-family: var(--display); font-size: 26px; line-height: 30px; font-weight: 800; letter-spacing: -.7px; }
-.call-name { max-width: 100%; font-family: var(--display); font-size: 26px; line-height: 30px; font-weight: 800; letter-spacing: -.7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.call-status { font-weight: 500; font-size: 15px; line-height: 20px; color: #C7CBD1; font-variant-numeric: tabular-nums; }
+.avatar { width: 96px; height: 96px; margin-bottom: 6px; border-radius: 50%; background: var(--orange); color: #FFFFFF; display: grid; place-items: center; font-family: var(--display); font-size: 22px; line-height: 25px; font-weight: 800; letter-spacing: -.7px; }
+.call-name { max-width: 100%; font-family: var(--display); font-size: 22px; line-height: 25px; font-weight: 800; letter-spacing: -.7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-status { font-weight: 500; font-size: 14px; line-height: 19px; color: #C7CBD1; font-variant-numeric: tabular-nums; }
 .call-sub { font-weight: 500; font-size: 12px; line-height: 16px; color: #8A9099; }
 .call-actions { display: flex; justify-content: space-around; align-items: flex-start; min-height: 96px; }
 .round { display: flex; flex-direction: column; align-items: center; gap: 8px; color: #FFFFFF; font-weight: 500; font-size: 12px; line-height: 16px; }
@@ -150,6 +150,6 @@ svg { fill: currentColor; }
 .round.quiet svg { background: rgba(255, 255, 255, .14); }
 .round.quiet[aria-pressed="true"] svg { background: #FFFFFF; color: var(--call-bg); }
 
-#toast { position: fixed; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: var(--r-sm); background: var(--ink); color: var(--on-ink); font-size: 14px; line-height: 20px; opacity: 0; transition: opacity .2s ease; pointer-events: none; }
+#toast { position: fixed; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: var(--r-sm); background: var(--ink); color: var(--on-ink); font-size: 13px; line-height: 19px; opacity: 0; transition: opacity .2s ease; pointer-events: none; }
 #toast.show { opacity: 1; }
 #toast[hidden] { display: block !important; }
