@@ -158,8 +158,20 @@ export class PaymentsClient {
   // ── Banks ───────────────────────────────────────────────────
 
   async listBanks(): Promise<PaymentBank[]> {
-    const res = await this.get<Json[]>('/bank?country=nigeria&currency=NGN&perPage=100');
-    const rows = Array.isArray(res.data) ? res.data : [];
+    // Every bank, page by page: one page of 100 left out more than half of them (microfinance banks
+    // and fintechs). Paystack's cursor paging; at most 10 pages.
+    const rows: Json[] = [];
+    let next: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const query = new URLSearchParams({ country: 'nigeria', currency: 'NGN', perPage: '100', use_cursor: 'true' });
+      if (next) query.set('next', next);
+      const res = await this.get<Json[]>(`/bank?${query.toString()}`);
+      if (Array.isArray(res.data)) rows.push(...res.data);
+      const meta = (res as unknown as { meta?: { next?: unknown } }).meta;
+      next = typeof meta?.next === 'string' && meta.next.length > 0 ? meta.next : null;
+      if (!next) break;
+    }
+    const seen = new Set<string>();
     return rows
       .filter((b) => b.active !== false && b.is_deleted !== true && b.supports_transfer !== false)
       .map((b) => ({
@@ -170,7 +182,7 @@ export class PaymentsClient {
         currency: 'NGN',
         provider: 'paystack',
       }))
-      .filter((b) => b.code.length > 0 && b.name.length > 0);
+      .filter((b) => b.code.length > 0 && b.name.length > 0 && !seen.has(b.code) && Boolean(seen.add(b.code)));
   }
 
   async validateBankAccount(params: {

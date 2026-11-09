@@ -8,7 +8,8 @@ const BANKS_CACHE_TTL_SECONDS = 6 * 60 * 60;
  * different key; a new key means an app can never be handed an id the current
  * provider does not understand.
  */
-export const BANKS_CACHE_KEY = 'payments:banks:v1:NG';
+// v2: the full list (v1 held only the first 100 banks).
+export const BANKS_CACHE_KEY = 'payments:banks:v2:NG';
 
 /** Nigerian banks that can receive a transfer — cached, since it rarely changes. */
 export async function getBanks(

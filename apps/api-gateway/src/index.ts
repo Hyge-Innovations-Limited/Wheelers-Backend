@@ -307,6 +307,8 @@ const MIME_TYPES: Record<string, string> = {
   ".js": "application/javascript",
   // The bidding page wears the mobile app's typeface, served from here.
   ".ttf": "font/ttf",
+  // Bank logos on the Withdraw page (widget/shared/banks/<code>.png).
+  ".png": "image/png",
 };
 
 // The live-trip map draws its pictures from a tile server; that host — and only

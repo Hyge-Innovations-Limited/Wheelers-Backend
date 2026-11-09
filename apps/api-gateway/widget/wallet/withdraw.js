@@ -224,11 +224,48 @@
 
   var CHEVRON = '<svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="48" d="M184 112l144 144-144 144"/></svg>';
 
+  /** The bank's logo, or its initials when there is no logo (or the picture fails to load). */
+  function bankMark(bank) {
+    var mark = document.createElement('i');
+    mark.className = 'bank-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    var url = window.WheelersBanks.logoUrl(bank.code);
+    if (url) {
+      var img = document.createElement('img');
+      img.src = url;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener('error', function () { mark.textContent = window.WheelersBanks.initials(bank.name); mark.className = 'bank-mark initials'; });
+      mark.appendChild(img);
+    } else {
+      mark.className = 'bank-mark initials';
+      mark.textContent = window.WheelersBanks.initials(bank.name);
+    }
+    return mark;
+  }
+
+  function bankRow(bank) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'bank-row';
+    button.setAttribute('aria-label', bank.name);
+    button.appendChild(bankMark(bank));
+    var name = document.createElement('span');
+    name.className = 'bank-row-name';
+    name.textContent = bank.name;
+    button.appendChild(name);
+    button.insertAdjacentHTML('beforeend', CHEVRON);
+    button.addEventListener('click', function () { pickBank(bank); });
+    return button;
+  }
+
+  /** No search: the popular banks, then every bank A–Z under its letter. A search: every match, best first. */
   function renderBanks(query, error) {
     var list = W.$('banklist');
     list.textContent = '';
-    var q = query.trim().toLowerCase();
-    var matches = banks.filter(function (b) { return !q || b.name.toLowerCase().indexOf(q) !== -1; }).slice(0, 40);
+    var q = query.trim();
+    var matches = window.WheelersBanks.search(banks, q);
     if (matches.length === 0) {
       var state = document.createElement('div');
       state.className = 'bank-list-state';
@@ -243,17 +280,16 @@
       list.appendChild(state);
       return;
     }
-    matches.forEach(function (bank) {
-      var button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'bank-row';
-      button.setAttribute('aria-label', bank.name);
-      var name = document.createElement('span');
-      name.textContent = bank.name;
-      button.appendChild(name);
-      button.insertAdjacentHTML('beforeend', CHEVRON);
-      button.addEventListener('click', function () { pickBank(bank); });
-      list.appendChild(button);
+    if (q) {
+      matches.forEach(function (bank) { list.appendChild(bankRow(bank)); });
+      return;
+    }
+    window.WheelersBanks.sections(banks).forEach(function (section) {
+      var head = document.createElement('p');
+      head.className = 'bank-section';
+      head.textContent = section.title;
+      list.appendChild(head);
+      section.banks.forEach(function (bank) { list.appendChild(bankRow(bank)); });
     });
   }
   W.$('bank-q').addEventListener('input', function () { renderBanks(this.value); });
@@ -262,6 +298,9 @@
     pick.bankCode = bank.code;
     pick.bankName = bank.name;
     W.$('bank-name').textContent = bank.name;
+    var picked = W.$('bank-picked-mark');
+    picked.textContent = '';
+    picked.appendChild(bankMark(bank));
     W.show(W.$('bank-search'), false);
     W.show(W.$('bank-picked'), true);
     W.show(W.$('acct-field'), true);

@@ -81,7 +81,7 @@
     </div>
 
     <div class="card row-card" id="bank-picked" hidden>
-      <span class="icon-dot sm"><svg viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M176 416v64M80 32h192a32 32 0 0132 32v412a4 4 0 01-4 4H48V64a32 32 0 0132-32zM320 192h112a32 32 0 0132 32v256H320V192z"/><g fill="currentColor"><circle cx="112" cy="112" r="16"/><circle cx="176" cy="112" r="16"/><circle cx="240" cy="112" r="16"/><circle cx="112" cy="192" r="16"/><circle cx="176" cy="192" r="16"/><circle cx="240" cy="192" r="16"/><circle cx="112" cy="272" r="16"/><circle cx="176" cy="272" r="16"/><circle cx="240" cy="272" r="16"/><circle cx="112" cy="352" r="16"/><circle cx="240" cy="352" r="16"/><circle cx="392" cy="272" r="16"/><circle cx="392" cy="352" r="16"/></g></svg></span>
+      <span id="bank-picked-mark"></span>
       <div class="row-copy">
         <p class="small muted">Bank</p>
         <p class="body-bold" id="bank-name"></p>
@@ -204,6 +204,7 @@
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="common.js"></script>
+<script src="../shared/banks.js"></script>
 <script src="withdraw.js"></script>
 </body>
 </html>

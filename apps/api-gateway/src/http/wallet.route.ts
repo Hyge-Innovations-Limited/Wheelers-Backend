@@ -144,7 +144,7 @@ function roundNgn(value: number): number {
 // ─── Bank network helpers ──────────────────────────────────────────
 
 function getBankCacheKey(country: string): string {
-  return `payments:banks:v1:${country.toUpperCase()}`;
+  return `payments:banks:v2:${country.toUpperCase()}`;
 }
 
 function normalizeBankTerm(value: string): string {
@@ -720,7 +720,8 @@ export async function handleListWithdrawalBankNetworksRoute(
     const country = parseCountryCode(url.searchParams.get("country"), "NG");
     const currency = url.searchParams.get("currency")?.toUpperCase() ?? "NGN";
     const query = url.searchParams.get("query")?.trim().toLowerCase() ?? "";
-    const limit = parseLimit(url.searchParams.get("limit"));
+    // The app asks for the whole list (a few hundred banks) to show it A–Z; older apps ask for 40.
+    const limit = Math.min(Math.max(Number.parseInt(url.searchParams.get("limit") ?? "", 10) || 20, 1), 1000);
 
     const banks = await getBanksFromCacheOrProvider(deps, country, currency);
     const needles = getBankSearchNeedles(query);
