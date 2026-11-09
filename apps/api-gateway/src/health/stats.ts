@@ -13,7 +13,8 @@ export const BUCKET_BOUNDS = [25, 50, 100, 250, 500, 1000, 2500, Infinity] as co
 export const SLOW_QUERY_MS = 500;
 const KEEP_SECONDS = 8 * 24 * 3600;
 
-export type StatKind = 'http' | 'db' | 'dbexec';
+/** loc: driver location pings (socket and background HTTP), each timed from arrival to stored. */
+export type StatKind = 'http' | 'db' | 'dbexec' | 'loc';
 
 export interface StatTotals {
   count: number;
@@ -107,6 +108,7 @@ export function createStatsRecorder(now: () => number = Date.now) {
     db: StatTotals;
     /** The same queries timed by Postgres alone (no wait for a connection). */
     dbExec: StatTotals;
+    loc: StatTotals;
     ops: Map<string, { count: number; sumMs: number; slow: number; errors: number }>;
     routes: Map<string, RouteTotals>;
   }>();
@@ -115,7 +117,7 @@ export function createStatsRecorder(now: () => number = Date.now) {
     const minute = Math.floor(at / MINUTE);
     let entry = minutes.get(minute);
     if (!entry) {
-      entry = { http: emptyTotals(), db: emptyTotals(), dbExec: emptyTotals(), ops: new Map(), routes: new Map() };
+      entry = { http: emptyTotals(), db: emptyTotals(), dbExec: emptyTotals(), loc: emptyTotals(), ops: new Map(), routes: new Map() };
       minutes.set(minute, entry);
     }
     return entry;
@@ -152,6 +154,11 @@ export function createStatsRecorder(now: () => number = Date.now) {
       addSample(slot(now()).dbExec, ms, false, SLOW_QUERY_MS);
     },
 
+    /** A driver location ping was handled (stored, or failed). */
+    loc(ms: number, failed: boolean): void {
+      addSample(slot(now()).loc, ms, failed, 500);
+    },
+
     /** A database query finished. */
     db(name: string, ms: number, failed: boolean): void {
       const entry = slot(now());
@@ -171,7 +178,7 @@ export function createStatsRecorder(now: () => number = Date.now) {
         if (minute >= current) continue;
         minutes.delete(minute);
         const at = minute * MINUTE;
-        for (const kind of ['http', 'db', 'dbexec'] as const) {
+        for (const kind of ['http', 'db', 'dbexec', 'loc'] as const) {
           const fields = fieldsOf(kind === 'dbexec' ? entry.dbExec : entry[kind]);
           if (fields.length === 0) continue;
           for (const size of [MINUTE, QUARTER, HOUR]) {

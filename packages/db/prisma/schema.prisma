@@ -1979,3 +1979,31 @@ model TripRecording {
   @@index([rideId])
   @@index([createdAt])
 }
+
+/// One row per Lagos day, kept for good: the Health page's long-term lines (the minute counts in Redis
+/// last 8 days). Written once a day, just after midnight, by the gateway's leader.
+model HealthDay {
+  /// YYYY-MM-DD, Lagos.
+  day             String   @id
+  apiRequests     Int
+  apiErrors       Int
+  apiP95Ms        Int?
+  dbQueries       Int
+  dbP95Ms         Int?
+  locPings        Int
+  locP95Ms        Int?
+  /// The highest event-loop delay (99th percentile) any process had in a minute that day.
+  maxLoopP99Ms    Int?
+  maxCpuPct       Float?
+  maxRssMb        Int?
+  /// The most Kafka messages ride-service and the gateway were behind at any minute.
+  maxKafkaLag     Int?
+  searches        Int
+  trips           Int
+  activeRiders    Int
+  activeDrivers   Int
+  /// The slowest endpoints of the day: [{ route, count, avgMs }].
+  slowRoutes      Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

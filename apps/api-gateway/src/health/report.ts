@@ -1,3 +1,5 @@
+import { VITALS_KEY, type VitalsSample } from '@wheleers/config';
+import { KAFKA_KEY, zrange, type KafkaSample } from './monitor';
 import type { RedisClient } from '../redis/client';
 import { serviceUsage } from '../usage/service-usage';
 import { overallStatus, readInstances, type ComponentCheck, type HealthStatus } from './checks';
@@ -32,6 +34,9 @@ export interface HealthPoint {
   slowQueries: number;
   dbPingMs: number | null;
   redisPingMs: number | null;
+  /** Driver location pings handled in the point, and how long 95% of them took. */
+  locPings: number;
+  locP95: number | null;
 }
 
 const RANK: Record<HealthStatus, number> = { up: 0, degraded: 1, down: 2 };
@@ -88,12 +93,13 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
   // Counts per point, for both processes together.
   const totals = await Promise.all(Array.from({ length: count }, async (_, i) => {
     const slot = firstSlot + i;
-    const [http, db, dbexec] = await Promise.all([
+    const [http, db, dbexec, loc] = await Promise.all([
       hgetall(redis, totalsKey('http', size, slot)).catch(() => ({})),
       hgetall(redis, totalsKey('db', size, slot)).catch(() => ({})),
       hgetall(redis, totalsKey('dbexec', size, slot)).catch(() => ({})),
+      hgetall(redis, totalsKey('loc', size, slot)).catch(() => ({})),
     ]);
-    return { at: slot * size, http: totalsFromHash(http), db: totalsFromHash(db), dbexec: totalsFromHash(dbexec) };
+    return { at: slot * size, http: totalsFromHash(http), db: totalsFromHash(db), dbexec: totalsFromHash(dbexec), loc: totalsFromHash(loc) };
   }));
 
   // The minute checks in the period.
@@ -125,6 +131,8 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
       slowQueries: t.db.slow,
       dbPingMs: avg(latencyOf('postgres')),
       redisPingMs: avg(latencyOf('redis')),
+      locPings: t.loc.count,
+      locP95: percentileMs(t.loc),
     };
   });
 
@@ -253,6 +261,7 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
       dbP95: percentileMs(db),
       dbAvgMs: db.count ? Math.round(db.sumMs / db.count) : null,
       slowQueries: db.slow,
+      locPings: points.reduce((a, p) => a + p.locPings, 0),
       // The same queries timed by Postgres alone, per SQL statement (one Prisma
       // call can run several: an include, a transaction's BEGIN and COMMIT).
       dbRunAvgMs: execAvg === null ? null : Math.round(execAvg * 10) / 10,
@@ -264,6 +273,9 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
     },
     endpoints,
     points,
+    // Each process's CPU, memory and event-loop delay, and the Kafka backlog, at the same points.
+    vitals: await vitalsByPoint(redis, from, size, count),
+    kafka: await kafkaByPoint(redis, from, size, count),
     spikes: findSpikes(points, size),
     incidents: incidents.slice(0, 20),
     queries,
@@ -275,3 +287,31 @@ export async function buildHealthReport(redis: RedisClient, range: HealthRange, 
 }
 
 export type HealthReport = Awaited<ReturnType<typeof buildHealthReport>>;
+
+/** Per service, per point: the worst minute (highest event-loop delay, CPU, memory) of any of its processes. */
+async function vitalsByPoint(redis: RedisClient, from: number, size: number, count: number) {
+  const samples = await zrange<VitalsSample>(redis, VITALS_KEY, from);
+  const services = [...new Set(samples.map((v) => v.svc))].sort();
+  return services.map((svc) => {
+    const mine = samples.filter((v) => v.svc === svc);
+    const points = Array.from({ length: count }, (_, i) => {
+      const inPoint = mine.filter((v) => Math.floor((v.at - from) / size) === i);
+      const max = (k: 'loopP99Ms' | 'cpuPct' | 'rssMb') => (inPoint.length ? Math.max(...inPoint.map((v) => v[k])) : null);
+      return { at: from + i * size, loopP99Ms: max('loopP99Ms'), cpuPct: max('cpuPct'), rssMb: max('rssMb') };
+    });
+    const latest = new Map<string, VitalsSample>();
+    for (const v of mine) latest.set(v.id, v);
+    return { svc, processes: latest.size, points, latest: [...latest.values()] };
+  });
+}
+
+/** Messages Kafka consumers were behind: the most at any minute in each point, and the latest per group. */
+async function kafkaByPoint(redis: RedisClient, from: number, size: number, count: number) {
+  const samples = await zrange<KafkaSample>(redis, KAFKA_KEY, from);
+  const total = (k: KafkaSample) => Object.values(k.lag).reduce((a, b) => a + b, 0);
+  const points = Array.from({ length: count }, (_, i) => {
+    const inPoint = samples.filter((k) => Math.floor((k.at - from) / size) === i);
+    return { at: from + i * size, lag: inPoint.length ? Math.max(...inPoint.map(total)) : null };
+  });
+  return { points, latest: samples[samples.length - 1] ?? null };
+}

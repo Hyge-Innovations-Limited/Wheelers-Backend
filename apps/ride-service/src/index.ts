@@ -1,4 +1,5 @@
-import { GoogleMapsRoutePlanner, RIDE, loadWorkspaceEnv, startAlerts, validateRideEnv, validateSharedEnv } from '@wheleers/config';
+import { GoogleMapsRoutePlanner, RIDE, VITALS_KEEP_MS, VITALS_KEY, createVitalsSampler, loadWorkspaceEnv, startAlerts, validateRideEnv, validateSharedEnv } from '@wheleers/config';
+import { hostname } from 'node:os';
 import { createConsumer, createProducer, onShutdown } from '@wheleers/kafka-client';
 import { TOPICS } from '@wheleers/kafka-schemas';
 
@@ -177,6 +178,16 @@ async function bootstrap(): Promise<void> {
     console.warn(`[${SERVICE_ID}] presence redis: ${error.message}`);
   });
   driverPresence.configure((command, ...args) => presenceRedis.call(command, ...args));
+
+  // CPU, memory and event-loop delay every minute, for the Health page and its alert (same key as the gateway's).
+  const vitals = createVitalsSampler(SERVICE_ID, `${hostname()}:${process.pid}`);
+  const vitalsTimer = setInterval(() => {
+    const v = vitals.sample();
+    void presenceRedis.zadd(VITALS_KEY, v.at, JSON.stringify(v))
+      .then(() => presenceRedis.zremrangebyscore(VITALS_KEY, '-inf', v.at - VITALS_KEEP_MS))
+      .catch(() => undefined);
+  }, 60_000);
+  vitalsTimer.unref();
 
   const producer = await createProducer({ serviceId: SERVICE_ID });
   const consumer = await createConsumer({ groupId: SERVICE_ID, concurrency: 1 });
