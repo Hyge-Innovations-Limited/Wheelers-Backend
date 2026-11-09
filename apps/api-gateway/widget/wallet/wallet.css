@@ -212,7 +212,21 @@ svg { display: block; flex: none; }
   border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left;
   font-weight: 700; font-size: 16px; line-height: 22px; color: var(--ink);
 }
-.bank-row span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bank-row-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The bank's logo on a white disc, or its initials */
+.bank-mark {
+  flex: none; width: 40px; height: 40px; border-radius: 20px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: #FFFFFF; border: 1px solid var(--line);
+  font-style: normal; font-weight: 800; font-size: 14px; line-height: 1; color: var(--orange-ink);
+}
+.bank-mark img { width: 100%; height: 100%; object-fit: contain; }
+.bank-mark.initials { background: var(--orange-soft); border-color: transparent; }
+/* "Popular", then A, B, C… */
+.bank-section {
+  position: sticky; top: 0; z-index: 1; margin: 0; padding: 14px 0 6px;
+  background: var(--page); font-size: 13px; line-height: 18px; font-weight: 800; letter-spacing: .4px; color: var(--muted);
+}
 .bank-row svg { width: 18px; height: 18px; color: var(--muted); }
 .bank-list-state { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 32px 0; text-align: center; }
 
