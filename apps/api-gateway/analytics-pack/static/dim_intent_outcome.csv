@@ -1,0 +1,6 @@
+intent_outcome_key,intent_outcome_name,is_fulfilled,sort
+completed,Got a ride,TRUE,1
+gave_up_after_cancelled_after_match,Gave up after a matched trip fell through,FALSE,2
+gave_up_after_cancelled_by_rider,Gave up while negotiating,FALSE,3
+gave_up_after_expired_no_match,Gave up after search timed out,FALSE,4
+gave_up_after_abandoned_before_search,Left before searching,FALSE,5

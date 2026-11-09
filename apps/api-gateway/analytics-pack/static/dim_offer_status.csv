@@ -1,0 +1,9 @@
+offer_status_key,offer_status_name,is_accepted,rider_acted,sort
+accepted,Accepted,TRUE,TRUE,1
+rejected,Rejected by rider,FALSE,TRUE,2
+expired,Expired,FALSE,FALSE,3
+closed_other_driver_chosen,Lost to another driver,FALSE,FALSE,4
+voided_price_change,Voided by price change,FALSE,FALSE,5
+withdrawn_by_driver,Withdrawn by driver,FALSE,FALSE,6
+closed_session_cancelled,Closed: rider cancelled,FALSE,FALSE,7
+closed_search_timed_out,Closed: search timed out,FALSE,FALSE,8

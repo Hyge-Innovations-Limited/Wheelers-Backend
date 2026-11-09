@@ -1,0 +1,6 @@
+payment_method_key,payment_method_name,processor,driver_funds_available,is_cash,sort
+card_paystack,Card (Paystack),Paystack,Next day 09:00,FALSE,1
+bank_transfer,Bank transfer (Paystack),Paystack,Next day 09:00,FALSE,2
+wallet,Wheelers wallet,Wheelers,Instant,FALSE,3
+cash,Cash,Driver collects,In hand,TRUE,4
+xlm,Stellar (XLM),Stellar,Instant,FALSE,5

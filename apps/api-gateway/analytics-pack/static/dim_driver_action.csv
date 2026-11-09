@@ -1,0 +1,7 @@
+driver_action_key,driver_action_name,is_delivered,is_seen,is_bid,is_explicit_decline,offer_type,sort
+not_delivered,Ping not delivered,FALSE,FALSE,FALSE,FALSE,,1
+ignored_unseen,"Delivered, never opened",TRUE,FALSE,FALSE,FALSE,,2
+ignored_seen,"Opened, no response",TRUE,TRUE,FALSE,FALSE,,3
+declined,Declined,TRUE,TRUE,FALSE,TRUE,,4
+countered,Countered higher,TRUE,TRUE,TRUE,FALSE,counter_offer,5
+offered_at_rider_price,Took rider's price,TRUE,TRUE,TRUE,FALSE,accept_rider_price,6

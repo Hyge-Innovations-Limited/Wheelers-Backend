@@ -1,0 +1,5 @@
+channel_key,channel_name,outbound_message_cost_ngn,sort
+app,Mobile app,0,1
+whatsapp,WhatsApp,14,2
+claude,Claude,0,3
+unknown,Unknown,0,4

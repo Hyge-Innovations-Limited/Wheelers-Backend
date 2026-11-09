@@ -1,0 +1,25 @@
+hour_key,hour_label,day_part,day_part_sort,is_peak
+0,00:00,Night (00–05),1,FALSE
+1,01:00,Night (00–05),1,FALSE
+2,02:00,Night (00–05),1,FALSE
+3,03:00,Night (00–05),1,FALSE
+4,04:00,Night (00–05),1,FALSE
+5,05:00,Night (00–05),1,FALSE
+6,06:00,Early morning (06),2,FALSE
+7,07:00,Morning peak (07–09),3,TRUE
+8,08:00,Morning peak (07–09),3,TRUE
+9,09:00,Morning peak (07–09),3,TRUE
+10,10:00,Midday (10–15),4,FALSE
+11,11:00,Midday (10–15),4,FALSE
+12,12:00,Midday (10–15),4,FALSE
+13,13:00,Midday (10–15),4,FALSE
+14,14:00,Midday (10–15),4,FALSE
+15,15:00,Midday (10–15),4,FALSE
+16,16:00,Evening peak (16–19),5,TRUE
+17,17:00,Evening peak (16–19),5,TRUE
+18,18:00,Evening peak (16–19),5,TRUE
+19,19:00,Evening peak (16–19),5,TRUE
+20,20:00,Night (20–23),6,FALSE
+21,21:00,Night (20–23),6,FALSE
+22,22:00,Night (20–23),6,FALSE
+23,23:00,Night (20–23),6,FALSE
