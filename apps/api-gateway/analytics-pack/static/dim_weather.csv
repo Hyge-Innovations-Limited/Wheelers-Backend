@@ -1,0 +1,4 @@
+weather_key,weather_name,is_rain,sort
+clear,Clear,FALSE,1
+light_rain,Light rain,TRUE,2
+heavy_rain,Heavy rain,TRUE,3

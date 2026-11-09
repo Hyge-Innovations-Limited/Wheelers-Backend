@@ -1,0 +1,5 @@
+traffic_level_key,traffic_level_name,traffic_fare_multiplier,sort
+light,Light,1.0,1
+moderate,Moderate,1.1,2
+heavy,Heavy,1.25,3
+gridlock,Gridlock,1.4,4

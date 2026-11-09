@@ -3,6 +3,8 @@ import { LAUNCH_ZONES } from '@wheleers/config';
 import { adminAnalyticsClient, isDay, lagosToday, periodDays, RIDE_CHANNELS } from '@wheleers/db';
 import type { AnalyticsFilters, BreakdownBy, Bucket, FeeKind, RideChannelName, TableQuery, TripStatusFilter } from '@wheleers/db';
 import { buildWorkbook } from '../analytics/workbook';
+import { buildAnalyticsPack } from '../analytics/pack';
+import { zipFiles } from '../analytics/zip';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
 import { clientIp, recordAdminActivity } from '../admin/activity';
@@ -29,6 +31,7 @@ import { sendJson } from './utils';
  *   GET /admin/insights/riders?q=&sort=&dir=&limit=&offset=
  *   GET /admin/insights/reconcile                each headline total computed two ways
  *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1&raw=0   the Excel workbook (raw=0 leaves out the raw sheets)
+ *       &format=zip   a .zip of that workbook and the Power BI pack (powerbi/: the analyst's 30 files, _relationships.csv, guide, NOTES.md)
  *   GET /admin/fees/summary?bucket=
  *   GET /admin/fees/ledger?kind=&q=&sort=&dir=&limit=&offset=
  *   GET /admin/fees/deposits?q=&sort=&dir=&limit=&offset=      every deposit made (not tied to a ride)
@@ -167,10 +170,17 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
           return true;
         }
         recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope, from: f.from, to: f.to, contacts, raw } });
-        const file = await buildWorkbook(scope, f, bucket, contacts, raw);
-        const name = `wheelers-${scope}-${f.from}-to-${f.to}.xlsx`;
+        // The Power BI pack, built once: its tables are sheets in the workbook, and its files the zip's powerbi/ folder.
+        const pack = (raw && scope === 'overview') || url.searchParams.get('format') === 'zip' ? await buildAnalyticsPack(f) : undefined;
+        const book = await buildWorkbook(scope, f, bucket, contacts, raw, pack);
+        const workbookName = `wheelers-${scope}-${f.from}-to-${f.to}.xlsx`;
+        const asZip = url.searchParams.get('format') === 'zip';
+        const file = asZip
+          ? zipFiles([{ name: workbookName, data: book }, ...(pack ?? (await buildAnalyticsPack(f))).files.map((x) => ({ name: `powerbi/${x.name}`, data: x.data }))])
+          : book;
+        const name = asZip ? `wheelers-${scope}-${f.from}-to-${f.to}.zip` : workbookName;
         res.statusCode = 200;
-        res.setHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('content-type', asZip ? 'application/zip' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('content-disposition', `attachment; filename="${name}"`);
         res.setHeader('access-control-expose-headers', 'content-disposition');
         res.setHeader('cache-control', 'no-store');

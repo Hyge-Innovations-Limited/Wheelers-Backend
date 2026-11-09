@@ -1,0 +1,6 @@
+session_outcome_key,session_outcome_name,reached_search,is_matched,is_completed,sort
+abandoned_before_search,Left before searching,FALSE,FALSE,FALSE,1
+cancelled_by_rider,Rider cancelled while negotiating,TRUE,FALSE,FALSE,2
+expired_no_match,Search timed out,TRUE,FALSE,FALSE,3
+cancelled_after_match,Cancelled after match,TRUE,TRUE,FALSE,4
+completed,Trip completed,TRUE,TRUE,TRUE,5

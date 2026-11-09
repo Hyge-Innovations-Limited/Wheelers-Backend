@@ -1,3 +1,4 @@
+import { buildAnalyticsPack, type AnalyticsPack } from './pack';
 import ExcelJS from 'exceljs';
 import { adminAnalyticsClient, CHANNEL_LABELS, excelInsightsClient, tripActivityClient } from '@wheleers/db';
 import type { AnalyticsFilters, Bucket, Kpis, RideChannelName, TripRow } from '@wheleers/db';
@@ -427,7 +428,11 @@ async function feesSheets(book: ExcelJS.Workbook, f: AnalyticsFilters, bucket: B
   ], wd.items.map((r) => ({ ...r, name: cleanName(r.name), accountName: cleanName(r.accountName), createdAt: lagosTime(r.createdAt), settledAt: lagosTime(r.settledAt) })), cut(wd.items.length, wd.total));
 }
 
-export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean, raw = false): Promise<Buffer> {
+/**
+ * `pack`: the Power BI pack's 30 tables, each added as a sheet named like its file (dim_date, fact_trips…) when
+ * raw sheets are on. Built here when not given (the zip download passes the one it already built).
+ */
+export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, bucket: Bucket, contacts: boolean, raw = false, pack?: AnalyticsPack): Promise<Buffer> {
   const book = new ExcelJS.Workbook();
   book.creator = 'Wheelers admin';
   book.created = new Date();
@@ -601,7 +606,22 @@ export async function buildWorkbook(scope: WorkbookScope, f: AnalyticsFilters, b
     if (raw) await rawSheets(book, f, contacts);
   }
 
+  // The pack goes with the overview workbook (the fees one stays as it is).
+  if (raw && scope === 'overview') packSheets(book, pack ?? (await buildAnalyticsPack(f)));
   return Buffer.from(await book.xlsx.writeBuffer());
+}
+
+/** The Power BI pack's tables, one sheet each, after the workbook's own sheets. */
+function packSheets(book: ExcelJS.Workbook, pack: AnalyticsPack): void {
+  for (const table of pack.tables) {
+    addSheet(
+      book,
+      table.name,
+      table.columns.map((c) => ({ header: c, key: c, width: Math.min(28, Math.max(12, c.length + 2)) })),
+      table.rows,
+      table.rows.length === 0 ? 'Not recorded yet: the columns are here so the Power BI model loads (see NOTES.md in the zip).' : undefined,
+    );
+  }
 }
 
 /* ── where riders stop, and why ─────────────────────────────────────── */

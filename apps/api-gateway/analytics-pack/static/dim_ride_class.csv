@@ -1,0 +1,4 @@
+ride_class_key,ride_class_name,class_fare_multiplier,sort
+economy,Economy,1.0,1
+comfort,Comfort,1.35,2
+xl,XL,1.6,3
