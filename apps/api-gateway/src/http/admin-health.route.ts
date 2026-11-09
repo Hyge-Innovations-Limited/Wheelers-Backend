@@ -1,3 +1,4 @@
+import { prisma } from '@wheleers/db';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RedisClient } from '../redis/client';
 import { runHealthChecks } from '../health/checks';
@@ -13,7 +14,7 @@ interface AdminHealthDeps {
 }
 
 /**
- * GET /admin/health?range=1h|24h|7d
+ * GET /admin/health?range=1h|24h|7d&days=30|90|all
  * The checks run now, plus the period's uptime, charts, spikes, incidents and slowest queries.
  */
 export async function handleAdminHealthRoute(
@@ -30,7 +31,11 @@ export async function handleAdminHealthRoute(
   const range: HealthRange = asked in RANGES ? (asked as HealthRange) : '24h';
   try {
     const live = await runHealthChecks({ redis: deps.redis, horizonUrl: deps.horizonUrl });
-    sendJson(res, 200, await buildHealthReport(deps.redis, range, live));
+    // The long-term lines: one row per day, kept for good (?days=30|90|all, 30 by default).
+    const daysAsked = url.searchParams.get('days') ?? '30';
+    const take = daysAsked === 'all' ? undefined : daysAsked === '90' ? 90 : 30;
+    const days = (await prisma.healthDay.findMany({ orderBy: { day: 'desc' }, take }).catch(() => [])).reverse();
+    sendJson(res, 200, { ...(await buildHealthReport(deps.redis, range, live)), days });
   } catch (error) {
     console.error('[admin-health] report failed', { error: error instanceof Error ? error.message : String(error) });
     sendJson(res, 500, { error: 'Could not build the health report.' });

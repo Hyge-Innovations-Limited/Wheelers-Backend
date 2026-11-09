@@ -102,3 +102,4 @@ export type { TripDetails } from './trip-details';
 // Fuel tank size of common cars (litres), from makers' specs
 export { VEHICLE_TANKS, vehicleTankLitres } from './vehicle-tanks';
 export type { VehicleTankEntry } from './vehicle-tanks';
+export { createVitalsSampler, VITALS_KEY, VITALS_KEEP_MS, type VitalsSample } from './vitals';

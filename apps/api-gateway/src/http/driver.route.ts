@@ -1,3 +1,4 @@
+import { meterLocation } from '../health/location-meter';
 import { formatTripId } from '@wheleers/config';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverClient, driverLocationClient, rideClient, walletClient, driverBidClient } from '@wheleers/db';
@@ -257,7 +258,7 @@ export async function handlePostDriverLocationRoute(
       sendJson(res, 400, { error: 'lat and lng are required numbers.' });
       return;
     }
-    await driverClient.updateLocation(driver.id, lat, lng);
+    await meterLocation(() => driverClient.updateLocation(driver.id, lat, lng));
     sendJson(res, 200, { ok: true });
   } catch (error) {
     sendDriverRouteError(res, 'POST /drivers/me/location', error, 'Could not update location.');

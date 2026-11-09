@@ -25,4 +25,4 @@ export type {
   WheelersConsumer,
   TopicDefinition,
   DlqPayload,
-} from './types';
+} from './types';export { consumerLag } from './lag';

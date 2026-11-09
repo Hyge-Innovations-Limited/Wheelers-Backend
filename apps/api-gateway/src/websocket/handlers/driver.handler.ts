@@ -1,3 +1,4 @@
+import { meterLocation } from '../../health/location-meter';
 import { driverClient, driverLocationClient, pinnedPosition } from '@wheleers/db';
 import {
   DriverOfflineEvent,
@@ -101,46 +102,49 @@ export async function handleDriverMessage(
   }
 
   if (type === 'driver:gps') {
-    // Without a rideId this is an idle position ping. The driver's row used to
-    // be written only at go-online, so matching (and the pickup distance shown
-    // to riders) worked off wherever the driver was when they came online —
-    // hours stale by the afternoon. Idle pings refresh the row and stay off
-    // the gps.stream topic, which is reserved for in-trip telemetry.
-    const rideId = getString(payload, 'rideId');
-    const driverId = resolveDriverId(payload, auth);
-    const lat = requireNumber(payload, 'lat');
-    const lng = requireNumber(payload, 'lng');
+    // Timed for the Health page (location pings: how many, and how long each takes).
+    return meterLocation(async () => {
+      // Without a rideId this is an idle position ping. The driver's row used to
+      // be written only at go-online, so matching (and the pickup distance shown
+      // to riders) worked off wherever the driver was when they came online —
+      // hours stale by the afternoon. Idle pings refresh the row and stay off
+      // the gps.stream topic, which is reserved for in-trip telemetry.
+      const rideId = getString(payload, 'rideId');
+      const driverId = resolveDriverId(payload, auth);
+      const lat = requireNumber(payload, 'lat');
+      const lng = requireNumber(payload, 'lng');
 
-    if (!rideId) {
-      await driverClient.updateLocation(driverId, lat, lng);
+      if (!rideId) {
+        await driverClient.updateLocation(driverId, lat, lng);
+        return {
+          type: 'driver:gps:accepted',
+          payload: { rideId: null },
+        };
+      }
+
+      const event = GpsUpdateEvent.parse({
+        eventType: 'GPS_UPDATE',
+        rideId,
+        driverId,
+        lat,
+        lng,
+        speedKmh: getNumber(payload, 'speedKmh'),
+        headingDeg: getNumber(payload, 'headingDeg'),
+        accuracyM: getNumber(payload, 'accuracyM'),
+        timestamp,
+      });
+
+      await publisher.publishGpsEvent(event);
+      // Keep the driver's own row and trail current too — see noteTripPosition.
+      void driverLocationClient.noteTripPosition(driverId, lat, lng);
+
       return {
         type: 'driver:gps:accepted',
-        payload: { rideId: null },
+        payload: {
+          rideId: event.rideId,
+        },
       };
-    }
-
-    const event = GpsUpdateEvent.parse({
-      eventType: 'GPS_UPDATE',
-      rideId,
-      driverId,
-      lat,
-      lng,
-      speedKmh: getNumber(payload, 'speedKmh'),
-      headingDeg: getNumber(payload, 'headingDeg'),
-      accuracyM: getNumber(payload, 'accuracyM'),
-      timestamp,
     });
-
-    await publisher.publishGpsEvent(event);
-    // Keep the driver's own row and trail current too — see noteTripPosition.
-    void driverLocationClient.noteTripPosition(driverId, lat, lng);
-
-    return {
-      type: 'driver:gps:accepted',
-      payload: {
-        rideId: event.rideId,
-      },
-    };
   }
 
   return null;

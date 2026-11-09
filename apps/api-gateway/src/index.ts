@@ -1,3 +1,5 @@
+import { consumerLag } from "@wheleers/kafka-client";
+import { setLocationSink } from "./health/location-meter";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { readFile } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
@@ -756,6 +758,8 @@ async function bootstrap(): Promise<void> {
 
   // Every API request and database query, counted per minute for the admin Health page.
   const healthStats = createStatsRecorder();
+  // Driver location pings (socket and background HTTP) are counted and timed with the rest.
+  setLocationSink(healthStats.loc);
   onPrismaQuery((name, ms, failed) => {
     healthStats.db(name, ms, failed);
     addDbTime(ms);
@@ -2754,6 +2758,8 @@ async function bootstrap(): Promise<void> {
     sockets: () => registry.connectionCount,
     isLeader: leader.isLeader,
     horizonUrl: stellarConfig?.horizonUrl ?? null,
+    // ride-service (offers, bookings) and this gateway's own consumer group.
+    kafkaLag: () => consumerLag(["ride-service", sharedEnv.KAFKA_CLIENT_ID]),
   });
   if (stellar) {
     void stellar.ensureOperations()
