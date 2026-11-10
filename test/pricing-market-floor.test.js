@@ -10,6 +10,8 @@
 
 // These tests check the pricing rules themselves, before the recommended cut (pricing.ts RECOMMENDED_CUT_PERCENT).
 process.env.PRICING_RECOMMENDED_CUT_PERCENT = '0';
+process.env.PRICING_MIN_FARE_NGN = '3300';
+process.env.PRICING_MIN_OFFER_CUT_PERCENT = '0';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');

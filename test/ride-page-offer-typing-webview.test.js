@@ -401,3 +401,50 @@ test('the sheet too: the minimum line is replaced by "Lowest is", then comes bac
   assert.equal(page.el('offer-low').hidden, true);
   assert.equal(page.el('offer-min').hidden, false);
 });
+
+// Timi, 10 Nov 2026: while the rider types, the button follows the amount; it never greys out.
+test('typing: Find drivers follows each key and stays tappable; clearing the box puts the old price back', async () => {
+  const page = await loadPage(priceOnly());
+  await page.tap(page.el('price-figure'));
+  const key = (text) => { page.el('price-type').value = text; page.el('price-type').fire('input'); };
+  key('6');
+  assert.equal(page.el('find').textContent, 'Find drivers at \u20a65,000', 'one key, not an amount yet: unchanged');
+  key('61');
+  assert.equal(page.el('find').textContent, 'Find drivers at \u20a64,100', 'under the lowest: shows the lowest');
+  key('612');
+  key('6120');
+  assert.equal(page.el('find').textContent, 'Find drivers at ₦6,100');
+  assert.equal(page.el('find').disabled, false);
+  key('');
+  assert.equal(page.el('find').textContent, 'Find drivers at ₦5,000', 'nothing usable: back to the price it had');
+  page.el('price-type').fire('blur');
+  await page.settle();
+  assert.equal(page.el('find').textContent, 'Find drivers at ₦5,000', 'closed empty: back to the price it had');
+});
+
+test('typing: a fresh quote that closes the box takes the typed amount off the button', async () => {
+  const server = priceOnly();
+  const page = await loadPage(server);
+  await page.tap(page.el('price-figure'));
+  page.el('price-type').value = '7400';
+  page.el('price-type').fire('input');
+  assert.equal(page.el('find').textContent, 'Find drivers at ₦7,400');
+  server.state = priceState({ minOfferNgn: 7000, route: { pickupAddress: 'Yaba', destAddress: 'Epe', stopAddresses: [], suggestedFareNgn: 9000 } });
+  await page.poll();
+  assert.equal(page.el('find').textContent, 'Find drivers at ₦9,000');
+});
+
+test('typing in the sheet: Update price follows each key', async () => {
+  const page = await loadPage(bidsServer([]));
+  await page.poll();
+  await page.tap(page.el('change-offer'));
+  await page.tap(page.el('offer-figure'));
+  page.el('offer-type').value = '5630';
+  page.el('offer-type').fire('input');
+  assert.equal(page.el('offer-save').textContent, 'Update price to ₦5,650');
+  assert.equal(page.el('offer-save').disabled, false);
+  page.el('offer-type').value = '';
+  page.el('offer-type').fire('blur');
+  await page.settle();
+  assert.notEqual(page.el('offer-save').textContent, 'Update price to ₦5,650', 'closed empty: the typed amount goes');
+});

@@ -356,11 +356,19 @@
         W.show(line, got.low);
         W.show(hint, !got.low && (o.hintOn ? o.hintOn() : true));   // one line, not two
         if (o.after) o.after(got.amount);
+      } else if (o.preview) {
+        o.sync();   // nothing usable typed: the button goes back to the price it had
       }
     }
     figure.addEventListener('click', open);
     figure.addEventListener('keydown', function (event) { if (event && (event.key === 'Enter' || event.key === ' ')) { if (event.preventDefault) event.preventDefault(); open(); } });
     field.addEventListener('blur', done);
+    // The button follows the amount as it is typed (it stays tappable; a tap commits first).
+    field.addEventListener('input', function () {
+      if (!o.preview) return;
+      var got = typedAmount(field.value, o.floor());
+      if (got) o.preview(got.amount); else o.sync();   // nothing usable yet: the price it had
+    });
     field.addEventListener('keydown', function (event) { if (event && event.key === 'Enter') { if (event.preventDefault) event.preventDefault(); done(); } });
     // The minus and plus, and a fresh start, clear the line.
     function restore() { W.show(line, false); W.show(hint, o.hintOn ? o.hintOn() : true); }
@@ -2588,14 +2596,20 @@
     Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) {
       box.hidden = !tripBoxOn();
       box.querySelector('[data-trip="count"]').textContent = String(tripInfo.passengers);
-      box.querySelector('[data-trip="minus"]').disabled = tripInfo.passengers <= 1;
-      box.querySelector('[data-trip="plus"]').disabled = tripInfo.passengers >= TRIP_PEOPLE_MAX;
-      Array.prototype.forEach.call(box.querySelectorAll('[data-val]'), function (button) {
-        var on = tripInfo[button.getAttribute('data-trip')] === (button.getAttribute('data-val') === 'yes');
-        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      box.querySelector('[data-trip="people"]').setAttribute('aria-label', 'People: ' + tripInfo.passengers + '. Tap to change');
+      ['luggage', 'pet'].forEach(function (what) {
+        var chip = box.querySelector('[data-trip="' + what + '"]');
+        chip.setAttribute('aria-pressed', tripInfo[what] ? 'true' : 'false');
+        chip.setAttribute('aria-label', (what === 'luggage' ? 'Luggage' : 'Pet') + ': ' + (tripInfo[what] ? 'yes' : 'no'));
       });
       var note = box.querySelector('[data-trip="note"]');
       if (document.activeElement !== note) note.value = tripInfo.note;
+      // The note field shows when there is a note or it was opened; the chip says a note is there.
+      var noteOpen = Boolean(tripInfo.note) || box.getAttribute('data-note-open') === 'yes';
+      W.show(note, noteOpen);
+      var noteChip = box.querySelector('[data-trip="note-open"]');
+      noteChip.setAttribute('aria-expanded', noteOpen ? 'true' : 'false');
+      noteChip.setAttribute('aria-pressed', tripInfo.note ? 'true' : 'false');
     });
   }
   Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) {
@@ -2603,10 +2617,17 @@
       var button = event.target.closest('button[data-trip]');
       if (!button || button.disabled) return;
       var what = button.getAttribute('data-trip');
-      if (what === 'minus' || what === 'plus') {
-        tripInfo.passengers = Math.max(1, Math.min(TRIP_PEOPLE_MAX, tripInfo.passengers + (what === 'plus' ? 1 : -1)));
+      if (what === 'note-open') {
+        box.setAttribute('data-note-open', 'yes');
+        drawTripBoxes();
+        box.querySelector('[data-trip="note"]').focus();
+        return;
+      }
+      if (what === 'people') {
+        // 1 → 2 → 3 → 4 → 1: one small chip instead of a minus and a plus.
+        tripInfo.passengers = tripInfo.passengers >= TRIP_PEOPLE_MAX ? 1 : tripInfo.passengers + 1;
       } else {
-        tripInfo[what] = button.getAttribute('data-val') === 'yes';
+        tripInfo[what] = !tripInfo[what];
       }
       tripTouched = true;
       drawTripBoxes();
@@ -2651,9 +2672,8 @@
     W.show(back, toPlan || Boolean(s.chatUrl));
     back.setAttribute('href', toPlan ? '#' : s.chatUrl || '#');
     back.setAttribute('aria-label', toPlan ? 'Back to Plan your trip' : 'Back to WhatsApp');
-    var reason = reasonText(s.route.priceReason);
-    W.$('price-reason').textContent = reason;
-    W.show(W.$('price-reason'), Boolean(reason));
+    // The why-this-price line ("Raining · +₦300") is not shown (Timi, 10 Nov: unnecessary).
+    W.show(W.$('price-reason'), false);
     var signature = s.route.pickupAddress + '|' + s.route.destAddress + '|' + (s.route.stopAddresses || []).join('|') + '|' + s.route.suggestedFareNgn;
     if (priceDrawnFor !== signature) {           // a fresh quote — not every poll, or typing would be wiped
       // Another trip to price (from the chat, or planned again from Home): the trip details box starts
@@ -2712,6 +2732,7 @@
     ready: function () { return Boolean(state && state.phase === 'price'); },
     floor: function () { return state ? state.minOfferNgn || 0 : 0; },
     sync: function () { syncPrice(); },
+    preview: function (amount) { if (busy) return; W.$('find').textContent = 'Find drivers at ' + W.naira(amount); W.$('find').disabled = false; },
     after: function (amount) { track('price_changed', { method: 'typed', amountNgn: amount }); }
   });
   W.$('price-down').addEventListener('click', function () { stepPrice(false); });
@@ -3334,6 +3355,7 @@
     ready: function () { return Boolean(state); },
     floor: function () { return sheetFloor(); },
     sync: function () { syncOfferSheet(); },
+    preview: function (amount) { W.$('offer-save').textContent = (offerMode === 'restart' ? 'Search again at ' : 'Update price to ') + W.naira(amount); },
     after: function (amount) { track('price_changed', { method: 'typed', amountNgn: amount }); }
   });
   W.$('offer-down').addEventListener('click', function () { stepOffer(false); });

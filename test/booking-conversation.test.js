@@ -1965,7 +1965,7 @@ test('OFFERS FORM · Change my price: a box, "Bid updated" — drivers are told,
 
   const low = await form('data_exchange', { action: 'update_price', new_price: '100' });
   assert.equal(low.screen, 'CHANGE_PRICE');
-  assert.match(low.data.error, /below the lowest price for this trip, ₦3,300\. It's in the box now/);
+  assert.match(low.data.error, /below the lowest price for this trip, ₦2,600\. It's in the box now/);
   assert.equal(events('RIDE_RIDER_COUNTER_OFFER').length, 0);
 
   const updated = await form('data_exchange', { new_price: '3,500' }, 'CHANGE_PRICE');        // no `action` tag: the screen Meta names says it

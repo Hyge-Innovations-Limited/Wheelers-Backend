@@ -140,36 +140,36 @@ async function loadPage(server) {
 
 
 
-/** One trip box as the page's markup has it: People − n +, Luggage No/Yes, Pet No/Yes, the note. */
+/** One trip box as the page's markup has it: chips People n (1 → 4 → 1), Luggage and Pet (on / off), Note (opens the field). */
 function tripBox() {
   const parts = {
-    count: makeElement('count'), minus: makeElement('minus'), plus: makeElement('plus'), note: makeElement('note'),
+    count: makeElement('count'), people: makeElement('people'), luggage: makeElement('luggage'), pet: makeElement('pet'),
+    'note-open': makeElement('note-open'), note: makeElement('note'),
   };
-  parts.minus.attrs['data-trip'] = 'minus';
-  parts.plus.attrs['data-trip'] = 'plus';
-  const seg = [];
-  for (const what of ['luggage', 'pet']) for (const val of ['no', 'yes']) {
-    const b = makeElement(`${what}-${val}`);
-    b.attrs['data-trip'] = what;
-    b.attrs['data-val'] = val;
-    seg.push(b);
+  for (const k of ['people', 'luggage', 'pet', 'note-open']) {
+    parts[k].attrs['data-trip'] = k;
+    parts[k].closest = () => parts[k];
   }
-  for (const b of [parts.minus, parts.plus, ...seg]) b.closest = () => b;
   const box = makeElement('trip-box');
   box.querySelector = (selector) => {
-    const m = /data-trip="(\w+)"/.exec(selector);
+    const m = /data-trip="([\w-]+)"/.exec(selector);
     return m ? parts[m[1]] : null;
   };
-  box.querySelectorAll = (selector) => (selector === '[data-val]' ? seg : []);
+  box.querySelectorAll = () => [];
   const press = (b) => box.fire('click', { target: b });
+  const on = (what) => parts[what].attrs['aria-pressed'] === 'true';
+  const count = () => Number(parts.count.textContent);
   return {
-    box, parts, seg,
-    plus: () => press(parts.plus),
-    minus: () => press(parts.minus),
-    yes: (what) => press(seg.find((b) => b.attrs['data-trip'] === what && b.attrs['data-val'] === 'yes')),
-    no: (what) => press(seg.find((b) => b.attrs['data-trip'] === what && b.attrs['data-val'] === 'no')),
+    box, parts,
+    /** One more person (a tap on the chip; past 4 it goes back to 1). */
+    plus: () => press(parts.people),
+    /** One fewer: three taps round the 1 → 4 → 1 circle. */
+    minus: () => { if (count() > 1) for (let i = 0; i < 3; i++) press(parts.people); },
+    yes: (what) => { if (!on(what)) press(parts[what]); },
+    no: (what) => { if (on(what)) press(parts[what]); },
+    openNote: () => press(parts['note-open']),
     type: (text) => { parts.note.value = text; parts.note.fire('input'); },
-    pressed: (what) => seg.filter((b) => b.attrs['data-trip'] === what && b.attrs['aria-pressed'] === 'true').map((b) => b.attrs['data-val']),
+    pressed: (what) => [on(what) ? 'yes' : 'no'],
   };
 }
 
@@ -194,6 +194,8 @@ test('the box is on Set your price and on the ride for later\'s confirm, before 
   const price = HTML.slice(HTML.indexOf('data-view="price"'), HTML.indexOf('data-view="offers"'));
   assert.ok(price.indexOf('trip-box') > 0 && price.indexOf('trip-box') < price.indexOf('price-card'));
   assert.match(price, /placeholder="Note for driver \(optional\)"/);
+  // One row of chips: People, Luggage, Pet, Note.
+  assert.deepEqual([...price.matchAll(/class="trip-chip" type="button" data-trip="([\w-]+)"/g)].map((m) => m[1]), ['people', 'luggage', 'pet', 'note-open']);
 });
 
 test('untouched: 1 person, luggage and pet Yes (the default), no note; what the rider sets goes with Find drivers', async () => {
@@ -201,14 +203,18 @@ test('untouched: 1 person, luggage and pet Yes (the default), no note; what the 
   const b = tripBox();
   const page = await loadPage(priceServer([a.box, b.box]));
   assert.equal(a.parts.count.textContent, '1');
-  assert.equal(a.parts.minus.disabled, true);
   assert.deepEqual(a.pressed('luggage'), ['yes']);
   assert.deepEqual(a.pressed('pet'), ['yes']);
+  assert.equal(a.parts.note.hidden, true, 'the note field waits for its chip');
 
-  for (let i = 0; i < 6; i++) a.plus();
+  for (let i = 0; i < 3; i++) a.plus();
   assert.equal(a.parts.count.textContent, '4', 'at most 4');
-  assert.equal(a.parts.plus.disabled, true);
+  a.plus();
+  assert.equal(a.parts.count.textContent, '1', 'past 4 the chip goes back to 1');
+  for (let i = 0; i < 3; i++) a.plus();
   a.minus();
+  a.openNote();
+  assert.equal(a.parts.note.hidden, false, 'the Note chip opens the field');
   a.no('luggage');
   a.no('pet');
   a.yes('pet');
