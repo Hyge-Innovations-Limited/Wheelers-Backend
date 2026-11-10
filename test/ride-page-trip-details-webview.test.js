@@ -35,7 +35,7 @@ function makeElement(id) {
     appendChild(child) { node.children.push(child); return child; },
     removeChild() {}, insertBefore(child) { node.children.push(child); return child; },
     setAttribute(k, v) { node.attrs[k] = v; }, getAttribute(k) { return node.attrs[k] === undefined ? null : node.attrs[k]; },
-    removeAttribute() {}, focus() {}, blur() {}, select() {}, scrollIntoView() {}, remove() {},
+    removeAttribute(k) { delete node.attrs[k]; }, focus() {}, blur() {}, select() {}, scrollIntoView() {}, remove() {},
     get lastChild() { return node.children[node.children.length - 1] || (node._last = node._last || makeElement('last')); }, get firstChild() { return node.children[0] || null; },
     querySelector() { return makeElement('q'); }, querySelectorAll() { return []; }, closest() { return null; }, contains() { return false; },
     getBoundingClientRect() { return { top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }; },
@@ -307,12 +307,15 @@ test('a different trip to price, with nothing said for it, starts at the default
   server.state.tripDetails = { passengers: 3, luggage: false, pet: false };
   const page = await loadPage(server);
   assert.equal(a.parts.count.textContent, '3');
+  a.openNote();
+  assert.equal(a.parts.note.hidden, false);
   // The rider cancels and plans another trip: its price state says nothing about details.
   server.state = { ...server.state, route: { ...server.state.route, destAddress: 'Lekki' } };
   delete server.state.tripDetails;
   await page.poll();
   assert.equal(a.parts.count.textContent, '1');
   assert.deepEqual(a.pressed('pet'), ['yes']);
+  assert.equal(a.parts.note.hidden, true, 'the new trip starts with the note field closed');
 });
 
 /** Set your price for a trip the page can change (Plan your trip over it), and the page's answers. */
