@@ -2576,6 +2576,8 @@
   function resetTripBox() {
     tripInfo = { passengers: 1, luggage: true, pet: true, note: '' };
     tripTouched = false;
+    // A new trip starts with the note field closed again.
+    Array.prototype.forEach.call(document.querySelectorAll('.trip-box'), function (box) { box.removeAttribute('data-note-open'); });
     drawTripBoxes();
   }
   /** At most 60 characters, never half an emoji. */
