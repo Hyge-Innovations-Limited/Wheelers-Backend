@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { prisma } from '@wheleers/db';
+import { prisma, userDeviceClient } from '@wheleers/db';
 import { PRICING_AREAS, holidayOn, pricingAreaOf, zoneFor } from '@wheleers/config';
 import type { AnalyticsFilters } from '@wheleers/db';
 
@@ -138,6 +138,8 @@ export async function buildAnalyticsPack(f: Pick<AnalyticsFilters, 'from' | 'to'
     prisma.user.findMany({ where: { id: { in: riderIds } }, select: { id: true, createdAt: true } }),
   ]);
   const driverUserIds = drivers.map((d) => d.userId);
+  // Each person's phone system from their latest app or web device (UserDevice): device_os / phone_os.
+  const osOf = await userDeviceClient.platformsFor([...riderIds, ...driverUserIds]).catch(() => new Map());
   const driverByUser = new Map(drivers.map((d) => [d.userId, d.id]));
   const [ledger, riderMoney] = await Promise.all([
     prisma.transaction.findMany({ where: { createdAt: { gte: start, lt: end }, wallet: { userId: { in: driverUserIds } } }, orderBy: { createdAt: 'asc' }, select: { id: true, type: true, direction: true, amountNgn: true, balanceAfterNgn: true, referenceId: true, createdAt: true, wallet: { select: { userId: true } } } }),
@@ -313,12 +315,12 @@ export async function buildAnalyticsPack(f: Pick<AnalyticsFilters, 'from' | 'to'
     const preferred = methods.sort((a, b) => methods.filter((m) => m === b).length - methods.filter((m) => m === a).length)[0] ?? '';
     const given = riderRatings.get(u.id);
     return {
-      rider_id: u.id, signup_date: dayOf(u.createdAt), signup_channel: CHANNEL[theirs[0]?.channel ?? ''] ?? '',
+      rider_id: u.id, signup_date: dayOf(u.createdAt), signup_channel: CHANNEL[theirs[0]?.channel ?? ''] ?? '', device_os: osOf.get(u.id)?.platform ?? '',
       rider_rating: given ? round(given.reduce((a, b) => a + b, 0) / given.length, 2) : null, preferred_payment: preferred,
     };
   });
   const driverRows: Row[] = drivers.map((d) => ({
-    driver_id: d.id, vehicle_id: d.id, joined_date: dayOf(d.user.createdAt), verification_status: d.kycStatus.toLowerCase(), current_rating: d.rating,
+    driver_id: d.id, vehicle_id: d.id, joined_date: dayOf(d.user.createdAt), phone_os: osOf.get(d.userId)?.platform ?? '', verification_status: d.kycStatus.toLowerCase(), current_rating: d.rating,
   }));
   const year = Number(dayOf(now).slice(0, 4));
   const vehicles: Row[] = drivers.map((d) => ({
@@ -377,7 +379,7 @@ ${lines.join('\n')}
 - fact_session_events, fact_request_notifications (every ping to each driver, delivered / seen), fact_price_changes, fact_trip_rating_tags, dim_experiment_variant.
 - In fact_ride_sessions and fact_ride_intents: one search is one intent for now (search-again attempts are not yet grouped into one need to travel); rider history, drivers online and messaging-cost columns are empty.
 - In fact_driver_offers: notification, driver position, expiry and list-position columns.
-- In dim_rider / dim_driver: names and phones (left out on purpose), age, device, home area, segment, other platforms.
+- In dim_rider / dim_driver: names and phones (left out on purpose), age, home area, segment, other platforms. device_os / phone_os come from the person's latest app or web visit (empty until they have one).
 - Fuel estimates and driver gross / net in fact_trips.
 
 ## Our values in the analyst's keys

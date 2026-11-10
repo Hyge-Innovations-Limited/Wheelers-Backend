@@ -1,3 +1,4 @@
+import { userDeviceClient } from '@wheleers/db';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RedisClient } from '../redis/client';
 import { serviceUsage } from '../usage/service-usage';
@@ -49,7 +50,7 @@ function fail(res: ServerResponse, error: unknown, message: string): void {
   });
 }
 
-/** GET /admin/users?role=&q=&limit=&offset=&sort= */
+/** GET /admin/users?role=&q=&limit=&offset=&sort=&device=android|ios|computer */
 export async function handleAdminListUsersRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -60,6 +61,7 @@ export async function handleAdminListUsersRoute(
 
   const roleParam = url.searchParams.get('role');
   const sortParam = url.searchParams.get('sort');
+  const deviceParam = url.searchParams.get('device');
   const role = roleParam === 'rider' || roleParam === 'driver' ? roleParam : 'all';
   const sort =
     sortParam === 'rides' || sortParam === 'spend' || sortParam === 'name'
@@ -73,8 +75,12 @@ export async function handleAdminListUsersRoute(
       q: url.searchParams.get('q') ?? undefined,
       limit: intParam(url, 'limit', 25),
       offset: intParam(url, 'offset', 0),
+      device: deviceParam === 'android' || deviceParam === 'ios' || deviceParam === 'computer' ? deviceParam : undefined,
     });
-    sendJson(res, 200, result);
+    // Each person's latest device (app or web), for the list's Device column.
+    const items = (result as { items?: Array<{ id: string }> }).items ?? [];
+    const devices = await userDeviceClient.platformsFor(items.map((u) => u.id)).catch(() => new Map());
+    sendJson(res, 200, { ...result, items: items.map((u) => ({ ...u, device: devices.get(u.id) ?? null })) });
   } catch (error) {
     fail(res, error, 'could not list users');
   }
@@ -107,8 +113,12 @@ export async function handleAdminGetUserRoute(
     const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
     const active = (value: Date | null | undefined) => Boolean(value && value.getTime() > Date.now());
 
+    // The devices they use (app, our web pages, WhatsApp): collected only, shown on the profile.
+    const devices = await userDeviceClient.listByUser(userId).catch(() => []);
+
     sendJson(res, 200, {
       ...detail,
+      devices,
       security: security
         ? {
             hasPin: Boolean(security.walletPinHash),

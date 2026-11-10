@@ -2007,3 +2007,47 @@ model HealthDay {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
+
+/// The devices a person uses, one row per kind of device (shown on their admin profile). Collected only:
+/// nothing in the product changes with it. No phone names, advertising ids or fingerprints.
+model UserDevice {
+  id            String   @id @default(uuid())
+  userId        String
+  /// app | web | whatsapp
+  source        String
+  /// Which row this is for the person: source + system + model (or browser).
+  key           String
+  /// android | ios | windows | mac | linux | other
+  platform      String?
+  osVersion     String?
+  maker         String?
+  model         String?
+  /// phone | tablet | computer
+  formFactor    String?
+  browser       String?
+  browserVersion String?
+  appVersion    String?
+  appBuild      String?
+  ramGb         Float?
+  cpuCores      Int?
+  /// 4g, 3g, 2g, slow-2g (the browser's own reading)
+  network       String?
+  saveData      Boolean?
+  /// The page was opened from the WhatsApp app (Android, from the referrer).
+  fromWhatsapp  Boolean?
+  language      String?
+  timeZone      String?
+  /// width x height @ pixel ratio
+  screen        String?
+  /// WhatsApp row only: MTN / Airtel / Glo / 9mobile from the number prefix (approximate: numbers move).
+  phoneNetwork  String?
+  /// WhatsApp row only: whether WhatsApp forms open for them (null: not known yet).
+  formsOpen     Boolean?
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+  timesSeen     Int      @default(1)
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@index([platform])
+}

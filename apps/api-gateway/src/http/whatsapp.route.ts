@@ -1,3 +1,6 @@
+import { noteStatus, noteUserWrote } from '../whatsapp/form-fallback';
+import { userDeviceClient } from '@wheleers/db';
+import { phoneNetworkOf, shouldRecord } from '../devices/device-report';
 import { randomUUID } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { groupRideClient, walletClient, walletSecurityClient, withdrawalClient, rideClient } from '@wheleers/db';
@@ -17,7 +20,7 @@ import { geocodeAddress, findPlaceOptions, findAreaSpots, kmBetween, SAME_CITY_K
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { logActivity } from '../analytics/log-activity';
 import { chatTripDetailsOn, clearSaidTripDetails, readSaidTripDetails, rememberSaidTripDetails, saidLine, searchTripDetails } from '../whatsapp/trip-details-said';
-import { storeWhatsappRide, storeLastRoute, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
+import { lookupUserIdByPhone, storeWhatsappRide, storeLastRoute, setActiveRide, getActiveRide, clearActiveRide, setPhoneLookup, markWhatsappInbound, cleanupRideKeys, setPendingLocation, setPendingAreaHint, clearPendingLocation, setBookingStage, getBookingStage, clearBookingStage, getBids, getRideMeta, storePendingRoute, getPendingRoute, clearPendingRoute, getGroupRequestRider, getPendingGeoChoices, clearPendingGeoChoices, getPendingFarPlace, clearPendingFarPlace, clearPendingAccept, clearPendingWhatsappWithdrawal, getLastRoute, getLastCompletedRide, clearLastCompletedRide, rememberChatCancellation } from '../whatsapp-flows/bid-state';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { SCHEDULED_TEMPLATE_REPLY_ID } from '../whatsapp/scheduled-template';
 import { sendFlowOffersMessage } from '../whatsapp-flows/whatsapp-notifier';
@@ -37,7 +40,7 @@ import { awaitingPrice } from '../whatsapp/stages/awaiting-price';
 import { rememberLastInbound } from '../whatsapp-flows/ride-reactions';
 import { recordInboundWhatsapp } from '../whatsapp/transcript';
 import { getHeaderValue, isValidMetaSignature, replyAndLog, sendMetaFlowMessage, sendMetaReply, sendTypingIndicator, sendWhatsappText } from '../whatsapp/send';
-import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, isAffirmativeReply, isBookingOpener, isCancelCommand, isWholeNewTrip, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
+import { CANCELLATION_REASON_PROMPT, MetaMessageInfo, NONE_OF_THESE, extractMetaFailures, extractMetaMessages, extractMetaStatuses, isAffirmativeReply, isBookingOpener, isCancelCommand, isWholeNewTrip, isGroupCancelCommand, isGroupStatusCommand, isWithdrawalStage, isWithdrawalStatusCommand, parseCancellationReason, stripDirectionPrefix } from '../whatsapp/parse';
 import { askIfFarPlaceIsMeant, bookingIntentGroq, sendPlaceChoices, takePickedPlace } from '../whatsapp/places';
 import { BOOKING_START_PROMPT, ROUTE_PLAN_FAILED_REPLY, TIMED_OUT_REPLY, buildGroupSuggestionLine, forgetBookingInProgress, handleTripTap, planRouteSafe, replanPendingRoute, samePlacePair, sendQuoteWithPriceButton, startBookingOver } from '../whatsapp/trip';
 import { CHAT_REPLY_ID, SOS_CANCEL_REPLY_ID, SOS_REPLY_ID, TRACK_REPLY_ID, handleRideCardTap } from '../whatsapp/ride-card';
@@ -126,6 +129,12 @@ export async function handleMetaWhatsappWebhookRoute(
       console.warn('[whatsapp] Meta could not deliver a message', failure);
     }
 
+    // Read / delivered news starts the check on an unopened form (whatsapp/form-fallback.ts).
+    for (const status of extractMetaStatuses(parsed)) {
+      const userId = await lookupUserIdByPhone(deps.redisClient, status.to).catch(() => null);
+      if (userId) await noteStatus(deps.redisClient, userId, status.status, status.at).catch(() => undefined);
+    }
+
     // Meta sends status updates (delivered, read) — those yield no messages.
     for (const msgInfo of extractMetaMessages(parsed)) {
       await handleIncomingMetaMessage(deps, msgInfo);
@@ -174,10 +183,16 @@ export async function handleIncomingMetaMessage(
     await setPhoneLookup(deps.redisClient, user.id, phone).catch(() => {});
     // Their 24 h WhatsApp window starts again now (rides for later start inside it).
     await markWhatsappInbound(deps.redisClient, user.id).catch(() => {});
+    // They wrote: no link follow-up for a form sent before this (form-fallback.ts).
+    await noteUserWrote(deps.redisClient, user.id).catch(() => undefined);
     // The message the bot's next ride reaction goes on (ride-reactions.ts).
     await rememberLastInbound(deps.redisClient, phone, msgInfo.messageId);
     // The rider's transcript: this message as they sent it (admin reads the chat).
     void recordInboundWhatsapp(user.id, msgInfo);
+    // Their profile's WhatsApp row: the network from the number (admin Devices card; at most every 10 minutes).
+    if (shouldRecord(user.id, 'whatsapp')) {
+      void userDeviceClient.record(user.id, { source: 'whatsapp', phoneNetwork: phoneNetworkOf(phone) }).catch(() => undefined);
+    }
 
     const activeRideId = await getActiveRide(deps.redisClient, user.id);
     const bookingStage = await getBookingStage(deps.redisClient, user.id);

@@ -1,3 +1,4 @@
+import { noteFormOpened } from '../whatsapp/form-fallback';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { GoogleMapsRoutePlanner, validateRiderOffer } from '@wheleers/config';
@@ -213,6 +214,8 @@ export async function handleFlowAction(
   const { rideId, userId } = tokenData;
   // The rider's transcript: every step in a form, as it happens (admin reads it with the chat).
   void recordFormStep(userId, rideId, body);
+  // The form opened on their WhatsApp: no link follow-up, and their profile says forms open.
+  if (body.action === 'INIT') void noteFormOpened(deps.redisClient, userId).catch(() => undefined);
 
   // ── The Edit-trip form (token `edit:<userId>`) is its own small flow ───
   if (rideId === 'edit') {

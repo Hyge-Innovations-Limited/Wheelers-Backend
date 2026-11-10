@@ -73,6 +73,8 @@ export const adminMetricsClient = {
     limit?: number;
     offset?: number;
     sort?: 'recent' | 'rides' | 'spend' | 'name';
+    /** People who have used this kind of device (app or our web pages; UserDevice). */
+    device?: 'android' | 'ios' | 'computer';
   } = {}) => {
     const limit = Math.min(Math.max(options.limit ?? 25, 1), 100);
     const offset = Math.max(options.offset ?? 0, 0);
@@ -82,6 +84,11 @@ export const adminMetricsClient = {
     const filters: Prisma.Sql[] = [Prisma.sql`u.id <> ${PLATFORM_USER_ID}`];
     if (role === 'driver') filters.push(Prisma.sql`d.id IS NOT NULL`);
     else if (role === 'rider') filters.push(Prisma.sql`d.id IS NULL`);
+    if (options.device === 'computer') {
+      filters.push(Prisma.sql`EXISTS (SELECT 1 FROM "UserDevice" ud WHERE ud."userId" = u.id AND ud.source IN ('app', 'web') AND ud."formFactor" = 'computer')`);
+    } else if (options.device === 'android' || options.device === 'ios') {
+      filters.push(Prisma.sql`EXISTS (SELECT 1 FROM "UserDevice" ud WHERE ud."userId" = u.id AND ud.source IN ('app', 'web') AND ud.platform = ${options.device} AND COALESCE(ud."formFactor", '') <> 'computer')`);
+    }
 
     if (q) {
       const like = `%${q}%`;
