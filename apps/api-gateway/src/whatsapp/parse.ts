@@ -72,6 +72,24 @@ export function extractMetaFailures(body: unknown): MetaDeliveryFailure[] {
   return out;
 }
 
+/** WhatsApp's read and delivered news for our messages: who, which, and when (ms). */
+export function extractMetaStatuses(body: unknown): Array<{ to: string; status: 'read' | 'delivered'; at: number }> {
+  const payload = body as Record<string, unknown> | null;
+  if (payload?.object !== 'whatsapp_business_account') return [];
+  const out: Array<{ to: string; status: 'read' | 'delivered'; at: number }> = [];
+  for (const entry of (payload.entry as Array<Record<string, unknown>> | undefined) ?? []) {
+    for (const change of (entry.changes as Array<Record<string, unknown>> | undefined) ?? []) {
+      const value = change.value as Record<string, unknown> | undefined;
+      for (const status of (value?.statuses as Array<Record<string, unknown>> | undefined) ?? []) {
+        if (status.status !== 'read' && status.status !== 'delivered') continue;
+        const seconds = Number(status.timestamp);
+        out.push({ to: String(status.recipient_id ?? ''), status: status.status, at: Number.isFinite(seconds) ? seconds * 1000 : Date.now() });
+      }
+    }
+  }
+  return out;
+}
+
 export function extractMetaMessages(body: unknown): MetaMessageInfo[] {
   const out: MetaMessageInfo[] = [];
   const payload = body as Record<string, unknown>;

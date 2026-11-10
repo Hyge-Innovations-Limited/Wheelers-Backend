@@ -1,3 +1,5 @@
+import { formInMessage, noteFormSent, sendFormLink, sweepFormChecks } from "./whatsapp/form-fallback";
+import { handleDeviceRoute } from "./http/device.route";
 import { consumerLag } from "@wheleers/kafka-client";
 import { setLocationSink } from "./health/location-meter";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
@@ -468,7 +470,23 @@ async function bootstrap(): Promise<void> {
   driverPresence.configure((...args) => redisCommandClient.send(...args));
   // Every outbound call to Google, Gemini, Groq, Paystack, Meta… is counted for /admin/usage/services.
   // Every outgoing call is counted; every WhatsApp message the bot sends is also written to the rider's transcript.
-  meterOutboundCalls(redisCommandClient, { onWhatsappSent: (body) => { void recordOutboundWhatsapp(body); } });
+  meterOutboundCalls(redisCommandClient, {
+    onWhatsappSent: (body) => {
+      void recordOutboundWhatsapp(body);
+      // A form (Flow) went out: noted, so a link follows if it is never opened (whatsapp/form-fallback.ts).
+      const form = formInMessage(body, gatewayEnv.JWT_SECRET);
+      if (form) void noteFormSent(redisCommandClient, form).catch(() => undefined);
+    },
+  });
+  // Unopened forms (WhatsApp Desktop, a second device): the link, every 10 s, each check claimed by one process.
+  setInterval(() => {
+    void sweepFormChecks(redisCommandClient, (userId, phone) => sendFormLink({
+      metaAccessToken: gatewayEnv.META_ACCESS_TOKEN,
+      metaPhoneNumberId: gatewayEnv.META_PHONE_NUMBER_ID,
+      appBaseUrl: gatewayEnv.APP_BASE_URL,
+      jwtSecret: gatewayEnv.JWT_SECRET,
+    }, userId, phone)).catch(() => undefined);
+  }, 10_000).unref();
   await redisSubscriberClient.connect();
 
   const publisher = new GatewayPublisher(producer);
@@ -923,6 +941,12 @@ async function bootstrap(): Promise<void> {
 
     // Passkeys: Face ID or a fingerprint instead of an SMS code.
     if (await handlePasskeyRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient }, url)) {
+      return;
+    }
+
+    // The devices a person uses (collected for their admin profile): web pages and the app report here.
+    if (url.pathname === "/device/web" || url.pathname === "/device/app") {
+      await handleDeviceRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET }, url);
       return;
     }
 

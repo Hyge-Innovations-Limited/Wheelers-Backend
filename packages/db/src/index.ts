@@ -148,3 +148,4 @@ export {
   RidePaymentMethod,
   RiderKycStatus,
 } from '@prisma/client';
+export { userDeviceClient, deviceKey, type DeviceReport } from './clients/user-device.client';

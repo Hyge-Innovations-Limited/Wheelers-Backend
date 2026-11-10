@@ -1,3 +1,4 @@
+import { noteFormOpened } from '../whatsapp/form-fallback';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { GoogleMapsRoutePlanner, validateRiderOffer } from '@wheleers/config';
@@ -99,6 +100,8 @@ async function handleFlowAction(
   }
 
   const { userId } = tokenData;
+  // The form opened on their WhatsApp: no link follow-up, and their profile says forms open.
+  if (body.action === 'INIT') void noteFormOpened(deps.redisClient, userId).catch(() => undefined);
   const pending = await getPendingRideSearch(deps.redisClient, userId);
   if (!pending) {
     return { screen: 'CONFIRMATION', data: { message: 'This ride search has expired. Send a new message to book a ride.' } };
