@@ -61,11 +61,25 @@ const bookingFeeOf = (version: PricingVersion) => (version === 1 ? V1_BOOKING_FE
 export const PLATFORM_FEE_NGN = BOOKING_FEE_NGN;
 /** Old name: how far below the suggested fare a rider may go. */
 export const MIN_OFFER_DISCOUNT = 1 - MIN_OFFER_SHARE;
+/** A number from the environment within its range, else the default (the rule tests pin the old values with it). */
+function envNumber(name: string, fallback: number, min: number, max: number): number {
+  const raw = typeof process !== 'undefined' ? process.env?.[name] : undefined;
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
 /**
- * Hard floor on what any ride can cost the rider, regardless of distance.
- * Short trips would otherwise leave the driver nothing for their time.
+ * Hard floor on what any ride can cost the rider, regardless of distance: ₦2,600 (Timi, 10 Nov 2026; was ₦3,300,
+ * which pinned every trip under ~4.5 km to one price). Trips above it are priced by distance, time, hour, rain
+ * and surge. PRICING_MIN_FARE_NGN overrides it (the rule tests pin ₦3,300).
  */
-export const MIN_FARE_NGN = 3300;
+export const MIN_FARE_NGN = envNumber('PRICING_MIN_FARE_NGN', 2600, 500, 10_000);
+/**
+ * The rider's lowest offer is this much under what the minimum rule gives (Timi, 10 Nov 2026: 10%), never under
+ * MIN_FARE_NGN. PRICING_MIN_OFFER_CUT_PERCENT overrides it (the rule tests set 0).
+ */
+export const MIN_OFFER_CUT_PERCENT = envNumber('PRICING_MIN_OFFER_CUT_PERCENT', 10, 0, 50);
+const MIN_OFFER_FACTOR = 1 - MIN_OFFER_CUT_PERCENT / 100;
 /** Fares shown to riders are rounded up to this. */
 export const FARE_ROUNDING_INCREMENT = 50;
 export const SERVICE_FEE_NGN = BOOKING_FEE_NGN; // the booking fee's old name
@@ -1544,9 +1558,11 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
   // the minimum is still never above the recommended price itself.
   const pricedNgn = suggestedFareNgn / RECOMMENDED_FACTOR;
   const recommendedTripFare = tripFareNgn(pricedNgn);
+  // The rider's lowest offer: the rule's figure, 10% lower (MIN_OFFER_CUT_PERCENT), rounded up to ₦50.
+  const lower = (n: number) => roundUpToIncrement(n * MIN_OFFER_FACTOR, FARE_ROUNDING_INCREMENT);
   // A share of the suggested price (inDrive's minimum ÷ its one-click): the room grows with the trip.
   if (pricingSettings.minOfferShare !== null) {
-    const byShare = roundUpToIncrement(pricedNgn * pricingSettings.minOfferShare, FARE_ROUNDING_INCREMENT);
+    const byShare = lower(roundUpToIncrement(pricedNgn * pricingSettings.minOfferShare, FARE_ROUNDING_INCREMENT));
     return {
       minOfferNgn: Math.min(Math.max(byShare, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
       maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
@@ -1557,7 +1573,7 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
   // trip costs. It never goes under the minimum fare, nor above the suggested
   // fare on a trip that is already at the minimum.
   if (pricingSettings.minOfferGapNgn > 0) {
-    const byGap = roundUpToIncrement(pricedNgn - pricingSettings.minOfferGapNgn, FARE_ROUNDING_INCREMENT);
+    const byGap = lower(roundUpToIncrement(pricedNgn - pricingSettings.minOfferGapNgn, FARE_ROUNDING_INCREMENT));
     return {
       minOfferNgn: Math.min(Math.max(byGap, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
       maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
@@ -1571,7 +1587,7 @@ export function offerLimitsNgn(suggestedFareNgn: number): { minOfferNgn: number;
     ? roundUpToIncrement(pricedNgn - room, FARE_ROUNDING_INCREMENT)
     : 0;
   return {
-    minOfferNgn: Math.min(Math.max(byShare, byPremium, MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
+    minOfferNgn: Math.min(Math.max(lower(Math.max(byShare, byPremium)), MIN_FARE_NGN), Math.max(suggestedFareNgn, MIN_FARE_NGN)),
     maxOfferNgn: fareFromTripFareNgn(recommendedTripFare * MAX_COUNTER_SHARE),
   };
 }

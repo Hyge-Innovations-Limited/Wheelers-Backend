@@ -135,34 +135,36 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 20px; line-height
 /* a place on the route card opens Plan your trip on it */
 .route-card.editable [data-edit] { cursor: pointer; border-radius: 10px; }
 .route-card.editable [data-edit]:active { opacity: 0.72; }
+/* Set your price fits one screen: the two places without their labels, km and minutes under them */
+[data-view="price"] .route-label { display: none; }
+[data-view="price"] .route-card { flex-wrap: wrap; padding: 10px 14px; }
+[data-view="price"] .route-text { padding-bottom: 4px; }
+[data-view="price"] .rail-line { min-height: 8px; margin: 2px 0; }
+.route-meta { flex: 1 0 100%; margin: 2px 0 0 26px; font-size: 13px; line-height: 18px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tint-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .tint-chip { padding: 6px 10px; border-radius: 999px; background: var(--soft); font-size: 13px; line-height: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tint-chip:empty { display: none; }
 
-/* People, luggage, pet, a note (the app's trip details box, app/ride-selection.tsx) */
-.trip-box { background: var(--bg); border: 2px solid var(--ink); border-radius: var(--r-lg); padding: 4px 14px; display: flex; flex-direction: column; }
-.trip-row { display: flex; align-items: center; gap: 12px; min-height: 54px; border-bottom: 1px solid var(--line); }
-.trip-row:last-child { border-bottom: 0; }
-.trip-row > svg { flex: 0 0 auto; width: 22px; height: 22px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.trip-label { flex: 1 1 auto; font-size: 15px; font-weight: 700; }
-.trip-count { display: flex; align-items: center; gap: 4px; }
-.trip-step { width: 44px; height: 44px; border-radius: 22px; border: 2px solid var(--ink); background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 0; }
-.trip-step svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linecap: round; }
-.trip-step.plus { background: var(--ink); }
-.trip-step.plus svg { stroke: var(--page); }
-.trip-step:disabled { opacity: 0.35; cursor: not-allowed; }
-.trip-step:active:not(:disabled) { opacity: 0.72; }
-.trip-num { width: 30px; text-align: center; font-family: var(--display); font-weight: 800; font-size: 20px; line-height: 24px; font-variant-numeric: tabular-nums; }
-.trip-seg { display: flex; gap: 2px; padding: 3px; border-radius: var(--r-sm); background: var(--soft); }
-.trip-seg button { width: 56px; height: 44px; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 700; }
-.trip-seg button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); }
-.trip-seg button[data-val="yes"][aria-pressed="true"] { background: var(--orange); color: var(--ink); font-weight: 800; }
-.trip-note input { flex: 1 1 auto; min-width: 0; min-height: 44px; border: 0; outline: none; background: transparent; font: inherit; font-size: 16px; color: var(--ink); }
-.trip-note input::placeholder { color: var(--muted); }
-.trip-note:focus-within { box-shadow: inset 0 -2px 0 var(--orange); }
+/* People, luggage, pet, a note (the app's trip details box, app/ride-selection.tsx): one row of small chips.
+   People goes 1 → 4 → 1 on a tap; Luggage and Pet turn on (orange) and off; Note opens its field under the row. */
+.trip-box { display: flex; flex-direction: column; gap: 8px; }
+.trip-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.trip-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px;
+  border: 1.5px solid var(--card-edge); border-radius: 999px; background: var(--bg);
+  font-size: 13px; line-height: 18px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.trip-chip svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.trip-chip[aria-pressed="true"] { background: var(--orange); border-color: var(--orange); }
+.trip-chip:active { opacity: 0.72; }
+.trip-note-input {
+  min-height: 44px; padding: 0 14px; border: 1.5px solid var(--card-edge); border-radius: var(--r-md);
+  background: var(--bg); outline: none; font: inherit; font-size: 16px; color: var(--ink);
+}
+.trip-note-input:focus { border-color: var(--ink); }
 
 /* PriceCard: the figure between a minus and a plus */
-.price-card { padding: 14px 16px; border-radius: 20px; background: var(--ink); display: flex; flex-direction: column; gap: 10px; }
+.price-card { padding: 12px 14px; border-radius: 20px; background: var(--ink); display: flex; flex-direction: column; gap: 6px; }
 .price-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .price-label { font-size: 14px; line-height: 19px; color: var(--on-ink-muted); }
 .price-side { flex-shrink: 1; font-size: 13px; line-height: 19px; color: var(--on-ink-muted); text-align: right; }
