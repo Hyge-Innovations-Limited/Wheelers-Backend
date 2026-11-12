@@ -3737,7 +3737,68 @@
     // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';
+    drawWaiting(s);
     drawTripFoot(s);
+  }
+
+  /* waiting time: 5 free minutes after the driver arrives, then a fee a minute until the trip starts
+   * (the server's rule, rides/waiting.ts). The meter runs here between answers, on the server's clock. */
+  var waitTimer = null, waitInfo = null, waitSkewMs = 0, waitShownFee = null;
+
+  function drawWaiting(s) {
+    var t = (s && s.trip) || {};
+    var w = t.waiting;
+    var on = Boolean(w && w.arrivedAt && w.ngnPerMinute > 0);
+    // After the start: what it came to, once (paid from the wallet, or theirs to pay the driver).
+    var fee = on && t.status === 'IN_PROGRESS' && w.feeNgn > 0;
+    var done = W.$('d-wait-done');
+    W.show(done, fee);
+    if (fee) {
+      done.textContent = 'Waiting time: ' + w.minutes + ' min · ' + W.naira(w.feeNgn) +
+        (w.paid ? ', paid from your wallet.' : ". Your wallet couldn't cover it, so pay your driver.");
+    }
+    var waiting = on && t.status === 'ARRIVED';
+    W.show(W.$('d-wait'), waiting);
+    waitInfo = waiting ? w : null;
+    if (!waiting) { if (waitTimer) { clearInterval(waitTimer); waitTimer = null; } return; }
+    var serverNow = Date.parse(w.now);
+    if (isFinite(serverNow)) waitSkewMs = serverNow - Date.now();
+    tickWaiting();
+    if (!waitTimer) waitTimer = setInterval(tickWaiting, 1000);
+  }
+
+  function tickWaiting() {
+    var w = waitInfo;
+    if (!w || shownView !== 'confirmed') { if (waitTimer) { clearInterval(waitTimer); waitTimer = null; } return; }
+    var end = w.stoppedAt ? Date.parse(w.stoppedAt) : Date.now() + waitSkewMs;
+    var waited = Math.max(0, Math.floor((end - Date.parse(w.arrivedAt)) / 1000));
+    var free = Math.max(0, w.freeSeconds || 0);
+    var figure = W.$('d-wait-figure');
+    if (waited < free) {
+      var left = free - waited;
+      var clock = Math.floor(left / 60) + ':' + ('0' + (left % 60)).slice(-2);
+      W.$('d-wait-label').textContent = 'Free waiting';
+      figure.textContent = clock;
+      figure.className = 'wait-figure';
+      W.show(W.$('d-wait-dot'), false);
+      W.show(W.$('d-wait-bar'), true);
+      W.$('d-wait-fill').style.width = (free ? Math.round((left / free) * 1000) / 10 : 0) + '%';
+      W.$('d-wait-note').textContent = 'Then ' + W.naira(w.ngnPerMinute) + '/min';
+      W.$('d-wait').setAttribute('aria-label', 'Free waiting, ' + clock + ' left');
+      waitShownFee = null;
+      return;
+    }
+    var minutesPaid = Math.floor((waited - free) / 60);
+    var feeNow = minutesPaid * w.ngnPerMinute;
+    W.$('d-wait-label').textContent = 'Waiting time';
+    figure.textContent = W.naira(feeNow);
+    // The figure drops in each time it goes up; the dot stops once the meter has stopped.
+    figure.className = 'wait-figure on' + (waitShownFee !== null && feeNow !== waitShownFee ? ' tick' : '');
+    waitShownFee = feeNow;
+    W.show(W.$('d-wait-dot'), !w.stoppedAt);
+    W.show(W.$('d-wait-bar'), false);
+    W.$('d-wait-note').textContent = minutesPaid + ' min · ' + W.naira(w.ngnPerMinute) + '/min after ' + Math.round(free / 60) + ' free';
+    W.$('d-wait').setAttribute('aria-label', 'Waiting time ' + minutesPaid + ' minutes, ' + W.naira(feeNow));
   }
 
   /* the trip's lower part, as the app's: how much is done, Add or change stop, then Cancel ride · Support · Emergency */

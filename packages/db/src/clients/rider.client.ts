@@ -473,10 +473,12 @@ export const rideClient = {
       data:  { status: 'DRIVER_EN_ROUTE' },
     }),
 
+  // The first Arrived starts the waiting clock: a redelivered event, or the driver tapping it again,
+  // must not start it over. (A new driver after a re-match comes from another status, so gets a fresh clock.)
   markArrived: (rideId: string) =>
-    prisma.ride.update({
-      where: { id: rideId },
-      data:  { status: 'ARRIVED', arrivedAt: new Date() },
+    prisma.ride.updateMany({
+      where: { id: rideId, status: { not: 'ARRIVED' } },
+      data:  { status: 'ARRIVED', arrivedAt: new Date(), waitingStoppedAt: null },
     }),
 
   start: (rideId: string) =>

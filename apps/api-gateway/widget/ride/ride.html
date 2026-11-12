@@ -383,6 +383,14 @@
       <span class="plate big-plate" id="d-plate"></span>
     </div>
 
+    <!-- Waiting time: 5 free minutes after the driver arrives, then a fee a minute until the trip starts -->
+    <div class="wait-card" id="d-wait" role="timer" hidden>
+      <div class="wait-top"><span class="wait-label"><i class="live-dot" id="d-wait-dot" aria-hidden="true" hidden></i><span id="d-wait-label">Free waiting</span></span><strong class="wait-figure" id="d-wait-figure"></strong></div>
+      <div class="wait-bar" id="d-wait-bar"><span class="wait-fill" id="d-wait-fill"></span></div>
+      <p class="wait-note" id="d-wait-note"></p>
+    </div>
+    <p class="notice" id="d-wait-done" hidden></p>
+
     <div class="code-card" id="d-code-box" hidden>
       <div class="code-text"><span class="code-label">Your trip code</span><span class="code-note">Give this code to your driver when you get in.</span></div>
       <strong class="code-digits" id="d-code"></strong>

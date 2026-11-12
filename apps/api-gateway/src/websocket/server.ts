@@ -431,6 +431,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
       } catch (error) {
         const rawCode = error instanceof Error ? (error as unknown as { code?: unknown }).code : undefined;
         const code = typeof rawCode === 'string' ? rawCode : undefined;
+        const rawDetails = error instanceof Error ? (error as unknown as { details?: unknown }).details : undefined;
+        const details = rawDetails && typeof rawDetails === 'object' && !Array.isArray(rawDetails) ? rawDetails : undefined;
         console.warn('[ws] message error', {
           message: error instanceof Error ? error.message : 'Unknown message handling error',
           ...(code ? { code } : {}),
@@ -443,6 +445,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
           message: publicMessage(error instanceof Error ? error.message : undefined, 400),
           // Which refusal it was, and to which request, so the app can act on it (e.g. "chat closed").
           ...(code ? { code } : {}),
+          // The numbers behind a refusal the app shows (WAITING_UNPAID: minutes, amount, when the meter stopped).
+          ...(details ? { details } : {}),
           requestType: requestTypeOf(raw),
         });
       }

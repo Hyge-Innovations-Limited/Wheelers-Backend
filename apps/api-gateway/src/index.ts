@@ -2823,6 +2823,7 @@ async function bootstrap(): Promise<void> {
     ridePageUrlFor: (userId: string) => ridePageUrl(buildMetaWhatsappDeps(), userId),
     // The ride page's news, told to the chat once the rider has left the page.
     ridePageChat: (event) => sayRidePageEventInChat(buildMetaWhatsappDeps(), event),
+    isLeader: leader.isLeader,
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in

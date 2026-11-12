@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { checkTripCodeAtStart } from '../../rides/trip-code';
+import { settleWaitingAtStart } from '../../rides/waiting';
 import type { RedisClient } from '../../redis/client';
 import {
   GoogleMapsRoutePlanner,
@@ -958,6 +959,9 @@ export async function handleRideMessage(
     if (!driverId) throw new Error('Missing required field: driverId');
     // The rider's 4-digit trip code, checked here so no app can skip it.
     await checkTripCodeAtStart(requireString(payload, 'rideId'), payload['tripCode'], redis);
+    // Waiting time past the free minutes: taken from the rider's wallet now (paid to the driver at the end),
+    // or, when it cannot be, the driver is asked first (WAITING_UNPAID) and the meter stops.
+    await settleWaitingAtStart(requireString(payload, 'rideId'), payload);
 
     const event = RideStartedEvent.parse({
       eventType: 'RIDE_STARTED',

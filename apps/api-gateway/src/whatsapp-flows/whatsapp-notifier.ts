@@ -586,6 +586,8 @@ export async function sendDriverArrivedNotification(
     /** With Live call on: whose trip, so the card's button opens its Chat or call page. */
     riderId?: string;
     rideId?: string;
+    /** Waiting time: the free minutes, then this much a minute (packages/config waiting.ts). */
+    waiting?: { freeSeconds: number; ngnPerMinute: number };
   },
 ): Promise<void> {
   // Chat messages can't be edited, so each one stands alone: the rider must
@@ -596,6 +598,9 @@ export async function sendDriverArrivedNotification(
   const call = formatTappablePhone(details?.driverPhone);
   const head = [
     `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
+    ...(details?.waiting && details.waiting.ngnPerMinute > 0
+      ? [`Free waiting: ${Math.round(details.waiting.freeSeconds / 60)} min, then ₦${details.waiting.ngnPerMinute.toLocaleString()}/min.`]
+      : []),
     ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
   ];
   const text = [...head, ...(call ? [``, `Can't find them? Call ${call}`] : [])].join('\n');
@@ -710,6 +715,8 @@ async function sendRideCompletedNotification(
   tripId?: string | null,
   /** Paid from the rider's Stellar (testnet) balance: the XLM it cost. Their naira wallet was not touched. */
   paidXlm?: string | null,
+  /** Waiting time past the free minutes, written when the trip started. */
+  waiting?: { minutes: number; feeNgn: number; paid: boolean } | null,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
@@ -718,6 +725,9 @@ async function sendRideCompletedNotification(
     paidXlm
       ? `${distanceKm.toFixed(1)} km · *${paidXlm} XLM* (₦${fees.totalNgn.toLocaleString()}) paid from your Stellar wallet`
       : `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
+    ...(waiting && waiting.feeNgn > 0
+      ? [`Waiting time · ${waiting.minutes} min · ₦${waiting.feeNgn.toLocaleString()}${waiting.paid ? '' : ' (not paid)'}`]
+      : []),
     ...(balanceNgn !== undefined && !paidXlm ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
     `How was your driver? Reply *1* to *5* to rate them.`,

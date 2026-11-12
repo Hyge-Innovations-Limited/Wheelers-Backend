@@ -470,6 +470,15 @@ model Ride {
   recordingStartedAt     DateTime?
   matchedAt              DateTime?
   arrivedAt              DateTime?
+  /// Waiting time (5 min free after arrivedAt, then a fee per minute): the meter stopped here, when the driver was told
+  /// the rider's wallet could not cover it. Null: it ran until the start.
+  waitingStoppedAt       DateTime?
+  /// Waiting time, written once when the trip starts: the full minutes paid for, the fee, and whether the rider's wallet
+  /// covered it (true: reserved then, paid to the driver at completion; false: not collected, they settle in person).
+  /// All null: no waiting fee (none due, or the trip started before this).
+  waitingMinutes         Int?
+  waitingFeeNgn          Decimal?          @db.Decimal(18, 2)
+  waitingPaid            Boolean?
   startedAt              DateTime?
   completedAt            DateTime?
   cancelledAt            DateTime?
@@ -980,10 +989,14 @@ enum TransactionType {
   /// A manual, documented correction to a wallet (e.g. the pre-launch reset).
   /// Never written by the running system — only by an operator script.
   ADJUSTMENT
+  /// Waiting time: the rider's DEBIT and the driver's CREDIT (all of it; no fee taken), referenceId = the ride.
+  WAITING_FEE
 }
 
 enum WalletReservationKind {
   WITHDRAWAL
+  /// Waiting time held from the rider's wallet when the trip starts (referenceId waiting:<rideId>).
+  WAITING_FEE
 }
 
 enum WalletReservationStatus {

@@ -1,4 +1,4 @@
-import { rideClient } from '@wheleers/db';
+import { rideClient, waitingClient as defaultWaitingClient } from '@wheleers/db';
 import type { MessageContext } from '@wheleers/kafka-client';
 import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 import { calculateRideFees } from '@wheleers/config';
@@ -10,11 +10,14 @@ export function createRideEventsConsumer(params: {
   walletRepository: WalletRepository;
   walletEventsProducer: WalletEventsProducer;
   serviceId?: string;
+  /** The waiting fee held at the start (packages/db waiting.client); tests pass their own. */
+  waitingClient?: Pick<typeof defaultWaitingClient, 'payDriver' | 'giveBack'>;
 }) {
   const {
     walletRepository,
     walletEventsProducer,
     serviceId = 'wallet-service',
+    waitingClient = defaultWaitingClient,
   } = params;
 
   return {
@@ -157,6 +160,15 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_COMPLETED') {
+        // Waiting time held from the rider's wallet at the start: all of it to the driver now. On its own, so a
+        // problem here never holds up the fare, and once only (a redelivered event finds it already paid).
+        try {
+          const waiting = await waitingClient.payDriver(event.rideId, event.driverUserId);
+          if (waiting) console.info(`[${serviceId}][waiting] paid to the driver`, { rideId: event.rideId, driverUserId: event.driverUserId, amountNgn: waiting.amountNgn });
+        } catch (error) {
+          console.error(`[${serviceId}][waiting] CRITICAL: waiting fee not paid — still held from the rider`, { rideId: event.rideId, error: getErrorMessage(error) });
+        }
+
         // Only wallet rides settle in naira: cash was collected, XLM is paid on Stellar.
         if (event.paymentMethod !== 'WALLET') {
           console.info(`[${serviceId}][escrow] settlement skipped — ${event.paymentMethod.toLowerCase()} ride`, {
@@ -253,6 +265,14 @@ export function createRideEventsConsumer(params: {
       }
 
       if (event.eventType === 'RIDE_CANCELLED') {
+        // A waiting fee held at the start goes back too (the trip did not happen).
+        try {
+          const waiting = await waitingClient.giveBack(event.rideId);
+          if (waiting) console.info(`[${serviceId}][waiting] given back — ride cancelled`, { rideId: event.rideId, amountNgn: waiting.amountNgn });
+        } catch (error) {
+          console.error(`[${serviceId}][waiting] CRITICAL: waiting fee not given back — still held`, { rideId: event.rideId, error: getErrorMessage(error) });
+        }
+
         // Every cancellation gives the rider their money back, a driver's
         // included: the re-match takes a fresh hold when the rider accepts
         // the next driver. (The gateway releases it too; this is idempotent.)
