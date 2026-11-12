@@ -228,6 +228,15 @@ test('the waiting clock starts at the first Arrived: a second tap (or a redelive
   const again = await waitingClient.state(trip.rideId);
   assert.ok(again.arrivedAt.getTime() > Date.parse(before));
   assert.equal(again.waitingStoppedAt, null);
+  // A late Arrived after the start (or the end) changes nothing.
+  for (const status of ['IN_PROGRESS', 'COMPLETED', 'CANCELLED']) {
+    await prisma.ride.update({ where: { id: trip.rideId }, data: { status } });
+    const at = (await waitingClient.state(trip.rideId)).arrivedAt.toISOString();
+    await rideClient.markArrived(trip.rideId);
+    const after = await waitingClient.state(trip.rideId);
+    assert.equal(after.status, status, `${status} stays ${status}`);
+    assert.equal(after.arrivedAt.toISOString(), at);
+  }
 });
 
 test('what the screens get: terms, the server clock, the fee once written; the rider\'s line', async () => {

@@ -474,10 +474,11 @@ export const rideClient = {
     }),
 
   // The first Arrived starts the waiting clock: a redelivered event, or the driver tapping it again,
-  // must not start it over. (A new driver after a re-match comes from another status, so gets a fresh clock.)
+  // must not start it over, and a late one never takes a started or ended trip back to ARRIVED.
+  // (A new driver after a re-match comes from another status, so gets a fresh clock.)
   markArrived: (rideId: string) =>
     prisma.ride.updateMany({
-      where: { id: rideId, status: { not: 'ARRIVED' } },
+      where: { id: rideId, status: { notIn: ['ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'DISPUTED'] } },
       data:  { status: 'ARRIVED', arrivedAt: new Date(), waitingStoppedAt: null },
     }),
 
