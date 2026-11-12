@@ -28,6 +28,7 @@ import type { PendingRouteData, RouteStop } from '../whatsapp-flows/bid-state';
 import type { GoogleMapsRoutePlanner, TripDetails } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
+import { waitingView } from '../rides/waiting';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -278,6 +279,8 @@ async function liveTripFor(userId: string) {
     // Minutes to the pickup before the trip starts, to the destination during it.
     etaMin: kmToGo === null || ride.status === 'ARRIVED' ? null : Math.max(1, Math.round(estimateEtaSeconds(kmToGo) / 60)),
     map: { tileUrl: MAP_TILE_URL, attribution: MAP_ATTRIBUTION },
+    // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
+    waiting: waitingView(ride),
   };
 }
 
@@ -368,6 +371,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         etaMin: trip.etaMin,
         map: trip.map,
         line,
+        waiting: trip.waiting,
       },
     };
   }

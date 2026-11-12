@@ -103,3 +103,5 @@ export type { TripDetails } from './trip-details';
 export { VEHICLE_TANKS, vehicleTankLitres } from './vehicle-tanks';
 export type { VehicleTankEntry } from './vehicle-tanks';
 export { createVitalsSampler, VITALS_KEY, VITALS_KEEP_MS, type VitalsSample } from './vitals';
+// Waiting time: free minutes after Arrived, then a fee per minute until the trip starts
+export { waitingCharge, waitingTerms, WAITING_FREE_MINUTES, WAITING_NGN_PER_MINUTE, type WaitingCharge, type WaitingTerms } from './waiting';

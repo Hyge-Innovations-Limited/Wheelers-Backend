@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
+import { waitingLineForRider } from '../rides/waiting';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
 import { buildPricedRouteEvent, claimPublish, fundRouteHold, releasePublish, pendingRideOf, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../rides/trip-route-pending';
 import {
@@ -15,7 +16,7 @@ import {
   WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms } from '@wheleers/config';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
@@ -109,6 +110,8 @@ export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
   registry: SocketRegistry;
   redisClient: RedisClient;
+  /** Jobs that run on one gateway process only (the "free waiting is over" message). */
+  isLeader?: () => Promise<boolean>;
   publisher: GatewayPublisher;
   whatsappNotifier?: WhatsappNotifierDeps;
   /** DRIVER_STATUS_PUSHES_ENABLED: an app that reported background counts as away, and the "paying now" push. */
@@ -163,6 +166,19 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   // What waited while riders were on the ride page, said when they leave it.
   if (deps.ridePageChat) {
     createPageCatchup({ redis: deps.redisClient, deliver: (userId, item) => deliverPageCatchup(deps, userId, item) }).start();
+  }
+  // "Free waiting is over": once per arrival, to WhatsApp riders not on the ride page (it shows the meter there).
+  if (deps.isLeader) {
+    const isLeader = deps.isLeader;
+    let last = new Date();
+    setInterval(() => void (async () => {
+      if (!(await isLeader().catch(() => false))) return;
+      const now = new Date();
+      // A minute back at most: a slow or missed pass is caught up, an old arrival is never told late.
+      const from = new Date(Math.max(last.getTime(), now.getTime() - 60_000));
+      last = now;
+      await sayFreeWaitingOver(deps, from, now).catch((error) => console.warn('[waiting] free-waiting pass failed', { error: error instanceof Error ? error.message : String(error) }));
+    })(), FREE_WAITING_SWEEP_MS).unref();
   }
 
   await deps.consumer.subscribe(
@@ -505,6 +521,7 @@ async function tellArrivedInChat(deps: StartGatewayConsumerDeps, phone: string, 
       : await tripCodeClient.ensure(rideId).catch(() => null),
     // With Live call on, the card's button opens this trip's Chat or call page instead of showing the number.
     ...(riderId ? { riderId, rideId } : {}),
+    waiting: waitingTerms(),
   }).catch(() => {});
 }
 
@@ -1815,16 +1832,28 @@ export async function handleRideEvent(
     const participants = await participantsFor(event.rideId, rideParticipants);
     const driverUserId = participants?.driverUserId;
 
+    // Waiting time past the free minutes, written just before this event: the rider is told what it came to.
+    const startedWaiting = await waitingClient.state(event.rideId).catch(() => null);
+    const waitingLine = startedWaiting?.waitingFeeNgn != null
+      ? waitingLineForRider({ minutes: startedWaiting.waitingMinutes ?? 0, feeNgn: Number(startedWaiting.waitingFeeNgn), paid: startedWaiting.waitingPaid === true })
+      : null;
+
     // Notify rider
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       await setRideState(deps.redisClient, event.rideId, 'in_progress', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      // No "trip started" message: the rider is in the car, and the receipt follows.
+      // No "trip started" message: the rider is in the car, and the receipt follows. Only a waiting fee is said
+      // (once; on the ride page it is on the screen instead).
+      if (waitingLine && !(await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false))
+        && await deps.redisClient.setIfNotExists(`ride:${event.rideId}:waiting-said`, '1', 24 * 60 * 60).catch(() => false)) {
+        await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, waitingLine).catch(() => undefined);
+      }
     } else {
       await registry.sendToUser(event.riderId, 'ride:started', {
         rideId: event.rideId,
         startedAt: event.startedAt,
+        ...(waitingLine ? { waitingLine } : {}),
       });
     }
 
@@ -1846,6 +1875,11 @@ export async function handleRideEvent(
     // An XLM ride: the XLM and the rate it was accepted at, for the receipt and the payment on Stellar.
     const xlmRide = event.paymentMethod === 'XLM' ? await rideClient.findById(event.rideId).catch(() => null) : null;
     const paidXlm = xlmRide?.fareXlm != null ? String(Number(xlmRide.fareXlm)) : null;
+    // Waiting time written at the start: a line on both receipts, and the driver's earnings when it was paid.
+    const waitingRow = await waitingClient.state(event.rideId).catch(() => null);
+    const waiting = waitingRow?.waitingFeeNgn != null && Number(waitingRow.waitingFeeNgn) > 0
+      ? { minutes: waitingRow.waitingMinutes ?? 0, feeNgn: Number(waitingRow.waitingFeeNgn), paid: waitingRow.waitingPaid === true }
+      : null;
 
     // Notify rider
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
@@ -1863,6 +1897,7 @@ export async function handleRideEvent(
           event.rideId,
           formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null)),
           paidXlm,
+          waiting,
         ).catch(() => {});
         // ✅ the trip is done.
         await reactInChat(deps, event.riderId, phone, event.rideId, 'done').catch(() => undefined);
@@ -1885,6 +1920,7 @@ export async function handleRideEvent(
         durationSeconds: event.durationSeconds,
         completedAt: event.completedAt,
         referralCashbackSettled: settledReferralUsages > 0,
+        ...(waiting ? { waitingMinutes: waiting.minutes, waitingFeeNgn: waiting.feeNgn, waitingPaid: waiting.paid } : {}),
       });
     }
 
@@ -1907,8 +1943,11 @@ export async function handleRideEvent(
       distanceKm: event.distanceKm,
       durationSeconds: event.durationSeconds,
       completedAt: event.completedAt,
+      // Waiting time: a line of its own on the driver's sheet (paid: added to what they earned; all of it is theirs).
+      ...(waiting ? { waitingMinutes: waiting.minutes, waitingFeeNgn: waiting.feeNgn, waitingPaid: waiting.paid } : {}),
     });
-    await pushDriver(deps, event.driverUserId, { title: 'Trip done', body: `You earned ₦${Math.round(completionFees.driverPayoutNgn).toLocaleString('en-NG')}`, type: 'ride:completed', rideId: event.rideId, generation: 'done' });
+    const earnedNgn = completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0);
+    await pushDriver(deps, event.driverUserId, { title: 'Trip done', body: `You earned ₦${Math.round(earnedNgn).toLocaleString('en-NG')}`, type: 'ride:completed', rideId: event.rideId, generation: 'done' });
 
     // Clean up WhatsApp Redis state
     await endOfferCount(deps, event.rideId);
@@ -2536,6 +2575,23 @@ async function announceTripChatClosed(
  * the quick answer. Before a driver, the note alone decides: a search the
  * rider cancelled in the chat clears it on purpose, to say nothing twice.
  */
+const FREE_WAITING_SWEEP_MS = 20_000;
+
+/** The free minutes ran out on these rides since the last pass: the WhatsApp rider is told once. */
+async function sayFreeWaitingOver(deps: StartGatewayConsumerDeps, from: Date, to: Date): Promise<void> {
+  if (!deps.whatsappNotifier) return;
+  const terms = waitingTerms();
+  if (!(terms.ngnPerMinute > 0)) return;
+  for (const ride of await waitingClient.freeTimeEnded(from, to, terms.freeSeconds)) {
+    const said = await deps.redisClient.setIfNotExists(`ride:${ride.id}:free-wait-over:${ride.arrivedAt?.getTime() ?? 0}`, '1', 6 * 60 * 60).catch(() => false);
+    if (!said) continue;
+    if (await isRidePageOpen(deps.redisClient, ride.riderId).catch(() => false)) continue;
+    const phone = await whatsappRiderPhone(deps, ride.riderId, ride.id);
+    if (!phone) continue;
+    await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, `Free waiting is over. ₦${terms.ngnPerMinute.toLocaleString()} per minute from now.`).catch(() => undefined);
+  }
+}
+
 async function whatsappRiderPhone(
   deps: StartGatewayConsumerDeps,
   riderId: string,

@@ -294,6 +294,20 @@ h2 { font-family: var(--display); font-weight: 800; font-size: 20px; line-height
 .code-label { font-size: 13px; line-height: 19px; color: var(--on-ink-muted); }
 .code-note { font-size: 13px; line-height: 18px; color: var(--on-ink-soft); }
 .code-digits { flex: 0 0 auto; font-family: var(--display); font-weight: 800; font-size: 36px; line-height: 41px; letter-spacing: 5px; color: var(--orange); font-variant-numeric: tabular-nums; }
+/* Waiting time (ride.js drawWaiting): a quiet card under the driver, like the agreed price */
+.wait-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--bg); border: 1px solid var(--line); }
+.wait-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wait-label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 18px; color: var(--muted); }
+.wait-figure { font-family: var(--display); font-weight: 800; font-size: 21px; line-height: 24px; font-variant-numeric: tabular-nums; }
+.wait-figure.on { color: var(--orange-ink); }
+.wait-figure.tick { animation: wait-tick 0.5s ease-out; }
+@keyframes wait-tick { from { transform: translateY(-6px); opacity: 0; } }
+.wait-note { font-size: 13px; line-height: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.wait-bar { height: 6px; border-radius: 999px; background: var(--soft); overflow: hidden; }
+.wait-fill { display: block; height: 100%; width: 100%; border-radius: 999px; background: var(--ink); transition: width 1s linear; }
+.live-dot { width: 8px; height: 8px; border-radius: 4px; background: var(--orange); animation: wait-pulse 1.6s ease-in-out infinite; }
+@keyframes wait-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .live-dot, .wait-figure.tick { animation: none; } .wait-fill { transition: none; } }
 .trip-actions { display: flex; gap: 10px; }
 .action {
   flex: 1; height: 54px; display: flex; align-items: center; justify-content: center; gap: 8px;

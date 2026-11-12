@@ -4,6 +4,7 @@ import { tripCodeStillNeeded } from '../rides/trip-code';
 import type WebSocket from 'ws';
 import { rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
+import { waitingView, type WaitingView } from '../rides/waiting';
 
 /**
  * The driver app's picture of an assigned ride.
@@ -40,6 +41,8 @@ export type DriverRideSnapshot = {
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
+  /** Waiting time: the free minutes, when the driver arrived, and whether the meter was stopped. Null: not arrived. */
+  waiting: WaitingView | null;
   /** People, luggage, pet and the rider's note. Absent: booked without them. */
   tripDetails?: TripDetails;
 };
@@ -92,6 +95,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     matchedAt: ride.matchedAt?.toISOString() ?? null,
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,
+    waiting: waitingView(ride),
     ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
   };
 }

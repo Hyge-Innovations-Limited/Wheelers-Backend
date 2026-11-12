@@ -33,6 +33,7 @@ export { chatClient }           from './clients/chat.client';
 export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';
 export { tripCodeClient }       from './clients/trip-code.client';
+export { waitingClient, waitingReference } from './clients/waiting.client';
 export { tripRecordingClient, TRIP_RECORDING_KEEP_DAYS } from './clients/trip-recording.client';
 export { adminChatClient } from './clients/admin-chat.client';
 export type { ChatItem, ChatWho, ChatSource } from './clients/admin-chat.client';

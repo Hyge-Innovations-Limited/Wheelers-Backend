@@ -18,6 +18,7 @@ import type { RedisClient } from "../redis/client";
 import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
+import { waitingView } from "../rides/waiting";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -569,6 +570,8 @@ function serializeRideDetail(ride: RideWithDriver) {
     arrivedAt: ride.arrivedAt?.toISOString() ?? null,
     startedAt: ride.startedAt?.toISOString() ?? null,
     completedAt: ride.completedAt?.toISOString() ?? null,
+    // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
+    waiting: waitingView(ride),
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),
