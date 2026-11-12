@@ -173,6 +173,18 @@ test('wallet short: the driver is asked once, the meter stops there, Yes starts 
   assert.deepEqual(await wallet(trip.driverUserId), { balance: 0, locked: 0 }, 'nothing paid out that was not taken');
 });
 
+test('the admin Activity page does not list the question as a failure', async () => {
+  const trip = await waitingTrip({ arrivedAt: minutesAgo(9), balanceNgn: 0 });
+  const driver = await open(trip.driverUserId);
+  assert.equal((await start(driver, trip, NEW_APP)).code, 'WAITING_UNPAID');
+  // A real refusal on the same socket still is (to show the check works).
+  driver.send(JSON.stringify({ type: 'ride:start', payload: { rideId: randomUUID(), riderId: trip.riderId, lockedFareNgn: 1, paymentMethod: 'WALLET' } }));
+  await sleep(400);
+  const failures = await prisma.userActivityEvent.findMany({ where: { userId: trip.driverUserId, eventType: 'request_failed' } });
+  assert.equal(failures.filter((f) => f.metadata?.code === 'WAITING_UNPAID').length, 0);
+  assert.ok(failures.length >= 1, 'other refusals are still recorded');
+});
+
 test('after No, the next Start is not asked again (and the meter stays stopped)', async () => {
   const trip = await waitingTrip({ arrivedAt: minutesAgo(12), balanceNgn: 0 });
   const driver = await open(trip.driverUserId);
@@ -266,6 +278,7 @@ test.after(async () => {
   for (const s of sockets) { try { s.terminate(); } catch { /* closed */ } }
   await g.registry.shutdown().catch(() => {});
   await new Promise((resolve) => g.server.close(resolve));
+  await prisma.userActivityEvent.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.walletReservation.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.transaction.deleteMany({ where: { referenceId: { in: made.rides } } });
   await prisma.wallet.deleteMany({ where: { userId: { in: made.users } } });

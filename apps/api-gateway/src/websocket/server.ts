@@ -439,7 +439,8 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
         });
         // The refusal, for the admin Activity page: who hit it, doing what.
         const who = deps.registry.getAuthContext(socket);
-        if (who) recordLiveFailure(who.userId, requestTypeOf(raw), error instanceof Error ? error.message : 'Something went wrong.', code);
+        // Not a failure: the driver is being asked about waiting the rider's wallet could not cover (WAITING_UNPAID).
+        if (who && code !== 'WAITING_UNPAID') recordLiveFailure(who.userId, requestTypeOf(raw), error instanceof Error ? error.message : 'Something went wrong.', code);
         deps.registry.sendToSocket(socket, 'error', {
           // Ours, always: an engineer's message stays in the log above.
           message: publicMessage(error instanceof Error ? error.message : undefined, 400),
