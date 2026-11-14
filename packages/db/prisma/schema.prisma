@@ -77,13 +77,13 @@ model User {
   interstateBookings         InterstateBooking[]
   safetyAlerts               SafetyAlert[]
   supportConversations       SupportConversation[]
+  /// Passkeys: sign in with Face ID or a fingerprint instead of an SMS code.
+  passkeys                   Passkey[]
 
   @@index([privyDid])
   @@index([username])
   @@index([email])
   @@index([providerCustomerId])
-  /// Passkeys: sign in with Face ID or a fingerprint instead of an SMS code.
-  passkeys                   Passkey[]
 }
 
 model UserConsent {
@@ -149,10 +149,12 @@ model Driver {
   locationPoints       DriverLocationPoint[]
   shifts               DriverShift[]
   dispatchContacts     DispatchContact[]
+  /// Set by an admin: this driver can no longer post on the Feed (they still see it).
+  feedBlockedAt        DateTime?
+  feedPosts            FeedPost[]
 
   @@index([status])
   @@index([kycStatus])
-
   @@index([verifiedPhone])
 }
 
@@ -213,22 +215,22 @@ model Wallet {
 }
 
 model VirtualAccount {
-  id                    String   @id @default(uuid())
-  userId                String   @unique
+  id                 String   @id @default(uuid())
+  userId             String   @unique
   /// Which payment provider issued this account. Rows left over from the
   /// retired Pouch integration say "pouch" and are replaced on next provision.
-  provider              String   @default("paystack")
-  providerCustomerId    String
-  providerAccountId     String   @unique
-  bankName              String
-  accountNumber         String
-  accountName           String
-  currency              String   @default("NGN")
-  country               String   @default("NG")
-  status                String   @default("active")
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  user                  User     @relation(fields: [userId], references: [id])
+  provider           String   @default("paystack")
+  providerCustomerId String
+  providerAccountId  String   @unique
+  bankName           String
+  accountNumber      String
+  accountName        String
+  currency           String   @default("NGN")
+  country            String   @default("NG")
+  status             String   @default("active")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id])
 
   @@index([providerAccountId])
 }
@@ -385,46 +387,46 @@ model GroupRideFaceVerification {
 }
 
 model Ride {
-  id                     String            @id @default(uuid())
+  id                      String            @id @default(uuid())
   /// The short trip ID people use, shown as WH-01234. Numbered in booking order.
-  tripNumber             Int               @unique @default(autoincrement())
+  tripNumber              Int               @unique @default(autoincrement())
   /// The 4-digit code the rider gives the driver to start the trip. Issued
   /// when a driver is assigned and shown only to the rider. Null: none was
   /// issued (group rides), and none is asked for.
-  tripCode               String?
+  tripCode                String?
   /// When the driver entered the right code.
-  tripCodeVerifiedAt     DateTime?
+  tripCodeVerifiedAt      DateTime?
   /// Wrong codes entered for this trip.
-  tripCodeWrongTries     Int               @default(0)
+  tripCodeWrongTries      Int               @default(0)
   /// Support started the trip without the code (the rider could not give it): who, and when.
-  tripCodeUnlockedBy     String?
-  tripCodeUnlockedAt     DateTime?
-  riderId                String
-  driverId               String?
-  status                 RideStatus        @default(REQUESTED)
-  paymentMethod          RidePaymentMethod @default(WALLET)
+  tripCodeUnlockedBy      String?
+  tripCodeUnlockedAt      DateTime?
+  riderId                 String
+  driverId                String?
+  status                  RideStatus        @default(REQUESTED)
+  paymentMethod           RidePaymentMethod @default(WALLET)
   /// An XLM ride: the naira per XLM it was accepted at, and its fare in XLM at that rate.
-  xlmRateNgn             Decimal?          @db.Decimal(18, 2)
-  fareXlm                Decimal?          @db.Decimal(18, 7)
-  pickupLat              Float
-  pickupLng              Float
-  pickupAddress          String
-  destLat                Float
-  destLng                Float
-  destAddress            String
-  fareEstimateNgn        Decimal?          @db.Decimal(18, 2)
-  riderOfferNgn          Decimal?          @db.Decimal(18, 2)
-  agreedFareNgn          Decimal?          @db.Decimal(18, 2)
-  fareFinalNgn           Decimal?          @db.Decimal(18, 2)
-  platformFeeNgn         Decimal?          @db.Decimal(18, 2)
+  xlmRateNgn              Decimal?          @db.Decimal(18, 2)
+  fareXlm                 Decimal?          @db.Decimal(18, 7)
+  pickupLat               Float
+  pickupLng               Float
+  pickupAddress           String
+  destLat                 Float
+  destLng                 Float
+  destAddress             String
+  fareEstimateNgn         Decimal?          @db.Decimal(18, 2)
+  riderOfferNgn           Decimal?          @db.Decimal(18, 2)
+  agreedFareNgn           Decimal?          @db.Decimal(18, 2)
+  fareFinalNgn            Decimal?          @db.Decimal(18, 2)
+  platformFeeNgn          Decimal?          @db.Decimal(18, 2)
   /// platformFeeNgn, split: the commission (5% of the trip fare; 10% in version 2, 4% of the driver's share in 1),
   /// the booking fee (serviceFeeNgn, flat), the WhatsApp fee (version 3), VAT (7.5%) and the state levy (owed to Lagos).
-  commissionNgn          Decimal?          @db.Decimal(18, 2)
-  serviceFeeNgn          Decimal?          @db.Decimal(18, 2)
-  vatNgn                 Decimal?          @db.Decimal(18, 2)
-  stateLevyNgn           Decimal?          @db.Decimal(18, 2)
+  commissionNgn           Decimal?          @db.Decimal(18, 2)
+  serviceFeeNgn           Decimal?          @db.Decimal(18, 2)
+  vatNgn                  Decimal?          @db.Decimal(18, 2)
+  stateLevyNgn            Decimal?          @db.Decimal(18, 2)
   /// ₦300 flat on every version 3 and 4 ride. Null on rides settled before it existed.
-  whatsappFeeNgn         Decimal?          @db.Decimal(18, 2)
+  whatsappFeeNgn          Decimal?          @db.Decimal(18, 2)
   /// Which pricing rules this ride was priced under, and settles by. 1: until
   /// 2026-10-10 (booking fee, then 4% commission and 7.5% VAT from the
   /// driver). 2: VAT and the booking fee are in the rider's fare; the driver
@@ -433,63 +435,63 @@ model Ride {
   /// 2026-11-03): no booking fee; the ₦300 WhatsApp fee off the fare, then
   /// VAT 7.5%, the levy and 5% commission from the rest. Rides from before the
   /// column existed are 1; new ones are 4.
-  pricingVersion         Int               @default(4)
+  pricingVersion          Int               @default(4)
   /// True when the split was reconstructed by the backfill with the rates in force then, not recorded at settlement.
-  feeSplitEstimated      Boolean           @default(false)
+  feeSplitEstimated       Boolean           @default(false)
   /// How the ride was booked.
-  channel                RideChannel       @default(UNKNOWN)
+  channel                 RideChannel       @default(UNKNOWN)
   /// Launch zone of the pickup and destination (packages/config zones), null = outside every zone.
-  pickupZone             String?
-  destZone               String?
-  distanceKm             Float?
+  pickupZone              String?
+  destZone                String?
+  distanceKm              Float?
   /// The km of the route the current agreed fare was set for (booking, then each priced route change). Null on older rides.
-  plannedDistanceKm      Float?
+  plannedDistanceKm       Float?
   /// Our own suggested fare for the route at booking: what the agreed fare is measured against (agreed / this = the ride's negotiated rate, kept by every route change). Null on older rides.
-  bookingSuggestedFareNgn Decimal?                   @db.Decimal(18, 2)
+  bookingSuggestedFareNgn Decimal?          @db.Decimal(18, 2)
   /// The ride's negotiated rate: the agreed fare at the match / bookingSuggestedFareNgn. Written once, when the driver is matched; no route change ever recomputes it. Null: 1.
-  bargainRate            Float?
+  bargainRate             Float?
   /// The km of the route as last PRICED (set at booking and by every priced route change, never by an unpriced one): the most an older app's unpriced changes may stretch the trip is 0.5 km past it. Null on older rides.
-  pricedPlannedKm        Float?
-  durationSeconds        Int?
-  cancelStage            CancelStage?
-  cancelReason           String?
+  pricedPlannedKm         Float?
+  durationSeconds         Int?
+  cancelStage             CancelStage?
+  cancelReason            String?
   /// Who ended the ride, written in the same update that sets CANCELLED: 'rider' | 'driver' | 'system'. Null on rides before this column and on rides that were not cancelled. (There is no admin cancel; if one is added it counts as 'system'.) A driver backing out after accept sends the ride back to matching and writes nothing here.
-  cancelledBy            String?
+  cancelledBy             String?
   /// The rider's first price, set once at creation; riderOfferNgn is overwritten by every counter offer. Null on older rides.
-  firstRiderOfferNgn     Decimal?          @db.Decimal(18, 2)
+  firstRiderOfferNgn      Decimal?          @db.Decimal(18, 2)
   /// How many times the rider changed their price during the search.
-  riderOfferChanges      Int               @default(0)
+  riderOfferChanges       Int               @default(0)
   /// What the rider told drivers before they bid: people (1-4), luggage, a pet, a short note (no links or numbers). All null: booked without them (older apps, chat).
-  passengers             Int?
-  hasLuggage             Boolean?
-  hasPet                 Boolean?
-  riderNote              String?
-  penaltyNgn             Decimal?          @db.Decimal(18, 2)
-  recordingId            String?
+  passengers              Int?
+  hasLuggage              Boolean?
+  hasPet                  Boolean?
+  riderNote               String?
+  penaltyNgn              Decimal?          @db.Decimal(18, 2)
+  recordingId             String?
   /// When the driver's phone started recording this trip. Recordings are accepted only after it.
-  recordingStartedAt     DateTime?
-  matchedAt              DateTime?
-  arrivedAt              DateTime?
+  recordingStartedAt      DateTime?
+  matchedAt               DateTime?
+  arrivedAt               DateTime?
   /// Waiting time (5 min free after arrivedAt, then a fee per minute): the meter stopped here, when the driver was told
   /// the rider's wallet could not cover it. Null: it ran until the start.
-  waitingStoppedAt       DateTime?
+  waitingStoppedAt        DateTime?
   /// Waiting time, written once when the trip starts: the full minutes paid for, the fee, and whether the rider's wallet
   /// covered it (true: reserved then, paid to the driver at completion; false: not collected, they settle in person).
   /// All null: no waiting fee (none due, or the trip started before this).
-  waitingMinutes         Int?
-  waitingFeeNgn          Decimal?          @db.Decimal(18, 2)
-  waitingPaid            Boolean?
-  startedAt              DateTime?
-  completedAt            DateTime?
-  cancelledAt            DateTime?
-  createdAt              DateTime          @default(now())
-  updatedAt              DateTime          @updatedAt
-  disputes               Dispute[]
-  gpsLogs                GpsLog[]
-  driver                 Driver?           @relation("DriverRides", fields: [driverId], references: [id])
-  routeStops             RideStop[]
-  bids                   DriverBid[]
-  referralQualifications Referral[]        @relation("ReferralFirstRide")
+  waitingMinutes          Int?
+  waitingFeeNgn           Decimal?          @db.Decimal(18, 2)
+  waitingPaid             Boolean?
+  startedAt               DateTime?
+  completedAt             DateTime?
+  cancelledAt             DateTime?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  disputes                Dispute[]
+  gpsLogs                 GpsLog[]
+  driver                  Driver?           @relation("DriverRides", fields: [driverId], references: [id])
+  routeStops              RideStop[]
+  bids                    DriverBid[]
+  referralQualifications  Referral[]        @relation("ReferralFirstRide")
 
   chatMessages ChatMessage[]
   tripCalls    TripCall[]
@@ -892,31 +894,31 @@ model StellarAccount {
 /// withdrawal. Queued, then sent and confirmed by a background job; the
 /// reference makes each happen once.
 model StellarTransfer {
-  id             String    @id @default(uuid())
+  id            String    @id @default(uuid())
   /// ACCOUNT_OPEN, TOPUP, FARE, COMMISSION, WITHDRAWAL
-  kind           String
+  kind          String
   /// "fare:<rideId>", "topup:<transactionId>"…: one transfer per thing, however often it is asked for.
-  reference      String    @unique
-  rideId         String?
-  userId         String?
-  fromPublicKey  String
-  toPublicKey    String
-  amountXlm      Decimal   @db.Decimal(20, 7)
+  reference     String    @unique
+  rideId        String?
+  userId        String?
+  fromPublicKey String
+  toPublicKey   String
+  amountXlm     Decimal   @db.Decimal(20, 7)
   /// Its naira equivalent, at the live rate below.
-  amountNgn      Decimal?  @db.Decimal(18, 2)
+  amountNgn     Decimal?  @db.Decimal(18, 2)
   /// Naira per XLM used for this transfer (live market rate), so the evidence adds up.
-  rateNgnPerXlm  Decimal?  @db.Decimal(18, 4)
-  memo           String?
+  rateNgnPerXlm Decimal?  @db.Decimal(18, 4)
+  memo          String?
   /// PENDING, SUBMITTED, CONFIRMED, FAILED, SKIPPED (the rider's account had too little test XLM)
-  status         String    @default("PENDING")
+  status        String    @default("PENDING")
   /// Known before it is sent, so a send cut short is checked, not repeated.
-  txHash         String?   @unique
-  ledger         Int?
-  attempts       Int       @default(0)
-  lastError      String?
-  createdAt      DateTime  @default(now())
-  submittedAt    DateTime?
-  confirmedAt    DateTime?
+  txHash        String?   @unique
+  ledger        Int?
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  submittedAt   DateTime?
+  confirmedAt   DateTime?
 
   @@index([status, createdAt])
   @@index([rideId])
@@ -1559,15 +1561,15 @@ model PricingQuote {
 /// pricing/weather.ts): what prices rain, and what tells the nightly learning
 /// which prices were seen in the rain.
 model WeatherReading {
-  id          String   @id @default(uuid())
-  zone        String
-  at          DateTime @default(now())
+  id        String   @id @default(uuid())
+  zone      String
+  at        DateTime @default(now())
   /// "none", "light" or "heavy".
-  rain        String
+  rain      String
   /// Rain over the last hour, when the provider says.
-  mm          Float?
+  mm        Float?
   /// The provider's own words: "LIGHT_RAIN", "THUNDERSTORM"…
-  condition   String?
+  condition String?
 
   @@index([at])
   @@index([zone, at])
@@ -1778,29 +1780,29 @@ enum MailInboxKind {
 /// One email we send: built, signed and kept exactly as it goes out, so every
 /// retry sends the same bytes. One MailDelivery per recipient.
 model MailMessage {
-  id              String         @id @default(uuid())
-  stream          MailStream     @default(TRANSACTIONAL)
-  priority        MailPriority   @default(NORMAL)
-  fromAddress     String
-  subject         String
+  id               String         @id @default(uuid())
+  stream           MailStream     @default(TRANSACTIONAL)
+  priority         MailPriority   @default(NORMAL)
+  fromAddress      String
+  subject          String
   /// The Message-ID header, with angle brackets: replies and bounces name it.
-  messageIdHeader String         @unique
+  messageIdHeader  String         @unique
   /// The signed message (RFC 5322), as sent.
-  raw             Bytes
-  sizeBytes       Int
+  raw              Bytes
+  sizeBytes        Int
   /// The caller's key: the same key twice is the same email, sent once.
-  idempotencyKey  String?        @unique
+  idempotencyKey   String?        @unique
   /// From, recipients, subject and body, hashed: the same email again within minutes is the first one (a retried call, a double tap).
-  contentHash     String?
+  contentHash      String?
   /// What it is, for counting: "password_reset", "kyc_approved".
-  tag             String?
+  tag              String?
   /// The inbox message this answers, when it is a reply from the inbox.
   inReplyToInboxId String?
   /// Not delivered by then: given up (a sign-in code is useless after minutes).
-  expiresAt       DateTime
-  createdAt       DateTime       @default(now())
-  deliveries      MailDelivery[]
-  events          MailEvent[]
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+  deliveries       MailDelivery[]
+  events           MailEvent[]
 
   @@index([createdAt])
   @@index([tag, createdAt])
@@ -1997,70 +1999,156 @@ model TripRecording {
 /// last 8 days). Written once a day, just after midnight, by the gateway's leader.
 model HealthDay {
   /// YYYY-MM-DD, Lagos.
-  day             String   @id
-  apiRequests     Int
-  apiErrors       Int
-  apiP95Ms        Int?
-  dbQueries       Int
-  dbP95Ms         Int?
-  locPings        Int
-  locP95Ms        Int?
+  day           String   @id
+  apiRequests   Int
+  apiErrors     Int
+  apiP95Ms      Int?
+  dbQueries     Int
+  dbP95Ms       Int?
+  locPings      Int
+  locP95Ms      Int?
   /// The highest event-loop delay (99th percentile) any process had in a minute that day.
-  maxLoopP99Ms    Int?
-  maxCpuPct       Float?
-  maxRssMb        Int?
+  maxLoopP99Ms  Int?
+  maxCpuPct     Float?
+  maxRssMb      Int?
   /// The most Kafka messages ride-service and the gateway were behind at any minute.
-  maxKafkaLag     Int?
-  searches        Int
-  trips           Int
-  activeRiders    Int
-  activeDrivers   Int
+  maxKafkaLag   Int?
+  searches      Int
+  trips         Int
+  activeRiders  Int
+  activeDrivers Int
   /// The slowest endpoints of the day: [{ route, count, avgMs }].
-  slowRoutes      Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  slowRoutes    Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 /// The devices a person uses, one row per kind of device (shown on their admin profile). Collected only:
 /// nothing in the product changes with it. No phone names, advertising ids or fingerprints.
 model UserDevice {
-  id            String   @id @default(uuid())
-  userId        String
+  id             String   @id @default(uuid())
+  userId         String
   /// app | web | whatsapp
-  source        String
+  source         String
   /// Which row this is for the person: source + system + model (or browser).
-  key           String
+  key            String
   /// android | ios | windows | mac | linux | other
-  platform      String?
-  osVersion     String?
-  maker         String?
-  model         String?
+  platform       String?
+  osVersion      String?
+  maker          String?
+  model          String?
   /// phone | tablet | computer
-  formFactor    String?
-  browser       String?
+  formFactor     String?
+  browser        String?
   browserVersion String?
-  appVersion    String?
-  appBuild      String?
-  ramGb         Float?
-  cpuCores      Int?
+  appVersion     String?
+  appBuild       String?
+  ramGb          Float?
+  cpuCores       Int?
   /// 4g, 3g, 2g, slow-2g (the browser's own reading)
-  network       String?
-  saveData      Boolean?
+  network        String?
+  saveData       Boolean?
   /// The page was opened from the WhatsApp app (Android, from the referrer).
-  fromWhatsapp  Boolean?
-  language      String?
-  timeZone      String?
+  fromWhatsapp   Boolean?
+  language       String?
+  timeZone       String?
   /// width x height @ pixel ratio
-  screen        String?
+  screen         String?
   /// WhatsApp row only: MTN / Airtel / Glo / 9mobile from the number prefix (approximate: numbers move).
-  phoneNetwork  String?
+  phoneNetwork   String?
   /// WhatsApp row only: whether WhatsApp forms open for them (null: not known yet).
-  formsOpen     Boolean?
-  firstSeenAt   DateTime @default(now())
-  lastSeenAt    DateTime @default(now())
-  timesSeen     Int      @default(1)
+  formsOpen      Boolean?
+  firstSeenAt    DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  timesSeen      Int      @default(1)
 
   @@unique([userId, key])
   @@index([userId])
   @@index([platform])
+}
+
+/// The drivers' Feed (14 Nov 2026): posts by drivers (text, up to 4 photos,
+/// likes, no comments) that an admin approves before anyone else sees them,
+/// and Wheelers' own posts. Kept for good; the feed shows the last 30 days
+/// (road alerts 3 hours).
+enum FeedPostKind {
+  DRIVER
+  ROAD_ALERT
+  WHEELERS
+}
+
+enum FeedPostStatus {
+  /// Waiting for an admin; only its author sees it.
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model FeedPost {
+  id              String         @id @default(uuid())
+  kind            FeedPostKind   @default(DRIVER)
+  /// The driver who wrote it. Null for a Wheelers post.
+  driverId        String?
+  text            String
+  status          FeedPostStatus @default(PENDING)
+  rejectionReason String?
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  /// When it went live (first approval): the feed's order.
+  approvedAt      DateTime?
+  pinned          Boolean        @default(false)
+  likeCount       Int            @default(0)
+  /// Reports since it was last approved: 3 send it back to the admin.
+  reportCount     Int            @default(0)
+  /// Deleted by its author or removed by an admin: gone from every list.
+  deletedAt       DateTime?
+  deletedBy       String?
+  createdAt       DateTime       @default(now())
+  driver          Driver?        @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  photos          FeedPhoto[]
+  likes           FeedLike[]
+  reports         FeedReport[]
+
+  @@index([status, approvedAt])
+  @@index([driverId, createdAt])
+}
+
+model FeedPhoto {
+  id       String   @id @default(uuid())
+  postId   String
+  fileKey  String
+  width    Int
+  height   Int
+  position Int
+  post     FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+}
+
+model FeedLike {
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+  post      FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+}
+
+model FeedReport {
+  postId    String
+  userId    String
+  reason    String?
+  createdAt DateTime @default(now())
+  post      FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+}
+
+/// "Hide this driver's posts", for one user.
+model FeedHide {
+  userId         String
+  hiddenDriverId String
+  createdAt      DateTime @default(now())
+
+  @@id([userId, hiddenDriverId])
 }

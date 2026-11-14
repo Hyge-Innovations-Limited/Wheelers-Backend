@@ -34,6 +34,7 @@ export type { ChatMessageKind } from './clients/chat.client';
 export { tripCallClient }       from './clients/trip-call.client';
 export { tripCodeClient }       from './clients/trip-code.client';
 export { waitingClient, waitingReference } from './clients/waiting.client';
+export { feedClient, FEED_REPORTS_TO_HIDE, type FeedFilter, type FeedCursor, type FeedPostRow } from './clients/feed.client';
 export { tripRecordingClient, TRIP_RECORDING_KEEP_DAYS } from './clients/trip-recording.client';
 export { adminChatClient } from './clients/admin-chat.client';
 export type { ChatItem, ChatWho, ChatSource } from './clients/admin-chat.client';
