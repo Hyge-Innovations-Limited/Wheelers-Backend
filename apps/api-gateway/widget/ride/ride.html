@@ -392,7 +392,7 @@
     <p class="notice" id="d-wait-done" hidden></p>
 
     <div class="code-card" id="d-code-box" hidden>
-      <div class="code-text"><span class="code-label">Your trip code</span><span class="code-note">Give this code to your driver when you get in.</span></div>
+      <div class="code-text"><span class="code-label"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Your trip code</span><span class="code-note">Give this code to your driver when you get in.</span></div>
       <strong class="code-digits" id="d-code"></strong>
     </div>
 
@@ -470,6 +470,7 @@
     </div>
     <p class="hint" id="pw-rate" hidden></p>
     <button class="btn primary" type="button" id="pay-go"></button>
+    <p class="secure-line"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Secure payment</p>
     <button class="btn quiet" type="button" data-close>Back</button>
   </div>
   <div class="sheet-part" id="pay-add" hidden>
@@ -518,15 +519,15 @@
 
 <!-- Rider safety (14 Nov 2026): before the trip, when it starts (recorded), after it. Once each per trip. -->
 <div class="sheet" id="sheet-tips" hidden role="dialog" aria-modal="true" aria-labelledby="tips-title">
-  <h2 id="tips-title"></h2>
-  <div class="rec-line" id="tips-rec" hidden><i aria-hidden="true"></i><span>This trip is recorded for your safety.</span></div>
+  <div class="sheet-head"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><h2 id="tips-title"></h2></div>
+  <div class="rec-line" id="tips-rec" hidden><svg class="ico mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>This trip is recorded for your safety.</span></div>
   <ol class="tips" id="tips-list"></ol>
   <button class="btn primary" type="button" id="tips-ok">Got it</button>
 </div>
 
 <!-- What was checked about a driver (an offer's ✓ chips) -->
 <div class="sheet" id="sheet-checks" hidden role="dialog" aria-modal="true" aria-labelledby="checks-title">
-  <h2 id="checks-title">Checked by Wheelers</h2>
+  <div class="sheet-head"><img class="w-mark" src="../shared/w-mark.png" alt="" width="28" height="28"><h2 id="checks-title">Checked by Wheelers</h2></div>
   <ul class="checks-list" id="checks-list"></ul>
   <button class="btn primary" type="button" data-close>Close</button>
 </div>
