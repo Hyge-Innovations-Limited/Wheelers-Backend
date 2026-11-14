@@ -841,6 +841,22 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 .tips li + li { border-top: 1px solid var(--line); }
 .tips li::before { content: counter(tip); flex: none; width: 24px; height: 24px; border-radius: 12px; background: var(--ink); color: var(--orange); font-family: var(--display); font-weight: 700; font-size: 13px; line-height: 24px; text-align: center; }
 .rec-line { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 14px; background: #F5F2ED; font-size: 13px; line-height: 18px; }
-.rec-line i { flex: none; width: 8px; height: 8px; border-radius: 4px; background: var(--sos); animation: rec-pulse 1.6s ease-in-out infinite; }
-@keyframes rec-pulse { 50% { opacity: 0.25; } }
-@media (prefers-reduced-motion: reduce) { .rec-line i { animation: none; } }
+.rec-line .mic { flex: none; width: 16px; height: 16px; color: var(--sos); animation: rec-pulse 1.6s ease-in-out infinite; }
+@keyframes rec-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .rec-line .mic { animation: none; } }
+
+/* ── security icons (14 Nov 2026): one small icon where it means something ── */
+.ico { width: 16px; height: 16px; flex: none; }
+/* Checked by Wheelers / safety sheets: the mark beside the title. */
+.sheet-head { display: flex; align-items: center; gap: 10px; }
+.sheet-head .ico { width: 22px; height: 22px; color: #00875F; }
+.w-mark { width: 28px; height: 28px; border-radius: 8px; flex: none; }
+/* An offer's checks start with a shield. */
+.check-shield { display: inline-flex; align-items: center; color: #00875F; }
+.check-shield .ico { width: 18px; height: 18px; }
+/* The trip code is private: a lock beside its label. */
+.code-label { display: inline-flex; align-items: center; gap: 6px; }
+.code-label .ico { width: 14px; height: 14px; }
+/* Under Pay: the money is handled safely. */
+.secure-line { display: flex; align-items: center; justify-content: center; gap: 6px; margin: -4px 0 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+.secure-line .ico { width: 13px; height: 13px; }

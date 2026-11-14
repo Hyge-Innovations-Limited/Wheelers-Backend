@@ -6,6 +6,7 @@ import { logActivity } from '../analytics/log-activity';
 import { isRecord, getString } from '../utils/object';
 import { sniffKycFileType, type DriverKycStorage } from '../storage/driver-kyc-storage';
 import { readJsonBody, sendJson } from './utils';
+import { driverChecksFor } from '../drivers/driver-checks';
 
 interface DriverPapersDeps {
   jwtSecret: string;
@@ -179,7 +180,9 @@ export async function handleDriverPapersRoute(req: IncomingMessage, res: ServerR
   const { userId, driver } = who;
 
   if (url.pathname === '/drivers/papers' && req.method === 'GET') {
-    sendJson(res, 200, await driverPapersView(driver.id));
+    // And what riders see was checked about this driver (the ✓ chips on their offers).
+    const [view, checks] = await Promise.all([driverPapersView(driver.id), driverChecksFor(driver.id)]);
+    sendJson(res, 200, { ...view, checks });
     return true;
   }
 

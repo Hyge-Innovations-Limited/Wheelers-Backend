@@ -231,7 +231,8 @@ test('an offer shows what was checked as ✓ chips; a tap lists each with its mo
   ])));
   const row = find(page.el('offer-list'), (n) => n.className === 'offer-checks');
   assert.ok(row, 'the chips are on the card');
-  assert.deepEqual(row.children.map((c) => c.children.map((x) => x.textContent).join('')), ['NIN', 'Licence', 'Insurance'], 'only kinds the page knows');
+  assert.equal(row.children[0].className, 'check-shield', 'a shield first');
+  assert.deepEqual(row.children.filter((c) => c.className === 'check-chip').map((c) => c.children.map((x) => x.textContent).join('')), ['NIN', 'Licence', 'Insurance'], 'only kinds the page knows');
   assert.match(row.attrs['aria-label'], /^Checked: NIN, Licence, Insurance\./);
   await page.tap(row);
   assert.equal(sheetOpen(page, 'sheet-checks'), true);

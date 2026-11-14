@@ -3138,6 +3138,7 @@
     insurance: { chip: 'Insurance', line: 'Car insurance is valid' },
     plate: { chip: 'Plate', line: 'Plate matches the car' }
   };
+  var SHIELD_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function monthOf(iso) {
@@ -3154,6 +3155,10 @@
     var row = el('button', 'offer-checks');
     row.type = 'button';
     row.setAttribute('aria-label', 'Checked: ' + checks.map(function (c) { return CHECK_WORDS[c.kind].chip; }).join(', ') + '. See what was checked about ' + name);
+    // A shield first: these are checks, not features.
+    var shield = el('span', 'check-shield');
+    shield.innerHTML = SHIELD_ICON;
+    row.appendChild(shield);
     checks.forEach(function (c) {
       var chip = el('span', 'check-chip');
       chip.innerHTML = TICK;
