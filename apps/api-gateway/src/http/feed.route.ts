@@ -194,12 +194,14 @@ export async function handleFeedRoute(req: IncomingMessage, res: ServerResponse,
     const today = await feedClient.postsSince(driver.id, new Date(Date.now() - DAY_MS));
     if (today >= FEED_POSTS_PER_DAY) { sendJson(res, 429, { error: `You can post ${FEED_POSTS_PER_DAY} times a day. Try again tomorrow.`, code: 'DAILY_LIMIT' }); return true; }
 
-    // Two photos at a time, each in its own worker thread: about half the wait of one by one, while a
-    // big photo (up to ~160 MB while it is decoded) never has three others beside it on the server.
+    // One photo at a time, in a worker thread (the API keeps answering meanwhile): a decoded photo
+    // takes ~100 MB and the server has little memory to spare (14 Nov 2026: 1.9 GB, already in swap).
     const shrink = deps.shrink ?? shrinkFeedPhoto;
     const shrunk: Awaited<ReturnType<typeof shrinkFeedPhoto>>[] = [];
-    for (let i = 0; i < rawPhotos.length; i += 2) {
-      shrunk.push(...await Promise.all(rawPhotos.slice(i, i + 2).map((raw) => shrink(Buffer.from(raw.replace(/^data:[^,]*,/, ''), 'base64')))));
+    for (const raw of rawPhotos) {
+      const one = await shrink(Buffer.from(raw.replace(/^data:[^,]*,/, ''), 'base64'));
+      shrunk.push(one);
+      if (!one.ok) break;
     }
     const bad = shrunk.find((s) => !s.ok);
     if (bad && !bad.ok) { sendJson(res, 400, { error: bad.error, code: 'BAD_PHOTO' }); return true; }

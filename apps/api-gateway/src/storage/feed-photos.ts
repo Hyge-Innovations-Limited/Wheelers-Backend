@@ -3,8 +3,13 @@ import { Worker } from 'node:worker_threads';
 
 /** The most a Feed photo may be as sent (a phone photo is 2 to 6 MB). */
 export const FEED_PHOTO_MAX_BYTES = 12 * 1024 * 1024;
-/** Bigger than this many pixels is refused before decoding (it would take hundreds of MB). */
-const MAX_PIXELS = 40_000_000;
+/**
+ * Bigger than this many pixels is refused before decoding: decoded, a photo
+ * takes about 4 bytes a pixel and more again while resized (25 MP ≈ 100 MB+).
+ * The server has 1.9 GB and was already using swap (14 Nov 2026). A phone's
+ * normal photo is 12 MP; its 50 MP mode is refused.
+ */
+const MAX_PIXELS = 25_000_000;
 const WORKER_TIMEOUT_MS = 20_000;
 
 /**

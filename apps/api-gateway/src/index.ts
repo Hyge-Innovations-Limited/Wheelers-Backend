@@ -133,7 +133,7 @@ import { handleTripChatPageRoute } from "./trip-chat/page.route";
 import { handleAdminTripRoute } from "./http/admin-trip.route";
 import { stellarConfigFromEnv } from "./stellar/config";
 import { onPrismaExecution, onPrismaQuery } from "@wheleers/db";
-import { addDbTime, currentTiming, routeKey, runWithTiming } from "./health/request-timing";
+import { addDbTime, countsForApiHealth, currentTiming, routeKey, runWithTiming } from "./health/request-timing";
 import { createStatsRecorder } from "./health/stats";
 import { startHealthJobs } from "./health/jobs";
 import { configureMapsCache } from "./maps/shared-cache";
@@ -802,7 +802,8 @@ async function bootstrap(): Promise<void> {
     const startedAt = Date.now();
     const timing = currentTiming();
     res.once("finish", () => {
-      healthStats.http(Date.now() - startedAt, res.statusCode);
+      // Riders' and drivers' requests only (not the admin dashboard): what the slow-API alert watches.
+      if (countsForApiHealth(req.method, url.pathname)) healthStats.http(Date.now() - startedAt, res.statusCode);
       healthStats.route(routeKey(req.method, url.pathname, res.statusCode), Date.now() - startedAt, res.statusCode, timing);
       // What people tried in the app and how it went, for the admin Activity page.
       recordRequestOutcome(req, res, url.pathname, gatewayEnv.JWT_SECRET);
