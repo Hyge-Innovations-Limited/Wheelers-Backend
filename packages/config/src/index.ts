@@ -106,3 +106,4 @@ export { createVitalsSampler, VITALS_KEY, VITALS_KEEP_MS, type VitalsSample } fr
 // Waiting time: free minutes after Arrived, then a fee per minute until the trip starts
 export { waitingCharge, waitingTerms, WAITING_FREE_MINUTES, WAITING_NGN_PER_MINUTE, type WaitingCharge, type WaitingTerms } from './waiting';
 export { LAGOS_CNG_STATIONS, nearestCngStations, straightKm, type CngStation, type NearbyCngStation } from './cng-stations';
+export { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE, type SafetyMoment } from './safety-tips';

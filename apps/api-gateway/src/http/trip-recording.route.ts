@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { adminActivityClient, driverClient, rideClient, tripRecordingClient, TRIP_RECORDING_KEEP_DAYS } from '@wheleers/db';
 import { authenticateHttpUser } from './authenticate';
+import { tripRecordingStarted } from '../rides/trip-recorded';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
 import { clientIp } from '../utils/client-ip';
@@ -153,7 +154,8 @@ export async function handleTripRecordingRoute(req: IncomingMessage, res: Server
       if (path === '/drivers/me/trip-recordings/start') {
         const ride = await ownRide(driver.id, body.rideId);
         if (String(ride.status) !== 'IN_PROGRESS') throw new RecordingError('This trip is not running.', 409, 'not_running');
-        await tripRecordingClient.markRideRecording(ride.id);
+        // The first time: the rider is told the trip is recorded (once).
+        if (await tripRecordingClient.markRideRecording(ride.id)) tripRecordingStarted(ride.id);
         sendJson(res, 200, { ok: true, nextSegmentIndex: await tripRecordingClient.nextSegmentIndex(ride.id) });
         return true;
       }

@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
+import { setTripRecordedHook } from '../rides/trip-recorded';
 import { waitingLineForRider } from '../rides/waiting';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
+import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
 import { buildPricedRouteEvent, claimPublish, fundRouteHold, releasePublish, pendingRideOf, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../rides/trip-route-pending';
 import {
@@ -16,13 +17,14 @@ import {
   WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms, safetyTipsFor } from '@wheleers/config';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
 import { loadDriverRideSnapshot } from '../websocket/driver-ride-sync';
 import type { RedisClient } from '../redis/client';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
+import { driverChecksField } from '../drivers/driver-checks';
 import {
   isWhatsappRider,
   lookupPhoneByUserId,
@@ -75,6 +77,8 @@ import {
   sendFlowOffersMessage,
   sendDriverArrivedNotification,
   sendRideCompletedNotification,
+  sendRideStartedNotification,
+  sendTripRecordedNotification,
   setGroupRideChecker,
   sendRideCancelledNotification,
   rideCancelledText,
@@ -161,6 +165,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   // The receipt's Repeat / Reverse buttons must not be offered for a group seat.
   setGroupRideChecker(async (rideId) => Boolean(await getGroupSeat(deps.redisClient, rideId).catch(() => null)));
   const rideParticipants = new Map<string, RideParticipantState>();
+  // The driver's phone started recording a trip: the rider is told (once).
+  setTripRecordedHook((rideId) => sayTripRecorded(deps, rideId));
   // Searches held for a rider who was paying: ended once that choice lapses unpaid.
   setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
@@ -1271,6 +1277,7 @@ export async function handleRideEvent(
         etaSeconds: event.etaSeconds,
         distanceKm: event.distanceKm,
         ...(await driverPhotoFields(deps.driverPhoto, event.driverId, { riderId: event.riderId })),
+        ...(await driverChecksField(event.driverId)),
       });
       // The socket only reaches an open app. With the app closed, the first
       // offer of a search is a push, so the rider knows to come and choose.
@@ -1838,22 +1845,38 @@ export async function handleRideEvent(
       ? waitingLineForRider({ minutes: startedWaiting.waitingMinutes ?? 0, feeNgn: Number(startedWaiting.waitingFeeNgn), paid: startedWaiting.waitingPaid === true })
       : null;
 
+    // The driver's phone may already be recording it (it marks the trip a few seconds after the start).
+    const recordedAtStart = Boolean((await prisma.ride.findUnique({ where: { id: event.rideId }, select: { recordingStartedAt: true } }).catch(() => null))?.recordingStartedAt);
+
     // Notify rider
     const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId);
     if (phone && deps.whatsappNotifier) {
       await setRideState(deps.redisClient, event.rideId, 'in_progress', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
-      // No "trip started" message: the rider is in the car, and the receipt follows. Only a waiting fee is said
-      // (once; on the ride page it is on the screen instead).
-      if (waitingLine && !(await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false))
-        && await deps.redisClient.setIfNotExists(`ride:${event.rideId}:waiting-said`, '1', 24 * 60 * 60).catch(() => false)) {
-        await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, waitingLine).catch(() => undefined);
+      // "Trip started" (Timi, 14 Nov 2026): once, with what the waiting came to, whether the trip is
+      // recorded, and three safety tips. A redelivered RIDE_STARTED sends nothing more. A rider on the
+      // ride page gets nothing in the chat: the page shows it ("no chat while on the page").
+      if (!(await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false))
+        && await deps.redisClient.setIfNotExists(`ride:${event.rideId}:started-said`, '1', 24 * 60 * 60).catch(() => false)) {
+        const sayWaiting = waitingLine
+          ? await deps.redisClient.setIfNotExists(`ride:${event.rideId}:waiting-said`, '1', 24 * 60 * 60).catch(() => false)
+          : false;
+        const sayRecorded = recordedAtStart
+          && await deps.redisClient.setIfNotExists(`ride:${event.rideId}:recorded-said`, '1', 24 * 60 * 60).catch(() => false);
+        await sendRideStartedNotification(deps.whatsappNotifier, phone, null, {
+          waitingLine: sayWaiting ? waitingLine : null,
+          recorded: sayRecorded,
+          tips: safetyTipsFor(event.rideId, 'during'),
+        }).catch(() => undefined);
+        // Marked while this was being sent: said now, on its own.
+        if (!sayRecorded) await sayTripRecorded(deps, event.rideId);
       }
     } else {
       await registry.sendToUser(event.riderId, 'ride:started', {
         rideId: event.rideId,
         startedAt: event.startedAt,
         ...(waitingLine ? { waitingLine } : {}),
+        recorded: recordedAtStart,
       });
     }
 
@@ -1921,6 +1944,8 @@ export async function handleRideEvent(
         completedAt: event.completedAt,
         referralCashbackSettled: settledReferralUsages > 0,
         ...(waiting ? { waitingMinutes: waiting.minutes, waitingFeeNgn: waiting.feeNgn, waitingPaid: waiting.paid } : {}),
+        // "Before you go": three safety tips over the receipt.
+        safetyTips: safetyTipsFor(event.rideId, 'after'),
       });
     }
 
@@ -2589,6 +2614,33 @@ async function sayFreeWaitingOver(deps: StartGatewayConsumerDeps, from: Date, to
     const phone = await whatsappRiderPhone(deps, ride.riderId, ride.id);
     if (!phone) continue;
     await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, `Free waiting is over. ₦${terms.ngnPerMinute.toLocaleString()} per minute from now.`).catch(() => undefined);
+  }
+}
+
+/**
+ * The trip is recorded: the rider is told once (Timi, 14 Nov 2026). A WhatsApp
+ * rider gets the line on its own only after "Trip started" went without it
+ * (if that message has not gone yet, it says it itself); an app rider gets
+ * `ride:recorded`; an open ride page sees it in its state. Nothing when the
+ * trip is not recorded or not running. Never throws.
+ */
+export async function sayTripRecorded(deps: StartGatewayConsumerDeps, rideId: string): Promise<void> {
+  try {
+    const ride = await prisma.ride.findUnique({ where: { id: rideId }, select: { riderId: true, status: true, recordingStartedAt: true } }).catch(() => null);
+    if (!ride?.recordingStartedAt || String(ride.status) !== 'IN_PROGRESS') return;
+    void tellRidePage(deps.registry, ride.riderId);
+    const phone = await whatsappRiderPhone(deps, ride.riderId, rideId);
+    if (phone && deps.whatsappNotifier) {
+      if (!(await deps.redisClient.get(`ride:${rideId}:started-said`).catch(() => null))) return;
+      if (!(await deps.redisClient.setIfNotExists(`ride:${rideId}:recorded-said`, '1', 24 * 60 * 60).catch(() => false))) return;
+      await sendTripRecordedNotification(deps.whatsappNotifier, phone).catch(() => undefined);
+      return;
+    }
+    if (await deps.redisClient.setIfNotExists(`ride:${rideId}:recorded-told`, '1', 24 * 60 * 60).catch(() => false)) {
+      await deps.registry.sendToUser(ride.riderId, 'ride:recorded', { rideId });
+    }
+  } catch (error) {
+    console.warn('[consumer] trip recorded not said', { rideId, error: error instanceof Error ? error.message : String(error) });
   }
 }
 

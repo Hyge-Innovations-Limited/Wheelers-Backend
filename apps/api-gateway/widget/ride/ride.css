@@ -821,3 +821,26 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 #pay-add .waiting[hidden] { display: none; }
 #pay-add .waiting .spinner { width: 14px; height: 14px; border-width: 2px; }
 #pay-add .waiting span:last-child { font-size: 13px; color: var(--muted); }
+
+/* ── rider safety (14 Nov 2026) ─────────────────────────────────────────── */
+/* What was checked about a driver, on each offer: small green chips; tap for the list. */
+.offer-checks { all: unset; display: flex; flex-wrap: wrap; gap: 6px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.offer-checks:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; border-radius: 8px; }
+.check-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px 0 6px; border-radius: 999px; background: #E8FFF7; color: #00875F; font-size: 12px; line-height: 16px; font-weight: 700; }
+.check-chip svg { width: 13px; height: 13px; flex: none; }
+.checks-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 16px; background: #fff; overflow: hidden; }
+.checks-list li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; font-size: 14px; line-height: 20px; }
+.checks-list li + li { border-top: 1px solid var(--line); }
+.checks-list .ok { flex: none; width: 26px; height: 26px; border-radius: 13px; background: #E8FFF7; color: #00875F; display: flex; align-items: center; justify-content: center; }
+.checks-list .ok svg { width: 15px; height: 15px; }
+.checks-list .what { flex: 1; min-width: 0; }
+.checks-list small { flex: none; color: var(--muted); font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
+/* Safety tips: three, numbered, in one card. */
+.tips { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 16px; background: #fff; overflow: hidden; counter-reset: tip; }
+.tips li { counter-increment: tip; display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; font-size: 14px; line-height: 20px; }
+.tips li + li { border-top: 1px solid var(--line); }
+.tips li::before { content: counter(tip); flex: none; width: 24px; height: 24px; border-radius: 12px; background: var(--ink); color: var(--orange); font-family: var(--display); font-weight: 700; font-size: 13px; line-height: 24px; text-align: center; }
+.rec-line { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 14px; background: #F5F2ED; font-size: 13px; line-height: 18px; }
+.rec-line i { flex: none; width: 8px; height: 8px; border-radius: 4px; background: var(--sos); animation: rec-pulse 1.6s ease-in-out infinite; }
+@keyframes rec-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .rec-line i { animation: none; } }
