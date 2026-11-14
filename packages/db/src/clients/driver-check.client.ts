@@ -78,6 +78,22 @@ export const driverCheckClient = {
     prisma.driverCheck.count({ where: { source, createdAt: { gte: since }, outcome: { not: 'error' } } }),
 
   /** Each driver's checks, newest first: the lists show the latest of each kind. */
+  /**
+   * What a rider's offer card needs to say what was checked (drivers/driver-checks.ts):
+   * the KYC answer with its NIN, the licence date, every check, newest first, and the insurance paper.
+   */
+  badgeFacts: (driverId: string) =>
+    prisma.driver.findUnique({
+      where: { id: driverId },
+      select: {
+        kycStatus: true,
+        licenceExpiresOn: true,
+        kycSubmission: { select: { ninImageKey: true, status: true, reviewedAt: true, submittedAt: true } },
+        checks: { orderBy: { createdAt: 'desc' }, take: 50, select: { kind: true, paperType: true, outcome: true, createdAt: true } },
+        documents: { where: { type: 'insurance' }, select: { status: true, expiresOn: true, reviewedAt: true } },
+      },
+    }),
+
   forDrivers: (driverIds: string[]) =>
     driverIds.length === 0 ? Promise.resolve([]) : prisma.driverCheck.findMany({
       where: { driverId: { in: driverIds } },

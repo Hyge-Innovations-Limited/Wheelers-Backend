@@ -605,7 +605,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
@@ -3085,6 +3085,9 @@
       if (offer.plate) side.appendChild(el('span', 'plate', offer.plate));
       top.appendChild(side);
       card.appendChild(top);
+      // What was checked about this driver: only checks that passed and are in date; tap for the list.
+      var checksRow = drawOfferChecks(offer, name);
+      if (checksRow) card.appendChild(checksRow);
       // Only a driver who took the rider's own price is called out (components/rider/offer-card.tsx).
       var comparison = Math.round(offer.priceNgn) === Math.round(yoursNgn) ? 'Accepted your price' : '';
       if (comparison) {
@@ -3124,6 +3127,119 @@
       }
       holder.appendChild(card);
     });
+  }
+
+  /* ── what was checked about a driver (14 Nov 2026) ─────────────────── */
+
+  var CHECK_WORDS = {
+    nin: { chip: 'NIN', line: 'NIN verified' },
+    licence: { chip: 'Licence', line: "Driver's licence is real" },
+    face: { chip: 'Face', line: 'Face matches the licence' },
+    insurance: { chip: 'Insurance', line: 'Car insurance is valid' },
+    plate: { chip: 'Plate', line: 'Plate matches the car' }
+  };
+  var TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function monthOf(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+  }
+  function knownChecks(offer) {
+    return (Array.isArray(offer && offer.checks) ? offer.checks : []).filter(function (c) { return c && CHECK_WORDS[c.kind]; });
+  }
+  /** The ✓ chips under a driver, as one button that opens "Checked by Wheelers"; null when nothing was checked. */
+  function drawOfferChecks(offer, name) {
+    var checks = knownChecks(offer);
+    if (!checks.length) return null;
+    var row = el('button', 'offer-checks');
+    row.type = 'button';
+    row.setAttribute('aria-label', 'Checked: ' + checks.map(function (c) { return CHECK_WORDS[c.kind].chip; }).join(', ') + '. See what was checked about ' + name);
+    checks.forEach(function (c) {
+      var chip = el('span', 'check-chip');
+      chip.innerHTML = TICK;
+      chip.appendChild(document.createTextNode(CHECK_WORDS[c.kind].chip));
+      row.appendChild(chip);
+    });
+    row.addEventListener('click', function () { openChecks(checks); });
+    return row;
+  }
+  function openChecks(checks) {
+    var list = W.$('checks-list');
+    list.innerHTML = '';
+    checks.forEach(function (c) {
+      var li = el('li', '');
+      var ok = el('span', 'ok');
+      ok.innerHTML = TICK;
+      li.appendChild(ok);
+      li.appendChild(el('span', 'what', CHECK_WORDS[c.kind].line));
+      li.appendChild(el('small', '', c.until && c.kind === 'insurance' ? 'to ' + monthOf(c.until) : monthOf(c.at)));
+      list.appendChild(li);
+    });
+    track('driver_checks_opened', { checks: checks.length });
+    openSheet('sheet-checks');
+  }
+
+  /* ── safety: before the trip, when it starts (recorded), after it ─────── */
+
+  // Each shown once per trip on this phone (kept a week; a trip is never shown the same sheet twice).
+  var SAFETY_KEY = 'wheelers.safety.seen';
+  // Also kept in memory: with storage blocked (private mode) a sheet still shows once while the page is open.
+  var safetyShownHere = {};
+  function safetySeen(key) {
+    if (safetyShownHere[key]) return true;
+    var seen = readStore('localStorage', SAFETY_KEY) || {};
+    return Boolean(seen[key]);
+  }
+  function markSafetySeen(key) {
+    safetyShownHere[key] = true;
+    var seen = readStore('localStorage', SAFETY_KEY) || {};
+    var now = Date.now();
+    Object.keys(seen).forEach(function (k) { if (now - seen[k] > 7 * 86400000) delete seen[k]; });
+    seen[key] = now;
+    writeStore('localStorage', SAFETY_KEY, seen);
+  }
+  function showSafety(title, tips, recorded, button) {
+    W.$('tips-title').textContent = title;
+    W.show(W.$('tips-rec'), Boolean(recorded));
+    var list = W.$('tips-list');
+    list.innerHTML = '';
+    (tips || []).forEach(function (tip) { list.appendChild(el('li', '', tip)); });
+    W.show(list, Boolean(tips && tips.length));
+    W.$('tips-ok').textContent = button;
+    openSheet('sheet-tips');
+  }
+  W.$('tips-ok').addEventListener('click', function () { closeSheets(); });
+
+  /**
+   * After each render: the one safety sheet due now, if any. Never over another
+   * sheet, while paying or busy, or before the trip screen itself shows.
+   *   before  a driver is coming (not started): "Before you get in", three tips
+   *   start   the trip runs and the driver's phone records it: "Trip started", recorded
+   *   after   a trip just completed (home): "Before you go", three tips
+   */
+  function maybeSafety(s) {
+    if (!s || busy || paying || openSheetId()) return;
+    if (s.phase === 'confirmed' && shownView === 'confirmed' && s.trip && s.rideId) {
+      var running = s.trip.status === 'IN_PROGRESS';
+      if (running && s.trip.recorded && !safetySeen('start:' + s.rideId)) {
+        markSafetySeen('start:' + s.rideId);
+        markSafetySeen('before:' + s.rideId);
+        track('safety_shown', { moment: 'start' });
+        showSafety('Trip started', null, true, 'OK');
+        return;
+      }
+      if (!running && s.trip.safety && s.trip.safety.before && !safetySeen('before:' + s.rideId)) {
+        markSafetySeen('before:' + s.rideId);
+        track('safety_shown', { moment: 'before' });
+        showSafety('Before you get in', s.trip.safety.before, false, 'Got it');
+      }
+      return;
+    }
+    if (s.phase === 'idle' && shownView === 'idle' && s.justFinished && s.justFinished.rideId && !safetySeen('after:' + s.justFinished.rideId)) {
+      markSafetySeen('after:' + s.justFinished.rideId);
+      track('safety_shown', { moment: 'after' });
+      showSafety('Before you go', s.justFinished.tips, false, 'Done');
+    }
   }
 
   /* accept → "Pay ₦X from your wallet?" (Contract D) → Confirming your driver */
@@ -4068,6 +4184,7 @@
     else if (view === 'confirming') drawConfirming();
     else if (view === 'found') drawFound(state);
     else if (view === 'confirmed') drawConfirmed(state);
+    maybeSafety(state);
   }
 
   // Every state shown is numbered. A poll's number is taken when it is sent; an

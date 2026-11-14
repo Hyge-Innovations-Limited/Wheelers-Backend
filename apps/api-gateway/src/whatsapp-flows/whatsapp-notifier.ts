@@ -1,5 +1,5 @@
 import { signFlowToken } from './encryption';
-import { calculateRideFees } from '@wheleers/config';
+import { calculateRideFees, TRIP_RECORDED_LINE } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
 import { tripLines } from './trip-text';
 
@@ -692,14 +692,31 @@ export async function sendRideStartedNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
   /** The short trip ID, e.g. WH-01234: what the rider quotes if they need help. */
-  tripId?: string | null,
+  _tripId?: string | null,
+  extras: {
+    /** What the waiting came to (rides/waiting.ts waitingLineForRider), when there was a fee. */
+    waitingLine?: string | null;
+    /** The driver's phone is recording this trip: said only when it is. */
+    recorded?: boolean;
+    /** Three safety tips for the trip (safetyTipsFor(rideId, 'during')). */
+    tips?: string[];
+  } = {},
 ): Promise<void> {
+  const tips = (extras.tips ?? []).filter(Boolean);
   await sendMetaWhatsappMessage(deps, phone, [
     // No trip ID in the chat: riders never need it (admin and the Excel keep it).
     `*Trip started*`,
     ``,
     `Sit back and enjoy the ride. Your receipt comes here when you arrive.`,
+    ...(extras.waitingLine ? [``, extras.waitingLine] : []),
+    ...(extras.recorded ? [``, `🎙 ${TRIP_RECORDED_LINE}`] : []),
+    ...(tips.length ? [``, `*Stay safe*`, ...tips.map((tip, i) => `${i + 1}. ${tip}`)] : []),
   ].join('\n'));
+}
+
+/** The trip is being recorded, said on its own when the phone started after "Trip started" went. */
+export async function sendTripRecordedNotification(deps: WhatsappNotifierDeps, phone: string): Promise<void> {
+  await sendMetaWhatsappMessage(deps, phone, `🎙 ${TRIP_RECORDED_LINE}`);
 }
 
 export { sendRideCompletedNotification };

@@ -1,0 +1,245 @@
+// Rider safety on the ride page (Timi, 14 Nov 2026): "Before you get in" while the driver comes,
+// "Trip started · This trip is recorded" when the trip starts and the driver's phone records it,
+// "Before you go" after a completed trip; each once per trip. Offers show what was checked about
+// the driver (✓ chips), and a tap lists it.
+//   node scripts/run-with-env.cjs node --test --test-force-exit test/ride-page-safety-webview.test.js
+//   node scripts/run-with-env.cjs node --test --test-force-exit test/ride-page-waiting-webview.test.js
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const WIDGET = path.join(__dirname, '../apps/api-gateway/widget');
+const COMMON = fs.readFileSync(path.join(WIDGET, 'wallet/common.js'), 'utf8');
+const RIDE = fs.readFileSync(path.join(WIDGET, 'ride/ride.js'), 'utf8');
+
+function makeElement(id) {
+  const listeners = {};
+  const node = {
+    id, lastChild: { textContent: '' }, parentNode: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } }, children: [], style: {}, dataset: {}, textContent: '', get innerHTML() { return ''; }, set innerHTML(v) { if (v === '') node.children.length = 0; }, value: '', disabled: false,
+    hidden: /^(sheet-|overlay)/.test(id || ''), className: '', onclick: null, scrollTop: 0, attrs: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener() {},
+    appendChild(child) {
+      const old = child.parentNode;
+      if (old && old.children && old !== node) { const i = old.children.indexOf(child); if (i >= 0) old.children.splice(i, 1); }
+      node.children.push(child); child.parentNode = node; return child;
+    },
+    removeChild() {}, insertBefore(child) { node.children.push(child); return child; },
+    setAttribute(k, v) { node.attrs[k] = v; }, getAttribute(k) { return node.attrs[k] === undefined ? null : node.attrs[k]; },
+    removeAttribute() {}, focus() {}, blur() {}, select() {}, scrollIntoView() {}, remove() {},
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }; },
+    click() { (listeners.click || []).forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, target: node })); if (node.onclick) node.onclick(); },
+    fire(type, event) { (listeners[type] || []).forEach((fn) => fn(event || {})); },
+    listeners,
+  };
+  return node;
+}
+
+
+/** The page, loaded. `server.state` is what /ride-page/state answers; `server.accept` answers /ride-page/accept. */
+async function loadPage(server) {
+  const elements = {};
+  const timers = [];
+  const clock = { skew: 0 };
+  const RealDate = Date;
+  class FakeDate extends RealDate {
+    constructor(...args) { if (args.length) super(...args); else super(RealDate.now() + clock.skew); }
+    static now() { return RealDate.now() + clock.skew; }
+  }
+  const calls = [];
+  const copied = [];
+  // A history that remembers every step: entries pushed, and how far back() / go(n) moved.
+  const history = {
+    stack: [null], moves: [],
+    get state() { return this.stack[this.stack.length - 1]; },
+    pushState(s) { this.stack.push(s); }, replaceState(s) { this.stack[this.stack.length - 1] = s; },
+    under: false,
+    // Like a browser, back() lands later: the state read in the meantime is still the old one.
+    back() { this.go(-1); },
+    go(n) { this.moves.push(n); setImmediate(() => { for (let i = 0; i < -n; i++) { if (this.stack.length > 1) this.stack.pop(); else this.under = true; } if (this.onMove) this.onMove(); }); },
+    // Every entry this page pushed has been stepped back over, once, and none further.
+    settled() { return this.stack.length === 1 && !this.under; },
+  };
+  const docListeners = {};
+  const winListeners = {};
+  history.onMove = () => (winListeners.popstate || []).forEach((fn) => fn({ state: history.state }));
+  const document = {
+    hidden: false, activeElement: null, body: makeElement('body'), head: makeElement('head'),
+    getElementById(id) { return (elements[id] = elements[id] || makeElement(id)); },
+    createElement() { return makeElement(''); },
+    createElementNS() { return makeElement(''); },
+    createTextNode(t) { return { textContent: t }; },
+    querySelector() { return makeElement('q'); },
+    querySelectorAll() { return []; },
+    addEventListener(type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
+  };
+  const fetchStub = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ method: init.method || 'GET', url, body, keepalive: Boolean(init.keepalive) });
+    const answer = await server.answer(init.method || 'GET', url, body);
+    return { ok: answer.status === 200, status: answer.status, json: async () => answer.json };
+  };
+  const window = {
+    location: { hash: '#t=tok', pathname: '/widget/ride/', search: '' },
+    __wheelersToken: 'tok', document, scrollTo() {}, innerHeight: 800, innerWidth: 400,
+    addEventListener(type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+  };
+  const sandbox = {
+    window, document, fetch: fetchStub, console, Promise, JSON, Math, Date: FakeDate, Object, Array, String, Number, Boolean, Error, RegExp, isFinite, parseFloat, parseInt, encodeURIComponent, decodeURIComponent,
+    history,
+    navigator: { clipboard: { writeText: async (text) => { copied.push(text); } }, geolocation: null, userAgent: 'test' },
+    sessionStorage: { getItem() { return null; }, setItem() {} },
+    location: window.location,
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    requestAnimationFrame: (fn) => { timers.push({ fn, ms: 0 }); return 1; },
+    URL, Intl, Symbol, Map, Set, parseFloat: parseFloat,
+  };
+  sandbox.window.window = window;
+  vm.createContext(sandbox);
+  // The window's own globals the scripts read bare (like a browser).
+  Object.assign(sandbox, { addEventListener: window.addEventListener, scrollTo() {} });
+  vm.runInContext(COMMON, sandbox);
+  vm.runInContext(RIDE, sandbox);
+  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)); };
+  await settle();
+  const page = {
+    calls, elements, settle, document, history, copied,
+    toasts: () => document.getElementById('toasts').children.map((c) => c.textContent),
+    el: (id) => document.getElementById(id),
+    paying: () => calls.filter((c) => c.url === '/ride-page/paying').map((c) => `${c.body.offerKey}:${c.body.open ? 'open' : 'close'}`),
+    async tap(target) { target.click(); await settle(); },
+    /** The Accept button the page drew for an offer (the nth offer card). */
+    acceptButtons() {
+      const out = [];
+      const walk = (node) => { (node.children || []).forEach((c) => { if (c.className && /accept/.test(c.className) && /^Accept/.test(c.textContent)) out.push(c); walk(c); }); };
+      walk(document.getElementById('offer-list'));
+      return out;
+    },
+    async poll() { page.runTimers(); await settle(); },
+    // The page's own timers (polls, swipes); the 8 s limit on a paying request waits for fireLimit().
+    runTimers() { const due = timers.filter((t) => t.ms !== 8000 && t.ms !== 20000); due.forEach((t) => timers.splice(timers.indexOf(t), 1)); due.forEach((t) => { try { t.fn(); } catch (e) { /* a timer of the page */ } }); },
+    // The page's 20 s limit on its own requests (a hung accept).
+    async fireRequestLimit() { const due = timers.filter((t) => t.ms === 20000); due.forEach((t) => timers.splice(timers.indexOf(t), 1)); due.forEach((t) => t.fn()); await settle(); },
+    async advanceClock(ms) { clock.skew += ms; },
+    async fireLimit() { const due = timers.filter((t) => t.ms === 8000); due.forEach((t) => timers.splice(timers.indexOf(t), 1)); due.forEach((t) => t.fn()); await settle(); },
+    fireWindow(type, event) { (winListeners[type] || []).forEach((fn) => fn(event || {})); },
+  };
+  return page;
+}
+
+function makeServer(state) {
+  const server = {
+    state,
+    async answer(method, url) {
+      if (url.startsWith('/ride-page/state')) return { status: 200, json: server.state };
+      return { status: 200, json: {} };
+    },
+  };
+  return server;
+}
+
+const BEFORE = ['Check the plate is LAG 234 KJ.', 'Sit in the back if you\'re riding alone.', 'Wait inside until your driver has arrived.'];
+const AFTER = ['Check you have your phone, bag and keys.', 'Rate your driver: it keeps riders safe.', 'Let someone know you\'ve arrived.'];
+const trip = (status, extra = {}) => ({
+  phase: 'confirmed', rideId: 'ride-9', balanceNgn: 1000, offerNgn: 4200,
+  route: { pickupAddress: 'Yaba', destAddress: 'Lekki', stopAddresses: [] },
+  driver: { name: 'Tunde Adebayo', rating: 4.9, fareNgn: 4200, plate: 'LAG 234 KJ' },
+  tripCode: status === 'IN_PROGRESS' ? null : '4821',
+  trip: { status, recorded: false, safety: { before: BEFORE, after: AFTER }, ...extra },
+});
+const tipsShown = (page) => page.el('tips-list').children.map((c) => c.textContent);
+const sheetOpen = (page, id) => page.el(id).hidden === false;
+
+test('the driver is coming: "Before you get in" with the three tips, once (not again on the next poll or after closing)', async () => {
+  const server = makeServer(trip('ARRIVED'));
+  const page = await loadPage(server);
+  assert.equal(sheetOpen(page, 'sheet-tips'), true);
+  assert.equal(page.el('tips-title').textContent, 'Before you get in');
+  assert.deepEqual(tipsShown(page), BEFORE);
+  assert.equal(page.el('tips-rec').hidden, true, 'nothing about recording before the trip');
+  assert.equal(page.el('tips-ok').textContent, 'Got it');
+  await page.tap(page.el('tips-ok'));
+  assert.equal(sheetOpen(page, 'sheet-tips'), false);
+  await page.poll();
+  assert.equal(sheetOpen(page, 'sheet-tips'), false, 'once per trip');
+});
+
+test('the trip starts and is recorded: "Trip started" with the recorded line, no tips; only once', async () => {
+  const server = makeServer(trip('IN_PROGRESS', { recorded: true }));
+  const page = await loadPage(server);
+  assert.equal(sheetOpen(page, 'sheet-tips'), true);
+  assert.equal(page.el('tips-title').textContent, 'Trip started');
+  assert.equal(page.el('tips-rec').hidden, false);
+  assert.equal(page.el('tips-list').hidden, true);
+  assert.equal(page.el('tips-ok').textContent, 'OK');
+  await page.tap(page.el('tips-ok'));
+  await page.poll();
+  assert.equal(sheetOpen(page, 'sheet-tips'), false);
+});
+
+test('started but not recorded: nothing; recorded a few seconds later: "Trip started" then', async () => {
+  const server = makeServer(trip('IN_PROGRESS', { recorded: false }));
+  const page = await loadPage(server);
+  assert.equal(sheetOpen(page, 'sheet-tips'), false, 'not recorded: never claimed');
+  server.state = trip('IN_PROGRESS', { recorded: true });
+  await page.poll();
+  assert.equal(sheetOpen(page, 'sheet-tips'), true);
+  assert.equal(page.el('tips-title').textContent, 'Trip started');
+});
+
+test('after a completed trip: "Before you go" over home, once', async () => {
+  const server = makeServer({ phase: 'idle', balanceNgn: 1000, justFinished: { rideId: 'ride-9', tips: AFTER } });
+  const page = await loadPage(server);
+  assert.equal(sheetOpen(page, 'sheet-tips'), true);
+  assert.equal(page.el('tips-title').textContent, 'Before you go');
+  assert.deepEqual(tipsShown(page), AFTER);
+  assert.equal(page.el('tips-ok').textContent, 'Done');
+  await page.tap(page.el('tips-ok'));
+  await page.poll();
+  assert.equal(sheetOpen(page, 'sheet-tips'), false);
+});
+
+test('home with nothing just finished: no sheet', async () => {
+  const page = await loadPage(makeServer({ phase: 'idle', balanceNgn: 1000, justFinished: null }));
+  assert.equal(sheetOpen(page, 'sheet-tips'), false);
+});
+
+const offers = (checks) => ({
+  phase: 'offers', rideId: 'ride-1', balanceNgn: 50000, offerNgn: 4200,
+  route: { pickupAddress: 'Yaba', destAddress: 'Lekki', stopAddresses: [] },
+  offers: [{ key: 'bid-A', driverName: 'Tunde Adebayo', priceNgn: 4200, checks }],
+});
+function find(node, test) {
+  if (test(node)) return node;
+  for (const c of node.children || []) { const hit = find(c, test); if (hit) return hit; }
+  return null;
+}
+
+test('an offer shows what was checked as ✓ chips; a tap lists each with its month (insurance with its end)', async () => {
+  const page = await loadPage(makeServer(offers([
+    { kind: 'nin', at: '2026-10-20T09:00:00Z', until: null },
+    { kind: 'licence', at: '2026-10-22T09:00:00Z', until: '2028-01-01T00:00:00Z' },
+    { kind: 'insurance', at: '2026-10-25T09:00:00Z', until: '2027-03-31T00:00:00Z' },
+    { kind: 'unknown-kind', at: '2026-10-25T09:00:00Z', until: null },
+  ])));
+  const row = find(page.el('offer-list'), (n) => n.className === 'offer-checks');
+  assert.ok(row, 'the chips are on the card');
+  assert.deepEqual(row.children.map((c) => c.children.map((x) => x.textContent).join('')), ['NIN', 'Licence', 'Insurance'], 'only kinds the page knows');
+  assert.match(row.attrs['aria-label'], /^Checked: NIN, Licence, Insurance\./);
+  await page.tap(row);
+  assert.equal(sheetOpen(page, 'sheet-checks'), true);
+  const lines = page.el('checks-list').children.map((li) => li.children.map((c) => c.textContent).join('|'));
+  assert.deepEqual(lines, ['|NIN verified|Oct 2026', "|Driver's licence is real|Oct 2026", '|Car insurance is valid|to Mar 2027']);
+});
+
+test('an offer with nothing checked shows no chips (never a failed or expired one: the server leaves those out)', async () => {
+  const page = await loadPage(makeServer(offers([])));
+  assert.equal(find(page.el('offer-list'), (n) => n.className === 'offer-checks'), null);
+});

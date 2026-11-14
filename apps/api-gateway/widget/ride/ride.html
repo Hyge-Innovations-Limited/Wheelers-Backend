@@ -516,6 +516,21 @@
   <button class="btn danger" type="button" id="sc-yes"></button>
 </div>
 
+<!-- Rider safety (14 Nov 2026): before the trip, when it starts (recorded), after it. Once each per trip. -->
+<div class="sheet" id="sheet-tips" hidden role="dialog" aria-modal="true" aria-labelledby="tips-title">
+  <h2 id="tips-title"></h2>
+  <div class="rec-line" id="tips-rec" hidden><i aria-hidden="true"></i><span>This trip is recorded for your safety.</span></div>
+  <ol class="tips" id="tips-list"></ol>
+  <button class="btn primary" type="button" id="tips-ok">Got it</button>
+</div>
+
+<!-- What was checked about a driver (an offer's ✓ chips) -->
+<div class="sheet" id="sheet-checks" hidden role="dialog" aria-modal="true" aria-labelledby="checks-title">
+  <h2 id="checks-title">Checked by Wheelers</h2>
+  <ul class="checks-list" id="checks-list"></ul>
+  <button class="btn primary" type="button" data-close>Close</button>
+</div>
+
 <!-- Choose another time: as the app's TimePicker (app/schedule-ride.tsx) -->
 <div class="sheet" id="sheet-time" hidden role="dialog" aria-modal="true" aria-labelledby="tp-title">
   <div class="sheet-title"><h2 id="tp-title">Choose a time</h2><p class="small muted" id="tp-day"></p></div>

@@ -3,6 +3,8 @@ import { driverBidClient, driverClient, referralClient, rideClient, ridePageEven
 import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
+import { driverChecksField } from '../drivers/driver-checks';
+import { justFinishedFor, safetyView } from '../rides/safety';
 import { createWalletPageToken, PageLinkExpiredError, RIDE_PAGE_TOKEN_TTL_SECONDS, verifyWalletPageToken } from '../auth/local';
 import type { Queue } from 'bullmq';
 import { buildScheduledRideJobId, parseScheduledFor } from './ride.route';
@@ -281,6 +283,8 @@ async function liveTripFor(userId: string) {
     map: { tileUrl: MAP_TILE_URL, attribution: MAP_ATTRIBUTION },
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
+    // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
+    ...safetyView(ride, driver.vehiclePlate),
   };
 }
 
@@ -372,6 +376,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         map: trip.map,
         line,
         waiting: trip.waiting,
+        recorded: trip.recorded,
+        safety: trip.safety,
       },
     };
   }
@@ -461,6 +467,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
           distanceKm: bid.distanceKm ?? null,
           receivedAt: bid.receivedAt,
           ...(await driverPhotoFields(deps.driverPhoto, bid.driverId, { riderId: userId })),
+          // What was checked about this driver (only what passed and is in date).
+          ...(await driverChecksField(bid.driverId)),
         }))),
       };
     }
@@ -498,6 +506,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
   // No quote and no live search: it expired, was cancelled, or the trip ended.
   return {
     phase: 'idle' as const, balanceNgn, chatUrl: CHAT_URL, lastSearch: await lastSearchFor(deps, userId),
+    // A trip that just completed: the page shows its "Before you go" tips once.
+    justFinished: await justFinishedFor(userId),
     // Home's "Later" (a ride for later), and how many stops Plan your trip takes.
     canSchedule: Boolean(deps.scheduling && deps.routePlanner),
     maxStops: MAX_CHAT_STOPS,

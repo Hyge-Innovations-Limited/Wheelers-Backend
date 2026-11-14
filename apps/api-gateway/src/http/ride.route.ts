@@ -16,6 +16,8 @@ import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
 import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
+import { driverChecksField } from "../drivers/driver-checks";
+import { safetyView } from "../rides/safety";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
 import { waitingView } from "../rides/waiting";
@@ -572,6 +574,8 @@ function serializeRideDetail(ride: RideWithDriver) {
     completedAt: ride.completedAt?.toISOString() ?? null,
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
+    // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
+    ...safetyView(ride, (ride as { driver?: { vehiclePlate?: string | null } | null }).driver?.vehiclePlate ?? null),
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),
@@ -670,6 +674,7 @@ export async function handleActiveRideRoute(
             distanceKm: bid.distanceKm,
             receivedAt: bid.createdAt.toISOString(),
             ...(await driverPhotoFields(deps.driverPhoto, bid.driverId, { riderId: user.id })),
+            ...(await driverChecksField(bid.driverId)),
           }))),
         }
       : null;
