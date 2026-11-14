@@ -331,6 +331,12 @@ test('photos: made smaller in a worker (1280 at most), stored as JPEG; links sta
   assert.equal(bad.body.code, 'BAD_PHOTO');
   const broken = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x00, 0x01, 0x00]), Buffer.alloc(200, 1)]);
   assert.equal((await shrinkFeedPhoto(broken)).ok, false, 'a broken JPEG is refused, not a crash');
+  // A 50 MP photo (8000 × 6250) is refused from its header alone, before anything is decoded.
+  const huge = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x18, 0x6a, 0x1f, 0x40]), Buffer.alloc(200, 1)]);
+  assert.deepEqual([imageSize(huge).width, imageSize(huge).height], [8000, 6250]);
+  const refused = await shrinkFeedPhoto(huge);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'A photo is too big. Pick a smaller one.');
 });
 
 test('helpers: names, image sizes, signing windows', () => {

@@ -65,3 +65,16 @@ export function routeKey(method: string | undefined, pathname: string, status?: 
     .slice(0, 120);
   return `${verb} ${path || '/'}`;
 }
+
+/**
+ * Whether a request counts toward the API time and errors that the slow-API
+ * alert and the Health page's "API time" read: riders' and drivers' requests
+ * only. The admin dashboard refreshes itself every few seconds and a few of
+ * its pages are heavy by design (14 Nov 2026: four admin pages alone tripped
+ * "API slow" on a quiet afternoon), and a browser's OPTIONS pre-check is not
+ * a request anyone waits on. Every route is still in the per-route table.
+ */
+export function countsForApiHealth(method: string | undefined, pathname: string): boolean {
+  if (method === 'OPTIONS') return false;
+  return !(pathname === '/admin' || pathname.startsWith('/admin/'));
+}

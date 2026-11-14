@@ -212,3 +212,15 @@ test('the database\'s own figures: tables always, the SQL list or how to switch 
     await prisma.adminUser.delete({ where: { id: admin.id } });
   }
 });
+
+test('the slow-API alert counts riders\' and drivers\' requests only: not the admin dashboard, not browser pre-checks', () => {
+  const { countsForApiHealth } = require('../apps/api-gateway/dist/health/request-timing.js');
+  assert.equal(countsForApiHealth('GET', '/rides/active'), true);
+  assert.equal(countsForApiHealth('POST', '/drivers/me/location'), true);
+  assert.equal(countsForApiHealth('POST', '/webhooks/whatsapp'), true);
+  assert.equal(countsForApiHealth('GET', '/admin/health'), false);
+  assert.equal(countsForApiHealth('GET', '/admin/data/datasets'), false);
+  assert.equal(countsForApiHealth('GET', '/admin'), false);
+  assert.equal(countsForApiHealth('GET', '/administrator'), true, 'only the admin area, not a path that starts the same');
+  assert.equal(countsForApiHealth('OPTIONS', '/rides/active'), false);
+});
