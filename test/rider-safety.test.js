@@ -121,6 +121,7 @@ test('checks: a failed or expired check is not shown (and a later failure hides 
   assert.equal(kinds(insuranceFailed).includes('insurance'), false, 'a failed insurance check wins over an approved paper');
   assert.equal(kinds(facts({ kycSubmission: { ninImageKey: null, status: 'APPROVED', reviewedAt: at(1), submittedAt: at(2) } })).includes('nin'), false, 'no NIN on the KYC');
   assert.equal(kinds(facts({ kycStatus: 'SUBMITTED' })).includes('nin'), false, 'KYC not approved');
+  assert.equal(kinds(facts({ kycSubmission: { ninImageKey: 'k/nin.jpg', status: 'SUBMITTED', reviewedAt: null, submittedAt: at(30) } })).includes('nin'), true, 'approved some other way (the driver is approved, the KYC row was not moved): NIN still shows');
   assert.equal(kinds(facts({ checks: facts().checks.map((c) => (c.kind === 'plate' ? { ...c, outcome: 'error' } : c)) })).includes('plate'), false, 'a plate check that errored');
   assert.equal(kinds(facts({ checks: facts().checks.map((c) => (c.kind === 'licenceFace' ? { ...c, outcome: 'mismatch' } : c)) })).includes('face'), false);
 });

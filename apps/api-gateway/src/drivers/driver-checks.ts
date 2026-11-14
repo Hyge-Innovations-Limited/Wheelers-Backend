@@ -47,7 +47,8 @@ export function driverCheckBadges(facts: DriverCheckFacts | null, now = Date.now
   const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
   const kyc = facts.kycSubmission;
-  if (facts.kycStatus === 'APPROVED' && kyc?.ninImageKey && kyc.status === 'APPROVED') {
+  // The driver is approved (by the team, whichever way) and their KYC carries a NIN.
+  if (facts.kycStatus === 'APPROVED' && kyc?.ninImageKey) {
     out.set('nin', { kind: 'nin', at: iso(kyc.reviewedAt ?? kyc.submittedAt) ?? new Date(now).toISOString(), until: null });
   }
 

@@ -3160,7 +3160,7 @@
       chip.appendChild(document.createTextNode(CHECK_WORDS[c.kind].chip));
       row.appendChild(chip);
     });
-    row.addEventListener('click', function () { openChecks(checks); });
+    row.addEventListener('click', function () { if (W.$('sheet-checks')) openChecks(checks); });
     return row;
   }
   function openChecks(checks) {
@@ -3199,6 +3199,7 @@
     writeStore('localStorage', SAFETY_KEY, seen);
   }
   function showSafety(title, tips, recorded, button) {
+    if (!W.$('sheet-tips') || !W.$('tips-list')) return;
     W.$('tips-title').textContent = title;
     W.show(W.$('tips-rec'), Boolean(recorded));
     var list = W.$('tips-list');
@@ -3208,7 +3209,8 @@
     W.$('tips-ok').textContent = button;
     openSheet('sheet-tips');
   }
-  W.$('tips-ok').addEventListener('click', function () { closeSheets(); });
+  // (Guarded: a page cached from before these sheets has no such button.)
+  if (W.$('tips-ok')) W.$('tips-ok').addEventListener('click', function () { closeSheets(); });
 
   /**
    * After each render: the one safety sheet due now, if any. Never over another
