@@ -54,7 +54,8 @@ export class DriverKycStorage {
     return objectKey;
   }
 
-  async getSignedUrl(key: string, expiresInSeconds = 3600, contentType?: KycFileType): Promise<string> {
+  /** `signingDate`: sign as of that time (Feed photos: the same link all through a window, so phones cache it). */
+  async getSignedUrl(key: string, expiresInSeconds = 3600, contentType?: KycFileType, signingDate?: Date): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
@@ -63,7 +64,7 @@ export class DriverKycStorage {
       ...(contentType ? { ResponseContentType: contentType, ResponseContentDisposition: 'inline' } : {}),
     });
 
-    return getSignedUrl(this.s3, command, { expiresIn: expiresInSeconds });
+    return getSignedUrl(this.s3, command, { expiresIn: expiresInSeconds, ...(signingDate ? { signingDate } : {}) });
   }
 
   /**

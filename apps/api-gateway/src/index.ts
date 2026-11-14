@@ -80,6 +80,8 @@ import {
 } from "./http/driver-kyc.route";
 import { handleDriverPapersRoute, lagosToday } from "./http/driver-papers.route";
 import { handleAdminDriverPapersRoute } from "./http/admin-driver-papers.route";
+import { handleFeedRoute } from "./http/feed.route";
+import { handleAdminFeedRoute } from "./http/admin-feed.route";
 import { handleAdminDriverChecksRoute } from "./http/admin-driver-checks.route";
 import { premblyConfigFromEnv } from "./verification/prembly";
 import { handleDriverPhoneRoute } from "./http/driver-phone.route";
@@ -601,6 +603,16 @@ async function bootstrap(): Promise<void> {
         secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY!,
         bucket: gatewayEnv.R2_BUCKET!,
         prefix: 'drivers/kyc',
+      })
+    : null;
+  // The drivers' Feed: photos in the same bucket, apart from papers.
+  const feedStorage = r2Configured
+    ? new DriverKycStorage({
+        accountId: gatewayEnv.R2_ACCOUNT_ID!,
+        accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!,
+        secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY!,
+        bucket: gatewayEnv.R2_BUCKET!,
+        prefix: 'drivers/feed',
       })
     : null;
   // DRIVER_PHOTO_ENABLED: the driver's face for the rider's avatar. Undefined (flag off) keeps every payload as it was.
@@ -1535,6 +1547,11 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    // The drivers' Feed and the CNG stations.
+    if (await handleFeedRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, feedStorage }, url)) {
+      return;
+    }
+
     if (url.pathname === "/drivers/kyc/resubmit") {
       if (req.method !== "POST") {
         sendMethodNotAllowed(res);
@@ -1621,6 +1638,16 @@ async function bootstrap(): Promise<void> {
       kycStorage: driverKycStorage,
       prembly: premblyConfigFromEnv(),
       llm: licenceReader,
+    }, url)) {
+      return;
+    }
+
+    // The drivers' Feed: approving posts, Wheelers posts, pins.
+    if (await handleAdminFeedRoute(req, res, {
+      adminApiKey: process.env.ADMIN_API_KEY ?? '',
+      jwtSecret: gatewayEnv.JWT_SECRET,
+      feedStorage,
+      publisher,
     }, url)) {
       return;
     }
