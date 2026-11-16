@@ -3,6 +3,9 @@
   "data_api_version": "3.0",
   "routing_model": {
     "EMAIL": [
+      "NIN"
+    ],
+    "NIN": [
       "TERMS"
     ],
     "TERMS": [
@@ -16,6 +19,10 @@
       "title": "Welcome",
       "terminal": false,
       "data": {
+        "name": {
+          "type": "string",
+          "__example__": ""
+        },
         "email": {
           "type": "string",
           "__example__": ""
@@ -36,6 +43,7 @@
             "type": "Form",
             "name": "email_form",
             "init-values": {
+              "name": "${data.name}",
               "email": "${data.email}"
             },
             "children": [
@@ -46,7 +54,14 @@
               },
               {
                 "type": "TextBody",
-                "text": "Enter your email"
+                "text": "Enter your full name and email"
+              },
+              {
+                "type": "TextInput",
+                "name": "name",
+                "label": "Full name",
+                "input-type": "text",
+                "required": true
               },
               {
                 "type": "TextInput",
@@ -68,12 +83,89 @@
                   "name": "data_exchange",
                   "payload": {
                     "action": "welcome_email",
+                    "name": "${form.name}",
                     "email": "${form.email}",
                     "marketing": "${form.marketing}"
                   }
                 }
               }
             ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NIN",
+      "title": "Welcome",
+      "terminal": false,
+      "data": {
+        "name": {
+          "type": "string",
+          "__example__": "Ada Obi"
+        },
+        "email": {
+          "type": "string",
+          "__example__": "ada@example.com"
+        },
+        "marketing": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "nin": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "nin_form",
+            "children": [
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Enter your NIN"
+              },
+              {
+                "type": "TextInput",
+                "name": "nin",
+                "label": "NIN",
+                "input-type": "number",
+                "required": false,
+                "helper-text": "11 digits"
+              },
+              {
+                "type": "Footer",
+                "label": "Next",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "welcome_nin",
+                    "name": "${data.name}",
+                    "email": "${data.email}",
+                    "marketing": "${data.marketing}",
+                    "nin": "${form.nin}"
+                  }
+                }
+              }
+            ],
+            "init-values": {
+              "nin": "${data.nin}"
+            }
           }
         ]
       }
@@ -106,6 +198,14 @@
         "marketing": {
           "type": "boolean",
           "__example__": false
+        },
+        "name": {
+          "type": "string",
+          "__example__": "Ada Obi"
+        },
+        "nin": {
+          "type": "string",
+          "__example__": ""
         }
       },
       "layout": {
@@ -157,8 +257,10 @@
                   "name": "data_exchange",
                   "payload": {
                     "action": "welcome_agree",
+                    "name": "${data.name}",
                     "email": "${data.email}",
                     "marketing": "${data.marketing}",
+                    "nin": "${data.nin}",
                     "agree": "${form.agree}"
                   }
                 }

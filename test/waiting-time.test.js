@@ -1,5 +1,6 @@
-// Waiting time (Timi, 12 Nov 2026): 5 minutes free after the driver arrives, then ₦70 a minute until the
-// trip starts. Taken from the rider's wallet at the start when it covers it (held, then all of it to the
+// Waiting time (Timi, 12 Nov 2026): 5 minutes free after the driver arrives, then (Timi, 16 Nov 2026) the
+// price a minute the rider and the driver agreed, from the moment they agreed, until the trip starts. These
+// trips agreed ₦70 the moment the free minutes ended (test/waiting-deal.test.js has the agreeing). Taken from the rider's wallet at the start when it covers it (held, then all of it to the
 // driver when the trip ends; back to the rider if it is cancelled). When it does not: the driver is asked
 // once and the meter stops there; an older driver app is never stopped. Through the real ride:start socket,
 // a real Redis (database 15) and a real Postgres.
@@ -44,13 +45,14 @@ async function user(role, name, balanceNgn) {
   made.users.push(id);
   return id;
 }
-/** A driver waiting at the pickup since `arrivedAt`; the rider's wallet holds `balanceNgn`. */
-async function waitingTrip({ arrivedAt, balanceNgn = 0, paymentMethod = 'WALLET' }) {
+/** A driver waiting at the pickup since `arrivedAt`; the rider's wallet holds `balanceNgn`. ₦70/min agreed when the free 5 minutes ended. */
+async function waitingTrip({ arrivedAt, balanceNgn = 0, paymentMethod = 'WALLET', rateNgn = 70 }) {
   const riderId = await user('RIDER', 'Ada Obi', balanceNgn);
   const driverUserId = await user('DRIVER', 'Tunde Bakare', 0);
   const driver = await prisma.driver.create({ data: { userId: driverUserId, kycStatus: 'APPROVED' } });
   const ride = await prisma.ride.create({ data: {
     riderId, driverId: driver.id, status: 'ARRIVED', arrivedAt, paymentMethod,
+    ...(rateNgn ? { waitingRateNgn: rateNgn, waitingAgreedAt: new Date(arrivedAt.getTime() + 300_000) } : {}),
     pickupLat: 6.5, pickupLng: 3.37, pickupAddress: 'Yaba', destLat: 6.62, destLng: 3.5, destAddress: 'Ikorodu',
   } });
   made.rides.push(ride.id);
@@ -252,9 +254,12 @@ test('the waiting clock starts at the first Arrived: a second tap (or a redelive
 });
 
 test('what the screens get: terms, the server clock, the fee once written; the rider\'s line', async () => {
-  const view = waitingView({ arrivedAt: new Date('2026-11-12T10:00:00Z'), waitingStoppedAt: null, waitingMinutes: 4, waitingFeeNgn: 280, waitingPaid: true });
-  assert.equal(view.freeSeconds, 300);
+  const view = waitingView({ arrivedAt: new Date('2026-11-12T10:00:00Z'), waitingStoppedAt: null, waitingMinutes: 4, waitingFeeNgn: 280, waitingPaid: true, waitingRateNgn: 70, waitingAgreedAt: new Date('2026-11-12T10:05:30Z') });
+  assert.equal(view.freeSeconds, 330, 'free until they agreed');
   assert.equal(view.ngnPerMinute, 70);
+  assert.equal(view.deal.rateNgn, 70);
+  const open = waitingView({ arrivedAt: new Date('2026-11-12T10:00:00Z') });
+  assert.deepEqual([open.freeSeconds, open.ngnPerMinute, open.deal.rateNgn], [300, 0, null], 'nothing agreed: no price a minute');
   assert.ok(Math.abs(Date.parse(view.now) - Date.now()) < 5000);
   assert.deepEqual([view.arrivedAt, view.stoppedAt, view.minutes, view.feeNgn, view.paid], ['2026-11-12T10:00:00.000Z', null, 4, 280, true]);
   assert.equal(waitingView({ arrivedAt: null }), null, 'not arrived: nothing');

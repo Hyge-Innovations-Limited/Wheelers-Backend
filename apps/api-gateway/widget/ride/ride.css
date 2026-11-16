@@ -860,3 +860,13 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 /* Under Pay: the money is handled safely. */
 .secure-line { display: flex; align-items: center; justify-content: center; gap: 6px; margin: -4px 0 0; font-size: 12px; line-height: 16px; color: var(--muted); }
 .secure-line .ico { width: 13px; height: 13px; }
+
+/* The waiting price (rides/waiting-deal.ts): seven prices a minute in a grid, one picked. */
+.rates { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.rate {
+  height: 48px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); color: var(--ink);
+  font-size: 15px; line-height: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.rate[aria-checked="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.rate:active { opacity: 0.72; }
+#d-wait-act { margin-top: 4px; align-self: flex-start; }

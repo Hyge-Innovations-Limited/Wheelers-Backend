@@ -62,6 +62,7 @@ import {
   handleRiderRideHistoryRoute,
   handleGetRideRoute,
   handleActiveRideRoute,
+  handleWaitingDealRoute,
 } from "./http/ride.route";
 import {
   handleGetDriverStatsRoute,
@@ -126,6 +127,7 @@ import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
 import { recordRequestOutcome } from "./analytics/user-outcomes";
 import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
+import { handleRiderNinRoute } from "./http/rider-nin.route";
 import { setRidePageStateBuilder } from "./rides/ride-page-live";
 import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
 import { createTripChatService } from "./trip-chat/service";
@@ -985,6 +987,16 @@ async function bootstrap(): Promise<void> {
         jwtSecret: gatewayEnv.JWT_SECRET,
         paymentsClient,
       });
+      return;
+    }
+
+    // POST /auth/nin — the NIN from the app's Create account (checked by Prembly in the background)
+    if (url.pathname === "/auth/nin") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleRiderNinRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient });
       return;
     }
 
@@ -2367,6 +2379,17 @@ async function bootstrap(): Promise<void> {
         return;
       }
       await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, driverPhoto });
+      return;
+    }
+
+    // POST /rides/:rideId/waiting — the waiting price (rider or assigned driver)
+    const waitingDealMatch = url.pathname.match(/^\/rides\/([^/]+)\/waiting$/);
+    if (waitingDealMatch) {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleWaitingDealRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient }, decodeURIComponent(waitingDealMatch[1]));
       return;
     }
 

@@ -598,8 +598,9 @@ export async function sendDriverArrivedNotification(
   const call = formatTappablePhone(details?.driverPhone);
   const head = [
     `*${details?.driverName ?? 'Your driver'} is here.*${car}`,
-    ...(details?.waiting && details.waiting.ngnPerMinute > 0
-      ? [`Free waiting: ${Math.round(details.waiting.freeSeconds / 60)} min, then ₦${details.waiting.ngnPerMinute.toLocaleString()}/min.`]
+    // After the free minutes the rider is asked to agree a price or cancel (Timi, 16 Nov 2026): no fixed price here.
+    ...(details?.waiting && details.waiting.freeSeconds > 0
+      ? [`Free waiting: ${Math.round(details.waiting.freeSeconds / 60)} min.`]
       : []),
     ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
   ];

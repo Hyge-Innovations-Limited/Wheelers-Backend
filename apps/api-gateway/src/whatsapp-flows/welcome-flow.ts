@@ -1,14 +1,21 @@
-import { userClient } from '@wheleers/db';
+import { prisma, userClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
+import { checkRiderNin, checkRiderNinLive, cleanNin, ninTyped } from '../verification/rider-nin';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
 
 /**
- * The Welcome form (token `welcome:<userId>`): email, then the Privacy Policy and
- * Terms. The user comes only from the signed token.
+ * The Welcome form (token `welcome:<userId>`): name and email, the NIN, then the
+ * Privacy Policy and Terms. The user comes only from the signed token.
  *
- *   EMAIL  the email, an optional news-and-offers tick   [Next]        -> TERMS
+ *   EMAIL  full name, the email, an optional news-and-offers tick   [Next]  -> NIN
+ *   NIN    the NIN (Timi, 16 Nov 2026): Next goes on with the box empty; a typed one is checked by Prembly
+ *          there and then, and a wrong one stays here with a proper message  [Next]  -> TERMS
  *   TERMS  "Read our Privacy Policy and Terms", two links, an optional I agree tick  [Get started] -> agreed, the form closes
+ *
+ * The NIN is looked up on the NIN screen (verification/rider-nin.ts checkRiderNinLive): Prembly slow or down
+ * lets them on, and the check finishes behind.
+ * A form published before the name and NIN (no `name` in what it sends) still goes EMAIL -> TERMS.
  *
  * The I agree tick is not forced: ticked or not, tapping Get started is the agreement, and the screen says so.
  *
@@ -21,9 +28,11 @@ export interface WelcomeFlowDeps {
   redisClient: RedisClient;
   /** The call that agreed: log, open the deposit account, "You're all set." and carry on. */
   onWelcomeAgreed?: (userId: string) => Promise<void>;
+  /** Tests pass their own; the real one asks Prembly (verification/rider-nin.ts), from the NIN screen. */
+  checkNin?: typeof checkRiderNin;
 }
 
-export const WELCOME_ACTIONS = { EMAIL: 'welcome_email', TERMS: 'welcome_agree' } as const;
+export const WELCOME_ACTIONS = { EMAIL: 'welcome_email', NIN: 'welcome_nin', TERMS: 'welcome_agree' } as const;
 
 export const WELCOME_SUBMITS_PER_MINUTE = 10;
 
@@ -48,12 +57,24 @@ export function cleanEmail(raw: unknown): string | null {
 
 type Screen = { screen: string; data: Record<string, unknown> };
 
-function emailScreen(email: string, error = ''): Screen {
-  return { screen: 'EMAIL', data: { email, error, has_error: Boolean(error) } };
+/** Trimmed, spaces squeezed, at most 80 characters; null unless it is at least two words of 2+ letters. */
+export function cleanFullName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = raw.replace(/\s+/g, ' ').trim().slice(0, 80);
+  const words = name.split(' ').filter((w) => /\p{L}{2,}/u.test(w));
+  return words.length >= 2 ? name : null;
 }
 
-function termsScreen(email: string, error = '', marketing = false): Screen {
-  return { screen: 'TERMS', data: { email, marketing, privacy_url: privacyUrl(), terms_url: termsUrl(), error, has_error: Boolean(error) } };
+function emailScreen(email: string, error = '', name = ''): Screen {
+  return { screen: 'EMAIL', data: { name, email, error, has_error: Boolean(error) } };
+}
+
+function ninScreen(name: string, email: string, marketing: boolean, error = '', nin = ''): Screen {
+  return { screen: 'NIN', data: { name, email, marketing, nin, error, has_error: Boolean(error) } };
+}
+
+function termsScreen(email: string, error = '', marketing = false, name = '', nin = ''): Screen {
+  return { screen: 'TERMS', data: { name, nin, email, marketing, privacy_url: privacyUrl(), terms_url: termsUrl(), error, has_error: Boolean(error) } };
 }
 
 /** Closes the form. Meta posts its small reply bubble; the chat follow-up is separate. */
@@ -69,28 +90,46 @@ async function overRateLimit(redis: RedisClient, userId: string): Promise<boolea
 }
 
 export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, deps: WelcomeFlowDeps): Promise<Screen> {
-  const action = actionFor(body, { EMAIL: WELCOME_ACTIONS.EMAIL, TERMS: WELCOME_ACTIONS.TERMS });
+  const action = actionFor(body, { EMAIL: WELCOME_ACTIONS.EMAIL, NIN: WELCOME_ACTIONS.NIN, TERMS: WELCOME_ACTIONS.TERMS });
   const data = body.data ?? {};
 
   if (body.action !== 'data_exchange' || !action) {
     // Opened (or Back): they have seen the form, so the "never opened" count starts again.
     await deps.redisClient.del(welcomeSendsKey(userId)).catch(() => undefined);
-    const known = await userClient.findById(userId).catch(() => null) as { contactEmail?: string | null; email?: string | null } | null;
-    return emailScreen(known?.contactEmail ?? known?.email ?? '');
+    const known = await userClient.findById(userId).catch(() => null) as { contactEmail?: string | null; email?: string | null; name?: string | null } | null;
+    return emailScreen(known?.contactEmail ?? known?.email ?? '', '', cleanFullName(known?.name) ?? '');
   }
+
+  // A form published before the name and NIN sends no `name`: it goes on as it did.
+  const asksName = 'name' in data;
+  const typedName = typeof data['name'] === 'string' ? data['name'] : '';
+  const typedNin = typeof data['nin'] === 'string' || typeof data['nin'] === 'number' ? String(data['nin']).trim() : '';
+  const marketing = data['marketing'] === true || data['marketing'] === 'true';
 
   if (await overRateLimit(deps.redisClient, userId)) {
     const typed = typeof data['email'] === 'string' ? data['email'] : '';
-    return action === WELCOME_ACTIONS.TERMS ? termsScreen(typed, 'Try again in a minute.') : emailScreen(typed, 'Try again in a minute.');
+    if (action === WELCOME_ACTIONS.TERMS) return termsScreen(typed, 'Try again in a minute.', marketing, typedName, typedNin);
+    if (action === WELCOME_ACTIONS.NIN) return ninScreen(typedName, typed, marketing, 'Try again in a minute.');
+    return emailScreen(typed, 'Try again in a minute.', typedName);
   }
 
+  const name = asksName ? cleanFullName(typedName) : null;
+  if (asksName && !name) return emailScreen(typeof data['email'] === 'string' ? data['email'].trim() : '', 'Enter your first and last name.', typedName.trim());
   const email = cleanEmail(data['email']);
   if (!email) {
-    return emailScreen(typeof data['email'] === 'string' ? data['email'].trim() : '', 'Enter a valid email.');
+    return emailScreen(typeof data['email'] === 'string' ? data['email'].trim() : '', 'Enter a valid email.', typedName.trim());
   }
   // The optional tick, on the email screen; carried to the agreement.
-  const marketing = data['marketing'] === true || data['marketing'] === 'true';
-  if (action === WELCOME_ACTIONS.EMAIL) return termsScreen(email, '', marketing);
+  if (action === WELCOME_ACTIONS.EMAIL) return asksName ? ninScreen(name!, email, marketing) : termsScreen(email, '', marketing);
+
+  // The NIN: never required. Typed, Prembly checks it now; a wrong one stays here with what is wrong.
+  const nin = cleanNin(typedNin);
+  if (action === WELCOME_ACTIONS.NIN) {
+    if (!ninTyped(typedNin)) return termsScreen(email, '', marketing, name ?? '', '');
+    const answer = await checkRiderNinLive(userId, typedNin, name ?? '', { redis: deps.redisClient, check: deps.checkNin });
+    if (!answer.ok) return ninScreen(name ?? '', email, marketing, answer.error, typedNin);
+    return termsScreen(email, '', marketing, name ?? '', nin ?? '');
+  }
 
   // TERMS: tapping Get started under "By tapping Get started, you agree to both" is the agreement.
 
@@ -100,6 +139,7 @@ export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, d
   await userClient.setContactEmail(userId, email);
   // The optional tick: kept apart from the agreement, and only when they agree.
   await userClient.setMarketingEmailOptIn(userId, marketing);
+  if (name) await prisma.user.update({ where: { id: userId }, data: { name } }).catch(() => undefined);
   const won = await userClient.agreePrivacyOnce(userId);
   if (won && deps.onWelcomeAgreed) {
     // The form must answer Meta within seconds; the chat follow-up runs on its own.

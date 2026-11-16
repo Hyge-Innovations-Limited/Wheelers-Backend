@@ -31,6 +31,7 @@ import type { GoogleMapsRoutePlanner, TripDetails } from '@wheleers/config';
 import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_KM } from '../LLM/geocoding';
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
+import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -1410,6 +1411,21 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
+/** POST /ride-page/waiting { action: 'offer' | 'accept', ngn }: the waiting price with the driver (rides/waiting-deal.ts). */
+async function handleWaiting(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  if (await overLimit(deps.redisClient, `ride-page:waiting:${userId}`, 20, 60)) throw new PageError('Too many tries. Wait a minute.', 429, 'RATE_LIMITED');
+  const ride = await bookedTrip(deps, userId);
+  try {
+    await actOnWaiting(ride.id, userId, readWaitingAction(await readJsonBody(req).catch(() => null)));
+  } catch (error) {
+    if (error instanceof WaitingDealError) throw new PageError(error.message, error.status, error.code);
+    throw error;
+  }
+  sendJson(res, 200, await buildRidePageState(deps, userId));
+}
+
 /** A booked trip's new route from the page: { destination?, stops } (destination omitted: where it goes now). */
 async function readTripRoute(deps: RidePageRouteDeps, userId: string, body: unknown) {
   if (!isRecord(body)) throw new PageError('Pick where you are going.', 400, 'BAD_REQUEST');
@@ -1729,6 +1745,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/events': { method: 'POST', run: handleEvents },
   '/ride-page/topup': { method: 'GET', run: handleTopup },
   '/ride-page/cancel-ride': { method: 'POST', run: handleCancelRide },
+  '/ride-page/waiting': { method: 'POST', run: handleWaiting },
   '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
   '/ride-page/trip-route/cancel': { method: 'POST', run: handleTripRouteCancel },
   '/ride-page/trip-route/quote': { method: 'POST', run: handleTripRouteQuote },

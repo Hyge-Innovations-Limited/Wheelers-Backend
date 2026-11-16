@@ -7,6 +7,7 @@
  *   licenceFace  POST /verification/drivers_license/face      number, dob, image (the driver's selfie)
  *   plate        POST /verification/vehicle                   vehicle_number
  *   insurance    POST /verification/insurance_policy          channel, number
+ *   ninBasic     POST /verification/vnin-basic                number, number_nin (a rider's NIN at sign-up)
  *
  * The key is PREMBLY_API_KEY in the server's .env (and PREMBLY_APP_ID where
  * the account still has one). Unset, the checks say they are off.
@@ -42,6 +43,7 @@ type Raw = {
   response_code?: unknown;
   data?: unknown;
   frsc_data?: unknown;
+  nin_data?: unknown;
   verification?: { status?: unknown; reference?: unknown } | null;
   face_data?: { status?: unknown; message?: unknown; confidence?: unknown } | null;
   /** Whether this call cost us anything: { was_charged: false, amount: "40.00", note: "No charges" }. */
@@ -96,7 +98,7 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
 
   const reference = raw.verification && raw.verification.reference != null ? String(raw.verification.reference) : null;
   const verified = String(raw.verification?.status ?? '').toUpperCase() === 'VERIFIED';
-  const data = isObject(raw.data) ? raw.data : isObject(raw.frsc_data) ? raw.frsc_data : null;
+  const data = isObject(raw.data) ? raw.data : isObject(raw.frsc_data) ? raw.frsc_data : isObject(raw.nin_data) ? raw.nin_data : null;
 
   if (raw.status === true && data && (verified || !raw.verification)) {
     const f = raw.face_data;
@@ -108,6 +110,9 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
   if (NOT_FOUND.test(detail) && [200, 400, 404, 422].includes(res.status)) return { kind: 'not_found', detail, reference, charged };
   return { kind: 'error', detail, charged };
 }
+
+export const NIN_BASIC_PATH = '/verification/vnin-basic';
+export const ninBasicBody = (nin: string) => ({ number: nin, number_nin: nin });
 
 export const prembly = {
   licence: (config: PremblyConfig, input: { number: string; dob: string; firstName: string; lastName: string }, fetchImpl?: typeof fetch) =>
@@ -121,4 +126,12 @@ export const prembly = {
 
   insurance: (config: PremblyConfig, input: { number: string; channel: string }, fetchImpl?: typeof fetch) =>
     premblyPost(config, '/verification/insurance_policy', { channel: input.channel, number: input.number }, fetchImpl),
+
+  /**
+   * A rider's NIN at sign-up (Timi, 16 Nov 2026): NIN Basic, the number only. Prembly's page for it was down
+   * (16 Nov 2026); NIN Basic is shown taking `number`, its NIN Advance takes `number_nin`: both are sent, an
+   * API ignores the one it does not use. scripts/prembly-nin-probe.mjs shows the real reply's shape.
+   */
+  ninBasic: (config: PremblyConfig, nin: string, fetchImpl?: typeof fetch) =>
+    premblyPost(config, NIN_BASIC_PATH, ninBasicBody(nin), fetchImpl),
 };
