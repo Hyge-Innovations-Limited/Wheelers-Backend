@@ -74,6 +74,10 @@ function refusal(ride: NonNullable<Awaited<ReturnType<typeof rideFor>>>, side: W
  * Returns the ride's waiting block after it; throws WaitingDealError when it cannot be done.
  */
 export async function actOnWaiting(rideId: string, userId: string, act: WaitingAction, now: Date = new Date()): Promise<WaitingView | null> {
+  // Every way in (the routes, a chat button, the form) gets the same check: only the listed prices.
+  if ((act.action !== 'offer' && act.action !== 'accept') || !isWaitingRate(act.ngn)) {
+    throw new WaitingDealError('Pick a price from ₦40 to ₦100 a minute.', 400, 'BAD_RATE');
+  }
   const ride = await rideFor(rideId);
   if (!ride) throw new WaitingDealError('Trip not found.', 404, 'NO_RIDE');
   const side: WaitingSide | null = ride.riderId === userId ? 'rider' : ride.driver?.userId === userId ? 'driver' : null;
@@ -100,4 +104,11 @@ export async function actOnWaiting(rideId: string, userId: string, act: WaitingA
     void hook(change).catch((error) => console.warn('[waiting-deal] could not tell the other side', { rideId, error: error instanceof Error ? error.message : String(error) }));
   }
   return view;
+}
+
+/** The ride's waiting block as it stands (status too), for a screen that asks; null when there is no such ride. */
+export async function waitingNow(rideId: string): Promise<{ status: string; riderId: string; waiting: WaitingView | null } | null> {
+  const ride = await rideFor(rideId).catch(() => null);
+  if (!ride) return null;
+  return { status: String(ride.status), riderId: ride.riderId, waiting: waitingView(ride) };
 }

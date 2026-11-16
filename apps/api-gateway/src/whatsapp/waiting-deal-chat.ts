@@ -1,6 +1,7 @@
 import { WAITING_RATES_NGN } from '@wheleers/config';
 import { rideClient } from '@wheleers/db';
 import { actOnWaiting, WaitingDealError } from '../rides/waiting-deal';
+import { signFlowToken } from '../whatsapp-flows/encryption';
 
 /**
  * The waiting price in the chat (Timi, 16 Nov 2026), for WhatsApp riders not
@@ -12,6 +13,11 @@ import { actOnWaiting, WaitingDealError } from '../rides/waiting-deal';
  *   agreed               "Agreed: ₦60/min. Waiting time counts from now."
  *
  * Cancel ride is the usual cancel (its reasons), free.
+ *
+ * With the Waiting time form published (WHATSAPP_WAITING_FLOW_ID, npm run flow:push:waiting), the question and
+ * the counter are one form message each ("Choose", "Answer") and the rest happens in the form
+ * (whatsapp-flows/waiting-flow.ts): two messages instead of five. Without it, or if Meta refuses the form
+ * message, the buttons above.
  */
 
 export const WAIT_KEEP_ID = 'wait_keep';
@@ -20,6 +26,8 @@ const RATE_ID = /^wait_rate:(\d+)$/;
 const OK_ID = /^wait_ok:(\d+)$/;
 
 type Meta = { metaAccessToken?: string; metaPhoneNumberId?: string };
+/** What a form message needs too: the secret that signs its token. */
+type FormMeta = Meta & { flowTokenSecret?: string };
 
 export function isWaitingDealReply(replyId: string | undefined | null): boolean {
   return !!replyId && (replyId === WAIT_KEEP_ID || replyId === WAIT_CANCEL_ID || RATE_ID.test(replyId) || OK_ID.test(replyId));
@@ -139,4 +147,50 @@ export async function handleWaitingDealTap(
     console.warn('[waiting-deal] chat tap failed', { userId, replyId, error: error instanceof Error ? error.message : String(error) });
     await sendWaitingText(meta, phone, 'Something went wrong. Try again.');
   }
+}
+
+/** The Waiting time form's id on Meta, when it is published. */
+export function waitingFormId(): string | null {
+  return process.env['WHATSAPP_WAITING_FLOW_ID']?.trim() || null;
+}
+
+/** One form message: the words, and a button that opens the Waiting time form for this rider. */
+export function waitingFormMessage(text: string, cta: string, riderId: string, flowId: string, secret: string): Record<string, unknown> {
+  return {
+    type: 'flow',
+    body: { text },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_id: flowId,
+        flow_token: signFlowToken(`wait:${riderId}`, secret),
+        flow_cta: cta,
+        flow_action: 'data_exchange',
+      },
+    },
+  };
+}
+
+export const askFormText = (freeMinutes: number) =>
+  `*Your driver has waited ${freeMinutes} min*\nKeep them waiting for a price a minute, or cancel. Nothing is charged until you both agree.`;
+export const counterFormText = (ngn: number) => `*Your driver asks ${naira(ngn)}/min*\nTo keep waiting. Accept it, pick another price, or cancel.`;
+
+/** The form message when the form is published and can be signed; false when it was not sent (the caller sends the buttons). */
+async function sendForm(meta: FormMeta, to: string, riderId: string, text: string, cta: string): Promise<boolean> {
+  const flowId = waitingFormId();
+  if (!flowId || !meta.flowTokenSecret) return false;
+  return post(meta, to, { type: 'interactive', interactive: waitingFormMessage(text, cta, riderId, flowId, meta.flowTokenSecret) });
+}
+
+/** The free minutes are over: the form ("Choose"), or the buttons. */
+export async function sendWaitingAsk(meta: FormMeta, to: string, riderId: string, freeMinutes: number): Promise<void> {
+  if (await sendForm(meta, to, riderId, askFormText(freeMinutes), 'Choose')) return;
+  await sendWaitingInteractive(meta, to, waitingAskMessage(freeMinutes));
+}
+
+/** The driver asked another price: the form ("Answer"), or the buttons. */
+export async function sendDriverCounter(meta: FormMeta, to: string, riderId: string, ngn: number): Promise<void> {
+  if (await sendForm(meta, to, riderId, counterFormText(ngn), 'Answer')) return;
+  await sendWaitingInteractive(meta, to, driverCounterMessage(ngn));
 }

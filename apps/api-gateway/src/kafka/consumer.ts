@@ -4,7 +4,7 @@ import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
 import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
-import { agreedLine, driverCounterMessage, sendWaitingInteractive, sendWaitingText, waitingAskMessage } from '../whatsapp/waiting-deal-chat';
+import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
@@ -2620,7 +2620,7 @@ async function sayFreeWaitingOver(deps: StartGatewayConsumerDeps, from: Date, to
     const phone = await whatsappRiderPhone(deps, ride.riderId, ride.id);
     if (phone && deps.whatsappNotifier) {
       if (await isRidePageOpen(deps.redisClient, ride.riderId).catch(() => false)) continue;
-      await sendWaitingInteractive(deps.whatsappNotifier, phone, waitingAskMessage(freeMinutes)).catch(() => undefined);
+      await sendWaitingAsk(deps.whatsappNotifier, phone, ride.riderId, freeMinutes).catch(() => undefined);
       continue;
     }
     await pushDriver(deps, ride.riderId, { title: `Your driver has waited ${freeMinutes} min`, body: 'Keep them waiting or cancel.', type: 'waiting_ask', rideId: ride.id, generation: String(ride.arrivedAt?.getTime() ?? 0) }).catch(() => undefined);
@@ -2653,7 +2653,7 @@ async function tellWaitingDeal(deps: StartGatewayConsumerDeps, change: WaitingDe
   if (phone && deps.whatsappNotifier) {
     if (await isRidePageOpen(deps.redisClient, change.riderId).catch(() => false)) return;
     if (change.kind === 'agreed') await sendWaitingText(deps.whatsappNotifier, phone, agreedLine(change.ngn));
-    else await sendWaitingInteractive(deps.whatsappNotifier, phone, driverCounterMessage(change.ngn));
+    else await sendDriverCounter(deps.whatsappNotifier, phone, change.riderId, change.ngn);
     return;
   }
   await pushDriver(deps, change.riderId, change.kind === 'agreed'
