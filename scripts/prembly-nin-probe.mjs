@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { premblyConfigFromEnv, prembly, NIN_BASIC_PATH, ninBasicBody } = require('../apps/api-gateway/dist/verification/prembly.js');
-const { ninRecordNames, sameNin } = require('../apps/api-gateway/dist/verification/rider-nin.js');
+const { ninRecordNames, sameNin, ninSuspended } = require('../apps/api-gateway/dist/verification/rider-nin.js');
 
 const nin = String(process.argv[2] ?? '').replace(/[\s-]/g, '');
 if (!/^\d{11}$/.test(nin)) {
@@ -28,7 +28,7 @@ if (!config) {
 }
 
 /** Prembly's own words about the call: safe to show. */
-const SAFE = new Set(['status', 'response_code', 'detail', 'message', 'was_charged', 'amount', 'note', 'reference']);
+const SAFE = new Set(['status', 'response_code', 'detail', 'message', 'was_charged', 'amount', 'note', 'reference', 'nin_suspension_status']);
 
 /** Every key with its type, nested; values only for Prembly's own status words. */
 function shape(value, key = '', depth = 0) {
@@ -76,6 +76,7 @@ if (answer.kind === 'found') {
   console.log(`  name keys found on the record: ${keys.join(', ') || 'NONE (the name check would always fail)'}`);
   console.log(`  name words found: ${ninRecordNames(answer.data).length}`);
   console.log(`  record is for this NIN: ${sameNin(answer.data, nin) ? 'yes' : 'NO'}`);
+  console.log(`  suspended: ${ninSuspended(answer.data) ? 'YES (the check says it can\'t be verified)' : 'no'}`);
 } else {
   console.log(`  Prembly said: ${answer.detail}`);
 }
