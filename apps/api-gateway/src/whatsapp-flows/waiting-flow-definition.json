@@ -1,0 +1,274 @@
+{
+  "version": "6.0",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "PRICE": [
+      "CANCEL",
+      "NOTE",
+      "DONE"
+    ],
+    "CANCEL": [
+      "NOTE",
+      "DONE"
+    ],
+    "NOTE": [],
+    "DONE": []
+  },
+  "screens": [
+    {
+      "id": "PRICE",
+      "title": "Waiting time",
+      "terminal": false,
+      "data": {
+        "heading": {
+          "type": "string",
+          "__example__": "Keep your driver waiting"
+        },
+        "body": {
+          "type": "string",
+          "__example__": "Pick a price a minute. Your driver can accept or ask for another. Nothing is charged until you both agree."
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "rate:60",
+              "title": "₦60/min"
+            },
+            {
+              "id": "cancel",
+              "title": "Cancel ride",
+              "description": "Free. You won't be charged."
+            }
+          ]
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "price_form",
+            "children": [
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "TextHeading",
+                "text": "${data.heading}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.body}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "choice",
+                "label": "Pick one",
+                "required": true,
+                "data-source": "${data.choices}"
+              },
+              {
+                "type": "Footer",
+                "label": "Send",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "wait_price",
+                    "choice": "${form.choice}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "CANCEL",
+      "title": "Cancel ride",
+      "terminal": false,
+      "data": {
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "Long waiting time"
+            },
+            {
+              "id": "2",
+              "title": "Wrong pickup or destination"
+            }
+          ]
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        },
+        "has_error": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "cancel_form",
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Cancelling is free. Why are you cancelling?"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.error}",
+                "visible": "${data.has_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "reason",
+                "label": "Reason",
+                "required": true,
+                "data-source": "${data.reasons}"
+              },
+              {
+                "type": "Footer",
+                "label": "Cancel ride",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "action": "wait_cancel",
+                    "reason": "${form.reason}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NOTE",
+      "title": "Waiting time",
+      "terminal": false,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Sent ₦60/min"
+        },
+        "note": {
+          "type": "string",
+          "__example__": "We'll message you when your driver answers."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "note_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Swipe down to go back to the chat."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Wheelers",
+      "terminal": true,
+      "data": {
+        "headline": {
+          "type": "string",
+          "__example__": "Done"
+        },
+        "note": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "done_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.headline}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.note}"
+              },
+              {
+                "type": "Footer",
+                "label": "Back to chat",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "flow": "waiting"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
