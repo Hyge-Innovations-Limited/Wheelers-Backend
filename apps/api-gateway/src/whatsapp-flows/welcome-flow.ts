@@ -1,6 +1,6 @@
 import { prisma, userClient } from '@wheleers/db';
 import type { RedisClient } from '../redis/client';
-import { checkRiderNin, cleanNin, ninTyped } from '../verification/rider-nin';
+import { checkRiderNin, checkRiderNinLive, cleanNin, ninTyped } from '../verification/rider-nin';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
 
@@ -9,10 +9,12 @@ import { actionFor } from './flow-dispatch';
  * Privacy Policy and Terms. The user comes only from the signed token.
  *
  *   EMAIL  full name, the email, an optional news-and-offers tick   [Next]  -> NIN
- *   NIN    the NIN (Timi, 16 Nov 2026): Next goes on with the box empty  [Next]  -> TERMS
+ *   NIN    the NIN (Timi, 16 Nov 2026): Next goes on with the box empty; a typed one is checked by Prembly
+ *          there and then, and a wrong one stays here with a proper message  [Next]  -> TERMS
  *   TERMS  "Read our Privacy Policy and Terms", two links, an optional I agree tick  [Get started] -> agreed, the form closes
  *
- * A NIN is looked up by Prembly only once they agreed (verification/rider-nin.ts), in the background.
+ * The NIN is looked up on the NIN screen (verification/rider-nin.ts checkRiderNinLive): Prembly slow or down
+ * lets them on, and the check finishes behind.
  * A form published before the name and NIN (no `name` in what it sends) still goes EMAIL -> TERMS.
  *
  * The I agree tick is not forced: ticked or not, tapping Get started is the agreement, and the screen says so.
@@ -26,7 +28,7 @@ export interface WelcomeFlowDeps {
   redisClient: RedisClient;
   /** The call that agreed: log, open the deposit account, "You're all set." and carry on. */
   onWelcomeAgreed?: (userId: string) => Promise<void>;
-  /** Tests pass their own; the real one asks Prembly (verification/rider-nin.ts). */
+  /** Tests pass their own; the real one asks Prembly (verification/rider-nin.ts), from the NIN screen. */
   checkNin?: typeof checkRiderNin;
 }
 
@@ -67,8 +69,8 @@ function emailScreen(email: string, error = '', name = ''): Screen {
   return { screen: 'EMAIL', data: { name, email, error, has_error: Boolean(error) } };
 }
 
-function ninScreen(name: string, email: string, marketing: boolean, error = ''): Screen {
-  return { screen: 'NIN', data: { name, email, marketing, error, has_error: Boolean(error) } };
+function ninScreen(name: string, email: string, marketing: boolean, error = '', nin = ''): Screen {
+  return { screen: 'NIN', data: { name, email, marketing, nin, error, has_error: Boolean(error) } };
 }
 
 function termsScreen(email: string, error = '', marketing = false, name = '', nin = ''): Screen {
@@ -120,10 +122,12 @@ export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, d
   // The optional tick, on the email screen; carried to the agreement.
   if (action === WELCOME_ACTIONS.EMAIL) return asksName ? ninScreen(name!, email, marketing) : termsScreen(email, '', marketing);
 
-  // The NIN: never required. Typed, it must be 11 digits.
+  // The NIN: never required. Typed, Prembly checks it now; a wrong one stays here with what is wrong.
   const nin = cleanNin(typedNin);
   if (action === WELCOME_ACTIONS.NIN) {
-    if (ninTyped(typedNin) && !nin) return ninScreen(name ?? '', email, marketing, 'NIN is 11 digits.');
+    if (!ninTyped(typedNin)) return termsScreen(email, '', marketing, name ?? '', '');
+    const answer = await checkRiderNinLive(userId, typedNin, name ?? '', { redis: deps.redisClient, check: deps.checkNin });
+    if (!answer.ok) return ninScreen(name ?? '', email, marketing, answer.error, typedNin);
     return termsScreen(email, '', marketing, name ?? '', nin ?? '');
   }
 
@@ -137,8 +141,6 @@ export async function handleWelcomeFlow(body: FlowRequestBody, userId: string, d
   await userClient.setMarketingEmailOptIn(userId, marketing);
   if (name) await prisma.user.update({ where: { id: userId }, data: { name } }).catch(() => undefined);
   const won = await userClient.agreePrivacyOnce(userId);
-  // The NIN, now they agreed: Prembly looks it up in the background (the form must answer Meta within seconds).
-  if (won && name && nin) void (deps.checkNin ?? checkRiderNin)(userId, nin, name, { redis: deps.redisClient });
   if (won && deps.onWelcomeAgreed) {
     // The form must answer Meta within seconds; the chat follow-up runs on its own.
     void deps.onWelcomeAgreed(userId).catch((error) => {

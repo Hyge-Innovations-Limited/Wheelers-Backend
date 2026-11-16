@@ -118,6 +118,10 @@
         "has_error": {
           "type": "boolean",
           "__example__": false
+        },
+        "nin": {
+          "type": "string",
+          "__example__": ""
         }
       },
       "layout": {
@@ -158,7 +162,10 @@
                   }
                 }
               }
-            ]
+            ],
+            "init-values": {
+              "nin": "${data.nin}"
+            }
           }
         ]
       }

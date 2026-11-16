@@ -93,10 +93,12 @@ test('the check: another person\'s name, no such NIN, Prembly down; at most 3 a 
 
 const flowBody = (screen, data) => ({ action: 'data_exchange', flow_token: 't', screen, data });
 
-test('the Welcome form: full name and email, then the NIN (Next with it empty goes on), then the terms; checked only once agreed', async () => {
+test('the Welcome form: full name and email, then the NIN checked there and then; a wrong one stays with a proper message', async () => {
   const id = await user(null);
   const checked = [];
-  const deps = { redisClient: memoryRedis(), checkNin: async (...args) => { checked.push(args.slice(0, 3)); return 'VERIFIED'; } };
+  // Prembly's answer for each NIN (faked).
+  const ANSWERS = { '12345678909': 'NOT_FOUND', '22345678901': 'NO_MATCH', '12345678901': 'VERIFIED' };
+  const deps = { redisClient: memoryRedis(), checkNin: async (...args) => { checked.push(args.slice(0, 3)); return ANSWERS[args[1]]; } };
 
   const noName = await handleWelcomeFlow(flowBody('EMAIL', { name: 'Ada', email: 'ada@example.com' }), id, deps);
   assert.deepEqual([noName.screen, noName.data.error], ['EMAIL', 'Enter your first and last name.']);
@@ -104,26 +106,40 @@ test('the Welcome form: full name and email, then the NIN (Next with it empty go
   assert.equal(toNin.screen, 'NIN');
   assert.deepEqual([toNin.data.name, toNin.data.email, toNin.data.marketing], ['Ada Obi', 'ada@example.com', true]);
 
-  const badNin = await handleWelcomeFlow(flowBody('NIN', { name: 'Ada Obi', email: 'ada@example.com', nin: '1234' }), id, deps);
-  assert.deepEqual([badNin.screen, badNin.data.error], ['NIN', 'NIN is 11 digits.']);
-  const empty = await handleWelcomeFlow(flowBody('NIN', { name: 'Ada Obi', email: 'ada@example.com', nin: '' }), id, deps);
+  const at = (nin) => handleWelcomeFlow(flowBody('NIN', { name: 'Ada Obi', email: 'ada@example.com', nin }), id, deps);
+  const short = await at('1234');
+  assert.deepEqual([short.screen, short.data.error, short.data.nin], ['NIN', 'NIN is 11 digits.', '1234'], 'the typed number stays in the box');
+  assert.equal(checked.length, 0, 'not 11 digits: never sent to Prembly');
+  const unknown = await at('12345678909');
+  assert.deepEqual([unknown.screen, unknown.data.error], ['NIN', "We couldn't find this NIN. Check the 11 digits and try again."]);
+  const other = await at('22345678901');
+  assert.deepEqual([other.screen, other.data.error], ['NIN', "This NIN isn't in the name Ada Obi. Check your NIN, or go back and fix your name."]);
+  const empty = await at('');
   assert.deepEqual([empty.screen, empty.data.nin], ['TERMS', ''], 'Next with the box empty goes on');
-  const typed = await handleWelcomeFlow(flowBody('NIN', { name: 'Ada Obi', email: 'ada@example.com', nin: '12345678901' }), id, deps);
-  assert.deepEqual([typed.screen, typed.data.nin, typed.data.name], ['TERMS', '12345678901', 'Ada Obi']);
-  assert.equal(checked.length, 0, 'nothing goes to Prembly before they agree');
+  const right = await at('12345678901');
+  assert.deepEqual([right.screen, right.data.nin, right.data.name], ['TERMS', '12345678901', 'Ada Obi']);
+  assert.deepEqual(checked.map((c) => c[1]), ['12345678909', '22345678901', '12345678901']);
+  assert.deepEqual(checked[0], [id, '12345678909', 'Ada Obi'], 'held against the name typed on the first screen');
 
   const done = await handleWelcomeFlow(flowBody('TERMS', { name: 'Ada Obi', email: 'ada@example.com', nin: '12345678901', agree: true }), id, deps);
   assert.equal(done.screen, 'SUCCESS');
-  assert.deepEqual(checked, [[id, '12345678901', 'Ada Obi']]);
+  assert.equal(checked.length, 3, 'not looked up (or paid for) again at the terms');
   const row = await prisma.user.findUnique({ where: { id } });
   assert.deepEqual([row.name, row.privacyConsent], ['Ada Obi', 'AGREED']);
+});
 
-  // No NIN typed: agreed, nothing looked up.
-  const other = await user(null);
-  const none = [];
-  await handleWelcomeFlow(flowBody('TERMS', { name: 'Tunde Bakare', email: 't@example.com', nin: '', agree: true }), other, { redisClient: memoryRedis(), checkNin: async (...a) => { none.push(a); } });
-  assert.equal(none.length, 0);
-  assert.equal((await prisma.user.findUnique({ where: { id: other } })).privacyConsent, 'AGREED');
+test('live check: Prembly slow or down lets the rider on (the slow one finishes behind); 3 tries a day, then "Too many tries"', async () => {
+  const id = await user('Ada Obi');
+  const redis = memoryRedis();
+  let finished = false;
+  const slow = async () => { await new Promise((r) => setTimeout(r, 150)); finished = true; return 'NOT_FOUND'; };
+  assert.deepEqual(await nin.checkRiderNinLive(id, '12345678901', 'Ada Obi', { redis, check: slow, waitMs: 30 }), { ok: true, status: 'PENDING' });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(finished, true);
+  assert.deepEqual(await nin.checkRiderNinLive(id, '12345678901', 'Ada Obi', { redis, check: async () => 'UNCHECKED' }), { ok: true, status: 'UNCHECKED' });
+  await redis.set(`rider-nin:${id}:${new Date().toISOString().slice(0, 10)}`, '3');
+  const tooMany = await nin.checkRiderNinLive(id, '12345678901', 'Ada Obi', { redis, check: async () => 'VERIFIED' });
+  assert.deepEqual(tooMany, { ok: false, code: 'NIN_TOO_MANY', error: 'Too many tries. Leave it empty for now.' });
 });
 
 test('the form as Meta shows it: name, then a NIN box that is not required and never says optional', () => {
@@ -140,20 +156,32 @@ test('the form as Meta shows it: name, then a NIN box that is not required and n
   assert.equal(payload.name, '${data.name}');
 });
 
-test('the app: POST /auth/nin takes 11 digits and answers at once; the check runs behind', async () => {
+test('the app: POST /auth/nin checks while the rider waits; a wrong NIN answers 422 with the words to show', async () => {
   const id = await user('Ada Obi');
   const checked = [];
-  const server = http.createServer((req, res) => void handleRiderNinRoute(req, res, { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), check: async (...a) => { checked.push(a.slice(0, 3)); return 'VERIFIED'; } }));
+  const ANSWERS = { '12345678909': 'NOT_FOUND', '22345678901': 'NO_MATCH', '12345678901': 'VERIFIED' };
+  const server = http.createServer((req, res) => void handleRiderNinRoute(req, res, { jwtSecret: JWT_SECRET, redisClient: memoryRedis(), check: async (...a) => { checked.push(a.slice(0, 3)); return ANSWERS[a[1]]; } }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const post = (token, body) => fetch(`http://127.0.0.1:${server.address().port}/auth/nin`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
   const token = local.createLocalAccessToken(id, JWT_SECRET);
   try {
     assert.equal((await post(null, { nin: '12345678901' })).status, 401);
-    const bad = await post(token, { nin: '12345' });
-    assert.equal(bad.status, 400);
-    assert.equal((await bad.json()).error, 'NIN is 11 digits.');
-    assert.equal((await post(token, { nin: '1234 5678 901' })).status, 202);
-    assert.deepEqual(checked, [[id, '12345678901', 'Ada Obi']]);
+    const answers = [];
+    for (const n of ['12345', '12345678909', '22345678901']) {
+      const r = await post(token, { nin: n, fullName: 'Ada  Obi' });
+      answers.push([r.status, (await r.json()).error]);
+    }
+    assert.deepEqual(answers, [
+      [422, 'NIN is 11 digits.'],
+      [422, "We couldn't find this NIN. Check the 11 digits and try again."],
+      [422, "This NIN isn't in the name Ada Obi. Check your NIN, or go back and fix your name."],
+    ]);
+    const ok = await post(token, { nin: '1234 5678 901' });
+    assert.deepEqual([ok.status, await ok.json()], [200, { ok: true, status: 'VERIFIED' }]);
+    assert.deepEqual(checked.at(-1), [id, '12345678901', 'Ada Obi']);
+    // No name sent: the account's own.
+    await post(token, { nin: '12345678901' });
+    assert.equal(checked.at(-1)[2], 'Ada Obi');
   } finally {
     await new Promise((r) => server.close(r));
   }

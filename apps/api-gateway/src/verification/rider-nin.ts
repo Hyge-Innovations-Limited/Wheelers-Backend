@@ -5,9 +5,10 @@ import { prembly, premblyConfigFromEnv, type PremblyConfig } from './prembly';
 /**
  * A rider's NIN at sign-up (Timi, 16 Nov 2026), in the WhatsApp Welcome form
  * and the app's Create account. Never required: an empty box goes on. When one
- * is typed, Prembly (NIN Basic) looks it up and the name on it is held against
- * the name the rider gave. Only after they agreed to the privacy policy (no
- * data to a third party before that).
+ * is typed, Prembly (NIN Basic) looks it up while the rider waits and the name
+ * on it is held against the name the rider gave; a wrong one gets a proper
+ * message (checkRiderNinLive). Checked on the NIN screen, before the terms
+ * (Timi's call, 16 Nov 2026: a message on the spot over asking after them).
  *
  * The number itself is never kept: only its last 4 digits, the outcome and
  * when (User.ninLast4, ninStatus, ninCheckedAt):
@@ -88,7 +89,7 @@ export async function checkRiderNin(userId: string, rawNin: unknown, fullName: s
       console.warn('[rider-nin] Prembly is not set up: the NIN was not checked', { userId });
       return null;
     }
-    const dayKey = `rider-nin:${userId}:${new Date().toISOString().slice(0, 10)}`;
+    const dayKey = dayKeyFor(userId);
     const used = Number(await deps.redis.get(dayKey).catch(() => null)) || 0;
     if (used >= NIN_CHECKS_PER_DAY) return null;
     await deps.redis.set(dayKey, String(used + 1), 26 * 60 * 60).catch(() => undefined);
@@ -104,4 +105,53 @@ export async function checkRiderNin(userId: string, rawNin: unknown, fullName: s
     console.warn('[rider-nin] NIN check failed', { userId, error: error instanceof Error ? error.message : String(error) });
     return null;
   }
+}
+
+/* ── Checked while the rider waits (Timi, 16 Nov 2026): a wrong NIN gets a proper message on the spot ── */
+
+/** How long the form or the app waits for Prembly before letting the rider go on (the check finishes behind). */
+export const NIN_LIVE_WAIT_MS = 7000;
+
+export type NinLiveAnswer =
+  | { ok: true; status: NinStatus | 'PENDING' | null }
+  | { ok: false; code: 'NIN_INVALID' | 'NIN_NOT_FOUND' | 'NIN_OTHER_NAME' | 'NIN_TOO_MANY'; error: string };
+
+export const NIN_ERRORS = {
+  NIN_INVALID: 'NIN is 11 digits.',
+  NIN_NOT_FOUND: "We couldn't find this NIN. Check the 11 digits and try again.",
+  NIN_OTHER_NAME: (name: string) => `This NIN isn't in the name ${name}. Check your NIN, or go back and fix your name.`,
+  NIN_TOO_MANY: 'Too many tries. Leave it empty for now.',
+} as const;
+
+const dayKeyFor = (userId: string) => `rider-nin:${userId}:${new Date().toISOString().slice(0, 10)}`;
+
+/**
+ * The NIN typed in the form or the app, checked now. Wrong (not 11 digits, no such NIN, another person's name,
+ * too many tries today): a message for the rider. Right, or Prembly slow or down (not their fault): they go on,
+ * and a slow check still finishes behind and is written. Never throws.
+ */
+export async function checkRiderNinLive(
+  userId: string,
+  rawNin: unknown,
+  fullName: string,
+  deps: RiderNinDeps & { waitMs?: number; check?: typeof checkRiderNin },
+): Promise<NinLiveAnswer> {
+  const nin = cleanNin(rawNin);
+  if (!nin) return { ok: false, code: 'NIN_INVALID', error: NIN_ERRORS.NIN_INVALID };
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { ninStatus: true } });
+    if (user?.ninStatus === 'VERIFIED') return { ok: true, status: 'VERIFIED' };
+    const used = Number(await deps.redis.get(dayKeyFor(userId)).catch(() => null)) || 0;
+    if (used >= NIN_CHECKS_PER_DAY) return { ok: false, code: 'NIN_TOO_MANY', error: NIN_ERRORS.NIN_TOO_MANY };
+  } catch {
+    /* the check below decides */
+  }
+  const running = (deps.check ?? checkRiderNin)(userId, nin, fullName, deps);
+  let timer: NodeJS.Timeout | undefined;
+  const slow = new Promise<'PENDING'>((resolve) => { timer = setTimeout(() => resolve('PENDING'), deps.waitMs ?? NIN_LIVE_WAIT_MS); });
+  const status = await Promise.race([running, slow]);
+  if (timer) clearTimeout(timer);
+  if (status === 'NOT_FOUND') return { ok: false, code: 'NIN_NOT_FOUND', error: NIN_ERRORS.NIN_NOT_FOUND };
+  if (status === 'NO_MATCH') return { ok: false, code: 'NIN_OTHER_NAME', error: NIN_ERRORS.NIN_OTHER_NAME(fullName.trim() || 'you gave') };
+  return { ok: true, status };
 }
