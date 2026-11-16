@@ -51,6 +51,11 @@ model User {
   /// When the tick was last answered (yes or no).
   marketingEmailOptInAt      DateTime?
   bvn                        String?
+  /// The rider's NIN check at sign-up (Timi, 16 Nov 2026), by Prembly. The number itself is never kept:
+  /// only its last 4 digits, the outcome (VERIFIED, NO_MATCH, NOT_FOUND, UNCHECKED) and when.
+  ninLast4                   String?
+  ninStatus                  String?
+  ninCheckedAt               DateTime?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   driver                     Driver?
@@ -481,6 +486,16 @@ model Ride {
   waitingMinutes          Int?
   waitingFeeNgn           Decimal?          @db.Decimal(18, 2)
   waitingPaid             Boolean?
+  /// Waiting price (Timi, 16 Nov 2026): after the free minutes the rider and the driver agree a price a minute
+  /// (₦40–100). Nothing is charged until they agree; the meter runs from waitingAgreedAt at waitingRateNgn.
+  waitingRateNgn          Int?
+  waitingAgreedAt         DateTime?
+  /// The offer on the table: who made it (RIDER or DRIVER), how much a minute, when. Cleared when agreed.
+  waitingOfferBy          String?
+  waitingOfferNgn         Int?
+  waitingOfferAt          DateTime?
+  /// Offers made on this ride, both sides (a cap keeps it from turning into spam).
+  waitingOfferCount       Int               @default(0)
   startedAt               DateTime?
   completedAt             DateTime?
   cancelledAt             DateTime?

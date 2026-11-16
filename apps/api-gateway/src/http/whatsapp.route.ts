@@ -1,3 +1,4 @@
+import { handleWaitingDealTap, isWaitingDealReply } from '../whatsapp/waiting-deal-chat';
 import { noteStatus, noteUserWrote } from '../whatsapp/form-fallback';
 import { userDeviceClient } from '@wheleers/db';
 import { phoneNetworkOf, shouldRecord } from '../devices/device-report';
@@ -223,6 +224,13 @@ export async function handleIncomingMetaMessage(
     // ── SOS. Before consent, before any booking step, before anything. ────
     if (msgInfo.replyId && RIDE_CARD_REPLIES.has(msgInfo.replyId)) {
       await handleRideCardTap(deps, user.id, phone, msgInfo.replyId);
+      return;
+    }
+
+    // ── The waiting price: keep the driver waiting, a price, the driver's counter, or cancel ──
+    if (isWaitingDealReply(msgInfo.replyId)) {
+      await handleWaitingDealTap(deps, user.id, phone, msgInfo.replyId!, () =>
+        handleIncomingMetaMessage(deps, { ...msgInfo, messageId: '', replyId: undefined, messageBody: 'cancel ride' }));
       return;
     }
 

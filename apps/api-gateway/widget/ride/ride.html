@@ -388,6 +388,7 @@
       <div class="wait-top"><span class="wait-label"><i class="live-dot" id="d-wait-dot" aria-hidden="true" hidden></i><span id="d-wait-label">Free waiting</span></span><strong class="wait-figure" id="d-wait-figure"></strong></div>
       <div class="wait-bar" id="d-wait-bar"><span class="wait-fill" id="d-wait-fill"></span></div>
       <p class="wait-note" id="d-wait-note"></p>
+      <button class="btn small dark" type="button" id="d-wait-act" hidden></button>
     </div>
     <p class="notice" id="d-wait-done" hidden></p>
 
@@ -523,6 +524,18 @@
   <div class="rec-line" id="tips-rec" hidden><svg class="ico mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>This trip is recorded for your safety.</span></div>
   <ol class="tips" id="tips-list"></ol>
   <button class="btn primary" type="button" id="tips-ok">Got it</button>
+</div>
+
+<!-- The waiting price: keep the driver waiting at a price a minute, or cancel (rides/waiting-deal.ts) -->
+<div class="sheet" id="sheet-wait" hidden role="dialog" aria-modal="true" aria-labelledby="wait-title">
+  <h2 id="wait-title"></h2>
+  <p class="sub" id="wait-sub"></p>
+  <button class="btn primary" type="button" id="wait-accept" hidden></button>
+  <span class="label-caps" id="wait-label">Price a minute</span>
+  <div class="rates" id="wait-rates" role="radiogroup" aria-labelledby="wait-label"></div>
+  <div class="notice bad" id="wait-err" hidden></div>
+  <button class="btn dark" type="button" id="wait-send" disabled>Pick a price</button>
+  <button class="btn quiet danger-link" type="button" id="wait-cancel">Cancel ride</button>
 </div>
 
 <!-- What was checked about a driver (an offer's ✓ chips) -->

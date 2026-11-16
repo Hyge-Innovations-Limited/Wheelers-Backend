@@ -30,6 +30,7 @@ export const waitingClient = {
       select: {
         id: true, riderId: true, status: true, paymentMethod: true,
         arrivedAt: true, waitingStoppedAt: true, waitingMinutes: true, waitingFeeNgn: true, waitingPaid: true, startedAt: true,
+        waitingRateNgn: true, waitingAgreedAt: true, waitingOfferBy: true, waitingOfferNgn: true, waitingOfferAt: true, waitingOfferCount: true,
       },
     });
   },
@@ -48,6 +49,43 @@ export const waitingClient = {
       select: { id: true, riderId: true, arrivedAt: true },
       take: limit,
     });
+  },
+
+  /**
+   * A price a minute put on the table (Timi, 16 Nov 2026): only while the driver waits, the free minutes are over,
+   * nothing is agreed and fewer than `maxOffers` were made. The driver only answers an offer (never opens).
+   * One statement that checks as it writes: false when any of that no longer holds.
+   */
+  async offer(params: { rideId: string; by: 'RIDER' | 'DRIVER'; ngn: number; now: Date; freeSeconds: number; maxOffers: number }): Promise<boolean> {
+    const wrote = await prisma.ride.updateMany({
+      where: {
+        id: params.rideId,
+        status: 'ARRIVED',
+        waitingStoppedAt: null,
+        waitingRateNgn: null,
+        arrivedAt: { lte: new Date(params.now.getTime() - params.freeSeconds * 1000) },
+        waitingOfferCount: { lt: params.maxOffers },
+        ...(params.by === 'DRIVER' ? { waitingOfferNgn: { not: null } } : {}),
+      },
+      data: { waitingOfferBy: params.by, waitingOfferNgn: params.ngn, waitingOfferAt: params.now, waitingOfferCount: { increment: 1 } },
+    });
+    return wrote.count > 0;
+  },
+
+  /** The other side's offer of exactly `ngn` is taken: agreed from `now`. False when that offer is no longer the one on the table. */
+  async accept(params: { rideId: string; by: 'RIDER' | 'DRIVER'; ngn: number; now: Date }): Promise<boolean> {
+    const wrote = await prisma.ride.updateMany({
+      where: {
+        id: params.rideId,
+        status: 'ARRIVED',
+        waitingStoppedAt: null,
+        waitingRateNgn: null,
+        waitingOfferBy: params.by === 'RIDER' ? 'DRIVER' : 'RIDER',
+        waitingOfferNgn: params.ngn,
+      },
+      data: { waitingRateNgn: params.ngn, waitingAgreedAt: params.now, waitingOfferBy: null, waitingOfferNgn: null, waitingOfferAt: null },
+    });
+    return wrote.count > 0;
   },
 
   /** Stops the meter at `at`, once, while the driver is still waiting. The time it stopped (this one or an earlier one). */

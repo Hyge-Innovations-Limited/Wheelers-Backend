@@ -21,6 +21,7 @@ import { safetyView } from "../rides/safety";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
 import { waitingView } from "../rides/waiting";
+import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -627,6 +628,39 @@ export async function handleGetRideRoute(
     sendJson(res, 200, { ride: serializeRideDetail(ride) });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load ride");
+  }
+}
+
+/**
+ * POST /rides/:rideId/waiting { action: "offer" | "accept", ngn } — the waiting price between the rider and
+ * the assigned driver (rides/waiting-deal.ts). Answers { waiting } (the ride's waiting block after it).
+ */
+export async function handleWaitingDealRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: { jwtSecret: string; redisClient?: RedisClient },
+  rideId: string,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    if (deps.redisClient) {
+      const key = `waiting-deal:${user.id}:${Math.floor(Date.now() / 60_000)}`;
+      const used = Number(await deps.redisClient.get(key).catch(() => null)) || 0;
+      await deps.redisClient.set(key, String(used + 1), 120).catch(() => undefined);
+      if (used >= 20) {
+        sendJson(res, 429, { error: "Too many tries. Wait a minute.", code: "RATE_LIMITED" });
+        return;
+      }
+    }
+    const act = readWaitingAction(await readJsonBody(req).catch(() => null));
+    const waiting = await actOnWaiting(rideId, user.id, act);
+    sendJson(res, 200, { waiting });
+  } catch (error) {
+    if (error instanceof WaitingDealError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return;
+    }
+    sendRideRouteError(res, error, "Could not send that");
   }
 }
 

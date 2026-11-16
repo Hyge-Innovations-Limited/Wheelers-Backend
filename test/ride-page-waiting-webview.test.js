@@ -227,6 +227,100 @@ test('no waiting data (an older server, not arrived yet, or the fee switched off
   assert.equal(third.el('d-wait-done').hidden, true);
 });
 
+/* The waiting price (Timi, 16 Nov 2026): after the free minutes, keep the driver waiting at a price or cancel. */
+const RATES = [40, 50, 60, 70, 80, 90, 100];
+const deal = (extra = {}) => ({ rates: RATES, baseFreeSeconds: 300, rateNgn: null, agreedAt: null, offer: null, offersLeft: 10, ...extra });
+/** A server that answers /ride-page/waiting with the next state, and remembers what was sent. */
+function dealServer(state, next) {
+  const server = makeServer(state);
+  server.sent = [];
+  const plain = server.answer;
+  server.answer = async (method, url, body) => {
+    if (url === '/ride-page/waiting') { server.sent.push(body); return { status: 200, json: next(body) }; }
+    return plain(method, url, body);
+  };
+  return server;
+}
+const rateButtons = (page) => page.el('wait-rates').children;
+
+test('waiting price: inside the free minutes the note says a price comes next, not a fixed one', async () => {
+  const page = await loadPage(makeServer(arrived(48, { ngnPerMinute: 0, deal: deal() })));
+  assert.equal(page.el('d-wait').hidden, false, 'shown even though nothing is charged a minute yet');
+  assert.equal(page.el('d-wait-figure').textContent, '4:12');
+  assert.equal(page.el('d-wait-note').textContent, 'Then agree a price, or cancel');
+  assert.equal(page.el('d-wait-act').hidden, true);
+  assert.equal(page.el('sheet-wait').hidden, true);
+});
+
+test('waiting price: when the free minutes end the sheet asks once; a price is picked and sent', async () => {
+  const offered = arrived(400, { ngnPerMinute: 0, deal: deal({ offer: { by: 'rider', ngn: 60, at: iso(AT + 400000) }, offersLeft: 9 }) });
+  const server = dealServer(arrived(380, { ngnPerMinute: 0, deal: deal() }), () => offered);
+  const page = await loadPage(server);
+  assert.equal(page.el('d-wait-label').textContent, 'Waiting price');
+  assert.equal(page.el('d-wait-note').textContent, 'Free waiting is over.');
+  assert.equal(page.el('d-wait-act').textContent, 'Keep driver waiting');
+  assert.equal(page.el('sheet-wait').hidden, false, 'it opened by itself');
+  assert.equal(page.el('wait-title').textContent, 'Your driver has waited 5 min');
+  assert.equal(page.el('wait-accept').hidden, true);
+  assert.deepEqual(rateButtons(page).map((b) => b.textContent), RATES.map((n) => `₦${n}`));
+  assert.equal(page.el('wait-send').disabled, true);
+  assert.equal(page.el('wait-send').textContent, 'Pick a price');
+
+  await page.tap(rateButtons(page)[2]);
+  assert.equal(rateButtons(page)[2].attrs['aria-checked'], 'true');
+  assert.equal(page.el('wait-send').textContent, 'Send ₦60/min');
+  await page.tap(page.el('wait-send'));
+  assert.deepEqual(server.sent, [{ action: 'offer', ngn: 60 }]);
+  assert.equal(page.el('sheet-wait').hidden, true);
+  assert.equal(page.el('d-wait-note').textContent, 'Waiting for your driver.');
+  assert.equal(page.el('d-wait-figure').textContent, '₦60/min');
+  assert.equal(page.el('d-wait-act').textContent, 'Change price');
+
+  // Put away and polled again: it does not ask again for the same arrival.
+  server.state = arrived(420, { ngnPerMinute: 0, deal: deal() });
+  await page.poll();
+  assert.equal(page.el('sheet-wait').hidden, true);
+});
+
+test('waiting price: the driver asks more; Accept takes exactly that price', async () => {
+  const counter = arrived(500, { ngnPerMinute: 0, deal: deal({ offer: { by: 'driver', ngn: 80, at: iso(AT + 480000) }, offersLeft: 8 }) });
+  const agreed = arrived(510, { freeSeconds: 510, ngnPerMinute: 80, deal: deal({ rateNgn: 80, agreedAt: iso(AT + 510000), offersLeft: 8 }) });
+  const server = dealServer(counter, () => agreed);
+  const page = await loadPage(server);
+  assert.equal(page.el('sheet-wait').hidden, false);
+  assert.equal(page.el('wait-title').textContent, 'Your driver asks ₦80/min');
+  assert.equal(page.el('wait-accept').hidden, false);
+  assert.equal(page.el('wait-accept').textContent, 'Accept ₦80/min');
+  assert.equal(page.el('d-wait-note').textContent, 'Your driver asks ₦80/min.');
+  await page.tap(page.el('wait-accept'));
+  assert.deepEqual(server.sent, [{ action: 'accept', ngn: 80 }]);
+  assert.equal(page.el('sheet-wait').hidden, true);
+  assert.equal(page.el('d-wait-label').textContent, 'Waiting time');
+  assert.equal(page.el('d-wait-figure').textContent, '₦0', 'nothing yet: it counts from the agreement');
+});
+
+test('waiting price: agreed, the meter counts full minutes from the agreement at that price', async () => {
+  // Agreed at 7 min (420 s); 2 min 30 s later.
+  const page = await loadPage(makeServer(arrived(570, { freeSeconds: 420, ngnPerMinute: 80, deal: deal({ rateNgn: 80, agreedAt: iso(AT + 420000) }) })));
+  assert.equal(page.el('d-wait-figure').textContent, '₦160');
+  assert.equal(page.el('d-wait-note').textContent, '2 min · ₦80/min');
+  assert.equal(page.el('d-wait-dot').hidden, false);
+  assert.equal(page.el('d-wait-act').hidden, true);
+  assert.equal(page.el('sheet-wait').hidden, true);
+});
+
+test('waiting price: Cancel ride in the sheet opens the usual cancel, with its reasons', async () => {
+  const state = arrived(400, { ngnPerMinute: 0, deal: deal() });
+  state.cancelReasons = ['Driver asked me to cancel', 'Other reason'];
+  state.rideCancelReasons = state.cancelReasons;
+  const page = await loadPage(makeServer(state));
+  assert.equal(page.el('sheet-wait').hidden, false);
+  await page.tap(page.el('wait-cancel'));
+  assert.equal(page.el('sheet-cancel').hidden, false);
+  assert.equal(page.el('sheet-wait').hidden, true);
+  assert.equal(page.el('cx-title').textContent, 'Cancel this ride?');
+});
+
 test('markup: the card sits under the driver, before the trip code', () => {
   const html = fs.readFileSync(path.join(WIDGET, 'ride/ride.html'), 'utf8');
   const confirmed = html.slice(html.indexOf('<section data-view="confirmed"'));

@@ -3,6 +3,8 @@ import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '.
 import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
 import { setTripRecordedHook } from '../rides/trip-recorded';
+import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
+import { agreedLine, driverCounterMessage, sendWaitingInteractive, sendWaitingText, waitingAskMessage } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
@@ -167,6 +169,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   const rideParticipants = new Map<string, RideParticipantState>();
   // The driver's phone started recording a trip: the rider is told (once).
   setTripRecordedHook((rideId) => sayTripRecorded(deps, rideId));
+  // A waiting price offered or agreed: the other side is told (rides/waiting-deal.ts).
+  setWaitingDealHook((change) => tellWaitingDeal(deps, change));
   // Searches held for a rider who was paying: ended once that choice lapses unpaid.
   setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
@@ -2602,19 +2606,59 @@ async function announceTripChatClosed(
  */
 const FREE_WAITING_SWEEP_MS = 20_000;
 
-/** The free minutes ran out on these rides since the last pass: the WhatsApp rider is told once. */
+/**
+ * The free minutes ran out on these rides since the last pass (Timi, 16 Nov 2026): the rider is asked once,
+ * cancel or keep the driver waiting at a price. WhatsApp riders not on the ride page in the chat; app riders by
+ * push (the app and the page ask on screen themselves).
+ */
 async function sayFreeWaitingOver(deps: StartGatewayConsumerDeps, from: Date, to: Date): Promise<void> {
-  if (!deps.whatsappNotifier) return;
   const terms = waitingTerms();
-  if (!(terms.ngnPerMinute > 0)) return;
   for (const ride of await waitingClient.freeTimeEnded(from, to, terms.freeSeconds)) {
     const said = await deps.redisClient.setIfNotExists(`ride:${ride.id}:free-wait-over:${ride.arrivedAt?.getTime() ?? 0}`, '1', 6 * 60 * 60).catch(() => false);
     if (!said) continue;
-    if (await isRidePageOpen(deps.redisClient, ride.riderId).catch(() => false)) continue;
+    const freeMinutes = Math.round(terms.freeSeconds / 60);
     const phone = await whatsappRiderPhone(deps, ride.riderId, ride.id);
-    if (!phone) continue;
-    await sendMetaWhatsappMessage(deps.whatsappNotifier, phone, `Free waiting is over. ₦${terms.ngnPerMinute.toLocaleString()} per minute from now.`).catch(() => undefined);
+    if (phone && deps.whatsappNotifier) {
+      if (await isRidePageOpen(deps.redisClient, ride.riderId).catch(() => false)) continue;
+      await sendWaitingInteractive(deps.whatsappNotifier, phone, waitingAskMessage(freeMinutes)).catch(() => undefined);
+      continue;
+    }
+    await pushDriver(deps, ride.riderId, { title: `Your driver has waited ${freeMinutes} min`, body: 'Keep them waiting or cancel.', type: 'waiting_ask', rideId: ride.id, generation: String(ride.arrivedAt?.getTime() ?? 0) }).catch(() => undefined);
   }
+}
+
+/**
+ * A waiting price was offered or agreed (rides/waiting-deal.ts): both phones get the new waiting block
+ * (`ride:waiting`), the ride page refreshes, and the side that has to answer is told: the driver by push,
+ * the rider in the chat (WhatsApp, not on the page) or by push (app). Never throws.
+ */
+async function tellWaitingDeal(deps: StartGatewayConsumerDeps, change: WaitingDealChange): Promise<void> {
+  const payload = { rideId: change.rideId, waiting: change.waiting };
+  await deps.registry.sendToUser(change.riderId, 'ride:waiting', payload).catch(() => undefined);
+  if (change.driverUserId) await deps.registry.sendToUser(change.driverUserId, 'ride:waiting', payload).catch(() => undefined);
+  void tellRidePage(deps.registry, change.riderId);
+  const naira = `₦${change.ngn.toLocaleString('en-NG')}`;
+  const generation = `${change.kind}:${change.ngn}:${change.waiting?.deal.offersLeft ?? 0}`;
+
+  if (change.by === 'rider') {
+    if (!change.driverUserId) return;
+    await pushDriver(deps, change.driverUserId, change.kind === 'agreed'
+      ? { title: `${naira}/min agreed`, body: 'Waiting time counts from now.', type: 'waiting_agreed', rideId: change.rideId, generation }
+      : { title: `Rider offers ${naira}/min`, body: 'To keep you waiting. Accept or counter.', type: 'waiting_offer', rideId: change.rideId, generation });
+    return;
+  }
+
+  // The driver answered: the rider is told.
+  const phone = await whatsappRiderPhone(deps, change.riderId, change.rideId);
+  if (phone && deps.whatsappNotifier) {
+    if (await isRidePageOpen(deps.redisClient, change.riderId).catch(() => false)) return;
+    if (change.kind === 'agreed') await sendWaitingText(deps.whatsappNotifier, phone, agreedLine(change.ngn));
+    else await sendWaitingInteractive(deps.whatsappNotifier, phone, driverCounterMessage(change.ngn));
+    return;
+  }
+  await pushDriver(deps, change.riderId, change.kind === 'agreed'
+    ? { title: `${naira}/min agreed`, body: 'Waiting time counts from now.', type: 'waiting_agreed', rideId: change.rideId, generation }
+    : { title: `Your driver asks ${naira}/min`, body: 'Accept, pick another price, or cancel.', type: 'waiting_counter', rideId: change.rideId, generation });
 }
 
 /**

@@ -605,10 +605,11 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
-    for (var i = 0; i < SHEETS.length; i++) if (!W.$(SHEETS[i]).hidden) return SHEETS[i];
+    // (A page cached from before a sheet has no such element: skipped.)
+    for (var i = 0; i < SHEETS.length; i++) { var sheet = W.$(SHEETS[i]); if (sheet && !sheet.hidden) return SHEETS[i]; }
     return null;
   }
   function onSheetEntry() { return Boolean(history.state && history.state.sheet); }
@@ -3864,14 +3865,16 @@
     drawTripFoot(s);
   }
 
-  /* waiting time: 5 free minutes after the driver arrives, then a fee a minute until the trip starts
-   * (the server's rule, rides/waiting.ts). The meter runs here between answers, on the server's clock. */
-  var waitTimer = null, waitInfo = null, waitSkewMs = 0, waitShownFee = null;
+  /* waiting time: 5 free minutes after the driver arrives. Then (Timi, 16 Nov 2026) the rider keeps the driver
+   * waiting at a price a minute the driver accepts or counters, or cancels; nothing is charged until they agree,
+   * then each full minute from that moment (the server's rule, rides/waiting.ts and waiting-deal.ts). The meter
+   * runs here between answers, on the server's clock. An older server has no `deal`: its fixed price shows. */
+  var waitTimer = null, waitInfo = null, waitSkewMs = 0, waitShownFee = null, waitRideId = null;
 
   function drawWaiting(s) {
     var t = (s && s.trip) || {};
     var w = t.waiting;
-    var on = Boolean(w && w.arrivedAt && w.ngnPerMinute > 0);
+    var on = Boolean(w && w.arrivedAt && (w.ngnPerMinute > 0 || w.deal));
     // After the start: what it came to, once (paid from the wallet, or theirs to pay the driver).
     var fee = on && t.status === 'IN_PROGRESS' && w.feeNgn > 0;
     var done = W.$('d-wait-done');
@@ -3883,46 +3886,173 @@
     var waiting = on && t.status === 'ARRIVED';
     W.show(W.$('d-wait'), waiting);
     waitInfo = waiting ? w : null;
-    if (!waiting) { if (waitTimer) { clearInterval(waitTimer); waitTimer = null; } return; }
+    waitRideId = waiting ? (s.rideId || null) : null;
+    if (!waiting) {
+      if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
+      if (W.$('sheet-wait') && !W.$('sheet-wait').hidden) closeSheets();
+      return;
+    }
     var serverNow = Date.parse(w.now);
     if (isFinite(serverNow)) waitSkewMs = serverNow - Date.now();
     tickWaiting();
     if (!waitTimer) waitTimer = setInterval(tickWaiting, 1000);
+    // The sheet open while the driver answered: it shows the answer (or goes once agreed).
+    if (W.$('sheet-wait') && !W.$('sheet-wait').hidden) {
+      if (!w.deal || w.deal.rateNgn || w.stoppedAt) closeSheets();
+      else fillWaitSheet(false);
+    }
+  }
+
+  /** Not agreed yet, the free minutes over, the meter not stopped: the rider has something to answer. */
+  function waitOpen(w, waited) {
+    var d = w && w.deal;
+    return Boolean(d && !d.rateNgn && !w.stoppedAt && waited >= d.baseFreeSeconds);
   }
 
   function tickWaiting() {
     var w = waitInfo;
     if (!w || shownView !== 'confirmed') { if (waitTimer) { clearInterval(waitTimer); waitTimer = null; } return; }
+    var d = w.deal || null;
     var end = w.stoppedAt ? Date.parse(w.stoppedAt) : Date.now() + waitSkewMs;
     var waited = Math.max(0, Math.floor((end - Date.parse(w.arrivedAt)) / 1000));
-    var free = Math.max(0, w.freeSeconds || 0);
+    var baseFree = Math.max(0, d ? d.baseFreeSeconds || 0 : w.freeSeconds || 0);
     var figure = W.$('d-wait-figure');
-    if (waited < free) {
-      var left = free - waited;
+    var act = W.$('d-wait-act');
+    if (waited < baseFree) {
+      var left = baseFree - waited;
       var clock = Math.floor(left / 60) + ':' + ('0' + (left % 60)).slice(-2);
       W.$('d-wait-label').textContent = 'Free waiting';
       figure.textContent = clock;
       figure.className = 'wait-figure';
       W.show(W.$('d-wait-dot'), false);
       W.show(W.$('d-wait-bar'), true);
-      W.$('d-wait-fill').style.width = (free ? Math.round((left / free) * 1000) / 10 : 0) + '%';
-      W.$('d-wait-note').textContent = 'Then ' + W.naira(w.ngnPerMinute) + '/min';
+      W.show(act, false);
+      W.$('d-wait-fill').style.width = (baseFree ? Math.round((left / baseFree) * 1000) / 10 : 0) + '%';
+      W.$('d-wait-note').textContent = d ? 'Then agree a price, or cancel' : 'Then ' + W.naira(w.ngnPerMinute) + '/min';
       W.$('d-wait').setAttribute('aria-label', 'Free waiting, ' + clock + ' left');
       waitShownFee = null;
       return;
     }
-    var minutesPaid = Math.floor((waited - free) / 60);
+    if (waitOpen(w, waited)) {
+      var offer = d.offer;
+      W.$('d-wait-label').textContent = 'Waiting price';
+      figure.textContent = offer ? W.naira(offer.ngn) + '/min' : '';
+      figure.className = 'wait-figure';
+      W.show(W.$('d-wait-dot'), false);
+      W.show(W.$('d-wait-bar'), false);
+      var note = !offer ? 'Free waiting is over.' : offer.by === 'rider' ? 'Waiting for your driver.' : 'Your driver asks ' + W.naira(offer.ngn) + '/min.';
+      W.$('d-wait-note').textContent = note;
+      if (act) {
+        act.textContent = !offer ? 'Keep driver waiting' : offer.by === 'rider' ? 'Change price' : 'Answer';
+        W.show(act, true);
+      }
+      W.$('d-wait').setAttribute('aria-label', 'Waiting price. ' + note);
+      waitShownFee = null;
+      maybeWaitSheet(w);
+      return;
+    }
+    W.show(act, false);
+    var free = Math.max(0, w.freeSeconds || 0);
+    var minutesPaid = Math.max(0, Math.floor((waited - free) / 60));
     var feeNow = minutesPaid * w.ngnPerMinute;
     W.$('d-wait-label').textContent = 'Waiting time';
     figure.textContent = W.naira(feeNow);
     // The figure drops in each time it goes up; the dot stops once the meter has stopped.
     figure.className = 'wait-figure on' + (waitShownFee !== null && feeNow !== waitShownFee ? ' tick' : '');
     waitShownFee = feeNow;
-    W.show(W.$('d-wait-dot'), !w.stoppedAt);
+    W.show(W.$('d-wait-dot'), !w.stoppedAt && w.ngnPerMinute > 0);
     W.show(W.$('d-wait-bar'), false);
-    W.$('d-wait-note').textContent = minutesPaid + ' min · ' + W.naira(w.ngnPerMinute) + '/min after ' + Math.round(free / 60) + ' free';
+    W.$('d-wait-note').textContent = d
+      ? minutesPaid + ' min · ' + W.naira(w.ngnPerMinute) + '/min'
+      : minutesPaid + ' min · ' + W.naira(w.ngnPerMinute) + '/min after ' + Math.round(free / 60) + ' free';
     W.$('d-wait').setAttribute('aria-label', 'Waiting time ' + minutesPaid + ' minutes, ' + W.naira(feeNow));
   }
+
+  /** The sheet opens by itself once when the free minutes end, and once for each price the driver asks. */
+  function maybeWaitSheet(w) {
+    if (!W.$('sheet-wait') || !waitRideId || busy || paying || openSheetId()) return;
+    var offer = w.deal.offer;
+    var key = !offer ? 'wait-ask:' + waitRideId + ':' + w.arrivedAt : offer.by === 'driver' ? 'wait-counter:' + waitRideId + ':' + offer.at : null;
+    if (!key || safetySeen(key)) return;
+    markSafetySeen(key);
+    track('waiting_sheet_shown', { counter: Boolean(offer) });
+    openWaitSheet();
+  }
+
+  var waitPick = null;   // the price a minute picked in the sheet
+  var waitSending = false;
+
+  function openWaitSheet() {
+    if (!W.$('sheet-wait') || !waitInfo || !waitInfo.deal) return;
+    var offer = waitInfo.deal.offer;
+    waitPick = offer && offer.by === 'rider' ? offer.ngn : null;
+    fillWaitSheet(true);
+    openSheet('sheet-wait');
+  }
+
+  function fillWaitSheet(fresh) {
+    var w = waitInfo;
+    if (!w || !w.deal) return;
+    var d = w.deal;
+    var offer = d.offer;
+    var ask = offer && offer.by === 'driver';
+    W.$('wait-title').textContent = ask
+      ? 'Your driver asks ' + W.naira(offer.ngn) + '/min'
+      : 'Your driver has waited ' + Math.round(d.baseFreeSeconds / 60) + ' min';
+    W.$('wait-sub').textContent = ask
+      ? 'Accept, or pick another price.'
+      : 'Keep them waiting for a price a minute, or cancel. Nothing is charged until you both agree.';
+    var accept = W.$('wait-accept');
+    W.show(accept, Boolean(ask));
+    if (ask) accept.textContent = 'Accept ' + W.naira(offer.ngn) + '/min';
+    var rates = W.$('wait-rates');
+    rates.innerHTML = '';
+    (d.rates || []).forEach(function (n) {
+      var b = el('button', 'rate', W.naira(n));
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(waitPick === n));
+      b.setAttribute('aria-label', W.naira(n) + ' a minute');
+      b.addEventListener('click', function () { waitPick = n; fillWaitSheet(false); });
+      rates.appendChild(b);
+    });
+    var send = W.$('wait-send');
+    send.disabled = waitPick === null || waitSending;
+    send.textContent = waitPick === null ? 'Pick a price' : 'Send ' + W.naira(waitPick) + '/min';
+    if (fresh) W.show(W.$('wait-err'), false);
+  }
+
+  function sendWaiting(action, ngn, button) {
+    if (waitSending || !W.$('sheet-wait')) return;
+    waitSending = true;
+    button.classList.add('busy');
+    W.show(W.$('wait-err'), false);
+    api('POST', '/ride-page/waiting', { action: action, ngn: ngn }).then(function (next) {
+      track(action === 'accept' ? 'waiting_accepted' : 'waiting_offered', { ngn: ngn });
+      closeSheets();
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      track('waiting_failed', { code: error.code || String(error.status) });
+      W.$('wait-err').textContent = error.message;
+      W.show(W.$('wait-err'), true);
+      if (error.status === 409) refresh();
+    }).then(function () {
+      waitSending = false;
+      button.classList.remove('busy');
+      if (W.$('sheet-wait') && !W.$('sheet-wait').hidden) fillWaitSheet(false);
+    });
+  }
+
+  // (Guarded: a page cached from before the waiting price has none of these.)
+  if (W.$('d-wait-act')) W.$('d-wait-act').addEventListener('click', function () { openWaitSheet(); });
+  if (W.$('wait-send')) W.$('wait-send').addEventListener('click', function () { if (waitPick !== null) sendWaiting('offer', waitPick, W.$('wait-send')); });
+  if (W.$('wait-accept')) W.$('wait-accept').addEventListener('click', function () {
+    var offer = waitInfo && waitInfo.deal && waitInfo.deal.offer;
+    if (offer && offer.by === 'driver') sendWaiting('accept', offer.ngn, W.$('wait-accept'));
+  });
+  // The cancel sheet takes this one's place (one history entry), with its reasons; cancelling is free.
+  if (W.$('wait-cancel')) W.$('wait-cancel').addEventListener('click', function () { openCancel('ride'); });
 
   /* the trip's lower part, as the app's: how much is done, Add or change stop, then Cancel ride · Support · Emergency */
 

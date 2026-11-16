@@ -1,4 +1,4 @@
-import { waitingCharge, waitingTerms, type WaitingTerms } from '@wheleers/config';
+import { waitingCharge, waitingDealTerms, waitingTerms, WAITING_MAX_OFFERS, WAITING_RATES_NGN, type WaitingTerms } from '@wheleers/config';
 import { waitingClient } from '@wheleers/db';
 
 const naira = (n: number): string => `₦${Math.round(n).toLocaleString('en-NG')}`;
@@ -39,7 +39,9 @@ export async function settleWaitingAtStart(rideId: string, payload: Record<strin
     if (ride.status !== 'ARRIVED') return null;
 
     const until = ride.waitingStoppedAt ?? now;
-    const charge = waitingCharge(ride.arrivedAt, until);
+    // Only from the moment the rider and the driver agreed a price (nothing before, nothing without one).
+    const terms = waitingDealTerms(ride);
+    const charge = waitingCharge(ride.arrivedAt, until, terms);
     if (charge.feeNgn <= 0) return null;
 
     const askedAlready = ride.waitingStoppedAt !== null;
@@ -48,7 +50,7 @@ export async function settleWaitingAtStart(rideId: string, payload: Record<strin
     if (result.recorded) return { minutes: result.minutes, feeNgn: result.feeNgn, paid: result.paid };
 
     const stoppedAt = (await waitingClient.stopMeter(rideId, until)) ?? until;
-    const stopped = waitingCharge(ride.arrivedAt, stoppedAt);
+    const stopped = waitingCharge(ride.arrivedAt, stoppedAt, terms);
     throw new WaitingUnpaidError({ minutes: stopped.chargedMinutes, amountNgn: stopped.feeNgn, stoppedAt: stoppedAt.toISOString() });
   } catch (error) {
     if (error instanceof WaitingUnpaidError) throw error;
@@ -57,7 +59,26 @@ export async function settleWaitingAtStart(rideId: string, payload: Record<strin
   }
 }
 
-/** What the screens show while the driver waits, and after: the terms, the clock and, once written, the fee. */
+/** The waiting price between the rider and the driver (Timi, 16 Nov 2026). */
+export interface WaitingDeal {
+  /** The prices a minute to pick from. */
+  rates: readonly number[];
+  /** The free minutes after Arrived, whatever was agreed. */
+  baseFreeSeconds: number;
+  /** Agreed: the price a minute, and when (the meter counts from then). */
+  rateNgn: number | null;
+  agreedAt: string | null;
+  /** The offer waiting for an answer: from the rider or the driver. */
+  offer: { by: 'rider' | 'driver'; ngn: number; at: string } | null;
+  /** Offers still allowed on this ride, both sides together. */
+  offersLeft: number;
+}
+
+/**
+ * What the screens show while the driver waits, and after: the terms, the clock and, once written, the fee.
+ * `freeSeconds`/`ngnPerMinute` are this ride's own (free until the agreement, then the agreed price; ₦0 until
+ * then), so an app that knows nothing of `deal` still shows what will really be charged.
+ */
 export interface WaitingView extends WaitingTerms {
   /** The server's clock as this was read: a phone runs the meter from the difference, never its own clock. */
   now: string;
@@ -66,24 +87,48 @@ export interface WaitingView extends WaitingTerms {
   minutes: number | null;
   feeNgn: number | null;
   paid: boolean | null;
+  deal: WaitingDeal;
 }
 
-export function waitingView(ride: {
+type WaitingRow = {
   arrivedAt?: Date | null;
   waitingStoppedAt?: Date | null;
   waitingMinutes?: number | null;
   waitingFeeNgn?: unknown;
   waitingPaid?: boolean | null;
-} | null | undefined): WaitingView | null {
+  waitingRateNgn?: number | null;
+  waitingAgreedAt?: Date | null;
+  waitingOfferBy?: string | null;
+  waitingOfferNgn?: number | null;
+  waitingOfferAt?: Date | null;
+  waitingOfferCount?: number | null;
+};
+
+export function waitingDeal(ride: WaitingRow): WaitingDeal {
+  const offerBy = ride.waitingOfferBy === 'RIDER' ? 'rider' : ride.waitingOfferBy === 'DRIVER' ? 'driver' : null;
+  return {
+    rates: WAITING_RATES_NGN,
+    baseFreeSeconds: waitingTerms().freeSeconds,
+    rateNgn: ride.waitingRateNgn ?? null,
+    agreedAt: ride.waitingRateNgn != null && ride.waitingAgreedAt ? ride.waitingAgreedAt.toISOString() : null,
+    offer: offerBy && typeof ride.waitingOfferNgn === 'number' && ride.waitingRateNgn == null
+      ? { by: offerBy, ngn: ride.waitingOfferNgn, at: (ride.waitingOfferAt ?? new Date()).toISOString() }
+      : null,
+    offersLeft: Math.max(0, WAITING_MAX_OFFERS - (ride.waitingOfferCount ?? 0)),
+  };
+}
+
+export function waitingView(ride: WaitingRow | null | undefined): WaitingView | null {
   if (!ride?.arrivedAt) return null;
   return {
-    ...waitingTerms(),
+    ...waitingDealTerms(ride),
     now: new Date().toISOString(),
     arrivedAt: ride.arrivedAt.toISOString(),
     stoppedAt: ride.waitingStoppedAt ? ride.waitingStoppedAt.toISOString() : null,
     minutes: ride.waitingMinutes ?? null,
     feeNgn: ride.waitingFeeNgn != null ? Number(ride.waitingFeeNgn) : null,
     paid: ride.waitingPaid ?? null,
+    deal: waitingDeal(ride),
   };
 }
 
