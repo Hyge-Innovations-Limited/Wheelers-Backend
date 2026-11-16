@@ -7,7 +7,7 @@
  *   licenceFace  POST /verification/drivers_license/face      number, dob, image (the driver's selfie)
  *   plate        POST /verification/vehicle                   vehicle_number
  *   insurance    POST /verification/insurance_policy          channel, number
- *   ninBasic     POST /verification/vnin-basic                number (a rider's NIN at sign-up)
+ *   ninBasic     POST /verification/vnin-basic                number, number_nin (a rider's NIN at sign-up)
  *
  * The key is PREMBLY_API_KEY in the server's .env (and PREMBLY_APP_ID where
  * the account still has one). Unset, the checks say they are off.
@@ -111,6 +111,9 @@ export async function premblyPost(config: PremblyConfig, path: string, body: Rec
   return { kind: 'error', detail, charged };
 }
 
+export const NIN_BASIC_PATH = '/verification/vnin-basic';
+export const ninBasicBody = (nin: string) => ({ number: nin, number_nin: nin });
+
 export const prembly = {
   licence: (config: PremblyConfig, input: { number: string; dob: string; firstName: string; lastName: string }, fetchImpl?: typeof fetch) =>
     premblyPost(config, '/verification/drivers_license/advance', { number: input.number, dob: input.dob, first_name: input.firstName, last_name: input.lastName }, fetchImpl),
@@ -124,7 +127,11 @@ export const prembly = {
   insurance: (config: PremblyConfig, input: { number: string; channel: string }, fetchImpl?: typeof fetch) =>
     premblyPost(config, '/verification/insurance_policy', { channel: input.channel, number: input.number }, fetchImpl),
 
-  /** A rider's NIN at sign-up (Timi, 16 Nov 2026): NIN Basic, the number only. */
+  /**
+   * A rider's NIN at sign-up (Timi, 16 Nov 2026): NIN Basic, the number only. Prembly's page for it was down
+   * (16 Nov 2026); NIN Basic is shown taking `number`, its NIN Advance takes `number_nin`: both are sent, an
+   * API ignores the one it does not use. scripts/prembly-nin-probe.mjs shows the real reply's shape.
+   */
   ninBasic: (config: PremblyConfig, nin: string, fetchImpl?: typeof fetch) =>
-    premblyPost(config, '/verification/vnin-basic', { number: nin }, fetchImpl),
+    premblyPost(config, NIN_BASIC_PATH, ninBasicBody(nin), fetchImpl),
 };

@@ -67,7 +67,7 @@ test('the check: found and matching is VERIFIED; only the last 4 digits are kept
   const prembly = premblyAnswers(200, FOUND);
   assert.equal(await nin.checkRiderNin(id, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: prembly.fetchImpl }), 'VERIFIED');
   assert.equal(prembly.calls[0].url, 'https://prembly.test/verification/vnin-basic');
-  assert.deepEqual(prembly.calls[0].body, { number: '12345678901' });
+  assert.deepEqual(prembly.calls[0].body, { number: '12345678901', number_nin: '12345678901' }, 'both names Prembly uses for the NIN');
   const row = await prisma.user.findUnique({ where: { id } });
   assert.deepEqual([row.ninLast4, row.ninStatus], ['8901', 'VERIFIED']);
   assert.ok(row.ninCheckedAt);
@@ -75,6 +75,18 @@ test('the check: found and matching is VERIFIED; only the last 4 digits are kept
   // Verified: never looked up (or paid for) again.
   assert.equal(await nin.checkRiderNin(id, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: prembly.fetchImpl }), null);
   assert.equal(prembly.calls.length, 1);
+});
+
+test('the check: a record that comes back for another NIN is not theirs (NOT_FOUND)', async () => {
+  const id = await user('Ada Obi');
+  const other = { ...FOUND, nin_data: undefined, data: { firstname: 'ADA', surname: 'OBI', nin: '99999999999' } };
+  assert.equal(await nin.checkRiderNin(id, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, other).fetchImpl }), 'NOT_FOUND');
+  assert.equal(nin.sameNin({ nin: '12345678901' }, '12345678901'), true);
+  assert.equal(nin.sameNin({}, '12345678901'), true, 'no NIN on the record: the name decides');
+  // NIN Advance's layout (the person under `data`, a middle name) reads the same.
+  const advance = { status: true, response_code: '00', data: { firstname: 'Ada', middlename: 'Chioma', surname: 'Obi', nin: '12345678901' }, verification: { status: 'VERIFIED' } };
+  const id2 = await user('Ada Obi');
+  assert.equal(await nin.checkRiderNin(id2, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, advance).fetchImpl }), 'VERIFIED');
 });
 
 test('the check: another person\'s name, no such NIN, Prembly down; at most 3 a day; nothing without Prembly', async () => {

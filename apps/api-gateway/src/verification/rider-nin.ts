@@ -68,6 +68,13 @@ export function ninNameMatches(fullName: string, record: Record<string, unknown>
   return given.length === 1 ? hits === 1 : hits >= 2;
 }
 
+/** The record is for the NIN sent: when it carries a NIN, it must be the same one (a different record is not theirs). */
+export function sameNin(record: Record<string, unknown>, nin: string): boolean {
+  const back = record['nin'] ?? record['NIN'];
+  if (back == null || back === '') return true;
+  return cleanNin(back) === nin;
+}
+
 export interface RiderNinDeps {
   redis: RedisClient;
   config?: PremblyConfig | null;
@@ -96,7 +103,7 @@ export async function checkRiderNin(userId: string, rawNin: unknown, fullName: s
 
     const answer = await prembly.ninBasic(config, nin, deps.fetchImpl);
     const status: NinStatus = answer.kind === 'found'
-      ? (ninNameMatches(fullName, answer.data) ? 'VERIFIED' : 'NO_MATCH')
+      ? (!sameNin(answer.data, nin) ? 'NOT_FOUND' : ninNameMatches(fullName, answer.data) ? 'VERIFIED' : 'NO_MATCH')
       : answer.kind === 'not_found' ? 'NOT_FOUND' : 'UNCHECKED';
     if (answer.kind === 'error') console.warn('[rider-nin] Prembly could not answer', { userId, detail: answer.detail });
     await prisma.user.update({ where: { id: userId }, data: { ninLast4: nin.slice(-4), ninStatus: status, ninCheckedAt: new Date() } });
