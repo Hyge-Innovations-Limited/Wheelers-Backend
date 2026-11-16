@@ -89,6 +89,18 @@ test('the check: a record that comes back for another NIN is not theirs (NOT_FOU
   assert.equal(await nin.checkRiderNin(id2, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, advance).fetchImpl }), 'VERIFIED');
 });
 
+test('a suspended NIN is never verified, even in the right name; the rider is told plainly', async () => {
+  const id = await user('Ada Obi');
+  const suspended = { ...FOUND, nin_data: undefined, data: { firstname: 'ADA', surname: 'OBI', nin: '12345678901', nin_suspension_status: true, nin_suspension_message: 'NIN suspended' } };
+  assert.equal(await nin.checkRiderNin(id, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, suspended).fetchImpl }), 'SUSPENDED');
+  assert.equal((await prisma.user.findUnique({ where: { id } })).ninStatus, 'SUSPENDED');
+  assert.equal(nin.ninSuspended({ nin_suspension_status: false }), false, 'the real reply carries false for a good NIN');
+  assert.equal(nin.ninSuspended({ nin_suspension_status: 'true' }), true);
+  assert.equal(nin.ninSuspended({}), false);
+  const live = await nin.checkRiderNinLive(randomUUID(), '12345678901', 'Ada Obi', { redis: memoryRedis(), check: async () => 'SUSPENDED' });
+  assert.deepEqual(live, { ok: false, code: 'NIN_SUSPENDED', error: "We couldn't verify this NIN. Check it, or leave it empty for now." });
+});
+
 test('the check: another person\'s name, no such NIN, Prembly down; at most 3 a day; nothing without Prembly', async () => {
   const id = await user('Tunde Bakare');
   const redis = memoryRedis();

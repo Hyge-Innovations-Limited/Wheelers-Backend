@@ -15,13 +15,14 @@ import { prembly, premblyConfigFromEnv, type PremblyConfig } from './prembly';
  *   VERIFIED   found, and the name matches
  *   NO_MATCH   found, another person's name
  *   NOT_FOUND  Prembly has no such NIN
+ *   SUSPENDED  found, but the government has suspended it
  *   UNCHECKED  Prembly could not answer (down, our key or balance): nothing learned
  *
  * Each lookup costs money on our Prembly balance: at most 3 a day per rider,
  * and none once a rider is VERIFIED.
  */
 
-export type NinStatus = 'VERIFIED' | 'NO_MATCH' | 'NOT_FOUND' | 'UNCHECKED';
+export type NinStatus = 'VERIFIED' | 'NO_MATCH' | 'NOT_FOUND' | 'SUSPENDED' | 'UNCHECKED';
 
 export const NIN_CHECKS_PER_DAY = 3;
 
@@ -68,6 +69,15 @@ export function ninNameMatches(fullName: string, record: Record<string, unknown>
   return given.length === 1 ? hits === 1 : hits >= 2;
 }
 
+/**
+ * The government has suspended this NIN (Prembly's `nin_suspension_status`, seen on a real lookup, 16 Nov 2026):
+ * never verified, whatever the name says.
+ */
+export function ninSuspended(record: Record<string, unknown>): boolean {
+  const flag = record['nin_suspension_status'];
+  return flag === true || (typeof flag === 'string' && flag.trim().toLowerCase() === 'true');
+}
+
 /** The record is for the NIN sent: when it carries a NIN, it must be the same one (a different record is not theirs). */
 export function sameNin(record: Record<string, unknown>, nin: string): boolean {
   const back = record['nin'] ?? record['NIN'];
@@ -103,7 +113,7 @@ export async function checkRiderNin(userId: string, rawNin: unknown, fullName: s
 
     const answer = await prembly.ninBasic(config, nin, deps.fetchImpl);
     const status: NinStatus = answer.kind === 'found'
-      ? (!sameNin(answer.data, nin) ? 'NOT_FOUND' : ninNameMatches(fullName, answer.data) ? 'VERIFIED' : 'NO_MATCH')
+      ? (!sameNin(answer.data, nin) ? 'NOT_FOUND' : ninSuspended(answer.data) ? 'SUSPENDED' : ninNameMatches(fullName, answer.data) ? 'VERIFIED' : 'NO_MATCH')
       : answer.kind === 'not_found' ? 'NOT_FOUND' : 'UNCHECKED';
     if (answer.kind === 'error') console.warn('[rider-nin] Prembly could not answer', { userId, detail: answer.detail });
     await prisma.user.update({ where: { id: userId }, data: { ninLast4: nin.slice(-4), ninStatus: status, ninCheckedAt: new Date() } });
@@ -121,11 +131,12 @@ export const NIN_LIVE_WAIT_MS = 7000;
 
 export type NinLiveAnswer =
   | { ok: true; status: NinStatus | 'PENDING' | null }
-  | { ok: false; code: 'NIN_INVALID' | 'NIN_NOT_FOUND' | 'NIN_OTHER_NAME' | 'NIN_TOO_MANY'; error: string };
+  | { ok: false; code: 'NIN_INVALID' | 'NIN_NOT_FOUND' | 'NIN_SUSPENDED' | 'NIN_OTHER_NAME' | 'NIN_TOO_MANY'; error: string };
 
 export const NIN_ERRORS = {
   NIN_INVALID: 'NIN is 11 digits.',
   NIN_NOT_FOUND: "We couldn't find this NIN. Check the 11 digits and try again.",
+  NIN_SUSPENDED: "We couldn't verify this NIN. Check it, or leave it empty for now.",
   NIN_OTHER_NAME: (name: string) => `This NIN isn't in the name ${name}. Check your NIN, or go back and fix your name.`,
   NIN_TOO_MANY: 'Too many tries. Leave it empty for now.',
 } as const;
@@ -159,6 +170,7 @@ export async function checkRiderNinLive(
   const status = await Promise.race([running, slow]);
   if (timer) clearTimeout(timer);
   if (status === 'NOT_FOUND') return { ok: false, code: 'NIN_NOT_FOUND', error: NIN_ERRORS.NIN_NOT_FOUND };
+  if (status === 'SUSPENDED') return { ok: false, code: 'NIN_SUSPENDED', error: NIN_ERRORS.NIN_SUSPENDED };
   if (status === 'NO_MATCH') return { ok: false, code: 'NIN_OTHER_NAME', error: NIN_ERRORS.NIN_OTHER_NAME(fullName.trim() || 'you gave') };
   return { ok: true, status };
 }
