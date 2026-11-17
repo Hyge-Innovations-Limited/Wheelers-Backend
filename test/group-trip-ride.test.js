@@ -238,7 +238,7 @@ test('old holes, closed: a ride that never started is not ended; a car on a ride
   const stranger = await user('DRIVER', 'Fake Driver');
   const strangerDriver = await prisma.driver.create({ data: { userId: stranger, kycStatus: 'APPROVED', status: 'ONLINE', lastSeenAt: new Date() } });
   made.drivers.push(strangerDriver.id);
-  await assert.rejects(handleDriverMessage('driver:gps', { rideId: t.tripId, driverId: t.driverId, lat: 6.5, lng: 3.4 }, { userId: stranger, driverId: strangerDriver.id, role: 'DRIVER' }, pub, redis), /not assigned to you/);
+  assert.equal((await handleDriverMessage('driver:gps', { rideId: t.tripId, driverId: t.driverId, lat: 6.5, lng: 3.4 }, { userId: stranger, driverId: strangerDriver.id, role: 'DRIVER' }, pub, redis)).type, 'driver:gps:ignored');
   await assert.rejects(handleDriverMessage('driver:gps', { rideId: t.tripId, lat: 6.5, lng: 3.4 }, { userId: t.a, role: 'RIDER' }, pub, redis));
   assert.equal(gpsPublished.length, 0);
   const own = await handleDriverMessage('driver:gps', { rideId: t.tripId, lat: 6.5, lng: 3.4 }, auth, pub, redis);

@@ -2829,12 +2829,13 @@ async function tellTripRiders(deps: StartGatewayConsumerDeps, tripId: string, mo
   for (const seat of trip.seats) {
     if (seat.rideId === moved.rideId) continue;
     if (await deps.redisClient.get(`gt:seatdone:${seat.rideId}`).catch(() => null)) continue;
-    await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId }).catch(() => undefined);
-    void tellRidePage(deps.registry, seat.riderId);
-    // In the chat, only what changes things for them: their turn is next, or someone left.
+    // Said only when it changes things for them: their turn is next, or someone left (the same words everywhere).
     const text = moved.kind === 'started' && nextPickup === seat.rideId ? `${moverName} is in. You're next.`
       : moved.kind === 'cancelled' ? `${moverName} left the group.`
       : null;
+    if (text) await setGroupNote(deps.redisClient, seat.rideId, text).catch(() => undefined);
+    await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId, ...(text ? { text } : {}) }).catch(() => undefined);
+    void tellRidePage(deps.registry, seat.riderId);
     if (!text || !deps.whatsappNotifier || (await isRidePageOpen(deps.redisClient, seat.riderId).catch(() => false))) continue;
     const phone = await whatsappRiderPhone(deps, seat.riderId, seat.rideId).catch(() => null);
     if (phone) await sendWaitingText(deps.whatsappNotifier, phone, text).catch(() => undefined);
@@ -2861,7 +2862,8 @@ async function tellGroupTrip(deps: StartGatewayConsumerDeps, change: GroupTripCh
       await deps.registry.sendToUser(seat.riderId, 'ride:group_counter', { rideId: seat.rideId, askId: change.ask.askId, seatPriceNgn: seat.seatPriceNgn, askNgn, expiresAt: change.ask.expiresAt }).catch(() => undefined);
     } else if (change.kind === 'counter_closed') {
       const saidYes = change.said.includes(seat.rideId);
-      text = change.outcome === 'no' && saidYes ? 'Another rider said no to that price. Still finding your driver.'
+      const saidNo = change.refused.includes(seat.rideId);
+      text = change.outcome === 'no' && !saidNo ? 'Another rider said no to that price. Still finding your driver.'
         : change.outcome === 'timeout' ? (saidYes ? 'Not everyone answered, so that price was declined. Still finding your driver.' : 'No answer, so that price was declined. Still finding your driver.')
         : null;
       await deps.registry.sendToUser(seat.riderId, 'ride:group_counter_closed', { rideId: seat.rideId, askId: change.ask.askId, outcome: change.outcome, ...(text ? { text } : {}) }).catch(() => undefined);
@@ -2911,7 +2913,8 @@ async function tellGroupLive(deps: StartGatewayConsumerDeps, change: GroupLiveCh
       others = change.joined.filter((m) => m.rideId !== member.rideId).map((m) => names.get(m.riderId) ?? 'Rider');
       text = `You're riding together with ${others.join(' and ')}. Your seat: ${naira(member.seatPriceNgn)}. Finding your driver.`;
     } else if ((change.kind === 'dropped' || change.kind === 'formed') && said === 'join') {
-      const late = !(await hasGroupSelfie(member.riderId).catch(() => true));
+      // "Too late for the selfie" only when that is why: never when someone else said no or time ran out first.
+      const late = change.kind === 'dropped' && change.reason === 'no_selfie' && !(await hasGroupSelfie(member.riderId).catch(() => true));
       text = late ? `${SELFIE_LATE.replace(/\.$/, '')} at ${naira(member.offerNgn)}.` : `No group this time. Your own search goes on at ${naira(member.offerNgn)}.`;
     }
     // WhatsApp riders not on the ride page hear it in the chat: the offer (form or buttons) once, then how it ended.

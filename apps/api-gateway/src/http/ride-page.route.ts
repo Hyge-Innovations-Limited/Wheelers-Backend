@@ -368,6 +368,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       ...(await routePendingField(deps, userId, trip.rideId)),
       // A group ride (rides/group-trip.ts): who else is in the car and every stop in order, theirs marked.
       ...(await riderGroupView(deps.redisClient, trip.rideId).then((group) => (group ? { group } : {})).catch(() => ({}))),
+      // What just happened on the group ride (Ada is in, you're next; someone left), said once.
+      ...(await groupNoteFor(deps.redisClient, trip.rideId).then((note) => (note ? { groupNote: note } : {})).catch(() => ({}))),
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
       // Live call on: Call opens the same page and dials the driver through Wheelers.

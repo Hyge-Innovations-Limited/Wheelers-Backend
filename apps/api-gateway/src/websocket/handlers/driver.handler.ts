@@ -49,7 +49,8 @@ async function drivesRideNow(redis: RedisClient | undefined, rideId: string, dri
   if (known !== null) return known === '1';
   const ride = await rideClient.findById(rideId).catch(() => null);
   const ok = Boolean(ride && ride.driverId === driverId && LIVE_TRIP_STATUSES.includes(String(ride.status)));
-  if (redis) await redis.set(key, ok ? '1' : '0', 60).catch(() => undefined);
+  // A yes for a minute; a no only for a few seconds (the booking may be written a moment after the app starts sending).
+  if (redis) await redis.set(key, ok ? '1' : '0', ok ? 60 : 5).catch(() => undefined);
   return ok;
 }
 
@@ -140,8 +141,10 @@ export async function handleDriverMessage(
       }
 
       // A position for a ride only from that ride's own driver, while it is live: never a fake car on someone's map.
+      // Quietly dropped, never an error: a ping a moment before the booking is written or just after the trip ended is
+      // normal, and the app shows every error as an alert.
       if (!auth.driverId || !(await drivesRideNow(redis, rideId, driverId))) {
-        throw new Error('This ride is not assigned to you.');
+        return { type: 'driver:gps:ignored', payload: { rideId } };
       }
 
       const event = GpsUpdateEvent.parse({

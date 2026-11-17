@@ -64,7 +64,7 @@ export type GroupTripChange =
    * That ask is over: every yes (booking), a No from someone, no answer in time, or the group booked another way.
    * `said`: the riders who had said yes.
    */
-  | { kind: 'counter_closed'; tripId: string; seats: GroupSeat[]; ask: CounterAsk; outcome: 'yes' | 'no' | 'timeout' | 'other'; said: string[] };
+  | { kind: 'counter_closed'; tripId: string; seats: GroupSeat[]; ask: CounterAsk; outcome: 'yes' | 'no' | 'timeout' | 'other'; said: string[]; refused: string[] };
 
 /** A counter over +10% of some seats: those riders are asked. */
 export interface CounterAsk {
@@ -188,16 +188,23 @@ async function dueAt(redis: RedisClient, member: string, atMs: number): Promise<
   await redis.send('ZADD', DUE_KEY, String(Math.round(atMs)), member).catch(() => undefined);
 }
 
+// A due deadline is leased (moved 30 s on) by the one gateway that runs it, and removed only when done with that same
+// lease: a gateway that dies half way leaves it to run again; one moved meanwhile (a retry) is never removed by mistake.
+const LEASE_DUE = "local s = redis.call('zscore', KEYS[1], ARGV[1]) if s and tonumber(s) <= tonumber(ARGV[2]) then redis.call('zadd', KEYS[1], ARGV[3], ARGV[1]) return 1 end return 0";
+const DONE_DUE = "local s = redis.call('zscore', KEYS[1], ARGV[1]) if s and tonumber(s) == tonumber(ARGV[2]) then return redis.call('zrem', KEYS[1], ARGV[1]) end return 0";
+
 /**
  * Run every group deadline that is due (the 2-minute end, an ask's 20 s, a retry after a booking in flight). Each runs
- * once: whoever removes it from gt:due runs it. Called every few seconds by every gateway. Returns how many ran.
+ * once at a time: whoever leases it runs it (every step is safe to run again). Called every few seconds by every
+ * gateway. Returns how many ran.
  */
 export async function runDue(deps: GroupTripDeps, nowMs: number = nowOf(deps)): Promise<number> {
   const due = await deps.redis.send('ZRANGEBYSCORE', DUE_KEY, '-inf', String(nowMs), 'LIMIT', '0', '50').catch(() => []);
   let ran = 0;
   for (const member of Array.isArray(due) ? due : []) {
     if (typeof member !== 'string') continue;
-    if (Number(await deps.redis.send('ZREM', DUE_KEY, member).catch(() => 0)) !== 1) continue;
+    const lease = String(nowMs + 30_000 + Math.floor(Math.random() * 1000));
+    if ((await evalNumber(deps.redis, LEASE_DUE, [DUE_KEY], [member, String(nowMs), lease]).catch(() => 0)) !== 1) continue;
     ran += 1;
     const [kind, a, b, c] = member.split(':');
     try {
@@ -205,7 +212,9 @@ export async function runDue(deps: GroupTripDeps, nowMs: number = nowOf(deps)): 
       else if (kind === 'ask' && a && b) await resolveAsk(deps, a, b, 'timeout');
       else if (kind === 'regroup' && a && b && c) await regroupWithout(deps, a, c.split(','), b === 'wallet_short' ? 'wallet_short' : 'left');
       else if (kind === 'leave' && a) await seatLeftBeforeBooking(deps, a);
+      await evalNumber(deps.redis, DONE_DUE, [DUE_KEY], [member, lease]).catch(() => 0);
     } catch (error) {
+      // Left leased: it runs again in 30 s.
       console.error('[group-trip] deadline failed', { member, error: error instanceof Error ? error.message : String(error) });
     }
   }
@@ -530,6 +539,7 @@ export async function answerCounter(deps: GroupTripDeps, riderId: string, seatRi
   const trip = await readTrip(deps.redis, ask.tripId);
   if (!trip?.seats.some((m) => m.rideId === seatRideId && m.riderId === riderId)) throw new GroupTripError('This price has ended. Still finding your driver.', 'ASK_OVER');
   if (answer === 'no') {
+    await deps.redis.set(askAnswerKey(ask.askId, seatRideId), 'no', COUNTER_ASK_SECONDS + 30).catch(() => undefined);
     await resolveAsk(deps, ask.tripId, ask.askId, 'no');
     return 'no';
   }
@@ -545,7 +555,7 @@ async function resolveAsk(deps: GroupTripDeps, tripId: string, askId: string, ou
   const ask = await readAsk(deps.redis, tripId);
   if (!ask || ask.askId !== askId) return;
   if (!(await deps.redis.setIfNotExists(`gt:askdone:${askId}`, '1', KEEP_SECONDS).catch(() => false))) return;
-  const said = await saidYes(deps.redis, ask);
+  const { said, refused } = await answersOf(deps.redis, ask);
   await deps.redis.del(askKey(tripId)).catch(() => undefined);
   for (const rideId of ask.over) await deps.redis.del(askSeatKey(rideId)).catch(() => undefined);
   await deps.redis.send('ZREM', DUE_KEY, `ask:${tripId}:${askId}`).catch(() => undefined);
@@ -557,22 +567,22 @@ async function resolveAsk(deps: GroupTripDeps, tripId: string, askId: string, ou
     const live = bids.find((b) => b.driverId === ask.bid.driverId);
     const stillOffered = live && live.status === 'PENDING' && Math.round(Number(live.amountNgn)) === Math.round(ask.bid.priceNgn);
     if (stillOffered) {
-      await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome: 'yes', said }).catch(() => undefined);
+      await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome: 'yes', said, refused }).catch(() => undefined);
       const booked = await bookAt(deps, trip, { tripId, ...ask.bid }, new Map(Object.entries(ask.prices)));
       if (booked === 'booked' || booked === 'regrouped') return;
       await declineBid(deps, tripId, ask.bid.driverId);
       return;
     }
-    await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome: 'other', said }).catch(() => undefined);
+    await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome: 'other', said, refused }).catch(() => undefined);
     return;
   }
-  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome, said }).catch(() => undefined);
+  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome, said, refused }).catch(() => undefined);
   await declineBid(deps, tripId, ask.bid.driverId);
 }
 
-async function saidYes(redis: RedisClient, ask: CounterAsk): Promise<string[]> {
+async function answersOf(redis: RedisClient, ask: CounterAsk): Promise<{ said: string[]; refused: string[] }> {
   const answers = await Promise.all(ask.over.map((id) => redis.get(askAnswerKey(ask.askId, id)).catch(() => null)));
-  return ask.over.filter((_, i) => answers[i] === 'yes');
+  return { said: ask.over.filter((_, i) => answers[i] === 'yes'), refused: ask.over.filter((_, i) => answers[i] === 'no') };
 }
 
 /** The trip was booked another way (or ended): an ask still open is over, its riders told; the driver hears it. */
@@ -580,13 +590,13 @@ async function closeAskOf(deps: GroupTripDeps, tripId: string, outcome: 'other')
   const ask = await readAsk(deps.redis, tripId);
   if (!ask) return;
   if (!(await deps.redis.setIfNotExists(`gt:askdone:${ask.askId}`, '1', KEEP_SECONDS).catch(() => false))) return;
-  const said = await saidYes(deps.redis, ask);
+  const { said, refused } = await answersOf(deps.redis, ask);
   await deps.redis.del(askKey(tripId)).catch(() => undefined);
   for (const rideId of ask.over) await deps.redis.del(askSeatKey(rideId)).catch(() => undefined);
   await deps.redis.send('ZREM', DUE_KEY, `ask:${tripId}:${ask.askId}`).catch(() => undefined);
   const trip = await readTrip(deps.redis, tripId);
   const asked = trip?.seats.filter((m) => ask.over.includes(m.rideId)) ?? [];
-  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome, said }).catch(() => undefined);
+  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome, said, refused }).catch(() => undefined);
   await declineBid(deps, tripId, ask.bid.driverId);
 }
 

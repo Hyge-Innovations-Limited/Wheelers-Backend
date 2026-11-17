@@ -437,6 +437,11 @@ test('names and places other riders see: a first name only, an area only', () =>
   assert.equal(gt.areaOf('12 Ikorodu Rd, Ketu, Lagos, Nigeria'), 'Ketu');
   assert.equal(gt.areaOf('7B Akinola Cole Crescent', 6.5095, 3.3711) !== '7B Akinola Cole Crescent', true, 'a street alone is never shown');
   assert.equal(gt.areaOf('Ikorodu Garage'), 'Ikorodu Garage');
+  assert.equal(gt.areaOf('Plot 5 Admiralty Way, Lekki Phase 1'), 'Lekki Phase 1');
+  assert.equal(gt.areaOf('15, Adeola Odeku Street, Victoria Island'), 'Victoria Island');
+  assert.equal(gt.areaOf('Ikeja City Mall, Obafemi Awolowo Way, Ikeja'), 'Ikeja');
+  assert.equal(gt.areaOf('House 4, Road 2, Lekki Gardens'), 'Lekki Gardens');
+  assert.notEqual(gt.areaOf('Allen Avenue', 6.6, 3.35), 'Allen Avenue');
 });
 
 test.after(async () => {

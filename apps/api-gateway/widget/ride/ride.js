@@ -153,15 +153,17 @@
 
   /* ── toasts: a queue, so three changes in one poll are three notes ─────── */
 
-  function say(message, tone) {
+  // `holdMs`: how long it stays (a long group line needs longer than a short note).
+  function say(message, tone, holdMs) {
     var holder = W.$('toasts');
     var node = document.createElement('div');
     node.className = 'toast-item' + (tone ? ' ' + tone : '');
     node.textContent = message;
     holder.appendChild(node);
     while (holder.children.length > 3) holder.removeChild(holder.firstChild);
-    setTimeout(function () { node.className += ' leaving'; }, 3400);
-    setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 3800);
+    var hold = holdMs || 3400;
+    setTimeout(function () { node.className += ' leaving'; }, hold);
+    setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, hold + 400);
   }
 
   /* ── small helpers ────────────────────────────────────────────────────── */
@@ -3284,13 +3286,14 @@
     if (groupShown && formed) {
       var with_ = (formed.others || []).join(' and ');
       if (open) closeSheets();
-      say("You're riding together with " + with_ + '. Your seat: ' + groupNaira(formed.seatPriceNgn) + '. Finding your driver.');
+      // The server says it (groupNote, the same words as the app and the chat); this line only for an older server.
+      if (!s.groupNote) say("You're riding together with " + with_ + '. Your seat: ' + groupNaira(formed.seatPriceNgn) + '. Finding your driver.', null, 6000);
       groupShown = null;
       return;
     }
     if (groupShown) {
       if (open) closeSheets();
-      if (groupAnswered && groupAnswered.offerId === groupShown && groupAnswered.answer === 'join') say('No group this time. Your search goes on.');
+      if (!s.groupNote && groupAnswered && groupAnswered.offerId === groupShown && groupAnswered.answer === 'join') say('No group this time. Your search goes on.', null, 6000);
       groupShown = null;
       groupAnswered = null;
       if (groupTimer) { clearInterval(groupTimer); groupTimer = null; }
@@ -3368,7 +3371,7 @@
     var note = s && s.groupNote;
     if (!note || !note.id || groupNotesSeen[note.id]) return;
     groupNotesSeen[note.id] = true;
-    say(note.text);
+    say(note.text, null, 6000);
   }
 
   function groupPart(part) {
@@ -3423,6 +3426,8 @@
     }
     var selfieLeft = Math.max(0, Math.round((Date.parse(offer.selfieDeadline) - Date.now()) / 1000));
     W.$('group-selfie-left').textContent = selfieLeft > 0 ? selfieLeft + ' s left' : '';
+    // The selfie's 60 s are over: that step goes (the app closes it too).
+    if (selfieLeft === 0 && !W.$('group-selfie').hidden && !W.$('sheet-group').hidden) closeSheets();
     if (left === 0 && !W.$('group-ask').hidden) { W.$('group-yes').disabled = true; W.$('group-no').disabled = true; }
   }
 
@@ -4111,6 +4116,7 @@
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';
     drawGroupTrip(s.group);
+    drawGroupNote(s);
     drawWaiting(s);
     drawTripFoot(s);
   }
