@@ -107,3 +107,4 @@ export { createVitalsSampler, VITALS_KEY, VITALS_KEEP_MS, type VitalsSample } fr
 export { waitingCharge, waitingTerms, waitingDealTerms, isWaitingRate, WAITING_RATES_NGN, WAITING_MAX_OFFERS, WAITING_FREE_MINUTES, WAITING_NGN_PER_MINUTE, type WaitingCharge, type WaitingTerms } from './waiting';
 export { LAGOS_CNG_STATIONS, nearestCngStations, straightKm, type CngStation, type NearbyCngStation } from './cng-stations';
 export { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE, type SafetyMoment } from './safety-tips';
+export { GROUP_RIDE_LIVE, groupRideLiveMode, groupSeatFloorNgn, groupSeatPriceNgn, type GroupRideLiveMode } from './group-ride-live';

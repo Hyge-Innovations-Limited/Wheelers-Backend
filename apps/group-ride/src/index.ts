@@ -1,4 +1,4 @@
-import { groupRideClient, pricingClient } from '@wheleers/db';
+import { groupRideClient, pricingClient, prisma } from '@wheleers/db';
 import {
   buildTopicList,
   createConsumer,
@@ -9,7 +9,9 @@ import {
 } from '@wheleers/kafka-client';
 import {
   GoogleMapsRoutePlanner,
+  groupRideLiveMode,
   loadWorkspaceEnv,
+  RIDE,
   startAlerts,
   validateGroupRideEnv,
   validateSharedEnv,
@@ -23,6 +25,7 @@ import { createGroupRidePlanner } from './planner/group-ride.planner';
 import { createGroupRideEventsProducer } from './producers/group-ride-events.producer';
 import { createGroupRideState } from './state';
 import { bearingDegrees } from './algorithms/geo';
+import { createLiveMatcher } from './live/live-matcher';
 
 const SERVICE_ID = 'group-ride';
 
@@ -123,6 +126,34 @@ async function bootstrap(): Promise<void> {
     });
   }
 
+  // Group ride on live searches (GROUP_RIDE_LIVE, off unless set): riders already searching who are heading
+  // along the same road. dryrun logs the groups it would offer and asks nobody.
+  const liveMode = groupRideLiveMode();
+  const liveMatcher = createLiveMatcher({ mode: liveMode });
+  if (liveMode !== 'off') {
+    const since = new Date(Date.now() - (RIDE.BID_TIMEOUT_SECONDS + 30) * 1000);
+    const open = await prisma.ride.findMany({
+      where: { status: { in: ['REQUESTED', 'MATCHING'] }, updatedAt: { gte: since }, paymentMethod: 'WALLET', routeStops: { none: { type: 'INTERMEDIATE' } } },
+      select: { id: true, riderId: true, pickupLat: true, pickupLng: true, pickupAddress: true, destLat: true, destLng: true, destAddress: true, riderOfferNgn: true, passengers: true, hasPet: true, createdAt: true, updatedAt: true },
+      take: 500,
+    }).catch(() => []);
+    liveMatcher.seed(open.filter((r) => Number(r.riderOfferNgn ?? 0) > 0).map((r) => ({
+      rideId: r.id,
+      riderId: r.riderId,
+      pickup: { lat: r.pickupLat, lng: r.pickupLng, address: r.pickupAddress },
+      destination: { lat: r.destLat, lng: r.destLng, address: r.destAddress },
+      route: [],
+      people: r.passengers ?? 1,
+      pet: r.hasPet === true,
+      paymentMethod: 'WALLET',
+      offerNgn: Number(r.riderOfferNgn),
+      openedAtMs: r.createdAt.getTime(),
+      priceAtMs: r.updatedAt.getTime(),
+    })));
+    liveMatcher.start();
+    console.log(`[${SERVICE_ID}] live group matching ${liveMode} (${liveMatcher.size()} open searches)`);
+  }
+
   await consumer.subscribe(
     [TOPICS.RIDE_EVENTS, TOPICS.GROUP_RIDE_EVENTS],
     async (value, ctx) => {
@@ -131,6 +162,8 @@ async function bootstrap(): Promise<void> {
         if (!event) {
           return;
         }
+
+        liveMatcher.onRideEvent(event);
 
         if (
           event.eventType === 'RIDE_CANCELLED' ||
@@ -162,6 +195,7 @@ async function bootstrap(): Promise<void> {
   );
 
   onShutdown(async () => {
+    liveMatcher.stop();
     await consumer.disconnect();
     await producer.disconnect();
   });
