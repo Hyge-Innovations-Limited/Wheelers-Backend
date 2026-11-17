@@ -870,3 +870,26 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 .rate[aria-checked="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
 .rate:active { opacity: 0.72; }
 #d-wait-act { margin-top: 4px; align-self: flex-start; }
+
+/* A group ride offer (rides/group-live.ts) */
+.group-top { display: flex; justify-content: space-between; align-items: baseline; }
+.group-timer { height: 4px; border-radius: 999px; background: var(--soft); overflow: hidden; margin-top: -6px; }
+.group-timer span { display: block; height: 100%; width: 100%; background: var(--orange); }
+.group-road { list-style: none; margin: 0; padding: 0 0 0 28px; position: relative; display: flex; flex-direction: column; gap: 12px; }
+.group-road::before { content: ""; position: absolute; left: 9px; top: 9px; bottom: 9px; width: 3px; border-radius: 2px; background: var(--ink); }
+.group-road li { position: relative; font-size: 15px; line-height: 19px; }
+.group-road li::before { content: ""; position: absolute; left: -25px; top: 3px; width: 13px; height: 13px; border-radius: 7px; background: var(--page); border: 3px solid var(--ink); box-sizing: border-box; }
+.group-road li.you::before { background: var(--orange); }
+.group-road li.end::before { border-radius: 2px; background: var(--ink); }
+.group-road li b { font-weight: 700; }
+.group-road li span { display: block; font-size: 13px; color: var(--muted); }
+.group-deal { display: flex; justify-content: space-between; align-items: flex-end; padding: 14px 16px; border-radius: var(--r-lg); background: var(--ink); color: var(--on-ink); }
+.group-deal .small { color: var(--on-ink-muted); }
+.group-seat { font-family: var(--display); font-weight: 800; font-size: 32px; line-height: 34px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.group-was { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.strike { text-decoration: line-through; }
+.group-save { display: inline-block; padding: 3px 9px; border-radius: 999px; background: var(--good); color: #fff; font-size: 12px; font-weight: 800; }
+.group-buttons { display: flex; gap: 10px; }
+.group-buttons .btn { flex: 1; }
+.group-photo { width: 160px; height: 160px; border-radius: 80px; object-fit: cover; align-self: center; border: 3px solid var(--orange); }
+#sheet-group label.btn { display: flex; align-items: center; justify-content: center; }

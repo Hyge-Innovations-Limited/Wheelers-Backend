@@ -605,7 +605,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     // (A page cached from before a sheet has no such element: skipped.)
@@ -2843,6 +2843,8 @@
     if (!showingDeclined) declined = null;
     var list = showingDeclined ? declined.offers : offers;
 
+    drawGroup(s);
+
     var count = offers.length;
     var searching = list.length === 0;
     W.show(W.$('searching'), searching);
@@ -3248,6 +3250,167 @@
       track('safety_shown', { moment: 'after' });
       showSafety('Before you go', s.justFinished.tips, false, 'Done');
     }
+  }
+
+  /* A group ride offer (Timi, 16-17 Nov 2026, rides/group-live.ts): riders searching right now who are going the
+   * same way. 20 s to say Ride together or No thanks; a yes with no selfie takes one (once, reused) within 60 s;
+   * then "Getting your group together", and how it ended. Nothing here books or pays. */
+  var groupShown = null;     // the offer id the sheet is about
+  var groupAnswered = null;  // { offerId, answer } said here
+  var groupTimer = null;
+  var groupPhoto = null;     // { base64, mimeType } of the selfie taken here
+
+  function groupNaira(n) { return W.naira(n); }
+
+  function drawGroup(s) {
+    if (!W.$('sheet-group')) return;
+    var offer = s && s.groupOffer;
+    var formed = s && s.groupFormed;
+    var open = !W.$('sheet-group').hidden;
+    if (offer && offer.offerId) {
+      if (groupShown !== offer.offerId) {
+        groupShown = offer.offerId;
+        groupPhoto = null;
+        if (busy || paying || (openSheetId() && !open)) return;
+        track('group_offer_shown', { riders: offer.people });
+      }
+      fillGroup(offer);
+      if (!open && !(busy || paying || openSheetId())) openSheet('sheet-group');
+      return;
+    }
+    if (groupShown && formed) {
+      var with_ = (formed.others || []).join(' and ');
+      if (open) closeSheets();
+      say("You're riding together with " + with_ + '. Your seat: ' + groupNaira(formed.seatPriceNgn) + '. Finding your driver.');
+      groupShown = null;
+      return;
+    }
+    if (groupShown) {
+      if (open) closeSheets();
+      if (groupAnswered && groupAnswered.offerId === groupShown && groupAnswered.answer === 'join') say('No group this time. Your search goes on.');
+      groupShown = null;
+      groupAnswered = null;
+      if (groupTimer) { clearInterval(groupTimer); groupTimer = null; }
+    }
+  }
+
+  function groupPart(part) {
+    W.show(W.$('group-ask'), part === 'ask');
+    W.show(W.$('group-selfie'), part === 'selfie');
+    W.show(W.$('group-wait'), part === 'wait');
+  }
+
+  function fillGroup(offer) {
+    var others = (offer.riders || []).filter(function (r) { return !r.you; });
+    W.$('group-title').textContent = others.length + (others.length === 1 ? ' rider is' : ' riders are') + ' going your way';
+    var road = W.$('group-road');
+    road.innerHTML = '';
+    (offer.riders || []).forEach(function (r) {
+      var li = el('li', r.you ? 'you' : '');
+      li.appendChild(el('b', '', r.name));
+      if (r.pickup) li.appendChild(el('span', '', r.pickup));
+      road.appendChild(li);
+    });
+    var drop = (offer.stops || []).filter(function (x) { return x.kind === 'dropoff' && x.you; })[0];
+    if (drop) { var end = el('li', 'end'); end.appendChild(el('b', '', String(drop.address).split(',')[0])); road.appendChild(end); }
+    W.$('group-seat').textContent = groupNaira(offer.seatPriceNgn);
+    W.$('group-own').textContent = groupNaira(offer.ownPriceNgn);
+    W.$('group-save').textContent = 'Save ' + groupNaira(offer.savedNgn);
+    W.$('group-facts').textContent = 'About ' + offer.extraMinutes + ' min more · ' + offer.people + ' in the car · Faces checked';
+    var answer = offer.answer || (groupAnswered && groupAnswered.offerId === offer.offerId ? groupAnswered.answer : null);
+    if (answer === 'join' && offer.selfieNeeded) {
+      // No photo taken here yet (a new offer, or the page just opened): only the camera button.
+      W.show(W.$('group-photo'), Boolean(groupPhoto));
+      W.show(W.$('group-send'), Boolean(groupPhoto));
+      if (!groupPhoto) W.$('group-take').textContent = 'Take a selfie';
+      groupPart('selfie');
+    }
+    else if (answer) {
+      W.$('group-wait-title').textContent = answer === 'join' ? 'Getting your group together' : 'No problem';
+      W.$('group-wait-sub').textContent = answer === 'join' ? "We'll tell you in a moment." : 'Your own search goes on.';
+      groupPart('wait');
+    } else groupPart('ask');
+    tickGroup(offer);
+    if (groupTimer) clearInterval(groupTimer);
+    groupTimer = setInterval(function () { tickGroup(offer); }, 1000);
+  }
+
+  function tickGroup(offer) {
+    var left = Math.max(0, Math.round((Date.parse(offer.expiresAt) - Date.now()) / 1000));
+    W.$('group-left').textContent = '0:' + ('0' + left).slice(-2);
+    W.$('group-timer-fill').style.width = Math.round((left / 20) * 100) + '%';
+    var selfieLeft = Math.max(0, Math.round((Date.parse(offer.selfieDeadline) - Date.now()) / 1000));
+    W.$('group-selfie-left').textContent = selfieLeft > 0 ? selfieLeft + ' s left' : '';
+    if (left === 0 && !W.$('group-ask').hidden) { W.$('group-yes').disabled = true; W.$('group-no').disabled = true; }
+  }
+
+  function answerGroup(answer, button) {
+    if (!groupShown) return;
+    var offerId = groupShown;
+    button.classList.add('busy');
+    W.show(W.$('group-err'), false);
+    api('POST', '/ride-page/group', { answer: answer }).then(function (next) {
+      groupAnswered = { offerId: offerId, answer: answer };
+      track(answer === 'join' ? 'group_joined' : 'group_declined', {});
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('group-err').textContent = error.message;
+      W.show(W.$('group-err'), true);
+      if (error.status === 409) refresh();
+    }).then(function () { button.classList.remove('busy'); });
+  }
+
+  /** The selfie, made small before it is sent (a phone photo can be several MB). */
+  function shrinkPhoto(file, done) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        var url = canvas.toDataURL('image/jpeg', 0.85);
+        done({ base64: url.split(',')[1], mimeType: 'image/jpeg', url: url });
+      };
+      img.onerror = function () { done(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { done(null); };
+    reader.readAsDataURL(file);
+  }
+
+  if (W.$('sheet-group')) {
+    W.$('group-yes').addEventListener('click', function () { answerGroup('join', W.$('group-yes')); });
+    W.$('group-no').addEventListener('click', function () { answerGroup('decline', W.$('group-no')); });
+    W.$('group-camera').addEventListener('change', function () {
+      var file = this.files && this.files[0];
+      W.show(W.$('group-selfie-err'), false);
+      if (!file) return;
+      shrinkPhoto(file, function (photo) {
+        if (!photo) { W.$('group-selfie-err').textContent = 'Could not read that photo. Try again.'; W.show(W.$('group-selfie-err'), true); return; }
+        groupPhoto = photo;
+        W.$('group-photo').src = photo.url;
+        W.show(W.$('group-photo'), true);
+        W.show(W.$('group-send'), true);
+        W.$('group-take').textContent = 'Take another';
+      });
+    });
+    W.$('group-send').addEventListener('click', function () {
+      if (!groupPhoto) return;
+      var button = W.$('group-send');
+      button.classList.add('busy');
+      api('POST', '/ride-page/group/selfie', { imageBase64: groupPhoto.base64, mimeType: groupPhoto.mimeType }).then(function (next) {
+        track('group_selfie_saved', {});
+        apply(next);
+      }).catch(function (error) {
+        if (linkDead(error)) return dead(error);
+        W.$('group-selfie-err').textContent = error.message;
+        W.show(W.$('group-selfie-err'), true);
+      }).then(function () { button.classList.remove('busy'); });
+    });
   }
 
   /* accept → "Pay ₦X from your wallet?" (Contract D) → Confirming your driver */

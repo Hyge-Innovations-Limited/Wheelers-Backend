@@ -526,6 +526,40 @@
   <button class="btn primary" type="button" id="tips-ok">Got it</button>
 </div>
 
+<!-- A group ride offer: riders going the same way, 25% off each seat (rides/group-live.ts) -->
+<div class="sheet" id="sheet-group" hidden role="dialog" aria-modal="true" aria-labelledby="group-title">
+  <div class="sheet-part" id="group-ask">
+    <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="group-left"></span></div>
+    <div class="group-timer"><span id="group-timer-fill"></span></div>
+    <h2 id="group-title"></h2>
+    <ol class="group-road" id="group-road"></ol>
+    <div class="group-deal">
+      <div><p class="small">Ride together</p><p class="group-seat" id="group-seat"></p></div>
+      <div class="group-was"><p class="small strike" id="group-own"></p><span class="group-save" id="group-save"></span></div>
+    </div>
+    <p class="small muted" id="group-facts"></p>
+    <div class="notice bad" id="group-err" hidden></div>
+    <div class="group-buttons">
+      <button class="btn ghost" type="button" id="group-no">No thanks</button>
+      <button class="btn primary" type="button" id="group-yes">Ride together</button>
+    </div>
+  </div>
+  <div class="sheet-part" id="group-selfie" hidden>
+    <h2>One selfie for group rides</h2>
+    <p class="sub">The riders in your group see it. You see theirs. You only do this once.</p>
+    <img class="group-photo" id="group-photo" alt="Your selfie" hidden>
+    <label class="btn dark" for="group-camera" id="group-take">Take a selfie</label>
+    <input class="visually-hidden" type="file" accept="image/*" capture="user" id="group-camera">
+    <div class="notice bad" id="group-selfie-err" hidden></div>
+    <button class="btn primary" type="button" id="group-send" hidden>Use this selfie</button>
+    <p class="small muted" id="group-selfie-left"></p>
+  </div>
+  <div class="sheet-part" id="group-wait" hidden>
+    <h2 id="group-wait-title">Getting your group together</h2>
+    <p class="sub" id="group-wait-sub">We'll tell you in a moment.</p>
+  </div>
+</div>
+
 <!-- The waiting price: keep the driver waiting at a price a minute, or cancel (rides/waiting-deal.ts) -->
 <div class="sheet" id="sheet-wait" hidden role="dialog" aria-modal="true" aria-labelledby="wait-title">
   <h2 id="wait-title"></h2>

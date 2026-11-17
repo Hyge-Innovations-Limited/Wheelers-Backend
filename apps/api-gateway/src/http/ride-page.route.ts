@@ -32,7 +32,7 @@ import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_K
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
 import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
-import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
+import { answerGroupOffer, formedGroupForRide, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -1417,9 +1417,17 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
 }
 
 /** `groupOffer` for a search in a group ride offer now, with the other riders' first names; {} otherwise. */
-async function groupOfferField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown }> {
+async function groupOfferField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown; groupFormed?: unknown }> {
   const offer = await offerForRide(deps.redisClient, rideId).catch(() => null);
-  if (!offer) return {};
+  if (!offer) {
+    // Formed: the riders and this seat, until the booking (next) takes over.
+    const formed = await formedGroupForRide(deps.redisClient, rideId).catch(() => null);
+    if (!formed) return {};
+    const users = await prisma.user.findMany({ where: { id: { in: formed.offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+    const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+    const me = formed.offer.members.find((m) => m.rideId === rideId);
+    return { groupFormed: { seatPriceNgn: formed.seatPriceNgn, others: formed.offer.members.filter((m) => m.rideId !== rideId).map((m) => names.get(m.riderId) ?? 'Rider'), ownPriceNgn: me?.offerNgn ?? null } };
+  }
   const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
   const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
   const view = await offerViewFor(deps.redisClient, offer, rideId, names).catch(() => null);

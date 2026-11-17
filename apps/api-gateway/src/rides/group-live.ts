@@ -154,6 +154,15 @@ export async function offerForRide(redis: RedisClient, rideId: string): Promise<
   return readOffer(redis, held);
 }
 
+/** The group a ride was formed into (its seats held for the booking), with this rider's seat; null otherwise. */
+export async function formedGroupForRide(redis: RedisClient, rideId: string): Promise<{ offer: GroupLiveOffer; seatPriceNgn: number } | null> {
+  const held = await redis.get(holdKey(rideId)).catch(() => null);
+  if (!held?.startsWith('group:')) return null;
+  const offer = await readOffer(redis, held.slice('group:'.length));
+  const me = offer?.members.find((m) => m.rideId === rideId);
+  return offer && me ? { offer, seatPriceNgn: me.seatPriceNgn } : null;
+}
+
 export async function answerOf(redis: RedisClient, offerId: string, rideId: string): Promise<GroupAnswer | null> {
   const raw = await redis.get(answerKey(offerId, rideId)).catch(() => null);
   return raw === 'join' || raw === 'decline' ? raw : null;
