@@ -33,7 +33,7 @@ import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
 import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
 import { answerGroupOffer, formedGroupForRide, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
-import { riderGroupView } from '../rides/group-trip';
+import { answerCounter, counterAskFor, formedSeatView, groupNoteFor, GroupTripError, riderGroupView } from '../rides/group-trip';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -1419,8 +1419,22 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
-/** `groupOffer` for a search in a group ride offer now, with the other riders' first names; {} otherwise. */
-async function groupOfferField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown; groupFormed?: unknown }> {
+/**
+ * The group for a search: `groupOffer` while offered; `groupFormed` while the group looks for a driver (the riders in
+ * it now); `groupCounter` while a driver's counter over this seat is asked; `groupNote` once, for a toast.
+ */
+async function groupOfferField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown; groupFormed?: unknown; groupCounter?: unknown; groupNote?: unknown }> {
+  const [note, trip, counter] = await Promise.all([
+    groupNoteFor(deps.redisClient, rideId).catch(() => null),
+    formedSeatView(deps.redisClient, rideId).catch(() => null),
+    counterAskFor(deps.redisClient, rideId).catch(() => null),
+  ]);
+  const extra = { ...(note ? { groupNote: note } : {}), ...(counter ? { groupCounter: counter } : {}) };
+  if (trip) return { groupFormed: trip, ...extra };
+  return { ...(await offerField(deps, rideId)), ...extra };
+}
+
+async function offerField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown; groupFormed?: unknown }> {
   const offer = await offerForRide(deps.redisClient, rideId).catch(() => null);
   if (!offer) {
     // Formed: the riders and this seat, until the booking (next) takes over.
@@ -1451,6 +1465,25 @@ async function handleGroupAnswer(req: IncomingMessage, res: ServerResponse, deps
     await answerGroupOffer(deps.redisClient, ride, userId, answer);
   } catch (error) {
     if (error instanceof GroupLiveError) throw new PageError(error.message, error.status, error.code);
+    throw error;
+  }
+  sendJson(res, 200, await buildRidePageState(deps, userId));
+}
+
+/** POST /ride-page/group/counter { answer: 'yes' | 'no' }: a driver's counter over this rider's seat (rides/group-trip.ts). */
+async function handleGroupCounter(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  const answer = isRecord(body) && (body.answer === 'yes' || body.answer === 'no') ? body.answer : null;
+  if (!answer) throw new PageError('Answer yes or no.', 400, 'BAD_ANSWER');
+  const pointer = await getActiveRide(deps.redisClient, userId).catch(() => null);
+  const ride = pointer ?? (await rideClient.findActiveByRider(userId).catch(() => null))?.id ?? null;
+  if (!ride) throw new PageError('This price has ended.', 409, 'ASK_OVER');
+  try {
+    await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, userId, ride, answer);
+  } catch (error) {
+    if (error instanceof GroupTripError) throw new PageError(error.message, 409, error.code);
     throw error;
   }
   sendJson(res, 200, await buildRidePageState(deps, userId));
@@ -1805,6 +1838,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/waiting': { method: 'POST', run: handleWaiting },
   '/ride-page/group': { method: 'POST', run: handleGroupAnswer },
   '/ride-page/group/selfie': { method: 'POST', run: handleGroupSelfie },
+  '/ride-page/group/counter': { method: 'POST', run: handleGroupCounter },
   '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
   '/ride-page/trip-route/cancel': { method: 'POST', run: handleTripRouteCancel },
   '/ride-page/trip-route/quote': { method: 'POST', run: handleTripRouteQuote },

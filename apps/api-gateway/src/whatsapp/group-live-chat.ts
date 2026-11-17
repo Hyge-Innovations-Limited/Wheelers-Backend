@@ -1,5 +1,6 @@
 import { rideClient } from '@wheleers/db';
 import { answerGroupOffer, GroupLiveError } from '../rides/group-live';
+import { answerCounter, GroupTripError } from '../rides/group-trip';
 import { takeGroupSelfie } from '../http/group-ride.route';
 import { signFlowToken } from '../whatsapp-flows/encryption';
 import { expectGroupSelfie, groupSelfieExpectedKey } from '../whatsapp-flows/group-offer-flow';
@@ -20,6 +21,47 @@ const naira = (n: number) => `₦${Math.round(n).toLocaleString('en-NG')}`;
 
 export function isGroupLiveReply(id: string | undefined | null): boolean {
   return id === GROUP_JOIN_ID || id === GROUP_DECLINE_ID;
+}
+
+/* A driver's counter over +10% of this rider's seat (rides/group-trip.ts): Yes or No in 20 s; silence is No. */
+export const GROUP_COUNTER_YES_ID = 'gct_yes';
+export const GROUP_COUNTER_NO_ID = 'gct_no';
+
+export function isGroupCounterReply(id: string | undefined | null): boolean {
+  return id === GROUP_COUNTER_YES_ID || id === GROUP_COUNTER_NO_ID;
+}
+
+export function groupCounterText(ask: { seatPriceNgn: number; askNgn: number }): string {
+  return `A driver asks *${naira(ask.askNgn)}* for your seat (was ${naira(ask.seatPriceNgn)}). Answer in 20 seconds.`;
+}
+
+export async function sendGroupCounterAsk(meta: FormMeta, to: string, ask: { seatPriceNgn: number; askNgn: number }): Promise<void> {
+  await sendWaitingInteractive(meta, to, {
+    type: 'button',
+    body: { text: groupCounterText(ask) },
+    action: { buttons: [{ type: 'reply', reply: { id: GROUP_COUNTER_YES_ID, title: `Yes, ${naira(ask.askNgn)}` } }, { type: 'reply', reply: { id: GROUP_COUNTER_NO_ID, title: 'No' } }] },
+  });
+}
+
+/** A tap on Yes / No for a driver's counter. Never throws. */
+export async function handleGroupCounterTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+  const answer = replyId === GROUP_COUNTER_YES_ID ? 'yes' : 'no';
+  try {
+    const ride = await rideClient.findActiveByRider(userId).catch(() => null);
+    if (!ride) {
+      await sendWaitingText(deps, phone, 'This price has ended.');
+      return;
+    }
+    await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, userId, ride.id, answer);
+    await sendWaitingText(deps, phone, answer === 'yes' ? 'Done. Booking your driver.' : 'No problem. Still finding your driver.');
+  } catch (error) {
+    if (error instanceof GroupTripError) {
+      await sendWaitingText(deps, phone, error.message);
+      return;
+    }
+    console.warn('[group-live-chat] counter tap failed', { userId, error: error instanceof Error ? error.message : String(error) });
+    await sendWaitingText(deps, phone, 'Something went wrong. Try again.');
+  }
 }
 
 /** The offer's words: who, where, the seat. */

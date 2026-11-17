@@ -64,6 +64,7 @@ import {
   handleActiveRideRoute,
   handleWaitingDealRoute,
   handleGroupAnswerRoute,
+  handleGroupCounterRoute,
 } from "./http/ride.route";
 import {
   handleGetDriverStatsRoute,
@@ -2388,6 +2389,17 @@ async function bootstrap(): Promise<void> {
     }
 
     // POST /rides/:rideId/group — the rider's answer to a group ride offer
+    // POST /rides/:rideId/group/counter — a rider in a group answering a driver's counter over their seat
+    const groupCounterMatch = url.pathname.match(/^\/rides\/([^/]+)\/group\/counter$/);
+    if (groupCounterMatch) {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleGroupCounterRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, publisher }, decodeURIComponent(groupCounterMatch[1]));
+      return;
+    }
+
     const groupAnswerMatch = url.pathname.match(/^\/rides\/([^/]+)\/group$/);
     if (groupAnswerMatch) {
       if (req.method !== "POST") {

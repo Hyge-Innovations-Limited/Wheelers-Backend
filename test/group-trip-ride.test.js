@@ -210,6 +210,20 @@ test('a rider\'s own trip: who else is in the car and every stop, theirs marked,
   assert.equal(await gt.riderGroupView(redis, randomUUID()), null, 'not a seat');
 });
 
+test('the dashboards count each rider\'s seat, never the trip (the driver\'s job)', async () => {
+  const t = await bookedTrip();
+  const { NOT_GROUP_TRIP } = require('../packages/db/dist/index.js');
+  const facts = await prisma.$queryRawUnsafe(`SELECT id, is_group FROM ride_facts WHERE id = ANY($1::text[])`, [t.tripId, t.ra, t.rb]);
+  assert.deepEqual(facts.map((f) => [f.id, f.is_group]).sort(), [[t.ra, true], [t.rb, true]].sort());
+  const funnel = await prisma.$queryRawUnsafe(`SELECT ride_id FROM ride_funnel WHERE ride_id = $1`, t.tripId);
+  assert.equal(funnel.length, 0);
+  const ids = [t.tripId, t.ra, t.rb];
+  assert.equal(await prisma.ride.count({ where: { id: { in: ids }, ...NOT_GROUP_TRIP } }), 2);
+  const solo = await prisma.ride.create({ data: { riderId: t.a, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 5000, pickupLat: 6.5, pickupLng: 3.3, pickupAddress: 'Yaba', destLat: 6.6, destLng: 3.4, destAddress: 'Ikeja' } });
+  made.rides.push(solo.id);
+  assert.equal(await prisma.ride.count({ where: { id: solo.id, ...NOT_GROUP_TRIP } }), 1, 'a ride with no group role is counted');
+});
+
 test.after(async () => {
   const users = [...made.users];
   await prisma.rideHold.deleteMany({ where: { rideId: { in: made.rides } } }).catch(() => {});

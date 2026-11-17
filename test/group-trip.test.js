@@ -162,7 +162,7 @@ test('the driver took another job in between: every seat and its money let go, t
   assert.deepEqual(await wallet(a), { balance: 11000, locked: 9000 }, 'held again for the new driver');
 });
 
-test('a driver already on another ride, or a counter over every seat\'s +10%: nothing booked, nothing held', async () => {
+test('a driver already on another ride, or a counter over +25% for a seat: nothing booked, nothing held', async () => {
   const { a, ra, joined, offer } = await formedPair();
   events.length = 0;
   const tripId = await gt.startGroupTrip(deps(), offer, joined);
@@ -172,7 +172,7 @@ test('a driver already on another ride, or a counter over every seat\'s +10%: no
   await rideClient.assignDriver(elsewhere, busy.driverId, {});
   assert.equal(await gt.onTripBid(deps(), { tripId, driverId: busy.driverId, driverUserId: busy.driverUserId, priceNgn: 15750 }), 'busy');
   const d = await onlineDriver();
-  assert.equal(await gt.onTripBid(deps(), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 19000 }), 'not_taken');
+  assert.equal(await gt.onTripBid(deps(), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 21000 }), 'not_taken');
   assert.deepEqual(await wallet(a), { balance: 20000, locked: 0 });
   assert.equal((await prisma.ride.findUnique({ where: { id: ra } })).status, 'MATCHING');
 });
@@ -188,24 +188,137 @@ test('a rider in a group never books a driver alone, in the app or by any hold',
   await assert.rejects(walletClient.createRideHold({ rideId: ra, walletId: w.id, riderId: a, driverUserId: d.driverUserId, amountNgn: 1000 }), /group ride seat/);
 });
 
-test('no driver in time, or a wallet short at booking: the group ends once, every rider\'s own search goes on at their own price', async () => {
-  const { ra, rb, joined, offer } = await formedPair([20000, 1000]);
+/** A group of these riders (each { offerNgn, seatPriceNgn, balance }), formed, its trip row made like ride-service does. */
+async function formedGroup(specs) {
+  const people = [];
+  const places = [['Yaba', 6.5095, 3.3711, 'Ikorodu Garage', 6.619, 3.51], ['Ketu', 6.596, 3.391, 'Mile 12', 6.606, 3.404], ['Ojota', 6.585, 3.383, 'Ikorodu Road', 6.61, 3.45]];
+  for (const [i, spec] of specs.entries()) {
+    const riderId = await rider(spec.balance ?? 20000);
+    const rideId = await search(riderId, { riderOfferNgn: spec.offerNgn });
+    people.push({ rideId, riderId, offerNgn: spec.offerNgn, seatPriceNgn: spec.seatPriceNgn, soloSeconds: 2000, extraSeconds: 60, place: places[i] });
+  }
+  const stops = [
+    ...people.map((m) => ({ rideId: m.rideId, kind: 'pickup', lat: m.place[1], lng: m.place[2], address: m.place[0] })),
+    ...people.slice().reverse().map((m) => ({ rideId: m.rideId, kind: 'dropoff', lat: m.place[4], lng: m.place[5], address: m.place[3] })),
+  ];
+  const joined = people.map(({ place, ...m }) => m);
   events.length = 0;
-  const tripId = await gt.startGroupTrip(deps(), offer, joined);
+  const tripId = await gt.startGroupTrip(deps(), { stops }, joined);
   await tripRowFrom(events.find((e) => e.eventType === 'RIDE_REQUESTED'));
-  const told = [];
-  const d = await onlineDriver();
   events.length = 0;
-  assert.equal(await gt.onTripBid(deps({ tell: async (c) => { told.push(c); } }), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 15750 }), 'seats_moved');
+  return { tripId, seats: joined };
+}
+
+test('no driver in time: the group ends once, every rider\'s own search goes on at their own price', async () => {
+  const { tripId, seats: [a, b] } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 9000 }, { offerNgn: 9000, seatPriceNgn: 6750 }]);
+  const told = [];
+  assert.equal(await gt.endUnbookedTrip(deps({ tell: async (c) => { told.push(c); } }), tripId), true);
   assert.equal(await gt.endUnbookedTrip(deps(), tripId), false, 'ended once');
-  const seats = await prisma.ride.findMany({ where: { id: { in: [ra, rb] } } });
-  assert.ok(seats.every((s) => s.groupRole === null && s.groupTripId === null && s.status === 'MATCHING'));
-  assert.deepEqual(events.filter((e) => e.eventType === 'RIDE_RIDER_COUNTER_OFFER').map((e) => [e.rideId, e.counterOfferNgn]), [[ra, 12000], [rb, 9000]], 'their own searches, their own prices');
-  assert.ok(events.some((e) => e.eventType === 'GROUP_TRIP_ENDED' && e.groupId === tripId));
+  const rows = await prisma.ride.findMany({ where: { id: { in: [a.rideId, b.rideId] } } });
+  assert.ok(rows.every((r) => r.groupRole === null && r.groupTripId === null && r.status === 'MATCHING'));
+  assert.deepEqual(events.filter((e) => e.eventType === 'RIDE_RIDER_COUNTER_OFFER').map((e) => [e.rideId, e.counterOfferNgn]), [[a.rideId, 12000], [b.rideId, 9000]]);
   assert.equal((await prisma.ride.findUnique({ where: { id: tripId } })).status, 'CANCELLED');
   assert.equal(told[0].kind, 'no_driver');
-  assert.equal(await gt.tripOfSeat(redis, ra), null);
+  const d = await onlineDriver();
   assert.equal(await gt.onTripBid(deps(), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 15750 }), 'ended');
+});
+
+test('a wallet short at booking: only that rider leaves (their own search goes on); the others go out again as a group at the same seats', async () => {
+  const { tripId, seats: [a, b, c] } = await formedGroup([
+    { offerNgn: 12000, seatPriceNgn: 9000 }, { offerNgn: 9000, seatPriceNgn: 6750 }, { offerNgn: 10000, seatPriceNgn: 7500, balance: 1000 },
+  ]);
+  const told = [];
+  const d = await onlineDriver();
+  assert.equal(await gt.onTripBid(deps({ tell: async (x) => { told.push(x); } }), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 23250 }), 'regrouped');
+  assert.deepEqual(told.map((x) => [x.kind, x.seats.map((m) => m.rideId)]), [['wallet_short', [c.rideId]], ['regrouped', [a.rideId, b.rideId]]]);
+  const newTrip = told[1].tripId;
+  assert.notEqual(newTrip, tripId);
+  const request = events.find((e) => e.eventType === 'RIDE_REQUESTED');
+  assert.deepEqual([request.rideId, request.riderOfferNgn, request.groupTrip.stops.map((s) => s.address)], [newTrip, 15750, ['Yaba', 'Ketu', 'Mile 12', 'Ikorodu Garage']]);
+  const rows = new Map((await prisma.ride.findMany({ where: { id: { in: [a.rideId, b.rideId, c.rideId] } } })).map((r) => [r.id, r]));
+  assert.deepEqual([rows.get(a.rideId).groupTripId, rows.get(b.rideId).groupTripId, rows.get(c.rideId).groupTripId], [newTrip, newTrip, null]);
+  assert.deepEqual(events.filter((e) => e.eventType === 'RIDE_RIDER_COUNTER_OFFER').map((e) => [e.rideId, e.counterOfferNgn]), [[c.rideId, 10000]]);
+  assert.equal((await prisma.ride.findUnique({ where: { id: tripId } })).status, 'CANCELLED');
+  assert.deepEqual(await wallet(a.riderId), { balance: 20000, locked: 0 }, 'nothing held');
+  made.rides.push(newTrip);
+});
+
+test('a rider leaves before the booking: with one left the group ends (their own search goes on); the one who left is not searched again', async () => {
+  const { tripId, seats: [a, b] } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 9000 }, { offerNgn: 9000, seatPriceNgn: 6750 }]);
+  const told = [];
+  await prisma.ride.update({ where: { id: b.rideId }, data: { status: 'CANCELLED' } });
+  assert.equal(await gt.seatLeftBeforeBooking(deps({ tell: async (x) => { told.push(x); } }), b.rideId), true);
+  assert.deepEqual(told.map((x) => [x.kind, x.seats.map((m) => m.rideId), x.left.map((m) => m.rideId)]), [['group_ended', [a.rideId], [b.rideId]]]);
+  assert.deepEqual(events.filter((e) => e.eventType === 'RIDE_RIDER_COUNTER_OFFER').map((e) => e.rideId), [a.rideId]);
+  assert.equal(await gt.seatLeftBeforeBooking(deps(), b.rideId), false, 'once');
+  assert.equal((await prisma.ride.findUnique({ where: { id: tripId } })).status, 'CANCELLED');
+});
+
+test('a counter over +10% for one rider (never over +25%): only that rider is asked; their yes books every seat at the counter', async () => {
+  const { tripId, seats: [a, b] } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 10000 }, { offerNgn: 9000, seatPriceNgn: 6000 }]);
+  const told = [];
+  const d = await onlineDriver();
+  const dd = deps({ tell: async (x) => { told.push(x); } });
+  assert.equal(await gt.onTripBid(dd, { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 17500 }), 'asking');
+  assert.deepEqual(told.map((x) => [x.kind, x.seats.map((m) => m.rideId)]), [['counter_ask', [b.rideId]]]);
+  assert.deepEqual(told[0].ask.prices, { [a.rideId]: 10850, [b.rideId]: 6650 });
+  const view = await gt.counterAskFor(redis, b.rideId);
+  assert.deepEqual([view.seatPriceNgn, view.askNgn, view.answer], [6000, 6650, null]);
+  assert.equal(await gt.counterAskFor(redis, a.rideId), null, 'within +10%: not asked');
+  await assert.rejects(gt.answerCounter(dd, a.riderId, a.rideId, 'yes'), (e) => e.code === 'ASK_OVER');
+  await assert.rejects(gt.answerCounter(dd, a.riderId, b.rideId, 'yes'), (e) => e.code === 'ASK_OVER', 'not their seat');
+  const other = await onlineDriver();
+  assert.equal(await gt.onTripBid(dd, { tripId, driverId: other.driverId, driverUserId: other.driverUserId, priceNgn: 17600 }), 'booking', 'one ask at a time');
+  assert.equal(await gt.answerCounter(dd, b.riderId, b.rideId, 'yes'), 'yes');
+  assert.deepEqual([(await wallet(a.riderId)).locked, (await wallet(b.riderId)).locked], [10850, 6650], 'each held at the counter');
+  const accepted = events.find((e) => e.eventType === 'RIDE_OFFER_ACCEPTED');
+  assert.deepEqual([accepted.rideId, accepted.driverId, accepted.agreedFareNgn], [tripId, d.driverId, 17500]);
+  assert.equal(told.at(-1).kind, 'counter_closed');
+  assert.equal(await gt.counterAskFor(redis, b.rideId), null);
+});
+
+test('an asked rider says No, or says nothing in 20 s: nothing booked, the driver hears their price was declined', async () => {
+  for (const how of ['no', 'silence']) {
+    const { tripId, seats: [a, b] } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 10000 }, { offerNgn: 9000, seatPriceNgn: 6000 }]);
+    const d = await onlineDriver();
+    await prisma.driverBid.create({ data: { rideId: tripId, riderId: a.riderId, driverId: d.driverId, driverUserId: d.driverUserId, amountNgn: 17500, status: 'PENDING', etaSeconds: 300 } });
+    let fire = null;
+    const dd = deps({ schedule: (fn) => { fire = fn; } });
+    assert.equal(await gt.onTripBid(dd, { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 17500 }), 'asking');
+    if (how === 'no') await gt.answerCounter(dd, b.riderId, b.rideId, 'no');
+    else { fire(); await new Promise((r) => setTimeout(r, 300)); }
+    assert.deepEqual(events.filter((e) => e.eventType === 'RIDE_BIDS_DECLINED').map((e) => [e.rideId, e.driverUserIds]), [[tripId, [d.driverUserId]]], how);
+    assert.equal(events.some((e) => e.eventType === 'RIDE_OFFER_ACCEPTED'), false);
+    assert.deepEqual(await wallet(b.riderId), { balance: 20000, locked: 0 });
+    assert.equal(await gt.counterAskFor(redis, b.rideId), null);
+    events.length = 0;
+  }
+});
+
+test('an asked rider whose wallet does not cover the new price: the counter is not taken, nobody asked', async () => {
+  const { tripId } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 10000 }, { offerNgn: 9000, seatPriceNgn: 6000, balance: 6300 }]);
+  const told = [];
+  const d = await onlineDriver();
+  assert.equal(await gt.onTripBid(deps({ tell: async (x) => { told.push(x); } }), { tripId, driverId: d.driverId, driverUserId: d.driverUserId, priceNgn: 17500 }), 'not_taken');
+  assert.equal(told.length, 0);
+});
+
+test('a booking in flight: the 2 min end and a rider leaving wait for it (never closing a trip whose seats are being booked)', async () => {
+  const { tripId, seats: [a, b] } = await formedGroup([{ offerNgn: 12000, seatPriceNgn: 9000 }, { offerNgn: 9000, seatPriceNgn: 6750 }]);
+  const later = [];
+  const dd = deps({ schedule: (fn) => { later.push(fn); } });
+  await redis.set(`gt:booking:${tripId}`, 'some-driver', 30);
+  assert.equal(await gt.endUnbookedTrip(dd, tripId), false);
+  await gt.seatLeftBeforeBooking(dd, b.rideId);
+  assert.equal(later.length, 2, 'both tried again after the booking');
+  assert.equal((await prisma.ride.findUnique({ where: { id: tripId } })).status, 'MATCHING', 'nothing closed meanwhile');
+  // The booking went through: both find a booked trip and leave it alone.
+  await redis.set(`gt:booked:${tripId}`, 'some-driver', 60);
+  await redis.del(`gt:booking:${tripId}`);
+  for (const fn of later) fn();
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal((await prisma.ride.findUnique({ where: { id: tripId } })).status, 'MATCHING');
+  assert.equal(await gt.tripOfSeat(redis, a.rideId), tripId);
 });
 
 test.after(async () => {

@@ -565,6 +565,19 @@
   </div>
 </div>
 
+<!-- A driver's price over this rider's seat in a group (rides/group-trip.ts): Yes or No in 20 s; silence is No -->
+<div class="sheet" id="sheet-gcounter" hidden role="dialog" aria-modal="true" aria-labelledby="gcounter-title">
+  <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="gcounter-left"></span></div>
+  <div class="group-timer"><span id="gcounter-fill"></span></div>
+  <h2 id="gcounter-title"></h2>
+  <p class="sub" id="gcounter-sub"></p>
+  <div class="notice bad" id="gcounter-err" hidden></div>
+  <div class="group-buttons">
+    <button class="btn ghost" type="button" id="gcounter-no">No</button>
+    <button class="btn primary" type="button" id="gcounter-yes"></button>
+  </div>
+</div>
+
 <!-- The waiting price: keep the driver waiting at a price a minute, or cancel (rides/waiting-deal.ts) -->
 <div class="sheet" id="sheet-wait" hidden role="dialog" aria-modal="true" aria-labelledby="wait-title">
   <h2 id="wait-title"></h2>

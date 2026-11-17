@@ -1,4 +1,4 @@
-import { handleGroupLivePhoto, handleGroupLiveTap, isGroupLiveReply } from '../whatsapp/group-live-chat';
+import { handleGroupCounterTap, handleGroupLivePhoto, handleGroupLiveTap, isGroupCounterReply, isGroupLiveReply } from '../whatsapp/group-live-chat';
 import { handleWaitingDealTap, isWaitingDealReply } from '../whatsapp/waiting-deal-chat';
 import { noteStatus, noteUserWrote } from '../whatsapp/form-fallback';
 import { userDeviceClient } from '@wheleers/db';
@@ -231,6 +231,11 @@ export async function handleIncomingMetaMessage(
     // ── A group ride offer: Ride together / No thanks (the buttons, when the form is not published) ──
     if (isGroupLiveReply(msgInfo.replyId)) {
       await handleGroupLiveTap(deps, user.id, phone, msgInfo.replyId!);
+      return;
+    }
+    // ── A driver's counter over this rider's seat in a group: Yes / No ──
+    if (isGroupCounterReply(msgInfo.replyId)) {
+      await handleGroupCounterTap(deps, user.id, phone, msgInfo.replyId!);
       return;
     }
 

@@ -605,7 +605,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group'];
+  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     // (A page cached from before a sheet has no such element: skipped.)
@@ -2844,6 +2844,8 @@
     var list = showingDeclined ? declined.offers : offers;
 
     drawGroup(s);
+    drawGroupCounter(s);
+    drawGroupNote(s);
 
     var count = offers.length;
     var searching = list.length === 0;
@@ -3292,6 +3294,75 @@
       groupAnswered = null;
       if (groupTimer) { clearInterval(groupTimer); groupTimer = null; }
     }
+  }
+
+  /* A driver's price over this rider's seat in a group (rides/group-trip.ts): Yes or No in 20 s; silence is No. Only
+   * the riders whose share is over +10% are asked. Gone from the state when it is over: the sheet closes. */
+  var gcounterShown = null, gcounterTimer = null;
+
+  function drawGroupCounter(s) {
+    var sheet = W.$('sheet-gcounter');
+    if (!sheet) return;
+    var ask = s && s.groupCounter;
+    var open = !sheet.hidden;
+    if (!ask || !ask.askId) {
+      if (gcounterShown) {
+        if (open) closeSheets();
+        gcounterShown = null;
+        if (gcounterTimer) { clearInterval(gcounterTimer); gcounterTimer = null; }
+      }
+      return;
+    }
+    if (gcounterShown !== ask.askId) {
+      gcounterShown = ask.askId;
+      W.show(W.$('gcounter-err'), false);
+      track('group_counter_shown', {});
+    }
+    var said = ask.answer === 'yes';
+    W.$('gcounter-title').textContent = 'A driver asks ' + W.naira(ask.askNgn) + ' for your seat';
+    W.$('gcounter-sub').textContent = said ? 'Waiting for the others.' : 'Your seat was ' + W.naira(ask.seatPriceNgn) + '.';
+    W.$('gcounter-yes').textContent = 'Yes, ' + W.naira(ask.askNgn);
+    W.$('gcounter-yes').disabled = said;
+    W.$('gcounter-no').disabled = said;
+    var tick = function () {
+      var left = Math.max(0, Math.round((Date.parse(ask.expiresAt) - Date.now()) / 1000));
+      W.$('gcounter-left').textContent = '0:' + ('0' + left).slice(-2);
+      W.$('gcounter-fill').style.width = Math.round((left / 20) * 100) + '%';
+      if (left === 0) { W.$('gcounter-yes').disabled = true; W.$('gcounter-no').disabled = true; }
+    };
+    tick();
+    if (gcounterTimer) clearInterval(gcounterTimer);
+    gcounterTimer = setInterval(tick, 1000);
+    if (!open && !(busy || paying || openSheetId())) openSheet('sheet-gcounter');
+  }
+
+  function answerGroupCounter(answer, button) {
+    if (!gcounterShown) return;
+    button.classList.add('busy');
+    W.show(W.$('gcounter-err'), false);
+    api('POST', '/ride-page/group/counter', { answer: answer }).then(function (next) {
+      track(answer === 'yes' ? 'group_counter_yes' : 'group_counter_no', {});
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('gcounter-err').textContent = error.message;
+      W.show(W.$('gcounter-err'), true);
+      if (error.status === 409) refresh();
+    }).then(function () { button.classList.remove('busy'); });
+  }
+
+  if (W.$('sheet-gcounter')) {
+    W.$('gcounter-yes').addEventListener('click', function () { answerGroupCounter('yes', W.$('gcounter-yes')); });
+    W.$('gcounter-no').addEventListener('click', function () { answerGroupCounter('no', W.$('gcounter-no')); });
+  }
+
+  /* What happened to the group while it looked for a driver (someone left, a wallet short): said once. */
+  var groupNotesSeen = {};
+  function drawGroupNote(s) {
+    var note = s && s.groupNote;
+    if (!note || !note.id || groupNotesSeen[note.id]) return;
+    groupNotesSeen[note.id] = true;
+    say(note.text);
   }
 
   function groupPart(part) {

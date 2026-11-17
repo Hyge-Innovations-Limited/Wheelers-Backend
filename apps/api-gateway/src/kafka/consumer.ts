@@ -6,10 +6,11 @@ import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
 import { answerOf, offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
 import { sendGroupOffer } from '../whatsapp/group-live-chat';
-import { existingGroupAccountId, onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
+import { existingGroupAccountId, onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, seatLeftBeforeBooking, setGroupNote, setGroupTripHook, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
+import { sendGroupCounterAsk } from '../whatsapp/group-live-chat';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
-import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
+import { groupTripClient, referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
 import { forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled } from '../rides/trip-route-quote';
 import { buildPricedRouteEvent, claimPublish, fundRouteHold, releasePublish, pendingRideOf, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../rides/trip-route-pending';
 import {
@@ -176,6 +177,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   setWaitingDealHook((change) => tellWaitingDeal(deps, change));
   // A group ride offered, answered, formed or dropped: each rider in it is told (rides/group-live.ts).
   setGroupLiveHook((change) => tellGroupLive(deps, change));
+  // The group trip before its booking (a counter asked, a rider gone): told the same way, from any caller.
+  setGroupTripHook((change) => tellGroupTrip(deps, change));
   // Searches held for a rider who was paying: ended once that choice lapses unpaid.
   setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
@@ -1916,6 +1919,7 @@ export async function handleRideEvent(
     const startedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
     if (driverUserId && startedSeatOf) {
       await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: startedSeatOf, rideId: event.rideId, seat: 'started' });
+      await tellTripRiders(deps, startedSeatOf);
     } else if (driverUserId) {
       await registry.sendToUser(driverUserId, 'ride:started', {
         rideId: event.rideId,
@@ -1990,6 +1994,7 @@ export async function handleRideEvent(
     // every seat is done it ends (rides/group-trip.ts seatFinished).
     const completedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
     if (completedSeatOf) {
+      await tellTripRiders(deps, completedSeatOf);
       await registry.sendToUser(event.driverUserId, 'ride:group_update', {
         tripId: completedSeatOf, rideId: event.rideId, seat: 'dropped', fareNgn: event.fareNgn,
         driverEarningsNgn: completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0),
@@ -2197,6 +2202,8 @@ export async function handleRideEvent(
     // rideParticipants is in-memory and only filled by RIDE_REQUESTED /
     // RIDE_DRIVER_ASSIGNED, so any gateway restart empties it and the driver
     // silently got nothing. Fall back to the DB, which always knows.
+    // A rider in a group that has no driver yet left: the others keep the group (rides/group-trip.ts).
+    if (!event.driverId && event.cancelledBy !== 'driver') await seatLeftBeforeBooking(groupTripDeps(deps), event.rideId).catch(() => false);
     if (event.driverId) {
       const participants = rideParticipants.get(event.rideId);
       let driverUserId = participants?.driverUserId ?? event.driverUserId;
@@ -2217,6 +2224,7 @@ export async function handleRideEvent(
       const cancelledSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
       if (driverUserId && cancelledSeatOf) {
         await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: cancelledSeatOf, rideId: event.rideId, seat: 'cancelled', cancelledBy: event.cancelledBy ?? 'rider' });
+        await tellTripRiders(deps, cancelledSeatOf);
         await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId).catch(() => false);
       } else if (driverUserId) {
         await registry.sendToUser(driverUserId, 'ride:cancelled', {
@@ -2529,6 +2537,19 @@ async function handleGroupRideEvent(
 ): Promise<void> {
   const registry = deps.registry;
 
+  // A group trip that never got a driver ended (no driver in time, or re-formed without someone): the drivers who saw
+  // it or sent a price hear the request is gone, as for any search that ends.
+  if (event.eventType === 'GROUP_TRIP_ENDED') {
+    const trip = await groupTripClient.tripOf(event.groupId).catch(() => null);
+    if (trip && !trip.driverId) {
+      const told = new Set<string>();
+      for (const bid of await driverBidClient.findByRide(event.groupId).catch(() => [])) told.add(bid.driverUserId);
+      for (const userId of await offeredDriverUsers(deps.redisClient, event.groupId).catch(() => [])) told.add(userId);
+      for (const userId of told) void registry.sendToUser(userId, 'ride:bid_timeout', { rideId: event.groupId, reason: 'timed_out' });
+    }
+    return;
+  }
+
   // Group ride on live searches: riders searching right now who could ride together (rides/group-live.ts).
   if (event.eventType === 'GROUP_RIDE_LIVE_OFFERED') {
     await receiveGroupOffer(deps.redisClient, event);
@@ -2746,14 +2767,56 @@ function groupTripDeps(deps: StartGatewayConsumerDeps): GroupTripDeps {
   };
 }
 
-/** No driver came for the group: each rider is told their own search goes on. Never throws. */
-async function tellGroupTrip(deps: StartGatewayConsumerDeps, change: GroupTripChange): Promise<void> {
-  for (const seat of change.seats) {
-    await deps.registry.sendToUser(seat.riderId, 'ride:group_dropped', { rideId: seat.rideId, reason: 'no_driver' }).catch(() => undefined);
+/**
+ * A booked group trip moved (a rider picked up, dropped off, or gone): every rider still on it re-reads their stops
+ * (the app by `ride:group_changed`, the page by its own poll). Never throws.
+ */
+async function tellTripRiders(deps: StartGatewayConsumerDeps, tripId: string): Promise<void> {
+  const trip = await readTrip(deps.redisClient, tripId).catch(() => null);
+  for (const seat of trip?.seats ?? []) {
+    if (await deps.redisClient.get(`gt:seatdone:${seat.rideId}`).catch(() => null)) continue;
+    await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId }).catch(() => undefined);
     void tellRidePage(deps.registry, seat.riderId);
+  }
+}
+
+/**
+ * The group before its booking, told to its riders (rides/group-trip.ts GroupTripChange): on the app and the page by
+ * socket (the page also gets a one-time note), in the chat when the page is not open. Never throws.
+ */
+async function tellGroupTrip(deps: StartGatewayConsumerDeps, change: GroupTripChange): Promise<void> {
+  const people = [...change.seats, ...('left' in change ? change.left : [])];
+  const users = await prisma.user.findMany({ where: { id: { in: people.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+  const first = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const naira = (n: number) => `₦${Math.round(n).toLocaleString('en-NG')}`;
+  const leftNames = 'left' in change ? change.left.map((m) => first.get(m.riderId) ?? 'A rider').join(' and ') || 'A rider' : '';
+  for (const seat of change.seats) {
+    const others = change.seats.filter((m) => m.rideId !== seat.rideId).map((m) => first.get(m.riderId) ?? 'Rider');
+    let text: string | null = null;
+    if (change.kind === 'counter_ask') {
+      const askNgn = change.ask.prices[seat.rideId] ?? seat.seatPriceNgn;
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_counter', { rideId: seat.rideId, askId: change.ask.askId, seatPriceNgn: seat.seatPriceNgn, askNgn, expiresAt: change.ask.expiresAt }).catch(() => undefined);
+    } else if (change.kind === 'counter_closed') {
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_counter_closed', { rideId: seat.rideId, askId: change.ask.askId, outcome: change.outcome }).catch(() => undefined);
+    } else if (change.kind === 'regrouped') {
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId, others, seatPriceNgn: seat.seatPriceNgn }).catch(() => undefined);
+      text = `${leftNames} left the group. Still finding your driver.`;
+    } else {
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_dropped', { rideId: seat.rideId, reason: change.kind }).catch(() => undefined);
+      const own = `Your own search goes on at ${naira(seat.offerNgn)}.`;
+      text = change.kind === 'wallet_short' ? `Your wallet couldn't cover your seat. ${own}`
+        : change.kind === 'group_ended' ? `${leftNames} left, so the group ended. ${own}`
+        : `No driver took the group in time. ${own}`;
+    }
+    if (text) await setGroupNote(deps.redisClient, seat.rideId, text).catch(() => undefined);
+    void tellRidePage(deps.registry, seat.riderId);
+    if (!deps.whatsappNotifier || (await isRidePageOpen(deps.redisClient, seat.riderId).catch(() => false))) continue;
     const phone = await whatsappRiderPhone(deps, seat.riderId, seat.rideId).catch(() => null);
-    if (phone && deps.whatsappNotifier && !(await isRidePageOpen(deps.redisClient, seat.riderId).catch(() => false))) {
-      await sendWaitingText(deps.whatsappNotifier, phone, `No driver took the group in time. Your own search goes on at ₦${seat.offerNgn.toLocaleString('en-NG')}.`).catch(() => undefined);
+    if (!phone) continue;
+    if (change.kind === 'counter_ask') {
+      await sendGroupCounterAsk(deps.whatsappNotifier, phone, { seatPriceNgn: seat.seatPriceNgn, askNgn: change.ask.prices[seat.rideId] ?? seat.seatPriceNgn }).catch(() => undefined);
+    } else if (text) {
+      await sendWaitingText(deps.whatsappNotifier, phone, text).catch(() => undefined);
     }
   }
 }

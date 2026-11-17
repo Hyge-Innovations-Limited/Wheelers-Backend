@@ -16,7 +16,8 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
-import { riderGroupView } from "../rides/group-trip";
+import { answerCounter, counterAskFor, formedSeatView, GroupTripError, riderGroupView } from "../rides/group-trip";
+import type { GatewayPublisher } from "../websocket/publisher";
 import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
 import { driverChecksField } from "../drivers/driver-checks";
 import { safetyView } from "../rides/safety";
@@ -697,6 +698,34 @@ export async function handleGroupAnswerRoute(
   }
 }
 
+/**
+ * POST /rides/:rideId/group/counter { answer: "yes" | "no" } — a rider in a group answering a driver's counter over
+ * their seat (rides/group-trip.ts). Yes from every asked rider books; one No ends it. Answers { answer }.
+ */
+export async function handleGroupCounterRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: { jwtSecret: string; redisClient: RedisClient; publisher: GatewayPublisher },
+  rideId: string,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const body = await readJsonBody(req).catch(() => null);
+    const answer = isRecord(body) && (body.answer === "yes" || body.answer === "no") ? body.answer : null;
+    if (!answer) {
+      sendJson(res, 400, { error: "Answer yes or no.", code: "BAD_ANSWER" });
+      return;
+    }
+    sendJson(res, 200, { answer: await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, user.id, rideId, answer) });
+  } catch (error) {
+    if (error instanceof GroupTripError) {
+      sendJson(res, 409, { error: error.message, code: error.code });
+      return;
+    }
+    sendRideRouteError(res, error, "Could not send that");
+  }
+}
+
 async function groupOfferView(redis: GroupRedis, rideId: string) {
   const offer = await offerForRide(redis, rideId);
   if (!offer) return null;
@@ -733,9 +762,15 @@ export async function handleActiveRideRoute(
       : { on: false, priceNgn: null };
     // A group ride on offer to this search (rides/group-live.ts): this rider's view of it.
     const groupOffer = searching && deps.redisClient ? await groupOfferView(deps.redisClient, active.id).catch(() => null) : null;
+    // In a group looking for a driver: the riders in it now, and a driver's counter this rider is asked about.
+    const [groupFormed, groupCounter] = searching && deps.redisClient
+      ? await Promise.all([formedSeatView(deps.redisClient, active.id).catch(() => null), counterAskFor(deps.redisClient, active.id).catch(() => null)])
+      : [null, null];
     const search = searching
       ? {
           ...(groupOffer ? { groupOffer } : {}),
+          ...(groupFormed ? { groupFormed } : {}),
+          ...(groupCounter ? { groupCounter } : {}),
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),

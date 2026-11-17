@@ -25,7 +25,7 @@ function server(state) {
   s.sent = [];
   const plain = s.answer;
   s.answer = async (method, url, body) => {
-    if (url === '/ride-page/group' || url === '/ride-page/group/selfie') { s.sent.push({ url, body }); return { status: 200, json: s.next(body, url) }; }
+    if (url === '/ride-page/group' || url === '/ride-page/group/selfie' || url === '/ride-page/group/counter') { s.sent.push({ url, body }); return { status: 200, json: s.next(body, url) }; }
     return plain(method, url, body);
   };
   return s;
@@ -85,6 +85,32 @@ test('a yes that did not become a group: told the search goes on', async () => {
   s.state = searching();
   await page.poll();
   assert.ok(page.toasts().includes('No group this time. Your search goes on.'));
+});
+
+test('a driver asks more for this rider\'s seat: Yes or No; yes sent, then waiting; gone from the state, the sheet closes', async () => {
+  const ask = { askId: 'ask-1', seatPriceNgn: 6000, askNgn: 6650, expiresAt: iso(now + 18_000), answer: null };
+  const formed = { seatPriceNgn: 6000, others: ['Ada'], ownPriceNgn: 9000 };
+  const s = server(searching({ groupFormed: formed, groupCounter: ask }));
+  s.next = () => searching({ groupFormed: formed, groupCounter: { ...ask, answer: 'yes' } });
+  const page = await loadPage(s);
+  assert.equal(page.el('sheet-gcounter').hidden, false);
+  assert.equal(page.el('gcounter-title').textContent, 'A driver asks ₦6,650 for your seat');
+  assert.equal(page.el('gcounter-sub').textContent, 'Your seat was ₦6,000.');
+  assert.equal(page.el('gcounter-yes').textContent, 'Yes, ₦6,650');
+  await page.tap(page.el('gcounter-yes'));
+  assert.deepEqual(s.sent, [{ url: '/ride-page/group/counter', body: { answer: 'yes' } }]);
+  assert.equal(page.el('gcounter-sub').textContent, 'Waiting for the others.');
+  assert.equal(page.el('gcounter-yes').disabled, true);
+  s.state = searching({ groupFormed: formed });
+  await page.poll();
+  assert.equal(page.el('sheet-gcounter').hidden, true);
+});
+
+test('what happened to the group (someone left, a wallet short) is said once', async () => {
+  const s = server(searching({ groupNote: { id: 'n1', text: 'Ada left the group. Still finding your driver.' } }));
+  const page = await loadPage(s);
+  await page.poll();
+  assert.equal(page.toasts().filter((t) => t === 'Ada left the group. Still finding your driver.').length, 1);
 });
 
 const confirmed = (group, status = 'ARRIVED') => ({

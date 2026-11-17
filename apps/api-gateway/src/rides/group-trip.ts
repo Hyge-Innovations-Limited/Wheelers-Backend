@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { calculateSuggestedFare, GROUP_RIDE_LIVE } from '@wheleers/config';
 import { driverBidClient, driverClient, groupTripClient, prisma } from '@wheleers/db';
-import { RideArrivedEvent, RideCancelledEvent, RideDriverAssignedEvent, RideOfferAcceptedEvent, RideRequestedEvent, RideRiderCounterOfferEvent, RideStartedEvent, GroupTripEndedEvent, GroupTripFormedEvent } from '@wheleers/kafka-schemas';
+import { RideArrivedEvent, RideBidsDeclinedEvent, RideCancelledEvent, RideDriverAssignedEvent, RideOfferAcceptedEvent, RideRequestedEvent, RideRiderCounterOfferEvent, RideStartedEvent, GroupTripEndedEvent, GroupTripFormedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { autoAcceptOffForChatPrice } from './auto-accept';
@@ -30,7 +30,39 @@ export interface GroupTripDeps {
   schedule?: (fn: () => void, ms: number) => void;
 }
 
-export type GroupTripChange = { kind: 'no_driver'; tripId: string; seats: GroupLiveMember[] };
+let tripHook: ((change: GroupTripChange) => Promise<void>) | null = null;
+/** The gateway's consumer tells riders (socket, page, chat); set once at start, used when a caller has no `tell`. */
+export function setGroupTripHook(hook: ((change: GroupTripChange) => Promise<void>) | null): void {
+  tripHook = hook;
+}
+const tellOf = (deps: GroupTripDeps) => deps.tell ?? tripHook;
+const laterOf = (deps: GroupTripDeps) => deps.schedule ?? ((fn: () => void, ms: number) => { setTimeout(fn, ms).unref(); });
+
+export type GroupTripChange =
+  /** No driver in time: every rider's own search goes on. */
+  | { kind: 'no_driver'; tripId: string; seats: GroupLiveMember[] }
+  /** These riders' wallets could not cover their seats at booking: the group went on without them. */
+  | { kind: 'wallet_short'; tripId: string; seats: GroupLiveMember[] }
+  /** The others left and these riders are on their own again (their own search goes on). */
+  | { kind: 'group_ended'; tripId: string; seats: GroupLiveMember[]; left: GroupLiveMember[] }
+  /** The group goes on without the riders who left (a new trip, the same seats and prices). */
+  | { kind: 'regrouped'; tripId: string; seats: GroupLiveMember[]; left: GroupLiveMember[] }
+  /** A driver's counter is over +10% of these riders' seats: each is asked (COUNTER_ASK_SECONDS). */
+  | { kind: 'counter_ask'; tripId: string; seats: GroupLiveMember[]; ask: CounterAsk }
+  /** That ask is over (a yes from all, a no, silence, or the group booked another way). */
+  | { kind: 'counter_closed'; tripId: string; seats: GroupLiveMember[]; ask: CounterAsk; outcome: 'yes' | 'no' };
+
+/** A counter over +10% of some seats: those riders are asked. */
+export interface CounterAsk {
+  askId: string;
+  tripId: string;
+  bid: { bidId?: string; driverId: string; driverUserId: string; priceNgn: number };
+  /** Every seat's price at this counter. */
+  prices: Record<string, number>;
+  /** The seats asked (over +10%). */
+  over: string[];
+  expiresAt: string;
+}
 
 export interface GroupTripRecord {
   tripId: string;
@@ -39,12 +71,18 @@ export interface GroupTripRecord {
   createdAt: string;
   /** No driver by then: the group ends. */
   deadline: string;
+  /** The stops in order (a group re-formed without someone keeps the rest's order). Absent on older records. */
+  stops?: GroupLiveOffer['stops'];
 }
 
 /** How long the group waits for a driver before every rider goes back to their own search. */
 export const GROUP_TRIP_SEARCH_SECONDS = 2 * 60;
 /** A counter is taken without asking when each rider's share of it is within this of their seat. */
 export const COUNTER_AUTO_SHARE = 0.10;
+/** Over that, only the riders whose share is over are asked, up to this; more is never taken (Timi, 16 Nov). */
+export const COUNTER_ASK_MAX_SHARE = 0.25;
+/** How long an asked rider has to answer; silence is No. */
+export const COUNTER_ASK_SECONDS = 20;
 
 const tripKey = (tripId: string) => `gt:trip:${tripId}`;
 const seatKey = (rideId: string) => `gt:seat:${rideId}`;
@@ -102,7 +140,7 @@ const kmBetween = (a: { lat: number; lng: number }, b: { lat: number; lng: numbe
  * A group the riders agreed to: the trip starts. Returns the trip id, or null when it could not (a seat moved on in
  * between: every rider's search simply goes on).
  */
-export async function startGroupTrip(deps: GroupTripDeps, offer: GroupLiveOffer, joined: GroupLiveMember[]): Promise<string | null> {
+export async function startGroupTrip(deps: GroupTripDeps, offer: Pick<GroupLiveOffer, 'stops'>, joined: GroupLiveMember[]): Promise<string | null> {
   const now = deps.now ?? Date.now;
   const tripId = randomUUID();
   const seatIds = joined.map((m) => m.rideId);
@@ -132,6 +170,7 @@ export async function startGroupTrip(deps: GroupTripDeps, offer: GroupLiveOffer,
     totalNgn,
     createdAt: new Date(at).toISOString(),
     deadline: new Date(at + GROUP_TRIP_SEARCH_SECONDS * 1000).toISOString(),
+    stops,
   };
   await deps.redis.set(tripKey(tripId), JSON.stringify(record), KEEP_SECONDS);
   await deps.publisher.publishRideEvent(RideRequestedEvent.parse({
@@ -161,11 +200,15 @@ export async function startGroupTrip(deps: GroupTripDeps, offer: GroupLiveOffer,
 
 /**
  * The seat prices for a driver's price on the trip: at or under the total, each seat as agreed; above it, the extra
- * shared by each rider's own fare, taken only if every share is within +10% of that seat. Null: not taken.
+ * shared by each rider's own fare. `over`: the seats whose share is more than +10% (their riders are asked). Null when
+ * any share is more than +25% (never taken).
  */
-export function seatPricesFor(seats: Array<{ rideId: string; offerNgn: number; seatPriceNgn: number }>, driverPriceNgn: number): Map<string, number> | null {
+export function priceSeats(
+  seats: Array<{ rideId: string; offerNgn: number; seatPriceNgn: number }>,
+  driverPriceNgn: number,
+): { prices: Map<string, number>; over: string[] } | null {
   const total = seats.reduce((s, m) => s + m.seatPriceNgn, 0);
-  if (driverPriceNgn <= total) return new Map(seats.map((m) => [m.rideId, m.seatPriceNgn]));
+  if (driverPriceNgn <= total) return { prices: new Map(seats.map((m) => [m.rideId, m.seatPriceNgn])), over: [] };
   const extra = driverPriceNgn - total;
   const weights = seats.reduce((s, m) => s + m.offerNgn, 0);
   const prices = new Map<string, number>();
@@ -176,8 +219,19 @@ export function seatPricesFor(seats: Array<{ rideId: string; offerNgn: number; s
     given += share;
     prices.set(m.rideId, m.seatPriceNgn + share);
   });
-  for (const m of seats) if (prices.get(m.rideId)! > m.seatPriceNgn * (1 + COUNTER_AUTO_SHARE) + 0.5) return null;
-  return prices;
+  const over: string[] = [];
+  for (const m of seats) {
+    const price = prices.get(m.rideId)!;
+    if (price > m.seatPriceNgn * (1 + COUNTER_ASK_MAX_SHARE) + 0.5) return null;
+    if (price > m.seatPriceNgn * (1 + COUNTER_AUTO_SHARE) + 0.5) over.push(m.rideId);
+  }
+  return { prices, over };
+}
+
+/** The seat prices when a driver's price is taken without asking anyone; null otherwise. */
+export function seatPricesFor(seats: Array<{ rideId: string; offerNgn: number; seatPriceNgn: number }>, driverPriceNgn: number): Map<string, number> | null {
+  const priced = priceSeats(seats, driverPriceNgn);
+  return priced && priced.over.length === 0 ? priced.prices : null;
 }
 
 /**
@@ -187,15 +241,27 @@ export function seatPricesFor(seats: Array<{ rideId: string; offerNgn: number; s
 export async function onTripBid(
   deps: GroupTripDeps,
   bid: { tripId: string; bidId?: string; driverId: string; driverUserId: string; priceNgn: number },
-): Promise<'booked' | 'not_taken' | 'busy' | 'booking' | 'ended' | 'driver_gone' | 'seats_moved'> {
+): Promise<'booked' | 'not_taken' | 'busy' | 'booking' | 'ended' | 'driver_gone' | 'seats_moved' | 'asking' | 'regrouped'> {
   const trip = await readTrip(deps.redis, bid.tripId);
   if (!trip || (await deps.redis.get(endedKey(bid.tripId)).catch(() => null))) return 'ended';
   if (await deps.redis.get(bookedKey(bid.tripId)).catch(() => null)) return 'booking';
-  const prices = seatPricesFor(trip.seats, bid.priceNgn);
-  if (!prices) return 'not_taken';
+  const priced = priceSeats(trip.seats, bid.priceNgn);
+  if (!priced) return 'not_taken';
+  if (priced.over.length > 0) return askOverSeats(deps, trip, bid, priced);
+  return bookAt(deps, trip, bid, priced.prices);
+}
+
+/** Book every seat at these prices for this driver, once; a short wallet or a seat gone drops only those riders. */
+async function bookAt(
+  deps: GroupTripDeps,
+  trip: GroupTripRecord,
+  bid: { tripId: string; bidId?: string; driverId: string; driverUserId: string; priceNgn: number },
+  prices: Map<string, number>,
+): Promise<'booked' | 'busy' | 'booking' | 'driver_gone' | 'seats_moved' | 'regrouped'> {
   // One booking at a time on the trip.
   if (!(await deps.redis.setIfNotExists(bookingKey(bid.tripId), bid.driverId, 30).catch(() => false))) return 'booking';
   try {
+    if (await deps.redis.get(bookedKey(bid.tripId)).catch(() => null)) return 'booking';
     const driver = await driverClient.findById(bid.driverId).catch(() => null);
     const fresh = driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
     if (!driver || driver.status !== 'ONLINE' || !fresh || driver.userId !== bid.driverUserId) return 'driver_gone';
@@ -207,9 +273,15 @@ export async function onTripBid(
     });
     if (!result.ok) {
       if (result.reason === 'busy') return 'busy';
-      // A seat short or gone (both checked at the offer, so rare): the group ends, every search goes on.
-      await endUnbookedTrip(deps, bid.tripId);
-      return 'seats_moved';
+      // A wallet short or a seat gone: only those riders leave; the rest go on as a group (or alone, if one is left).
+      const gone = result.reason === 'short' ? result.shortRideIds : [result.rideId];
+      if (gone.length === 0) {
+        await endUnbookedTrip(deps, bid.tripId);
+        return 'seats_moved';
+      }
+      await deps.redis.del(bookingKey(bid.tripId)).catch(() => undefined);
+      await regroupWithout(deps, bid.tripId, gone, result.reason === 'short' ? 'wallet_short' : 'left');
+      return 'regrouped';
     }
     await deps.redis.set(bookedKey(bid.tripId), bid.driverId, KEEP_SECONDS);
     // Every seat is held and assigned: now the trip itself (the driver's job), through the normal accept.
@@ -227,10 +299,194 @@ export async function onTripBid(
     // The seats' prices as booked (a counter moved them), for the announcements.
     trip.seats = trip.seats.map((m) => ({ ...m, seatPriceNgn: prices.get(m.rideId)! }));
     await deps.redis.set(tripKey(bid.tripId), JSON.stringify(trip), KEEP_SECONDS);
+    // A rider being asked about another driver's counter: that ask is over.
+    await closeAskOf(deps, bid.tripId, 'no');
     return 'booked';
   } finally {
     await deps.redis.del(bookingKey(bid.tripId)).catch(() => undefined);
   }
+}
+
+/* ── a counter over +10% for some riders: only they are asked ─────────────────────────────────────────────────────── */
+
+const askKey = (tripId: string) => `gt:ask:${tripId}`;
+const askSeatKey = (rideId: string) => `gt:askseat:${rideId}`;
+const askAnswerKey = (askId: string, rideId: string) => `gt:askans:${askId}:${rideId}`;
+
+async function readAsk(redis: RedisClient, tripId: string): Promise<CounterAsk | null> {
+  const raw = await redis.get(askKey(tripId)).catch(() => null);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as CounterAsk; } catch { return null; }
+}
+
+/**
+ * Ask the riders whose share of a driver's counter is over +10% (never over +25%), one ask at a time on a trip.
+ * Only riders whose wallet covers their new price are asked; otherwise the counter is not taken.
+ */
+async function askOverSeats(
+  deps: GroupTripDeps,
+  trip: GroupTripRecord,
+  bid: { tripId: string; bidId?: string; driverId: string; driverUserId: string; priceNgn: number },
+  priced: { prices: Map<string, number>; over: string[] },
+): Promise<'asking' | 'not_taken' | 'booking'> {
+  const asked = trip.seats.filter((m) => priced.over.includes(m.rideId));
+  const wallets = await Promise.all(asked.map((m) => prisma.wallet.findUnique({ where: { userId: m.riderId }, select: { balanceNgn: true } }).catch(() => null)));
+  if (asked.some((m, i) => !wallets[i] || Number(wallets[i]!.balanceNgn) < priced.prices.get(m.rideId)!)) return 'not_taken';
+  const now = deps.now ?? Date.now;
+  const ask: CounterAsk = {
+    askId: randomUUID(),
+    tripId: bid.tripId,
+    bid: { ...(bid.bidId ? { bidId: bid.bidId } : {}), driverId: bid.driverId, driverUserId: bid.driverUserId, priceNgn: bid.priceNgn },
+    prices: Object.fromEntries(priced.prices),
+    over: priced.over,
+    expiresAt: new Date(now() + COUNTER_ASK_SECONDS * 1000).toISOString(),
+  };
+  if (!(await deps.redis.setIfNotExists(askKey(bid.tripId), JSON.stringify(ask), COUNTER_ASK_SECONDS + 10).catch(() => false))) return 'booking';
+  for (const rideId of ask.over) await deps.redis.set(askSeatKey(rideId), `${bid.tripId}:${ask.askId}`, COUNTER_ASK_SECONDS + 10).catch(() => undefined);
+  await tellOf(deps)?.({ kind: 'counter_ask', tripId: bid.tripId, seats: asked, ask }).catch(() => undefined);
+  const schedule = deps.schedule ?? ((fn, ms) => { setTimeout(fn, ms).unref(); });
+  schedule(() => void resolveAsk(deps, bid.tripId, ask.askId, 'no').catch(() => undefined), COUNTER_ASK_SECONDS * 1000 + 500);
+  return 'asking';
+}
+
+/** What an asked rider sees: their seat, the price asked, until when. Null: nothing asked of this seat now. */
+export async function counterAskFor(redis: RedisClient, seatRideId: string): Promise<{ askId: string; seatPriceNgn: number; askNgn: number; expiresAt: string; answer: 'yes' | null } | null> {
+  const pointer = await redis.get(askSeatKey(seatRideId)).catch(() => null);
+  if (!pointer) return null;
+  const [tripId, askId] = pointer.split(':');
+  const ask = tripId ? await readAsk(redis, tripId) : null;
+  if (!ask || ask.askId !== askId || !ask.over.includes(seatRideId) || Date.parse(ask.expiresAt) <= Date.now()) return null;
+  const trip = await readTrip(redis, ask.tripId);
+  const seat = trip?.seats.find((m) => m.rideId === seatRideId);
+  if (!seat) return null;
+  const answer = (await redis.get(askAnswerKey(ask.askId, seatRideId)).catch(() => null)) === 'yes' ? 'yes' : null;
+  return { askId: ask.askId, seatPriceNgn: seat.seatPriceNgn, askNgn: ask.prices[seatRideId] ?? seat.seatPriceNgn, expiresAt: ask.expiresAt, answer };
+}
+
+/** An asked rider's answer. Yes from every asked rider books at the counter; one No ends the ask. */
+export async function answerCounter(deps: GroupTripDeps, riderId: string, seatRideId: string, answer: 'yes' | 'no'): Promise<'yes' | 'no'> {
+  const pointer = await deps.redis.get(askSeatKey(seatRideId)).catch(() => null);
+  const [tripId, askId] = pointer ? pointer.split(':') : [];
+  const ask = tripId ? await readAsk(deps.redis, tripId) : null;
+  if (!ask || ask.askId !== askId || !ask.over.includes(seatRideId) || Date.parse(ask.expiresAt) <= Date.now()) {
+    throw new GroupTripError('This price has ended.', 'ASK_OVER');
+  }
+  const trip = await readTrip(deps.redis, ask.tripId);
+  if (!trip?.seats.some((m) => m.rideId === seatRideId && m.riderId === riderId)) throw new GroupTripError('This price has ended.', 'ASK_OVER');
+  if (answer === 'no') {
+    await resolveAsk(deps, ask.tripId, ask.askId, 'no');
+    return 'no';
+  }
+  await deps.redis.set(askAnswerKey(ask.askId, seatRideId), 'yes', COUNTER_ASK_SECONDS + 10).catch(() => undefined);
+  const answers = await Promise.all(ask.over.map((id) => deps.redis.get(askAnswerKey(ask.askId, id)).catch(() => null)));
+  if (answers.every((a) => a === 'yes')) await resolveAsk(deps, ask.tripId, ask.askId, 'yes');
+  return 'yes';
+}
+
+/** The ask is over, once: every yes books at the counter; otherwise the driver hears their price was declined. */
+async function resolveAsk(deps: GroupTripDeps, tripId: string, askId: string, outcome: 'yes' | 'no'): Promise<void> {
+  const ask = await readAsk(deps.redis, tripId);
+  if (!ask || ask.askId !== askId) return;
+  if (!(await deps.redis.setIfNotExists(`gt:askdone:${askId}`, '1', KEEP_SECONDS).catch(() => false))) return;
+  await deps.redis.del(askKey(tripId)).catch(() => undefined);
+  for (const rideId of ask.over) await deps.redis.del(askSeatKey(rideId)).catch(() => undefined);
+  const trip = await readTrip(deps.redis, tripId);
+  const asked = trip?.seats.filter((m) => ask.over.includes(m.rideId)) ?? [];
+  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome }).catch(() => undefined);
+  if (outcome === 'yes' && trip && !(await deps.redis.get(endedKey(tripId)).catch(() => null))) {
+    const booked = await bookAt(deps, trip, { tripId, ...ask.bid }, new Map(Object.entries(ask.prices)));
+    if (booked === 'booked' || booked === 'regrouped') return;
+  }
+  // Not taken: the driver hears it (Offer declined) and may send another price.
+  const declined = await driverBidClient.declineOne(tripId, ask.bid.driverId).catch(() => null);
+  if (declined) {
+    await deps.publisher.publishRideEvent(RideBidsDeclinedEvent.parse({
+      eventType: 'RIDE_BIDS_DECLINED', rideId: tripId, riderId: await groupAccountId(), driverUserIds: [declined.driverUserId], remainingOffers: 0, timestamp: new Date().toISOString(),
+    })).catch(() => undefined);
+  }
+}
+
+/** The trip was booked another way (or ended): an ask still open is over, its riders told. */
+async function closeAskOf(deps: GroupTripDeps, tripId: string, outcome: 'yes' | 'no'): Promise<void> {
+  const ask = await readAsk(deps.redis, tripId);
+  if (!ask) return;
+  if (!(await deps.redis.setIfNotExists(`gt:askdone:${ask.askId}`, '1', KEEP_SECONDS).catch(() => false))) return;
+  await deps.redis.del(askKey(tripId)).catch(() => undefined);
+  for (const rideId of ask.over) await deps.redis.del(askSeatKey(rideId)).catch(() => undefined);
+  const trip = await readTrip(deps.redis, tripId);
+  const asked = trip?.seats.filter((m) => ask.over.includes(m.rideId)) ?? [];
+  await tellOf(deps)?.({ kind: 'counter_closed', tripId, seats: asked, ask, outcome }).catch(() => undefined);
+}
+
+/* ── a rider leaves before the booking: the group goes on without them ────────────────────────────────────────────── */
+
+/**
+ * Riders leave a group that has no driver yet (a wallet short at booking, or they cancelled): the others keep the group
+ * and their prices (a new trip with the rest's stops in the same order, a fresh 2 minutes for a driver). With one left,
+ * the group ends and their own search goes on at their own price. Once per trip; a booked trip is never re-formed.
+ */
+export async function regroupWithout(deps: GroupTripDeps, tripId: string, leavingRideIds: string[], why: 'wallet_short' | 'left'): Promise<string | null> {
+  if (await deps.redis.get(bookedKey(tripId)).catch(() => null)) return null;
+  // A booking in flight: decided after it (booked, the rider who left is a seat like any other; not, this runs then).
+  if (await deps.redis.get(bookingKey(tripId)).catch(() => null)) {
+    laterOf(deps)(() => void regroupWithout(deps, tripId, leavingRideIds, why).catch(() => undefined), 3000);
+    return null;
+  }
+  if (!(await deps.redis.setIfNotExists(endedKey(tripId), '1', KEEP_SECONDS).catch(() => false))) return null;
+  const trip = await readTrip(deps.redis, tripId);
+  await closeAskOf(deps, tripId, 'no');
+  await groupTripClient.closeUnbooked(tripId).catch(() => false);
+  await deps.publisher.publishGroupRideEvent(GroupTripEndedEvent.parse({ eventType: 'GROUP_TRIP_ENDED', groupId: tripId, timestamp: new Date().toISOString() }));
+  const bids = await driverBidClient.findByRide(tripId).catch(() => []);
+  for (const bid of bids) if (bid.status === 'PENDING') await driverBidClient.markWithdrawn(tripId, bid.driverId).catch(() => undefined);
+  await groupTripClient.unlinkSeats(tripId);
+  const seats = trip?.seats ?? [];
+  for (const seat of seats) await deps.redis.del(seatKey(seat.rideId)).catch(() => undefined);
+  const leaving = seats.filter((m) => leavingRideIds.includes(m.rideId));
+  const rest = seats.filter((m) => !leavingRideIds.includes(m.rideId));
+  const ownSearch = async (members: GroupLiveMember[]) => {
+    for (const seat of members) {
+      await deps.publisher.publishRideEvent(RideRiderCounterOfferEvent.parse({
+        eventType: 'RIDE_RIDER_COUNTER_OFFER', rideId: seat.rideId, riderId: seat.riderId, counterOfferNgn: seat.offerNgn, timestamp: new Date().toISOString(),
+      })).catch(() => undefined);
+    }
+  };
+  // A wallet short: their own search goes on at their own price. A rider who cancelled: nothing to go on.
+  if (why === 'wallet_short') {
+    await ownSearch(leaving);
+    if (leaving.length) await tellOf(deps)?.({ kind: 'wallet_short', tripId, seats: leaving }).catch(() => undefined);
+  }
+  let newTripId: string | null = null;
+  if (rest.length >= 2) {
+    const stops = trip?.stops ?? (await groupStopsOf(tripId));
+    newTripId = stops.length ? await startGroupTrip(deps, { stops }, rest).catch(() => null) : null;
+  }
+  if (newTripId) {
+    await tellOf(deps)?.({ kind: 'regrouped', tripId: newTripId, seats: rest, left: leaving }).catch(() => undefined);
+  } else if (rest.length) {
+    await ownSearch(rest);
+    await tellOf(deps)?.({ kind: 'group_ended', tripId, seats: rest, left: leaving }).catch(() => undefined);
+  }
+  return newTripId;
+}
+
+/** A trip's stops from its row (records written before the stops were kept). */
+async function groupStopsOf(tripId: string): Promise<GroupLiveOffer['stops']> {
+  const trip = await groupTripClient.tripOf(tripId).catch(() => null);
+  const raw = Array.isArray(trip?.groupStops) ? (trip!.groupStops as Array<Record<string, unknown>>) : [];
+  return raw.flatMap((s) =>
+    typeof s.rideId === 'string' && (s.kind === 'pickup' || s.kind === 'dropoff') && typeof s.lat === 'number' && typeof s.lng === 'number'
+      ? [{ rideId: s.rideId, kind: s.kind, lat: s.lat, lng: s.lng, address: typeof s.address === 'string' ? s.address : '' }]
+      : [],
+  );
+}
+
+/** A seat's rider cancelled while the group had no driver yet: the group goes on without them. */
+export async function seatLeftBeforeBooking(deps: GroupTripDeps, seatRideId: string): Promise<boolean> {
+  const tripId = await tripOfSeat(deps.redis, seatRideId);
+  if (!tripId || (await deps.redis.get(bookedKey(tripId)).catch(() => null))) return false;
+  await regroupWithout(deps, tripId, [seatRideId], 'left');
+  return true;
 }
 
 /** The trip has its driver (ride-service assigned it): each seat is announced to its rider, once. */
@@ -267,8 +523,14 @@ export async function onTripAssignmentFailed(deps: GroupTripDeps, event: { rideI
  */
 export async function endUnbookedTrip(deps: GroupTripDeps, tripId: string): Promise<boolean> {
   if (await deps.redis.get(bookedKey(tripId)).catch(() => null)) return false;
+  // A booking in flight: decided after it.
+  if (await deps.redis.get(bookingKey(tripId)).catch(() => null)) {
+    laterOf(deps)(() => void endUnbookedTrip(deps, tripId).catch(() => undefined), 3000);
+    return false;
+  }
   if (!(await deps.redis.setIfNotExists(endedKey(tripId), '1', KEEP_SECONDS).catch(() => false))) return false;
   const trip = await readTrip(deps.redis, tripId);
+  await closeAskOf(deps, tripId, 'no');
   await groupTripClient.closeUnbooked(tripId).catch(() => false);
   await deps.publisher.publishGroupRideEvent(GroupTripEndedEvent.parse({ eventType: 'GROUP_TRIP_ENDED', groupId: tripId, timestamp: new Date().toISOString() }));
   const bids = await driverBidClient.findByRide(tripId).catch(() => []);
@@ -281,7 +543,7 @@ export async function endUnbookedTrip(deps: GroupTripDeps, tripId: string): Prom
       eventType: 'RIDE_RIDER_COUNTER_OFFER', rideId: seat.rideId, riderId: seat.riderId, counterOfferNgn: seat.offerNgn, timestamp: new Date().toISOString(),
     })).catch(() => undefined);
   }
-  if (trip && deps.tell) await deps.tell({ kind: 'no_driver', tripId, seats: trip.seats }).catch(() => undefined);
+  if (trip) await tellOf(deps)?.({ kind: 'no_driver', tripId, seats: trip.seats }).catch(() => undefined);
   return true;
 }
 
@@ -429,4 +691,34 @@ export async function riderGroupView(redis: RedisClient, seatRideId: string): Pr
   }
   const others = seats.filter((s) => s.id !== seatRideId && String(s.status) !== 'CANCELLED').map((s) => first.get(s.riderId) ?? 'Rider');
   return { others, stops };
+}
+
+/* ── a one-time note for the ride page (it shows it once, as a toast) ────────────────────────────────────────────── */
+
+const noteKey = (rideId: string) => `gt:note:${rideId}`;
+export async function setGroupNote(redis: RedisClient, rideId: string, text: string): Promise<void> {
+  await redis.set(noteKey(rideId), JSON.stringify({ id: randomUUID(), text }), 120);
+}
+export async function groupNoteFor(redis: RedisClient, rideId: string): Promise<{ id: string; text: string } | null> {
+  const raw = await redis.get(noteKey(rideId)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const note = JSON.parse(raw) as { id?: unknown; text?: unknown };
+    return typeof note.id === 'string' && typeof note.text === 'string' ? { id: note.id, text: note.text } : null;
+  } catch { return null; }
+}
+
+/**
+ * A seat's group while it looks for a driver, as its rider sees it: the seat, the others now (after anyone left), and
+ * the rider's own price. Null: not in a group trip.
+ */
+export async function formedSeatView(redis: RedisClient, seatRideId: string): Promise<{ seatPriceNgn: number; others: string[]; ownPriceNgn: number } | null> {
+  const tripId = await tripOfSeat(redis, seatRideId);
+  const trip = tripId ? await readTrip(redis, tripId) : null;
+  const me = trip?.seats.find((m) => m.rideId === seatRideId);
+  if (!trip || !me) return null;
+  const others = trip.seats.filter((m) => m.rideId !== seatRideId);
+  const users = await prisma.user.findMany({ where: { id: { in: others.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+  const first = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  return { seatPriceNgn: me.seatPriceNgn, others: others.map((m) => first.get(m.riderId) ?? 'Rider'), ownPriceNgn: me.offerNgn };
 }

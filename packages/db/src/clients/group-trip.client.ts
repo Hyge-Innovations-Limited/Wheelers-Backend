@@ -10,6 +10,13 @@ type TxClient = Prisma.TransactionClient;
  * one transaction: all the seats or none.
  */
 
+/**
+ * Every ride but a group TRIP (the driver's job; its riders' seats are the rides), for counts and lists. Rides with no
+ * group role are kept: `groupRole <> 'TRIP'` alone would drop them (NULL), so both are said. Wrapped in AND so it
+ * spreads into a where that has its own OR.
+ */
+export const NOT_GROUP_TRIP = { AND: [{ OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] }] } satisfies Prisma.RideWhereInput;
+
 const LIVE = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] as const;
 const SEARCHING = ['REQUESTED', 'MATCHING'] as const;
 
