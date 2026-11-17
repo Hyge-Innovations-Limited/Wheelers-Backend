@@ -23,11 +23,13 @@ const scheduled = [];
 
 async function searching(extra = {}) {
   const riderId = randomUUID();
-  await prisma.user.create({ data: { id: riderId, privyDid: `test:group-offer:${riderId}`, role: 'RIDER', name: 'Ada Obi' } });
+  const { balanceNgn = 20000, phone = null, ...rideExtra } = extra;
+  await prisma.user.create({ data: { id: riderId, privyDid: `test:group-offer:${riderId}`, role: 'RIDER', name: 'Ada Obi', phone } });
+  await prisma.wallet.create({ data: { userId: riderId, balanceNgn } });
   made.users.push(riderId);
   const ride = await prisma.ride.create({ data: {
     riderId, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 12000,
-    pickupLat: 6.5095, pickupLng: 3.3711, pickupAddress: 'Yaba, Lagos', destLat: 6.619, destLng: 3.51, destAddress: 'Ikorodu Garage', ...extra,
+    pickupLat: 6.5095, pickupLng: 3.3711, pickupAddress: 'Yaba, Lagos', destLat: 6.619, destLng: 3.51, destAddress: 'Ikorodu Garage', ...rideExtra,
   } });
   made.rides.push(ride.id);
   return { rideId: ride.id, riderId };
@@ -156,6 +158,26 @@ test('a rider who said No thanks is not asked again this search; nobody is asked
   assert.equal(await live.receiveGroupOffer(redis, offered([a, d]), opts()), null, 'a has been asked twice');
 });
 
+test('only riders whose wallet covers their seat, and only listed test phones while the list is set', async () => {
+  const short = await searching({ balanceNgn: 5000 });
+  const b = await searching();
+  assert.equal(await live.receiveGroupOffer(redis, offered([short, b]), opts()), null, 'a ₦9,000 seat, ₦5,000 in the wallet');
+  assert.equal(await live.offerForRide(redis, b.rideId), null);
+
+  const listed = await searching({ phone: '+2348012345678' });
+  const other = await searching({ phone: '+2348099999999' });
+  process.env.GROUP_RIDE_LIVE_PHONES = '08012345678, +2348099999998';
+  try {
+    assert.equal(await live.receiveGroupOffer(redis, offered([listed, other]), opts()), null, 'one is not on the list');
+    assert.equal(live.onTestList('+2348012345678'), true);
+    assert.equal(live.onTestList('+2348099999999'), false);
+    assert.equal(live.onTestList(null), false);
+  } finally {
+    delete process.env.GROUP_RIDE_LIVE_PHONES;
+  }
+  assert.equal(live.onTestList('+2348099999999'), true, 'no list: everyone');
+});
+
 test('switched off: an offer is never held or asked', async () => {
   const a = await searching();
   const b = await searching();
@@ -171,6 +193,7 @@ test('switched off: an offer is never held or asked', async () => {
 test.after(async () => {
   live.setGroupLiveHook(undefined);
   await prisma.ride.deleteMany({ where: { id: { in: made.rides } } });
+  await prisma.wallet.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.user.deleteMany({ where: { id: { in: made.users } } });
   await prisma.$disconnect();
   await redis.disconnect().catch(() => {});

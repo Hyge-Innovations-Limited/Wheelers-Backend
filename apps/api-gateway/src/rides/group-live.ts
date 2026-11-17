@@ -109,6 +109,24 @@ async function countAsk(redis: RedisClient, rideId: string): Promise<void> {
   await redis.set(askedKey(rideId), String(n + 1), SEARCH_KEEP_SECONDS).catch(() => undefined);
 }
 
+/**
+ * Who may be offered a group ride (Timi, 17 Nov 2026): their wallet already covers their seat (so booking never
+ * finds it short), and, while GROUP_RIDE_LIVE_PHONES lists test phones, only those phones.
+ */
+export function onTestList(phone: string | null | undefined, list: string = process.env['GROUP_RIDE_LIVE_PHONES'] ?? ''): boolean {
+  const digits = (value: string) => value.replace(/\D/g, '');
+  const allowed = list.split(',').map(digits).filter(Boolean);
+  if (allowed.length === 0) return true;
+  const mine = digits(phone ?? '');
+  return mine.length > 0 && allowed.some((p) => p === mine || (p.length >= 10 && mine.endsWith(p.slice(-10))));
+}
+
+async function mayBeOffered(member: { riderId: string; seatPriceNgn: number }): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: member.riderId }, select: { phone: true, wallet: { select: { balanceNgn: true } } } }).catch(() => null);
+  if (!user || !onTestList(user.phone)) return false;
+  return Number(user.wallet?.balanceNgn ?? 0) >= member.seatPriceNgn;
+}
+
 /** Still searching for a driver, the rider's own, by wallet, no stops of its own. */
 async function stillSearching(redis: RedisClient, member: { rideId: string; riderId: string }): Promise<boolean> {
   const ride = await prisma.ride.findUnique({
@@ -158,7 +176,7 @@ export async function receiveGroupOffer(
   }
   const held: string[] = [];
   for (const member of event.members) {
-    const ok = (await stillSearching(redis, member)) && (await redis.setIfNotExists(holdKey(member.rideId), offerId, GROUP_RIDE_LIVE.HOLD_SECONDS).catch(() => false));
+    const ok = (await stillSearching(redis, member)) && (await mayBeOffered(member)) && (await redis.setIfNotExists(holdKey(member.rideId), offerId, GROUP_RIDE_LIVE.HOLD_SECONDS).catch(() => false));
     if (!ok) {
       for (const rideId of held) await releaseIfMine(redis, holdKey(rideId), offerId);
       return null;
