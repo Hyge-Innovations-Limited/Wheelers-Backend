@@ -4024,8 +4024,33 @@
     // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';
+    drawGroupTrip(s.group);
     drawWaiting(s);
     drawTripFoot(s);
+  }
+
+  /* A group ride (rides/group-trip.ts riderGroupView): who else is in the car, and every stop in order, the rider's
+   * own in orange; the others' by first name and area only. Absent: a ride of one rider. */
+  function drawGroupTrip(group) {
+    var box = W.$('d-group');
+    if (!box) return;
+    var on = Boolean(group && group.stops && group.stops.length);
+    W.show(box, on);
+    if (!on) return;
+    var others = group.others || [];
+    W.$('d-group-title').textContent = others.length ? 'Group ride · with ' + others.join(' and ') : 'Group ride';
+    var list = W.$('d-group-stops');
+    list.textContent = '';
+    group.stops.forEach(function (stop) {
+      var li = document.createElement('li');
+      if (stop.yours) li.className = 'yours';
+      if (stop.done) li.className = (li.className ? li.className + ' ' : '') + 'done';
+      var text = document.createElement('span');
+      var verb = stop.kind === 'pickup' ? (stop.yours ? ' get in' : ' gets in') : (stop.yours ? ' get out' : ' gets out');
+      text.textContent = (stop.yours ? 'You' : stop.name) + verb + ' · ' + stop.area;
+      li.appendChild(text);
+      list.appendChild(li);
+    });
   }
 
   /* waiting time: 5 free minutes after the driver arrives. Then (Timi, 16 Nov 2026) the rider keeps the driver

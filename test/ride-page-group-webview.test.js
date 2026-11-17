@@ -87,6 +87,31 @@ test('a yes that did not become a group: told the search goes on', async () => {
   assert.ok(page.toasts().includes('No group this time. Your search goes on.'));
 });
 
+const confirmed = (group, status = 'ARRIVED') => ({
+  phase: 'confirmed', rideId: 'ride-1', balanceNgn: 20000, offerNgn: 6750,
+  route: { pickupAddress: 'Ketu', destAddress: 'Mile 12', stopAddresses: [] },
+  trip: { status }, driver: { name: 'Tunde Bakare', rating: 4.9, fareNgn: 6750 },
+  ...(group ? { group } : {}),
+});
+const stopsText = (page) => page.el('d-group-stops').children.map((li) => `${li.className || '-'}|${li.children[0].textContent}`);
+
+test('on the trip: who else is in the car and every stop in order, yours marked; a ride of one rider shows none', async () => {
+  const group = { others: ['Ada'], stops: [
+    { kind: 'pickup', name: 'Ada', area: 'Yaba', yours: false, done: true },
+    { kind: 'pickup', name: 'You', area: 'Ketu', yours: true, done: false },
+    { kind: 'dropoff', name: 'You', area: 'Mile 12', yours: true, done: false },
+    { kind: 'dropoff', name: 'Ada', area: 'Ikorodu Garage', yours: false, done: false },
+  ] };
+  const s = server(confirmed(group));
+  const page = await loadPage(s);
+  assert.equal(page.el('d-group').hidden, false);
+  assert.equal(page.el('d-group-title').textContent, 'Group ride · with Ada');
+  assert.deepEqual(stopsText(page), ['done|Ada gets in · Yaba', 'yours|You get in · Ketu', 'yours|You get out · Mile 12', '-|Ada gets out · Ikorodu Garage']);
+  s.state = confirmed(null);
+  await page.poll();
+  assert.equal(page.el('d-group').hidden, true);
+});
+
 test('markup: one selfie input for the front camera; no inline styles', () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(require('node:path').join(__dirname, '../apps/api-gateway/widget/ride/ride.html'), 'utf8');

@@ -33,6 +33,7 @@ import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
 import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
 import { answerGroupOffer, formedGroupForRide, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
+import { riderGroupView } from '../rides/group-trip';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -364,6 +365,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       tripCode,
       paidWithXlm,
       ...(await routePendingField(deps, userId, trip.rideId)),
+      // A group ride (rides/group-trip.ts): who else is in the car and every stop in order, theirs marked.
+      ...(await riderGroupView(deps.redisClient, trip.rideId).then((group) => (group ? { group } : {})).catch(() => ({}))),
       // The Trip chat page (same site): chat with, or call, the driver through Wheelers.
       tripChatUrl: tripPageUrl('', deps.jwtSecret, userId, trip.rideId),
       // Live call on: Call opens the same page and dials the driver through Wheelers.

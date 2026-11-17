@@ -6,7 +6,7 @@ import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
 import { answerOf, offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
 import { sendGroupOffer } from '../whatsapp/group-live-chat';
-import { onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
+import { existingGroupAccountId, onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
@@ -241,7 +241,7 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
         if (!parsed.success) {
           throw new Error(`Invalid GPS processed event: ${parsed.error.message}`);
         }
-        await handleGpsProcessedEvent(parsed.data, deps.registry, rideParticipants);
+        await handleGpsProcessedEvent(parsed.data, deps.registry, rideParticipants, deps.redisClient);
         return;
       }
 
@@ -2408,13 +2408,31 @@ async function handleNotificationEvent(event: NotificationEvent, registry: Socke
   });
 }
 
-async function handleGpsProcessedEvent(
+export async function handleGpsProcessedEvent(
   event: GpsProcessedEvent,
   registry: SocketRegistry,
   rideParticipants: Map<string, RideParticipantState>,
+  redis?: RedisClient,
 ): Promise<void> {
   const participants = await participantsFor(event.rideId, rideParticipants);
   if (!participants?.riderId) {
+    return;
+  }
+
+  // A group trip (owned by the group account): each rider still on it sees the car on their own ride; a rider dropped
+  // off or gone stops seeing it. The trip's distances and stops are not theirs, so only the position goes.
+  if (redis && participants.riderId === (await existingGroupAccountId().catch(() => null))) {
+    const trip = await readTrip(redis, event.rideId).catch(() => null);
+    for (const seat of trip?.seats ?? []) {
+      if (await redis.get(`gt:seatdone:${seat.rideId}`).catch(() => null)) continue;
+      await registry.sendToUser(seat.riderId, 'ride:driver_location', {
+        rideId: seat.rideId, lat: event.lat, lng: event.lng, heading: event.headingDeg, speedKmh: event.speedKmh,
+        isStale: event.isStale, isConsistent: event.isConsistent,
+      });
+    }
+    if (participants.driverUserId) {
+      await registry.sendToUser(participants.driverUserId, 'ride:gps_update', { rideId: event.rideId, totalDistanceKm: event.totalDistanceKm, distanceToNextStopKm: event.distanceToNextStopKm });
+    }
     return;
   }
 

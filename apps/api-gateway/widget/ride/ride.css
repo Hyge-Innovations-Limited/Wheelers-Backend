@@ -893,3 +893,16 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 .group-buttons .btn { flex: 1; }
 .group-photo { width: 160px; height: 160px; border-radius: 80px; object-fit: cover; align-self: center; border: 3px solid var(--orange); }
 #sheet-group label.btn { display: flex; align-items: center; justify-content: center; }
+
+/* A group ride on the trip: who else is in the car, every stop in order, yours in orange. */
+.gtrip { display: flex; flex-direction: column; gap: 10px; }
+.gtrip-title { font-size: 14px; line-height: 19px; font-weight: 800; color: var(--ink); }
+.gtrip-stops { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.gtrip-stops li { display: flex; align-items: center; gap: 10px; font-size: 14px; line-height: 19px; color: var(--ink); min-width: 0; }
+.gtrip-stops li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gtrip-stops li::before { content: ''; flex: 0 0 auto; width: 10px; height: 10px; border-radius: 5px; border: 2px solid var(--line); background: var(--bg); }
+.gtrip-stops li.yours { font-weight: 800; color: var(--orange-ink); }
+.gtrip-stops li.yours::before { border-color: var(--orange); background: var(--orange); }
+.gtrip-stops li.done { color: var(--muted); text-decoration: line-through; }
+.gtrip-stops li.done::before { border-color: var(--muted); background: var(--muted); }
+

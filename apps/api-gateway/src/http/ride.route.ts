@@ -16,6 +16,7 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
+import { riderGroupView } from "../rides/group-trip";
 import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
 import { driverChecksField } from "../drivers/driver-checks";
 import { safetyView } from "../rides/safety";
@@ -757,7 +758,9 @@ export async function handleActiveRideRoute(
       : null;
     const detail = serializeRideDetail(ride);
     const driverPhoto = detail.driver ? await driverPhotoFields(deps.driverPhoto, detail.driver.id) : {};
-    sendJson(res, 200, { ride: { ...detail, ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}), tripCode, search } });
+    // A group ride (rides/group-trip.ts): who else is in the car and every stop in order, theirs marked.
+    const group = !searching && deps.redisClient ? await riderGroupView(deps.redisClient, active.id).catch(() => null) : null;
+    sendJson(res, 200, { ride: { ...detail, ...(detail.driver && deps.driverPhoto ? { driver: { ...detail.driver, ...driverPhoto } } : {}), tripCode, search, ...(group ? { group } : {}) } });
   } catch (error) {
     sendRideRouteError(res, error, "Could not load active ride");
   }

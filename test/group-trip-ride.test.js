@@ -14,6 +14,7 @@ const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
 const gt = require('../apps/api-gateway/dist/rides/group-trip.js');
 const { loadDriverRideSnapshot } = require('../apps/api-gateway/dist/websocket/driver-ride-sync.js');
 const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handlers/ride.handler.js');
+const { handleGpsProcessedEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
 
 const prisma = new PrismaClient();
 let redis;
@@ -169,6 +170,44 @@ test('the socket: the TRIP itself is never arrived, started or ended; one seat i
   await prisma.ride.update({ where: { id: t.ra }, data: { status: 'DRIVER_ASSIGNED' } });
   assert.equal((await send('ride:arrived', { rideId: t.ra })).type, 'ride:arrived:ack');
   assert.deepEqual(events.map((e) => [e.eventType, e.rideId]), [['RIDE_ARRIVED', t.ra], ['RIDE_ARRIVED', t.tripId]]);
+});
+
+test('the car on each rider\'s own ride: a rider dropped off or gone stops seeing it; a ride of one rider as before', async () => {
+  const t = await bookedTrip();
+  const sent = [];
+  const registry = { sendToUser: async (userId, type, payload) => { sent.push({ userId, type, payload }); } };
+  const gps = (rideId) => ({ eventType: 'GPS_PROCESSED', rideId, driverId: t.driverId, lat: 6.55, lng: 3.38, distanceFromLastKm: 0.1, totalDistanceKm: 2, isStale: false, isConsistent: true, distanceToNextStopKm: 1.2, nextStopAddress: 'Ketu', timestamp: new Date().toISOString() });
+  await handleGpsProcessedEvent(gps(t.tripId), registry, new Map(), redis);
+  const toRiders = sent.filter((m) => m.type === 'ride:driver_location');
+  assert.deepEqual(toRiders.map((m) => [m.userId, m.payload.rideId]).sort(), [[t.a, t.ra], [t.b, t.rb]].sort());
+  assert.equal(toRiders[0].payload.nextStopAddress, undefined, 'the trip\'s stops are not theirs');
+  assert.deepEqual(sent.filter((m) => m.type === 'ride:gps_update').map((m) => m.userId), [t.driverUserId]);
+
+  await redis.set(`gt:seatdone:${t.rb}`, '1', 60);
+  sent.length = 0;
+  await handleGpsProcessedEvent(gps(t.tripId), registry, new Map(), redis);
+  assert.deepEqual(sent.filter((m) => m.type === 'ride:driver_location').map((m) => m.userId), [t.a]);
+
+  // A seat is a ride of its rider: its own GPS (none is sent for it) would go to that rider as always.
+  sent.length = 0;
+  await handleGpsProcessedEvent(gps(t.ra), registry, new Map(), redis);
+  assert.deepEqual(sent.map((m) => [m.userId, m.type]), [[t.a, 'ride:driver_location'], [t.driverUserId, 'ride:gps_update']]);
+});
+
+test('a rider\'s own trip: who else is in the car and every stop, theirs marked, others by area only; a rider who left is gone from it', async () => {
+  const t = await bookedTrip();
+  let view = await gt.riderGroupView(redis, t.rb);
+  assert.deepEqual(view.others, ['Ada']);
+  assert.deepEqual(view.stops.map((s) => `${s.kind}:${s.name}:${s.area}:${s.yours}:${s.done}`), [
+    'pickup:Ada:Yaba:false:false', 'pickup:You:Ketu:true:false', 'dropoff:You:Mile 12:true:false', 'dropoff:Ada:Ikorodu Garage:false:false',
+  ]);
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'IN_PROGRESS' } });
+  view = await gt.riderGroupView(redis, t.rb);
+  assert.equal(view.stops[0].done, true, 'Ada picked up');
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'CANCELLED' } });
+  view = await gt.riderGroupView(redis, t.rb);
+  assert.deepEqual([view.others, view.stops.map((s) => s.name)], [[], ['You', 'You']]);
+  assert.equal(await gt.riderGroupView(redis, randomUUID()), null, 'not a seat');
 });
 
 test.after(async () => {

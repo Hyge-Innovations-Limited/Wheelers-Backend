@@ -67,6 +67,20 @@ export async function groupAccountId(): Promise<string> {
   return user.id;
 }
 
+let groupAccountLookedUpAt = 0;
+/**
+ * The group account when it exists, never made here: for hot paths (every GPS point) that only ask "is this a group
+ * trip". A miss is remembered a minute, so rides of one rider cost no lookup.
+ */
+export async function existingGroupAccountId(now: number = Date.now()): Promise<string | null> {
+  if (groupAccount) return groupAccount;
+  if (now - groupAccountLookedUpAt < 60_000) return null;
+  groupAccountLookedUpAt = now;
+  const user = await prisma.user.findUnique({ where: { privyDid: 'system:group-trips' }, select: { id: true } }).catch(() => null);
+  if (user) groupAccount = user.id;
+  return groupAccount;
+}
+
 export async function readTrip(redis: RedisClient, tripId: string): Promise<GroupTripRecord | null> {
   const raw = await redis.get(tripKey(tripId)).catch(() => null);
   if (!raw) return null;
@@ -368,9 +382,51 @@ export async function leaveTrip(deps: GroupTripDeps, driver: { driverId: string;
   for (const seat of unlinked) {
     // Out of the group first: the cancel below is a plain driver cancel to everyone who reads it.
     await deps.redis.del(seatKey(seat.id)).catch(() => undefined);
+    // A rider who cancelled at this same moment is not told their driver left (nor searched again).
+    if (await deps.redis.get(`gt:seatdone:${seat.id}`).catch(() => null)) continue;
     await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
       eventType: 'RIDE_CANCELLED', rideId: seat.id, riderId: seat.riderId, driverId, driverUserId, cancelledBy: 'driver',
       reason: 'The driver left the group', timestamp: new Date().toISOString(),
     }));
   }
+}
+
+export interface RiderGroupView {
+  /** The other riders still on the trip, first names. */
+  others: string[];
+  /** Every stop in order (riders who left are gone from it): theirs marked, others' by area only. */
+  stops: Array<{ kind: 'pickup' | 'dropoff'; name: string; area: string; yours: boolean; done: boolean }>;
+}
+
+/**
+ * A rider's own seat of a booked group trip, as they see it on their trip (Timi, plan step 8: the stops, theirs in
+ * orange). Other riders by first name and the area of their stops only, never the full address. Null: not a seat.
+ */
+export async function riderGroupView(redis: RedisClient, seatRideId: string): Promise<RiderGroupView | null> {
+  const tripId = await tripOfSeat(redis, seatRideId);
+  if (!tripId) return null;
+  const [trip, seats] = await Promise.all([groupTripClient.tripOf(tripId), groupTripClient.seatsOf(tripId)]);
+  if (!trip || !seats.some((s) => s.id === seatRideId)) return null;
+  const users = await prisma.user.findMany({ where: { id: { in: seats.map((s) => s.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+  const first = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const byId = new Map(seats.map((s) => [s.id, s]));
+  const raw = Array.isArray(trip.groupStops) ? (trip.groupStops as Array<{ rideId?: unknown; kind?: unknown; address?: unknown }>) : [];
+  const stops: RiderGroupView['stops'] = [];
+  for (const stop of raw) {
+    const seat = typeof stop.rideId === 'string' ? byId.get(stop.rideId) : undefined;
+    if (!seat || (stop.kind !== 'pickup' && stop.kind !== 'dropoff')) continue;
+    const status = String(seat.status);
+    if (status === 'CANCELLED') continue;
+    const yours = seat.id === seatRideId;
+    const address = typeof stop.address === 'string' ? stop.address : '';
+    stops.push({
+      kind: stop.kind,
+      name: yours ? 'You' : first.get(seat.riderId) ?? 'Rider',
+      area: address.split(',')[0]?.trim() || address,
+      yours,
+      done: status === 'COMPLETED' || (stop.kind === 'pickup' && status === 'IN_PROGRESS'),
+    });
+  }
+  const others = seats.filter((s) => s.id !== seatRideId && String(s.status) !== 'CANCELLED').map((s) => first.get(s.riderId) ?? 'Rider');
+  return { others, stops };
 }
