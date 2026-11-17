@@ -29,6 +29,7 @@ export interface SeatToBook {
 export type BookSeatsResult =
   | { ok: true }
   | { ok: false; reason: 'busy' }
+  | { ok: false; reason: 'trip_closed' }
   | { ok: false; reason: 'short'; shortRideIds: string[] }
   | { ok: false; reason: 'seat_moved'; rideId: string };
 
@@ -47,10 +48,13 @@ export const groupTripClient = {
     }).catch(() => false);
   },
 
-  /** These seats leave the trip (still searching on their own). Returns the seats let go. */
-  async unlinkSeats(tripId: string, seatRideIds?: string[]): Promise<number> {
+  /**
+   * These seats leave the trip (still searching on their own). Returns the seats let go. `includeAssigned`: also a seat
+   * that has a driver (a trip that never had one: that seat was booked alone in between and is not this group's).
+   */
+  async unlinkSeats(tripId: string, seatRideIds?: string[], opts: { includeAssigned?: boolean } = {}): Promise<number> {
     const wrote = await prisma.ride.updateMany({
-      where: { groupTripId: tripId, groupRole: 'SEAT', driverId: null, ...(seatRideIds ? { id: { in: seatRideIds } } : {}) },
+      where: { groupTripId: tripId, groupRole: 'SEAT', ...(opts.includeAssigned ? {} : { driverId: null }), ...(seatRideIds ? { id: { in: seatRideIds } } : {}) },
       data: { groupTripId: null, groupRole: null },
     });
     return wrote.count;
@@ -77,6 +81,9 @@ export const groupTripClient = {
     const { tripId, driverId, driverUserId, seats } = params;
     try {
       return await prisma.$transaction(async (tx: TxClient): Promise<BookSeatsResult> => {
+        // The trip itself, locked: still looking for a driver (never one the 2 minute end has just closed).
+        const open = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Ride" WHERE id = ${tripId} AND "groupRole" = 'TRIP' AND "driverId" IS NULL AND status IN ('REQUESTED', 'MATCHING') FOR UPDATE`;
+        if (open.length === 0) return { ok: false, reason: 'trip_closed' };
         await tx.$queryRaw`SELECT id FROM "Driver" WHERE id = ${driverId} FOR UPDATE`;
         const other = await tx.ride.findFirst({
           where: { driverId, status: { in: [...LIVE] }, OR: [{ groupTripId: null }, { groupTripId: { not: tripId } }] },
@@ -163,6 +170,7 @@ export const groupTripClient = {
 
   /** A trip that never got a driver is closed (its seats were let go first). */
   async closeUnbooked(tripId: string, at: Date = new Date()): Promise<boolean> {
+    // Waits for a booking holding the trip's row (bookSeats locks it), then closes it only if it is still unbooked.
     const wrote = await prisma.ride.updateMany({
       where: { id: tripId, groupRole: 'TRIP', driverId: null, status: { in: [...SEARCHING] } },
       data: { status: 'CANCELLED', cancelledAt: at, cancelStage: 'BEFORE_MATCH', cancelReason: 'Group trip without a driver' },

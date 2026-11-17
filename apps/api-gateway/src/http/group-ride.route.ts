@@ -1,10 +1,11 @@
 import { saveGroupSelfie } from '../rides/group-selfie';
-import { selfieTaken } from '../rides/group-live';
+import { answerOf, offerForRide, selfieTaken } from '../rides/group-live';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   GroupRideGenderPreference,
   GroupRideMatchRequestStatus,
   groupRideClient,
+  rideClient,
 } from '@wheleers/db';
 import type {
   GoogleMapsRoutePlanner,
@@ -514,6 +515,22 @@ export async function takeGroupSelfie(
 export async function handleGroupLiveSelfieRoute(req: IncomingMessage, res: ServerResponse, deps: GroupRideRouteDeps): Promise<void> {
   try {
     const user = await authenticateHttpUser(req, deps.jwtSecret);
+    // Each selfie is a paid face check: a few a minute, a few a day, and only for a "Ride together" waiting on it.
+    const minute = `group-selfie:${user.id}:${Math.floor(Date.now() / 60_000)}`;
+    const day = `group-selfie-day:${user.id}:${new Date().toISOString().slice(0, 10)}`;
+    const [perMinute, perDay] = await Promise.all([deps.redisClient.get(minute).catch(() => null), deps.redisClient.get(day).catch(() => null)]);
+    if ((Number(perMinute) || 0) >= 6 || (Number(perDay) || 0) >= 20) {
+      sendJson(res, 429, { error: 'Too many tries. Wait a minute.', code: 'RATE_LIMITED' });
+      return;
+    }
+    await deps.redisClient.set(minute, String((Number(perMinute) || 0) + 1), 120).catch(() => undefined);
+    await deps.redisClient.set(day, String((Number(perDay) || 0) + 1), 26 * 60 * 60).catch(() => undefined);
+    const ride = await rideClient.findActiveByRider(user.id).catch(() => null);
+    const offer = ride ? await offerForRide(deps.redisClient, ride.id).catch(() => null) : null;
+    if (!ride || !offer || (await answerOf(deps.redisClient, offer.offerId, ride.id).catch(() => null)) !== 'join') {
+      sendJson(res, 409, { error: 'This group ride offer has ended.', code: 'NO_OFFER' });
+      return;
+    }
     const body = await readJsonBody(req).catch(() => null);
     const result = await takeGroupSelfie(deps, user.id, isRecord(body) ? getString(body, 'imageBase64') ?? null : null, isRecord(body) ? getString(body, 'mimeType') ?? null : null);
     if (!result.ok) {

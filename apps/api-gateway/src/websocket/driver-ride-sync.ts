@@ -5,6 +5,7 @@ import type WebSocket from 'ws';
 import { prisma, rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
 import { waitingView, type WaitingView } from '../rides/waiting';
+import { firstNameOf } from '../rides/group-people';
 
 /**
  * The driver app's picture of an assigned ride.
@@ -79,8 +80,9 @@ async function groupTripFor(ride: { id: string; groupRole?: string | null; group
   const seats: DriverGroupSeat[] = await Promise.all(seatRows.map(async (r) => ({
     rideId: r.id,
     riderId: r.riderId,
-    riderName: byUser.get(r.riderId)?.name?.trim().split(/\s+/)[0] || 'Rider',
-    riderPhone: byUser.get(r.riderId)?.phone ?? null,
+    riderName: firstNameOf(byUser.get(r.riderId)?.name),
+    // A rider no longer on the trip (dropped off, cancelled, left behind): their number is not the driver's to keep.
+    riderPhone: ['COMPLETED', 'CANCELLED'].includes(String(r.status)) ? null : byUser.get(r.riderId)?.phone ?? null,
     status: String(r.status),
     seatPriceNgn: decimalToNumber(r.agreedFareNgn) ?? 0,
     pickup: { lat: r.pickupLat, lng: r.pickupLng, address: r.pickupAddress },

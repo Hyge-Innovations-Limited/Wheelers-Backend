@@ -15,6 +15,7 @@ import { offerKey } from '../../rides/whatsapp-ride.service';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { StageContext } from '../stage-context';
 import { priceCheckLines } from '../../whatsapp-flows/trip-text';
+import { tripOfSeat } from '../../rides/group-trip';
 
 /** The inRide stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function inRide(ctx: StageContext): Promise<boolean> {
@@ -343,6 +344,10 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
 
     // ── Counter-offer with a price: "1500", "₦2000", "2k" ──
     const counterOffer = parseCounterOffer(incomingMessage);
+    if (counterOffer !== null && (await tripOfSeat(deps.redisClient, activeRideId))) {
+      await sendMetaReply(deps, phone, "You're riding in a group. We're finding your driver.");
+      return true;
+    }
     if (counterOffer !== null) {
       const meta = await getRideMeta(deps.redisClient, activeRideId);
       if (meta) {

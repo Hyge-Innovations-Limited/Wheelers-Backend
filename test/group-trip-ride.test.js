@@ -14,6 +14,7 @@ const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
 const gt = require('../apps/api-gateway/dist/rides/group-trip.js');
 const { loadDriverRideSnapshot } = require('../apps/api-gateway/dist/websocket/driver-ride-sync.js');
 const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handlers/ride.handler.js');
+const { handleDriverMessage } = require('../apps/api-gateway/dist/websocket/handlers/driver.handler.js');
 const { handleGpsProcessedEvent } = require('../apps/api-gateway/dist/kafka/consumer.js');
 
 const prisma = new PrismaClient();
@@ -37,6 +38,7 @@ async function bookedTrip() {
   const driverUserId = await user('DRIVER', 'Tunde Bakare');
   const driver = await prisma.driver.create({ data: { userId: driverUserId, kycStatus: 'APPROVED', status: 'ONLINE', lastSeenAt: new Date() } });
   made.drivers.push(driver.id);
+  await gt.noteGroupTripDriver(redis, driverUserId);
   const ra = (await prisma.ride.create({ data: { riderId: a, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 12000, pickupLat: 6.5095, pickupLng: 3.3711, pickupAddress: 'Yaba', destLat: 6.619, destLng: 3.51, destAddress: 'Ikorodu Garage' } })).id;
   const rb = (await prisma.ride.create({ data: { riderId: b, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 9000, pickupLat: 6.596, pickupLng: 3.391, pickupAddress: 'Ketu', destLat: 6.606, destLng: 3.404, destAddress: 'Mile 12' } })).id;
   made.rides.push(ra, rb);
@@ -222,6 +224,51 @@ test('the dashboards count each rider\'s seat, never the trip (the driver\'s job
   const solo = await prisma.ride.create({ data: { riderId: t.a, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 5000, pickupLat: 6.5, pickupLng: 3.3, pickupAddress: 'Yaba', destLat: 6.6, destLng: 3.4, destAddress: 'Ikeja' } });
   made.rides.push(solo.id);
   assert.equal(await prisma.ride.count({ where: { id: solo.id, ...NOT_GROUP_TRIP } }), 1, 'a ride with no group role is counted');
+});
+
+test('old holes, closed: a ride that never started is not ended; a car on a ride only from its driver; a cancel names only the ride\'s driver', async () => {
+  const t = await bookedTrip();
+  const auth = { userId: t.driverUserId, driverId: t.driverId, role: 'DRIVER' };
+  const gpsPublished = [];
+  const pub = { ...publisher, publishGpsEvent: async (e) => { gpsPublished.push(e); } };
+  // Ending a seat nobody got into: refused (it charged the rider and paid the driver for nothing).
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'ARRIVED', arrivedAt: new Date() } });
+  await assert.rejects(handleRideMessage('ride:end', { rideId: t.ra, riderId: t.a }, auth, publisher, {}, redis), /Start the trip first/);
+  // A position for someone else's ride, or with another driver's id in the message: refused.
+  const stranger = await user('DRIVER', 'Fake Driver');
+  const strangerDriver = await prisma.driver.create({ data: { userId: stranger, kycStatus: 'APPROVED', status: 'ONLINE', lastSeenAt: new Date() } });
+  made.drivers.push(strangerDriver.id);
+  await assert.rejects(handleDriverMessage('driver:gps', { rideId: t.tripId, driverId: t.driverId, lat: 6.5, lng: 3.4 }, { userId: stranger, driverId: strangerDriver.id, role: 'DRIVER' }, pub, redis), /not assigned to you/);
+  await assert.rejects(handleDriverMessage('driver:gps', { rideId: t.tripId, lat: 6.5, lng: 3.4 }, { userId: t.a, role: 'RIDER' }, pub, redis));
+  assert.equal(gpsPublished.length, 0);
+  const own = await handleDriverMessage('driver:gps', { rideId: t.tripId, lat: 6.5, lng: 3.4 }, auth, pub, redis);
+  assert.equal(own.type, 'driver:gps:accepted');
+  assert.equal(gpsPublished[0].driverId, t.driverId);
+  // A rider's cancel naming some other driver: not that driver.
+  const solo = (await prisma.ride.create({ data: { riderId: t.a, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 5000, pickupLat: 6.5, pickupLng: 3.3, pickupAddress: 'Yaba', destLat: 6.6, destLng: 3.4, destAddress: 'Ikeja' } })).id;
+  made.rides.push(solo);
+  events.length = 0;
+  await handleRideMessage('ride:cancel', { rideId: solo, driverId: strangerDriver.id }, { userId: t.a, role: 'RIDER' }, publisher, {}, redis);
+  assert.equal(events.find((e) => e.eventType === 'RIDE_CANCELLED').driverId, undefined);
+});
+
+test('a rider in a group: no price change alone, no driver booking them alone; their cancel before a driver is written at once', async () => {
+  const [a, b] = [await user('RIDER', 'Ada Obi'), await user('RIDER', 'Chika Eze')];
+  const mk = async (riderId) => (await prisma.ride.create({ data: { riderId, status: 'MATCHING', paymentMethod: 'WALLET', riderOfferNgn: 9000, pickupLat: 6.5, pickupLng: 3.37, pickupAddress: 'Yaba', destLat: 6.62, destLng: 3.51, destAddress: 'Ikorodu' } })).id;
+  const [ra, rb] = [await mk(a), await mk(b)];
+  made.rides.push(ra, rb);
+  const joined = [{ rideId: ra, riderId: a, offerNgn: 9000, seatPriceNgn: 6750, soloSeconds: 2000, extraSeconds: 0 }, { rideId: rb, riderId: b, offerNgn: 9000, seatPriceNgn: 6750, soloSeconds: 2000, extraSeconds: 0 }];
+  const stops = [{ rideId: ra, kind: 'pickup', lat: 6.5, lng: 3.37, address: 'Yaba' }, { rideId: rb, kind: 'pickup', lat: 6.51, lng: 3.38, address: 'Sabo' }, { rideId: rb, kind: 'dropoff', lat: 6.6, lng: 3.5, address: 'Ikorodu' }, { rideId: ra, kind: 'dropoff', lat: 6.62, lng: 3.51, address: 'Ikorodu' }];
+  events.length = 0;
+  const tripId = await gt.startGroupTrip(deps(), { stops }, joined);
+  made.rides.push(tripId);
+  await assert.rejects(handleRideMessage('ride:rider_counter_offer', { rideId: ra, counterOfferNgn: 8000 }, { userId: a, role: 'RIDER' }, publisher, {}, redis), /riding in a group/);
+  const driverUserId = await user('DRIVER', 'Solo Driver');
+  const d = await prisma.driver.create({ data: { userId: driverUserId, kycStatus: 'APPROVED', status: 'ONLINE', lastSeenAt: new Date() } });
+  made.drivers.push(d.id);
+  await assert.rejects(handleRideMessage('driver:accept', { rideId: ra, agreedFareNgn: 9000 }, { userId: driverUserId, driverId: d.id, role: 'DRIVER' }, publisher, {}, redis), /no longer open/);
+  await handleRideMessage('ride:cancel', { rideId: rb }, { userId: b, role: 'RIDER' }, publisher, {}, redis);
+  assert.equal((await prisma.ride.findUnique({ where: { id: rb } })).status, 'CANCELLED', 'written now: a booking at this moment cannot take it');
 });
 
 test.after(async () => {

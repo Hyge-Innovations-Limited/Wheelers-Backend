@@ -307,7 +307,7 @@ async function bootstrap(): Promise<void> {
         // Group trips (live group ride): formed and ended.
         const groupEvent = safeParseKafkaEvent(TOPICS.GROUP_RIDE_EVENTS, value);
         if (groupEvent && (groupEvent.eventType === 'GROUP_TRIP_FORMED' || groupEvent.eventType === 'GROUP_TRIP_ENDED')) {
-          rideRequestedConsumer.handleGroupTrip(groupEvent);
+          await rideRequestedConsumer.handleGroupTrip(groupEvent);
           return;
         }
         await groupRideDispatchConsumer.handle(value, ctx);

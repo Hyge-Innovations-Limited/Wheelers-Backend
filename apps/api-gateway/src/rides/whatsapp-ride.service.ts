@@ -31,6 +31,7 @@ import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state'
 import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 import { startSearchClock } from './search-status';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+import { tripOfSeat } from './group-trip';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -155,6 +156,8 @@ export async function publishWhatsappRide(
 export type ChangeOfferResult =
   | { ok: true; offerNgn: number }
   | { ok: false; code: 'RIDE_GONE' }
+  /** In a group ride: the price is the group's seat now, not changed alone. */
+  | { ok: false; code: 'IN_GROUP' }
   | { ok: false; code: 'BELOW_MINIMUM'; minOfferNgn: number };
 
 /** A new price from the rider, shown to every driver looking at the request. */
@@ -166,6 +169,7 @@ export async function changeRiderOffer(
 ): Promise<ChangeOfferResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  if (await tripOfSeat(deps.redisClient, rideId)) return { ok: false, code: 'IN_GROUP' };
 
   // The first offer cleared the minimum fare; a later one has to as well, or
   // the floor is bypassed by simply lowering the price once bidding starts.

@@ -240,11 +240,16 @@ export const rideClient = {
 
   /** Trips this driver was assigned that ended cancelled — the raw material
    *  of a cancellation rate. Data first; policy later. */
+  /** Which group trip these rides are seats of now (ride-service checks a group event against it). */
+  groupLinksOf: (rideIds: string[]) =>
+    prisma.ride.findMany({ where: { id: { in: rideIds } }, select: { id: true, groupTripId: true } }),
+
+  // A group trip is the driver's job, not a ride: its riders' seats are counted (each a ride of its own).
   countCancelledByDriver: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'CANCELLED' } }),
+    prisma.ride.count({ where: { driverId, status: 'CANCELLED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   countCompletedByDriver: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'COMPLETED' } }),
+    prisma.ride.count({ where: { driverId, status: 'COMPLETED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   countCompletedByRider: (riderId: string) =>
     prisma.ride.count({ where: { riderId, status: 'COMPLETED' } }),
@@ -497,9 +502,10 @@ export const rideClient = {
       data:  { status: 'ARRIVED', arrivedAt: new Date(), waitingStoppedAt: null },
     }),
 
+  /** Started: only from before the trip (a cancelled or finished ride is never brought back by a late start). */
   start: (rideId: string) =>
-    prisma.ride.update({
-      where: { id: rideId },
+    prisma.ride.updateMany({
+      where: { id: rideId, status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED'] } },
       data: {
         status:    'IN_PROGRESS',
         startedAt: new Date(),

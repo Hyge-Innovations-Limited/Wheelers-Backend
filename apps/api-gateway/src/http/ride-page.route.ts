@@ -55,6 +55,7 @@ import { cancelRiderSos, raiseRiderSos, SOS_KINDS, sosLabel } from '../safety/ri
 import { supportContact } from '../whatsapp/menu';
 import { scheduledStartTemplate } from '../whatsapp/scheduled-template';
 import { refusalCode } from '../utils/service-area';
+import { firstNameOf } from '../rides/group-people';
 
 /**
  * The page a WhatsApp rider opens from the chat ("See driver offers"): name a
@@ -737,6 +738,7 @@ async function handleOffer(req: IncomingMessage, res: ServerResponse, deps: Ride
     if (result.code === 'BELOW_MINIMUM') {
       throw new PageError(`The lowest price for this trip is ₦${result.minOfferNgn.toLocaleString()}.`, 400, 'BELOW_MINIMUM', { minOfferNgn: result.minOfferNgn });
     }
+    if (result.code === 'IN_GROUP') throw new PageError("You're riding in a group. We're finding your driver.", 409, 'IN_GROUP');
     throw new PageError('This search has ended.', 409, 'RIDE_GONE');
   }
   // A yes at the new price (a price above the last yes switches auto-accept off without one).
@@ -1441,12 +1443,12 @@ async function offerField(deps: RidePageRouteDeps, rideId: string): Promise<{ gr
     const formed = await formedGroupForRide(deps.redisClient, rideId).catch(() => null);
     if (!formed) return {};
     const users = await prisma.user.findMany({ where: { id: { in: formed.offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
-    const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+    const names = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
     const me = formed.offer.members.find((m) => m.rideId === rideId);
     return { groupFormed: { seatPriceNgn: formed.seatPriceNgn, others: formed.offer.members.filter((m) => m.rideId !== rideId).map((m) => names.get(m.riderId) ?? 'Rider'), ownPriceNgn: me?.offerNgn ?? null } };
   }
   const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
-  const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const names = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
   const view = await offerViewFor(deps.redisClient, offer, rideId, names).catch(() => null);
   return view ? { groupOffer: view } : {};
 }
@@ -1481,7 +1483,7 @@ async function handleGroupCounter(req: IncomingMessage, res: ServerResponse, dep
   const ride = pointer ?? (await rideClient.findActiveByRider(userId).catch(() => null))?.id ?? null;
   if (!ride) throw new PageError('This price has ended.', 409, 'ASK_OVER');
   try {
-    await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, userId, ride, answer);
+    await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, userId, ride, answer, isRecord(body) && typeof body.askId === 'string' ? body.askId : undefined);
   } catch (error) {
     if (error instanceof GroupTripError) throw new PageError(error.message, 409, error.code);
     throw error;

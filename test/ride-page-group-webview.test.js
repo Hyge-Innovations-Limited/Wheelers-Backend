@@ -98,7 +98,7 @@ test('a driver asks more for this rider\'s seat: Yes or No; yes sent, then waiti
   assert.equal(page.el('gcounter-sub').textContent, 'Your seat was ₦6,000.');
   assert.equal(page.el('gcounter-yes').textContent, 'Yes, ₦6,650');
   await page.tap(page.el('gcounter-yes'));
-  assert.deepEqual(s.sent, [{ url: '/ride-page/group/counter', body: { answer: 'yes' } }]);
+  assert.deepEqual(s.sent, [{ url: '/ride-page/group/counter', body: { answer: 'yes', askId: 'ask-1' } }], 'the ask it answers (a stale one is refused)');
   assert.equal(page.el('gcounter-sub').textContent, 'Waiting for the others.');
   assert.equal(page.el('gcounter-yes').disabled, true);
   s.state = searching({ groupFormed: formed });

@@ -261,6 +261,7 @@ export async function handleOffersFormFlow(body: FlowRequestBody, userId: string
     const result = await changeRiderOffer(service, userId, rideId, amount);
     if (!result.ok) {
       if (result.code === 'BELOW_MINIMUM') return priceScreen(deps, rideId, `${naira(amount)} is below the lowest price for this trip, ${naira(result.minOfferNgn)}. It's in the box now: tap Update price to offer it, or type a higher price.`, result.minOfferNgn);
+      if (result.code === 'IN_GROUP') return done("You're riding in a group", "We're finding your driver.", false);
       return done('This search has ended', 'Nothing was charged. Book again any time from Quick Actions in the chat.', false);
     }
     // No chat message: "Bid updated" is said HERE, on the live list, and the next thing the chat hears is a driver answering it.

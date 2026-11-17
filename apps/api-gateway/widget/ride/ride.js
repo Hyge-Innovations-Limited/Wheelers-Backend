@@ -3260,6 +3260,7 @@
   var groupShown = null;     // the offer id the sheet is about
   var groupAnswered = null;  // { offerId, answer } said here
   var groupTimer = null;
+  var groupExpireTimer = null;
   var groupPhoto = null;     // { base64, mimeType } of the selfie taken here
 
   function groupNaira(n) { return W.naira(n); }
@@ -3327,8 +3328,13 @@
     var tick = function () {
       var left = Math.max(0, Math.round((Date.parse(ask.expiresAt) - Date.now()) / 1000));
       W.$('gcounter-left').textContent = '0:' + ('0' + left).slice(-2);
+      W.$('gcounter-left').setAttribute('aria-label', left + ' seconds left');
       W.$('gcounter-fill').style.width = Math.round((left / 20) * 100) + '%';
-      if (left === 0) { W.$('gcounter-yes').disabled = true; W.$('gcounter-no').disabled = true; }
+      // Time is up: silence is No, and the sheet goes (it never waits on the server to close it).
+      if (left === 0 && !W.$('sheet-gcounter').hidden) {
+        if (gcounterTimer) { clearInterval(gcounterTimer); gcounterTimer = null; }
+        closeSheets();
+      }
     };
     tick();
     if (gcounterTimer) clearInterval(gcounterTimer);
@@ -3340,7 +3346,7 @@
     if (!gcounterShown) return;
     button.classList.add('busy');
     W.show(W.$('gcounter-err'), false);
-    api('POST', '/ride-page/group/counter', { answer: answer }).then(function (next) {
+    api('POST', '/ride-page/group/counter', { answer: answer, askId: gcounterShown }).then(function (next) {
       track(answer === 'yes' ? 'group_counter_yes' : 'group_counter_no', {});
       apply(next);
     }).catch(function (error) {
@@ -3408,8 +3414,13 @@
 
   function tickGroup(offer) {
     var left = Math.max(0, Math.round((Date.parse(offer.expiresAt) - Date.now()) / 1000));
-    W.$('group-left').textContent = '0:' + ('0' + left).slice(-2);
+    W.$('group-left').textContent = left > 0 ? '0:' + ('0' + left).slice(-2) : "Time's up";
+    W.$('group-left').setAttribute('aria-label', left > 0 ? left + ' seconds left' : "Time's up");
     W.$('group-timer-fill').style.width = Math.round((left / 20) * 100) + '%';
+    // Unanswered at 0: "Time's up", then the sheet goes by itself (a lost update never leaves it stuck).
+    if (left === 0 && !W.$('group-ask').hidden && !W.$('sheet-group').hidden && !groupExpireTimer) {
+      groupExpireTimer = setTimeout(function () { groupExpireTimer = null; if (!W.$('group-ask').hidden) closeSheets(); }, 2000);
+    }
     var selfieLeft = Math.max(0, Math.round((Date.parse(offer.selfieDeadline) - Date.now()) / 1000));
     W.$('group-selfie-left').textContent = selfieLeft > 0 ? selfieLeft + ' s left' : '';
     if (left === 0 && !W.$('group-ask').hidden) { W.$('group-yes').disabled = true; W.$('group-no').disabled = true; }
@@ -3456,6 +3467,10 @@
   if (W.$('sheet-group')) {
     W.$('group-yes').addEventListener('click', function () { answerGroup('join', W.$('group-yes')); });
     W.$('group-no').addEventListener('click', function () { answerGroup('decline', W.$('group-no')); });
+    // The selfie control is a label (it opens the camera): the keyboard opens it too.
+    W.$('group-take').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); W.$('group-camera').click(); }
+    });
     W.$('group-camera').addEventListener('change', function () {
       var file = this.files && this.files[0];
       W.show(W.$('group-selfie-err'), false);

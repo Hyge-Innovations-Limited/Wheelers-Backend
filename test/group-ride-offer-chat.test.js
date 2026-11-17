@@ -59,7 +59,7 @@ test('the form: who is going your way and the seat; Ride together with a selfie 
   assert.equal(screen.screen, 'OFFER');
   assert.equal(screen.data.heading, '1 rider is going your way');
   assert.equal(screen.data.body, 'Chika (Ketu) is on your road to Ikorodu Garage.');
-  assert.equal(screen.data.price, 'Ride together for ₦9,000 instead of ₦12,000, about 6 min more.');
+  assert.equal(screen.data.price, 'Ride together for ₦9,000 instead of ₦12,000, about 6 min more. You save ₦3,000. Faces checked.');
   assert.deepEqual(screen.data.choices.map((c) => c.id), ['join', 'decline']);
   const done = await form(ada.riderId, { choice: 'join' });
   assert.deepEqual([done.screen, done.data.headline], ['NOTE', "You're in"]);
@@ -84,11 +84,11 @@ test('the chat message: the form when published, the two buttons when not; a but
   const realFetch = global.fetch;
   global.fetch = async (url, init) => { if (String(url).startsWith('https://graph.facebook.com/')) { sent.push(JSON.parse(init.body)); return new Response('{}', { status: 200 }); } return realFetch(url, init); };
   const meta = { metaAccessToken: 't', metaPhoneNumberId: 'p', flowTokenSecret: SECRET };
-  const view = { riders: [{ you: true, name: 'You', pickup: 'Yaba' }, { you: false, name: 'Chika', pickup: 'Ketu' }], seatPriceNgn: 9000, ownPriceNgn: 12000, extraMinutes: 6 };
+  const view = { offerId: 'offer-1', riders: [{ you: true, name: 'You', pickup: 'Yaba' }, { you: false, name: 'Chika', pickup: 'Ketu' }], seatPriceNgn: 9000, ownPriceNgn: 12000, extraMinutes: 6 };
   try {
     delete process.env.WHATSAPP_GROUP_FLOW_ID;
     await chat.sendGroupOffer(meta, '+2348000000000', 'rider-1', view);
-    assert.deepEqual(sent.at(-1).interactive.action.buttons.map((b) => b.reply.id), ['grp_join', 'grp_decline']);
+    assert.deepEqual(sent.at(-1).interactive.action.buttons.map((b) => b.reply.id), ['grp_join:offer-1', 'grp_decline:offer-1'], 'each button names its offer');
     assert.match(sent.at(-1).interactive.body.text, /^\*1 rider is going your way\*\nChika \(Ketu\) is on your road\./);
     process.env.WHATSAPP_GROUP_FLOW_ID = '777';
     await chat.sendGroupOffer(meta, '+2348000000000', 'rider-1', view);
@@ -99,7 +99,10 @@ test('the chat message: the form when published, the two buttons when not; a but
     const ada = await searching('Ada Obi');
     const chika = await searching('Chika Eze');
     await live.receiveGroupOffer(redis, offered(ada, chika), { schedule: () => {} });
-    await chat.handleGroupLiveTap({ ...meta, redisClient: redis }, ada.riderId, '+2348000000000', 'grp_join');
+    await chat.handleGroupLiveTap({ ...meta, redisClient: redis }, ada.riderId, '+2348000000000', 'grp_join:some-old-offer');
+    assert.equal(sent.at(-1).text.body, 'This group ride offer has ended. Your own search goes on.', 'an old button answers nothing');
+    const liveOffer = await live.offerForRide(redis, ada.rideId);
+    await chat.handleGroupLiveTap({ ...meta, redisClient: redis }, ada.riderId, '+2348000000000', `grp_join:${liveOffer.offerId}`);
     assert.equal(sent.at(-1).text.body, "You're in. We'll tell you here when your group is set.");
     // A photo when no selfie is expected is not taken as one.
     assert.equal(await chat.handleGroupLivePhoto({ ...meta, redisClient: redis }, chika.riderId, '+2348000000000', 'media-1'), false);

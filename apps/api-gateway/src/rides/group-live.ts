@@ -4,6 +4,7 @@ import type { GroupRideLiveOfferedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import { isSearchEnded } from './booking-lock';
 import { hasGroupSelfie } from './group-selfie';
+import { areaOf } from './group-people';
 
 /**
  * Group ride on live searches, the offer (Timi, 16-17 Nov 2026). The group-ride service found riders searching
@@ -88,6 +89,11 @@ async function releaseIfMine(redis: RedisClient, key: string, value: string): Pr
     return;
   }
   if ((await redis.get(key).catch(() => null)) === value) await redis.del(key).catch(() => undefined);
+}
+
+/** A formed group's hold on a ride, let go when the group ends or the rider leaves it (rides/group-trip.ts). */
+export async function releaseFormedHold(redis: RedisClient, rideId: string, offerId: string): Promise<void> {
+  await releaseIfMine(redis, holdKey(rideId), `group:${offerId}`);
 }
 
 /** Set `key` to `value` only while it holds `expected` (a formed group takes over its own offer's holds). */
@@ -182,6 +188,8 @@ export async function receiveGroupOffer(
   const offerId = event.groupId;
   // A rider who said No thanks is not asked again during this search; nobody is asked more than twice.
   for (const member of event.members) {
+    // Already riding in a group (looking for its driver, or booked): never offered another.
+    if (await redis.get(`gt:seat:${member.rideId}`).catch(() => null)) return null;
     if (await redis.get(declinedKey(member.rideId)).catch(() => null)) return null;
     if ((Number(await redis.get(askedKey(member.rideId)).catch(() => null)) || 0) >= MAX_ASKS) return null;
   }
@@ -300,7 +308,12 @@ export async function resolveGroupOffer(redis: RedisClient, offerId: string, opt
 export async function offerViewFor(redis: RedisClient, offer: GroupLiveOffer, rideId: string, names: Map<string, string> = new Map()) {
   const me = offer.members.find((m) => m.rideId === rideId);
   if (!me) return null;
-  const pickupOf = (id: string) => offer.stops.find((s) => s.rideId === id && s.kind === 'pickup')?.address.split(',')[0]?.trim() ?? '';
+  // The rider's own places as they know them; the others' as an area only (never their street or house).
+  const placeOf = (s: GroupLiveOffer['stops'][number]) => (s.rideId === rideId ? s.address.split(',')[0]?.trim() ?? '' : areaOf(s.address, s.lat, s.lng));
+  const pickupOf = (id: string) => {
+    const stop = offer.stops.find((s) => s.rideId === id && s.kind === 'pickup');
+    return stop ? placeOf(stop) : '';
+  };
   const answers = await Promise.all(offer.members.map((m) => answerOf(redis, offer.offerId, m.rideId)));
   return {
     offerId: offer.offerId,
@@ -319,6 +332,6 @@ export async function offerViewFor(redis: RedisClient, offer: GroupLiveOffer, ri
       pickup: pickupOf(m.rideId),
       answer: answers[i] ?? null,
     })),
-    stops: offer.stops.map((s) => ({ kind: s.kind, address: s.address, you: s.rideId === rideId })),
+    stops: offer.stops.map((s) => ({ kind: s.kind, address: s.rideId === rideId ? s.address : placeOf(s), you: s.rideId === rideId })),
   };
 }

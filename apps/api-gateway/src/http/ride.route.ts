@@ -16,7 +16,7 @@ import { getBoolean, getNumber, getRecord, getString, isRecord } from "../utils/
 import { buildRideEstimatePricing } from "../pricing/ride-estimate";
 import { logActivity } from "../analytics/log-activity";
 import type { RedisClient } from "../redis/client";
-import { answerCounter, counterAskFor, formedSeatView, GroupTripError, riderGroupView } from "../rides/group-trip";
+import { answerCounter, counterAskFor, formedSeatView, groupNoteFor, GroupTripError, riderGroupView } from "../rides/group-trip";
 import type { GatewayPublisher } from "../websocket/publisher";
 import { driverPhotoFields, type DriverPhotoResolver } from "../drivers/driver-photo";
 import { driverChecksField } from "../drivers/driver-checks";
@@ -27,6 +27,7 @@ import { waitingView } from "../rides/waiting";
 import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
 import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from "../rides/group-live";
 import type { RedisClient as GroupRedis } from "../redis/client";
+import { firstNameOf } from "../rides/group-people";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -716,7 +717,8 @@ export async function handleGroupCounterRoute(
       sendJson(res, 400, { error: "Answer yes or no.", code: "BAD_ANSWER" });
       return;
     }
-    sendJson(res, 200, { answer: await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, user.id, rideId, answer) });
+    const askId = isRecord(body) && typeof body.askId === "string" ? body.askId : undefined;
+    sendJson(res, 200, { answer: await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, user.id, rideId, answer, askId) });
   } catch (error) {
     if (error instanceof GroupTripError) {
       sendJson(res, 409, { error: error.message, code: error.code });
@@ -730,7 +732,7 @@ async function groupOfferView(redis: GroupRedis, rideId: string) {
   const offer = await offerForRide(redis, rideId);
   if (!offer) return null;
   const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
-  const names = new Map(users.map((u) => [u.id, (u.name ?? "").trim().split(/\s+/)[0] || "Rider"]));
+  const names = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
   return offerViewFor(redis, offer, rideId, names);
 }
 
@@ -763,14 +765,16 @@ export async function handleActiveRideRoute(
     // A group ride on offer to this search (rides/group-live.ts): this rider's view of it.
     const groupOffer = searching && deps.redisClient ? await groupOfferView(deps.redisClient, active.id).catch(() => null) : null;
     // In a group looking for a driver: the riders in it now, and a driver's counter this rider is asked about.
-    const [groupFormed, groupCounter] = searching && deps.redisClient
-      ? await Promise.all([formedSeatView(deps.redisClient, active.id).catch(() => null), counterAskFor(deps.redisClient, active.id).catch(() => null)])
-      : [null, null];
+    const [groupFormed, groupCounter, groupNote] = searching && deps.redisClient
+      ? await Promise.all([formedSeatView(deps.redisClient, active.id).catch(() => null), counterAskFor(deps.redisClient, active.id).catch(() => null), groupNoteFor(deps.redisClient, active.id).catch(() => null)])
+      : [null, null, null];
     const search = searching
       ? {
           ...(groupOffer ? { groupOffer } : {}),
           ...(groupFormed ? { groupFormed } : {}),
           ...(groupCounter ? { groupCounter } : {}),
+          // What happened to the group a moment ago (someone left, a wallet short): the app says it once.
+          ...(groupNote ? { groupNote } : {}),
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),

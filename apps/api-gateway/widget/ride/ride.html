@@ -534,8 +534,8 @@
 <!-- A group ride offer: riders going the same way, 25% off each seat (rides/group-live.ts) -->
 <div class="sheet" id="sheet-group" hidden role="dialog" aria-modal="true" aria-labelledby="group-title">
   <div class="sheet-part" id="group-ask">
-    <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="group-left"></span></div>
-    <div class="group-timer"><span id="group-timer-fill"></span></div>
+    <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="group-left" aria-live="off"></span></div>
+    <div class="group-timer" role="presentation"><span id="group-timer-fill"></span></div>
     <h2 id="group-title"></h2>
     <ol class="group-road" id="group-road"></ol>
     <div class="group-deal">
@@ -543,7 +543,7 @@
       <div class="group-was"><p class="small strike" id="group-own"></p><span class="group-save" id="group-save"></span></div>
     </div>
     <p class="small muted" id="group-facts"></p>
-    <div class="notice bad" id="group-err" hidden></div>
+    <div class="notice bad" id="group-err" role="alert" hidden></div>
     <div class="group-buttons">
       <button class="btn ghost" type="button" id="group-no">No thanks</button>
       <button class="btn primary" type="button" id="group-yes">Ride together</button>
@@ -551,11 +551,11 @@
   </div>
   <div class="sheet-part" id="group-selfie" hidden>
     <h2>One selfie for group rides</h2>
-    <p class="sub">The riders in your group see it. You see theirs. You only do this once.</p>
+    <p class="sub">Wheelers checks it's you. You only do this once.</p>
     <img class="group-photo" id="group-photo" alt="Your selfie" hidden>
-    <label class="btn dark" for="group-camera" id="group-take">Take a selfie</label>
+    <label class="btn dark" for="group-camera" id="group-take" role="button" tabindex="0">Take a selfie</label>
     <input class="visually-hidden" type="file" accept="image/*" capture="user" id="group-camera">
-    <div class="notice bad" id="group-selfie-err" hidden></div>
+    <div class="notice bad" id="group-selfie-err" role="alert" hidden></div>
     <button class="btn primary" type="button" id="group-send" hidden>Use this selfie</button>
     <p class="small muted" id="group-selfie-left"></p>
   </div>
@@ -567,11 +567,11 @@
 
 <!-- A driver's price over this rider's seat in a group (rides/group-trip.ts): Yes or No in 20 s; silence is No -->
 <div class="sheet" id="sheet-gcounter" hidden role="dialog" aria-modal="true" aria-labelledby="gcounter-title">
-  <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="gcounter-left"></span></div>
-  <div class="group-timer"><span id="gcounter-fill"></span></div>
+  <div class="group-top"><span class="label-caps">Group ride</span><span class="small muted" id="gcounter-left" aria-live="off"></span></div>
+  <div class="group-timer" role="presentation"><span id="gcounter-fill"></span></div>
   <h2 id="gcounter-title"></h2>
   <p class="sub" id="gcounter-sub"></p>
-  <div class="notice bad" id="gcounter-err" hidden></div>
+  <div class="notice bad" id="gcounter-err" role="alert" hidden></div>
   <div class="group-buttons">
     <button class="btn ghost" type="button" id="gcounter-no">No</button>
     <button class="btn primary" type="button" id="gcounter-yes"></button>

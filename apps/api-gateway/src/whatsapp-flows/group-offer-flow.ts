@@ -3,6 +3,8 @@ import type { RedisClient } from '../redis/client';
 import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
+import { firstNameOf } from '../rides/group-people';
+import { SELFIE_ASK } from '../whatsapp/group-selfie-text';
 
 /**
  * A group ride offer as one WhatsApp form (token `grp:<userId>`, Timi, 17 Nov 2026), for riders not on the ride
@@ -35,7 +37,7 @@ export async function groupOfferScreen(redis: RedisClient, userId: string, error
   const offer = rideId ? await offerForRide(redis, rideId) : null;
   if (!rideId || !offer) return closed('Nothing to decide here', 'This group ride offer has ended. Your own search goes on.');
   const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
-  const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const names = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
   const view = await offerViewFor(redis, offer, rideId, names);
   if (!view) return closed('Nothing to decide here', 'This group ride offer has ended.');
   if (view.answer) return closed(view.answer === 'join' ? "You're in" : 'You said No thanks', view.answer === 'join' ? "We'll tell you in the chat when your group is set." : 'Your own search goes on.');
@@ -46,10 +48,10 @@ export async function groupOfferScreen(redis: RedisClient, userId: string, error
     data: {
       heading: `${others.length} rider${others.length === 1 ? ' is' : 's are'} going your way`,
       body: `${others.join(' and ')} ${others.length === 1 ? 'is' : 'are'} on your road${to ? ` to ${to}` : ''}.`,
-      price: `Ride together for ${naira(view.seatPriceNgn)} instead of ${naira(view.ownPriceNgn)}, about ${view.extraMinutes} min more.`,
+      price: `Ride together for ${naira(view.seatPriceNgn)} instead of ${naira(view.ownPriceNgn)}, about ${view.extraMinutes} min more. You save ${naira(view.savedNgn)}. Faces checked.`,
       choices: [
         { id: 'join', title: 'Ride together', description: `Your seat ${naira(view.seatPriceNgn)}` },
-        { id: 'decline', title: 'No thanks', description: 'Keep my own search' },
+        { id: 'decline', title: 'No thanks', description: 'Your own search goes on' },
       ],
       error,
       has_error: Boolean(error),
@@ -70,7 +72,7 @@ export async function handleGroupOfferFlow(body: FlowRequestBody, userId: string
     if (choice === 'decline') return note('No problem', 'Your own search goes on.');
     if (result.selfieNeeded) {
       await expectGroupSelfie(deps.redisClient, userId);
-      return note('Send a selfie', 'Send a photo of your face in the chat now (within 60 seconds). Riders in your group see it. You only do this once.');
+      return note('Send a selfie', SELFIE_ASK);
     }
     return note("You're in", "We'll tell you in the chat when your group is set.");
   } catch (error) {

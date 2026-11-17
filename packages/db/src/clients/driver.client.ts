@@ -157,8 +157,9 @@ export const driverClient = {
     }),
 
   /** Rides this driver has finished (Ride @@index([driverId, status])). The rider sees it next to the photo. */
+  // A group trip is the driver's job, not a ride: its riders' seats are counted (each a ride of its own).
   completedRidesOf: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'COMPLETED' } }),
+    prisma.ride.count({ where: { driverId, status: 'COMPLETED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   findByUserId: (userId: string) =>
     prisma.driver.findUnique({

@@ -37,6 +37,8 @@ export function createRideEventsConsumer(params: {
         }
 
         try {
+          // A seat of a group ride: its money was held when the group was booked (every seat at once). Nothing to do.
+          if ((event as { groupSeat?: boolean }).groupSeat) return;
           const wallet = await walletRepository.findByUserId(event.riderId);
           if (!wallet) {
             console.error(`[${serviceId}][escrow] CRITICAL: no wallet for rider — ride proceeding with NO escrow`, {

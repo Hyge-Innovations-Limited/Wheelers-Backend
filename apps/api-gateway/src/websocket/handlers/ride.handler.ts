@@ -1,4 +1,4 @@
-import { GroupTripError, leaveTrip, mirrorTrip, skipSeat } from '../../rides/group-trip';
+import { drivesGroupTrips, GroupTripError, leaveTrip, mirrorTrip, skipSeat, tripOfSeat } from '../../rides/group-trip';
 import { randomUUID } from 'crypto';
 import { checkTripCodeAtStart } from '../../rides/trip-code';
 import { settleWaitingAtStart } from '../../rides/waiting';
@@ -12,7 +12,7 @@ import {
   depositNeededFor,
   tripDetailsFromRequest,
 } from '@wheleers/config';
-import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
+import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, prisma, referralClient, rideClient, driverBidClient } from '@wheleers/db';
 import {
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
@@ -641,8 +641,9 @@ export async function handleRideMessage(
     // Only the ride's own rider changes its price (a driver or any other user is refused). A group seat
     // has no ride row of its own until it is booked: its owner is the member who made the match request.
     let owned: boolean;
+    let row: Awaited<ReturnType<typeof rideClient.findStanding>> = null;
     try {
-      const row = await rideClient.findStanding(event.rideId);
+      row = await rideClient.findStanding(event.rideId);
       owned = row
         ? row.riderId === auth.userId
         : Boolean(await groupRideClient.findMatchRequestByIdForUser(event.rideId, auth.userId));
@@ -650,6 +651,8 @@ export async function handleRideMessage(
       throw new Error('Could not check this ride. Try again.');
     }
     if (!owned) throw new Error('This ride is not yours.');
+    // A rider in a group: their price is the group's seat now, not changed alone.
+    if (row?.groupRole === 'SEAT' || (redis && (await tripOfSeat(redis, event.rideId)))) throw new Error("You're riding in a group. We're finding your driver.");
 
     await assertOfferWithinBand(event.rideId, event.counterOfferNgn, 'rider');
 
@@ -952,11 +955,30 @@ export async function handleRideMessage(
     // A rider ending their search: over in the gateway's eyes now, before the ride service writes the row.
     if (cancelledBy === 'rider' && redis) await markSearchEnded(redis, rideId);
 
+    // The driver is the ride's own. Only with no driver on the row yet, a driver the rider was booking (one with a
+    // price on this ride) may be named, so they hear it; never just any driver.
+    let driverId: string | undefined = ride?.driverId ?? (cancelledBy === 'driver' ? auth.driverId ?? undefined : undefined);
+    const namedDriver = getString(payload, 'driverId');
+    if (!driverId && namedDriver) {
+      if (!ride) driverId = namedDriver;
+      else if ((await driverBidClient.findByRide(rideId).catch(() => [])).some((bid) => bid.driverId === namedDriver)) driverId = namedDriver;
+    }
+
+    // A rider in a group with no driver yet: their seat is written cancelled now, so a booking at this same moment
+    // never takes it (the group goes on without them). Booked meanwhile: it is a booked seat's cancel, with its driver.
+    if (ride?.groupRole === 'SEAT' && cancelledBy === 'rider' && !ride.driverId) {
+      const wrote = await prisma.ride.updateMany({
+        where: { id: rideId, driverId: null, status: { in: ['REQUESTED', 'MATCHING'] } },
+        data: { status: 'CANCELLED', cancelledAt: new Date(), cancelledBy: 'rider', cancelStage: 'BEFORE_MATCH', cancelReason: getString(payload, 'reason') ?? 'Rider cancelled' },
+      }).catch(() => ({ count: 0 }));
+      if (wrote.count === 0) driverId = (await rideClient.findById(rideId).catch(() => null))?.driverId ?? driverId;
+    }
+
     const event = RideCancelledEvent.parse({
       eventType: 'RIDE_CANCELLED',
       rideId,
       riderId,
-      driverId: getString(payload, 'driverId') ?? ride?.driverId ?? auth.driverId,
+      driverId,
       reason: getString(payload, 'reason'),
       cancelledBy,
       driverUserId: cancelledBy === 'driver' ? auth.userId : undefined,
@@ -999,6 +1021,8 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    // Started: from now this trip may be ended (the ride row follows a moment later).
+    if (redis) await redis.set(`ride:started:${event.rideId}`, '1', 24 * 60 * 60).catch(() => undefined);
     // A seat of a group trip: the trip starts too, with the first rider's code.
     if (redis) await mirrorTrip({ redis, publisher }, event.rideId, 'started', driverId).catch(() => undefined);
 
@@ -1023,7 +1047,11 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:end') {
-    refuseGroupTrip(await assertDriverOwnsRide(requireString(payload, 'rideId'), auth));
+    const endingRide = await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    refuseGroupTrip(endingRide);
+    // Only a trip that started ends (ending one nobody got into charged the rider and paid the driver for nothing).
+    const started = String(endingRide.status) === 'IN_PROGRESS' || (redis ? Boolean(await redis.get(`ride:started:${endingRide.id}`).catch(() => null)) : true);
+    if (!started) throw new Error('Start the trip first.');
     const endDriverId = auth.driverId;
     if (!endDriverId) throw new Error('Missing required field: driverId');
 
@@ -1119,6 +1147,9 @@ export async function handleRideMessage(
     // the fare band (₦500/km ceiling, rider floor). The app's +100/+500
     // chips and "change bid" never checked the cap; the server must.
     await assertRideOpenForBids(acceptRideId, bidRide);
+    // A rider in a group is booked only with the group; a group trip only by a driver app that can drive one.
+    if (bidRide?.groupRole === 'SEAT') throw new Error('This request is no longer open.');
+    if (bidRide?.groupRole === 'TRIP' && (!redis || !(await drivesGroupTrips(redis, auth.userId)))) throw new Error('Update the app to take group rides.');
     await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn', bidRide), 'driver', bidRide);
 
     const proximity = await computeBidProximity(

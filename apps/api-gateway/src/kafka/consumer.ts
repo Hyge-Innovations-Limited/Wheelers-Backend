@@ -6,7 +6,7 @@ import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
 import { answerOf, offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
 import { sendGroupOffer } from '../whatsapp/group-live-chat';
-import { existingGroupAccountId, onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, seatLeftBeforeBooking, setGroupNote, setGroupTripHook, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
+import { existingGroupAccountId, onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, noteSeatEarnings, riderGroupView, runDue, seatLeftBeforeBooking, setGroupNote, setGroupTripHook, startGroupTrip, drivesGroupTrips, endUnbookedTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
 import { sendGroupCounterAsk } from '../whatsapp/group-live-chat';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
@@ -115,6 +115,9 @@ import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoB
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { clearSaidTripDetails } from '../whatsapp/trip-details-said';
 import { noteHeldTimeout, takeDueHeldTimeouts } from '../rides/held-timeouts';
+import { firstNameOf } from '../rides/group-people';
+import { hasGroupSelfie } from '../rides/group-selfie';
+import { SELFIE_LATE } from '../whatsapp/group-selfie-text';
 
 export interface StartGatewayConsumerDeps {
   consumer: WheelersConsumer;
@@ -179,6 +182,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   setGroupLiveHook((change) => tellGroupLive(deps, change));
   // The group trip before its booking (a counter asked, a rider gone): told the same way, from any caller.
   setGroupTripHook((change) => tellGroupTrip(deps, change));
+  // Group deadlines (the 2 minute end, a 20 s ask, a retry) live in Redis: every gateway checks, one runs each.
+  setInterval(() => void runDue(groupTripDeps(deps)).catch(() => 0), 3000).unref();
   // Searches held for a rider who was paying: ended once that choice lapses unpaid.
   setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
@@ -1064,6 +1069,8 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_OFFER_SENT') {
+    // A group trip goes only to driver apps that can drive one (an older app would win a trip it cannot move).
+    if (await readTrip(deps.redisClient, event.rideId).catch(() => null) && !(await drivesGroupTrips(deps.redisClient, event.driverUserId))) return;
     // Drivers commit a car and half an hour to this request — it carries a
     // person, not just coordinates. Cached per rider: one broadcast fans out
     // to up to five drivers and must not cost five identical lookups.
@@ -1340,6 +1347,11 @@ export async function handleRideEvent(
   }
 
   if (event.eventType === 'RIDE_BID_TIMEOUT') {
+    // A group trip's own search timed out: the group ends as at its 2 minutes (every rider's own search goes on).
+    if (await readTrip(deps.redisClient, event.rideId).catch(() => null)) {
+      await endUnbookedTrip(groupTripDeps(deps), event.rideId).catch(() => false);
+      return;
+    }
     // FIRST: the rider CHOSE a driver and is adding money for them. This search
     // is not over, it is waiting on a bank transfer — nobody is told anything,
     // least of all that driver, whose card must not read "timed out" while the
@@ -1686,6 +1698,25 @@ export async function handleRideEvent(
       await setRideState(deps.redisClient, event.rideId, 'confirmed', IN_TRIP_ACTIVE_RIDE_TTL);
       await setActiveRide(deps.redisClient, event.riderId, event.rideId, IN_TRIP_ACTIVE_RIDE_TTL);
 
+      // A seat of a group ride: nobody accepted in the chat, so the chat has no ride card yet. One message: the
+      // driver, who they ride with, when they get in, the seat and the code (the page shows the same when open).
+      if (event.groupSeat && !(await isRidePageOpen(deps.redisClient, event.riderId).catch(() => false))) {
+        const phone = await whatsappRiderPhone(deps, event.riderId, event.rideId).catch(() => null);
+        const view = await riderGroupView(deps.redisClient, event.rideId).catch(() => null);
+        if (phone && view) {
+          const pickups = view.stops.filter((st) => st.kind === 'pickup');
+          const mine = pickups.findIndex((st) => st.yours);
+          const turn = mine <= 0 ? 'You get in first.' : `You get in after ${pickups[mine - 1]!.name}.`;
+          const car = [event.vehicleModel, event.vehiclePlate].filter(Boolean).join(', ');
+          const lines = [
+            `*Group ride booked.* ${firstNameOf(event.driverName)}${car ? ` (${car})` : ''} is coming.`,
+            `${view.others.length ? `With ${view.others.join(' and ')}. ` : ''}${turn}`,
+            `Your seat: ₦${Math.round(event.agreedFareNgn).toLocaleString('en-NG')}.${tripCode ? ` Your trip code: *${tripCode}*` : ''}`,
+          ];
+          await sendWaitingText(deps.whatsappNotifier, phone, lines.join('\n')).catch(() => undefined);
+        }
+      }
+
       // Store accepted bid for driver profile flow
       try {
         const driver = await driverClient.findById(event.driverId);
@@ -1756,6 +1787,8 @@ export async function handleRideEvent(
       stops: rideSnapshot?.stops ?? [],
       // People, luggage, pet and the rider's note: the app may no longer have the bid card.
       ...(rideSnapshot?.tripDetails ? { tripDetails: rideSnapshot.tripDetails } : {}),
+      // A group trip: its seats and stops, so the app opens the group screen at once (not the one-rider screens).
+      ...(rideSnapshot?.group ? { group: rideSnapshot.group } : {}),
       driverId: event.driverId,
       driverName: event.driverName,
       driverRating: event.driverRating,
@@ -1919,7 +1952,7 @@ export async function handleRideEvent(
     const startedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
     if (driverUserId && startedSeatOf) {
       await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: startedSeatOf, rideId: event.rideId, seat: 'started' });
-      await tellTripRiders(deps, startedSeatOf);
+      await tellTripRiders(deps, startedSeatOf, { rideId: event.rideId, kind: 'started' });
     } else if (driverUserId) {
       await registry.sendToUser(driverUserId, 'ride:started', {
         rideId: event.rideId,
@@ -1994,12 +2027,13 @@ export async function handleRideEvent(
     // every seat is done it ends (rides/group-trip.ts seatFinished).
     const completedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
     if (completedSeatOf) {
-      await tellTripRiders(deps, completedSeatOf);
+      await tellTripRiders(deps, completedSeatOf, { rideId: event.rideId, kind: 'dropped' });
+      const seatEarned = completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0);
+      await noteSeatEarnings(deps.redisClient, event.rideId, seatEarned);
       await registry.sendToUser(event.driverUserId, 'ride:group_update', {
-        tripId: completedSeatOf, rideId: event.rideId, seat: 'dropped', fareNgn: event.fareNgn,
-        driverEarningsNgn: completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0),
+        tripId: completedSeatOf, rideId: event.rideId, seat: 'dropped', fareNgn: event.fareNgn, driverEarningsNgn: seatEarned,
       });
-      await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId).catch(() => false);
+      await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId, { completed: true }).catch(() => false);
     } else {
     await registry.sendToUser(event.driverUserId, 'ride:completed', {
       rideId: event.rideId,
@@ -2224,7 +2258,7 @@ export async function handleRideEvent(
       const cancelledSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
       if (driverUserId && cancelledSeatOf) {
         await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: cancelledSeatOf, rideId: event.rideId, seat: 'cancelled', cancelledBy: event.cancelledBy ?? 'rider' });
-        await tellTripRiders(deps, cancelledSeatOf);
+        await tellTripRiders(deps, cancelledSeatOf, { rideId: event.rideId, kind: 'cancelled' });
         await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId).catch(() => false);
       } else if (driverUserId) {
         await registry.sendToUser(driverUserId, 'ride:cancelled', {
@@ -2537,6 +2571,18 @@ async function handleGroupRideEvent(
 ): Promise<void> {
   const registry = deps.registry;
 
+  // A group formed: its riders' own searches are over, so the drivers who were sent them (or priced them) hear that
+  // those requests ended, as when a rider books someone else.
+  if (event.eventType === 'GROUP_TRIP_FORMED') {
+    for (const seatRideId of event.seatRideIds) {
+      const told = new Set<string>();
+      for (const bid of await driverBidClient.findByRide(seatRideId).catch(() => [])) told.add(bid.driverUserId);
+      for (const userId of await offeredDriverUsers(deps.redisClient, seatRideId).catch(() => [])) told.add(userId);
+      for (const userId of told) void registry.sendToUser(userId, 'ride:bid_timeout', { rideId: seatRideId, reason: 'booked_other' });
+    }
+    return;
+  }
+
   // A group trip that never got a driver ended (no driver in time, or re-formed without someone): the drivers who saw
   // it or sent a price hear the request is gone, as for any search that ends.
   if (event.eventType === 'GROUP_TRIP_ENDED') {
@@ -2771,42 +2817,62 @@ function groupTripDeps(deps: StartGatewayConsumerDeps): GroupTripDeps {
  * A booked group trip moved (a rider picked up, dropped off, or gone): every rider still on it re-reads their stops
  * (the app by `ride:group_changed`, the page by its own poll). Never throws.
  */
-async function tellTripRiders(deps: StartGatewayConsumerDeps, tripId: string): Promise<void> {
+async function tellTripRiders(deps: StartGatewayConsumerDeps, tripId: string, moved: { rideId: string; kind: 'started' | 'dropped' | 'cancelled' }): Promise<void> {
   const trip = await readTrip(deps.redisClient, tripId).catch(() => null);
-  for (const seat of trip?.seats ?? []) {
+  if (!trip) return;
+  // Where everyone is now (the seat that just moved may not be written yet).
+  const rows = new Map((await prisma.ride.findMany({ where: { id: { in: trip.seats.map((m) => m.rideId) } }, select: { id: true, status: true } }).catch(() => [])).map((r) => [r.id, String(r.status)]));
+  rows.set(moved.rideId, moved.kind === 'started' ? 'IN_PROGRESS' : moved.kind === 'dropped' ? 'COMPLETED' : 'CANCELLED');
+  const nextPickup = (trip.stops ?? []).find((s) => s.kind === 'pickup' && !['IN_PROGRESS', 'COMPLETED', 'CANCELLED'].includes(rows.get(s.rideId) ?? ''))?.rideId ?? null;
+  const mover = trip.seats.find((m) => m.rideId === moved.rideId);
+  const moverName = mover ? firstNameOf((await prisma.user.findUnique({ where: { id: mover.riderId }, select: { name: true } }).catch(() => null))?.name) : 'A rider';
+  for (const seat of trip.seats) {
+    if (seat.rideId === moved.rideId) continue;
     if (await deps.redisClient.get(`gt:seatdone:${seat.rideId}`).catch(() => null)) continue;
     await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId }).catch(() => undefined);
     void tellRidePage(deps.registry, seat.riderId);
+    // In the chat, only what changes things for them: their turn is next, or someone left.
+    const text = moved.kind === 'started' && nextPickup === seat.rideId ? `${moverName} is in. You're next.`
+      : moved.kind === 'cancelled' ? `${moverName} left the group.`
+      : null;
+    if (!text || !deps.whatsappNotifier || (await isRidePageOpen(deps.redisClient, seat.riderId).catch(() => false))) continue;
+    const phone = await whatsappRiderPhone(deps, seat.riderId, seat.rideId).catch(() => null);
+    if (phone) await sendWaitingText(deps.whatsappNotifier, phone, text).catch(() => undefined);
   }
 }
 
 /**
- * The group before its booking, told to its riders (rides/group-trip.ts GroupTripChange): on the app and the page by
- * socket (the page also gets a one-time note), in the chat when the page is not open. Never throws.
+ * The group before its booking, told to its riders (rides/group-trip.ts GroupTripChange), in the same words on every
+ * screen: the app by socket (with `text`), the ride page by a one-time note, the chat when the page is not open.
+ * Never throws.
  */
 async function tellGroupTrip(deps: StartGatewayConsumerDeps, change: GroupTripChange): Promise<void> {
   const people = [...change.seats, ...('left' in change ? change.left : [])];
   const users = await prisma.user.findMany({ where: { id: { in: people.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
-  const first = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const first = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
   const naira = (n: number) => `₦${Math.round(n).toLocaleString('en-NG')}`;
   const leftNames = 'left' in change ? change.left.map((m) => first.get(m.riderId) ?? 'A rider').join(' and ') || 'A rider' : '';
   for (const seat of change.seats) {
     const others = change.seats.filter((m) => m.rideId !== seat.rideId).map((m) => first.get(m.riderId) ?? 'Rider');
+    const own = `Your own search goes on at ${naira(seat.offerNgn)}.`;
     let text: string | null = null;
     if (change.kind === 'counter_ask') {
       const askNgn = change.ask.prices[seat.rideId] ?? seat.seatPriceNgn;
       await deps.registry.sendToUser(seat.riderId, 'ride:group_counter', { rideId: seat.rideId, askId: change.ask.askId, seatPriceNgn: seat.seatPriceNgn, askNgn, expiresAt: change.ask.expiresAt }).catch(() => undefined);
     } else if (change.kind === 'counter_closed') {
-      await deps.registry.sendToUser(seat.riderId, 'ride:group_counter_closed', { rideId: seat.rideId, askId: change.ask.askId, outcome: change.outcome }).catch(() => undefined);
+      const saidYes = change.said.includes(seat.rideId);
+      text = change.outcome === 'no' && saidYes ? 'Another rider said no to that price. Still finding your driver.'
+        : change.outcome === 'timeout' ? (saidYes ? 'Not everyone answered, so that price was declined. Still finding your driver.' : 'No answer, so that price was declined. Still finding your driver.')
+        : null;
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_counter_closed', { rideId: seat.rideId, askId: change.ask.askId, outcome: change.outcome, ...(text ? { text } : {}) }).catch(() => undefined);
     } else if (change.kind === 'regrouped') {
-      await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId, others, seatPriceNgn: seat.seatPriceNgn }).catch(() => undefined);
       text = `${leftNames} left the group. Still finding your driver.`;
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_changed', { rideId: seat.rideId, others, seatPriceNgn: seat.seatPriceNgn, text }).catch(() => undefined);
     } else {
-      await deps.registry.sendToUser(seat.riderId, 'ride:group_dropped', { rideId: seat.rideId, reason: change.kind }).catch(() => undefined);
-      const own = `Your own search goes on at ${naira(seat.offerNgn)}.`;
       text = change.kind === 'wallet_short' ? `Your wallet couldn't cover your seat. ${own}`
         : change.kind === 'group_ended' ? `${leftNames} left, so the group ended. ${own}`
         : `No driver took the group in time. ${own}`;
+      await deps.registry.sendToUser(seat.riderId, 'ride:group_dropped', { rideId: seat.rideId, reason: change.kind, text }).catch(() => undefined);
     }
     if (text) await setGroupNote(deps.redisClient, seat.rideId, text).catch(() => undefined);
     void tellRidePage(deps.registry, seat.riderId);
@@ -2814,7 +2880,7 @@ async function tellGroupTrip(deps: StartGatewayConsumerDeps, change: GroupTripCh
     const phone = await whatsappRiderPhone(deps, seat.riderId, seat.rideId).catch(() => null);
     if (!phone) continue;
     if (change.kind === 'counter_ask') {
-      await sendGroupCounterAsk(deps.whatsappNotifier, phone, { seatPriceNgn: seat.seatPriceNgn, askNgn: change.ask.prices[seat.rideId] ?? seat.seatPriceNgn }).catch(() => undefined);
+      await sendGroupCounterAsk(deps.whatsappNotifier, phone, { askId: change.ask.askId, seatPriceNgn: seat.seatPriceNgn, askNgn: change.ask.prices[seat.rideId] ?? seat.seatPriceNgn }).catch(() => undefined);
     } else if (text) {
       await sendWaitingText(deps.whatsappNotifier, phone, text).catch(() => undefined);
     }
@@ -2832,36 +2898,41 @@ async function tellGroupLive(deps: StartGatewayConsumerDeps, change: GroupLiveCh
   }
   const riderIds = change.offer.members.map((m) => m.riderId);
   const users = await prisma.user.findMany({ where: { id: { in: riderIds } }, select: { id: true, name: true } }).catch(() => []);
-  const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const names = new Map(users.map((u) => [u.id, firstNameOf(u.name)]));
+  const naira = (n: number) => `₦${Math.round(n).toLocaleString('en-NG')}`;
   for (const member of change.offer.members) {
     const base = { rideId: member.rideId, offerId: change.offer.offerId };
-    // WhatsApp riders not on the ride page hear it in the chat: the offer (form or buttons) once, then how it ended
-    // for those who said yes. App riders and the page see it on screen.
+    const said = await answerOf(deps.redisClient, change.offer.offerId, member.rideId).catch(() => null);
+    const inGroup = change.kind === 'formed' && change.joined.some((m) => m.rideId === member.rideId);
+    // How it ended for this rider, the same words on the page, in the app and in the chat (only a yes hears it).
+    let text: string | null = null;
+    let others: string[] = [];
+    if (inGroup && change.kind === 'formed') {
+      others = change.joined.filter((m) => m.rideId !== member.rideId).map((m) => names.get(m.riderId) ?? 'Rider');
+      text = `You're riding together with ${others.join(' and ')}. Your seat: ${naira(member.seatPriceNgn)}. Finding your driver.`;
+    } else if ((change.kind === 'dropped' || change.kind === 'formed') && said === 'join') {
+      const late = !(await hasGroupSelfie(member.riderId).catch(() => true));
+      text = late ? `${SELFIE_LATE.replace(/\.$/, '')} at ${naira(member.offerNgn)}.` : `No group this time. Your own search goes on at ${naira(member.offerNgn)}.`;
+    }
+    // WhatsApp riders not on the ride page hear it in the chat: the offer (form or buttons) once, then how it ended.
     const phone = await whatsappRiderPhone(deps, member.riderId, member.rideId).catch(() => null);
     const inChat = Boolean(phone && deps.whatsappNotifier && !(await isRidePageOpen(deps.redisClient, member.riderId).catch(() => false)));
     if (inChat && phone && deps.whatsappNotifier) {
-      const said = await answerOf(deps.redisClient, change.offer.offerId, member.rideId).catch(() => null);
       if (change.kind === 'offered') {
         const view = await offerViewFor(deps.redisClient, change.offer, member.rideId, names);
         if (view) await sendGroupOffer(deps.whatsappNotifier, phone, member.riderId, view).catch(() => undefined);
-      } else if (change.kind === 'formed' && change.joined.some((m) => m.rideId === member.rideId)) {
-        const others = change.joined.filter((m) => m.rideId !== member.rideId).map((m) => names.get(m.riderId) ?? 'Rider');
-        await sendWaitingText(deps.whatsappNotifier, phone, `You're riding together with ${others.join(' and ')}. Your seat: ₦${member.seatPriceNgn.toLocaleString('en-NG')}. Finding your driver now.`).catch(() => undefined);
-      } else if ((change.kind === 'dropped' || change.kind === 'formed') && said === 'join') {
-        await sendWaitingText(deps.whatsappNotifier, phone, `No group this time. Your own search goes on at ₦${member.offerNgn.toLocaleString('en-NG')}.`).catch(() => undefined);
+      } else if (text) {
+        await sendWaitingText(deps.whatsappNotifier, phone, text).catch(() => undefined);
       }
     }
+    if (text) await setGroupNote(deps.redisClient, member.rideId, text).catch(() => undefined);
     if (change.kind === 'offered' || change.kind === 'answered') {
       const view = await offerViewFor(deps.redisClient, change.offer, member.rideId, names);
       await deps.registry.sendToUser(member.riderId, 'ride:group_offer', { ...base, offer: view }).catch(() => undefined);
-    } else if (change.kind === 'formed') {
-      const inGroup = change.joined.some((m) => m.rideId === member.rideId);
-      await deps.registry.sendToUser(member.riderId, inGroup ? 'ride:group_formed' : 'ride:group_dropped', {
-        ...base,
-        ...(inGroup ? { seatPriceNgn: member.seatPriceNgn, riders: change.joined.length } : { reason: 'declined' }),
-      }).catch(() => undefined);
+    } else if (inGroup) {
+      await deps.registry.sendToUser(member.riderId, 'ride:group_formed', { ...base, seatPriceNgn: member.seatPriceNgn, riders: others.length + 1, others, text }).catch(() => undefined);
     } else {
-      await deps.registry.sendToUser(member.riderId, 'ride:group_dropped', { ...base, reason: change.reason }).catch(() => undefined);
+      await deps.registry.sendToUser(member.riderId, 'ride:group_dropped', { ...base, reason: change.kind === 'formed' ? 'declined' : change.reason, ...(text ? { text } : {}) }).catch(() => undefined);
     }
     void tellRidePage(deps.registry, member.riderId);
   }

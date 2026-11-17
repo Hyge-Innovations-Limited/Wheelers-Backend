@@ -392,7 +392,15 @@ export const walletClient = {
     // A seat of a group trip is held only by the group's own booking (createRideHoldIn, every seat at once): never
     // by a rider booking a driver alone on it.
     const seat = await prisma.ride.findUnique({ where: { id: rideId }, select: { groupRole: true } }).catch(() => null);
-    if (seat?.groupRole === 'SEAT') throw new Error(`Ride ${rideId} is a group ride seat: booked by its group only`);
+    if (seat?.groupRole === 'SEAT') {
+      // Already held by its group's booking: the same as a duplicate (nothing new, nothing wrong).
+      const existing = await prisma.rideHold.findUnique({ where: { rideId } }).catch(() => null);
+      if (existing && existing.status === 'ACTIVE') {
+        const wallet = await prisma.wallet.findUniqueOrThrow({ where: { id: walletId } });
+        return { applied: false, holdAmountNgn: Number(existing.amountNgn), wallet };
+      }
+      throw new Error(`Ride ${rideId} is a group ride seat: booked by its group only`);
+    }
 
     try {
       return await prisma.$transaction((tx: TxClient) => createRideHoldIn(tx, params));

@@ -49,7 +49,7 @@ export function createRideRequestedConsumer(params: {
   /** Waits between the retries of the assignment write (tests make them short). */
   assignRetryDelaysMs?: number[];
   rideEventsProducer: RideEventsProducer;
-}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => void } {
+}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => Promise<void> } {
   const { state, rideEnv, rideEventsProducer } = params;
   const assignRetryDelaysMs = params.assignRetryDelaysMs ?? [250, 1_000, 3_000];
 
@@ -57,9 +57,15 @@ export function createRideRequestedConsumer(params: {
    * Group trips (Timi, 17 Nov 2026), from the group-ride events: formed, the seats' own searches stop (the trip
    * searches for them); ended, the trip's driver goes back to the pool and its search, if any, is gone.
    */
-  function handleGroupTrip(event: GroupTripFormedEvent | GroupTripEndedEvent): void {
+  async function handleGroupTrip(event: GroupTripFormedEvent | GroupTripEndedEvent): Promise<void> {
     if (event.eventType === 'GROUP_TRIP_FORMED') {
-      for (const seat of event.seatRideIds) clearPendingMatch(seat);
+      // Only seats still in this group (a redelivered "formed" after the group ended never stops their own searches).
+      const rows = await rideClient.groupLinksOf(event.seatRideIds).catch(() => null);
+      for (const seat of event.seatRideIds) {
+        const row = rows?.find((r) => r.id === seat);
+        if (rows && (!row || row.groupTripId !== event.groupId)) continue;
+        clearPendingMatch(seat);
+      }
       return;
     }
     clearPendingMatch(event.groupId);
@@ -251,8 +257,9 @@ export function createRideRequestedConsumer(params: {
     const scheduledWhatsapp = event.scheduled === true && event.channel === 'WHATSAPP';
     if (scheduledWhatsapp) {
       if (!(await scheduledWhatsappMayStart(event))) return;
-    } else {
+    } else if (!event.groupTrip) {
       // A ride for later booked on WhatsApp never ends the rider's live search (it waits for them instead).
+      // A group trip never ends another: every one is owned by the one group account.
       await supersedeOlderSearches(event);
     }
     state.routeByRideId.set(event.rideId, [
@@ -891,6 +898,8 @@ export function createRideRequestedConsumer(params: {
       plannedDistanceKm: ride.distanceKm ?? undefined,
       plannedDurationSeconds: ride.durationSeconds ?? undefined,
       ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
+      // A group trip keeps its riders' stops when its search is rebuilt (a restart).
+      ...(ride.groupRole === 'TRIP' && Array.isArray(ride.groupStops) ? { groupTrip: { stops: ride.groupStops as Array<{ rideId: string; kind: 'pickup' | 'dropoff'; lat: number; lng: number; address: string }> } } : {}),
       timestamp: new Date().toISOString(),
     };
   }
@@ -915,6 +924,8 @@ export function createRideRequestedConsumer(params: {
     });
     if (!ride) return null;
     if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') return null;
+    // A rider in a group: searched for only as the group (a price change or a late bid never revives their own search).
+    if (ride.groupRole === 'SEAT') return null;
     if (options.resetStatus) {
       // Only after the assigned driver cancelled, and only while the ride is still
       // theirs: a redelivered cancel finds it reopened (or another driver's) and
