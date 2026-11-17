@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { driverBidClient, driverClient, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { driverBidClient, driverClient, prisma, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
@@ -32,7 +32,7 @@ import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_K
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
 import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
-import { answerGroupOffer, GroupLiveError } from '../rides/group-live';
+import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from '../rides/group-live';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -133,6 +133,8 @@ export interface RidePageRouteDeps {
   stellar?: (XlmPayer & {
     walletSummary(userId: string): Promise<{ balanceXlm: number; spendableXlm: number; rate: { ngnPerXlm: number; at: string } | null } | null>;
   }) | null;
+  /** The group ride selfie (http/group-ride.route.ts takeGroupSelfie). Absent: the page cannot take one. */
+  groupSelfie?: (userId: string, imageBase64: string | null, mimeType: string | null) => Promise<{ ok: true } | { ok: false; status: number; code: string; error: string }>;
 }
 
 /** What the page needs to offer "Pay with XLM": the spendable balance and the rate (refreshed every 30 minutes). */
@@ -454,6 +456,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         // All the page says about offers: how many are waiting in the chat, and the way back to it.
         offerCount: bids.length,
         chatUrl: CHAT_URL,
+        // A group ride on offer to this search (rides/group-live.ts): its view for this rider, else absent.
+        ...(await groupOfferField(deps, rideId)),
         offers: await Promise.all(bids.map(async (bid) => ({
           key: offerKey(bid),
           // Wallet short for THIS offer? Then this is what to deposit — the bank's
@@ -1412,6 +1416,16 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
+/** `groupOffer` for a search in a group ride offer now, with the other riders' first names; {} otherwise. */
+async function groupOfferField(deps: RidePageRouteDeps, rideId: string): Promise<{ groupOffer?: unknown }> {
+  const offer = await offerForRide(deps.redisClient, rideId).catch(() => null);
+  if (!offer) return {};
+  const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+  const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  const view = await offerViewFor(deps.redisClient, offer, rideId, names).catch(() => null);
+  return view ? { groupOffer: view } : {};
+}
+
 /** POST /ride-page/group { answer: 'join' | 'decline' }: the rider's answer to a group ride offer (rides/group-live.ts). */
 async function handleGroupAnswer(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
@@ -1428,6 +1442,18 @@ async function handleGroupAnswer(req: IncomingMessage, res: ServerResponse, deps
     if (error instanceof GroupLiveError) throw new PageError(error.message, error.status, error.code);
     throw error;
   }
+  sendJson(res, 200, await buildRidePageState(deps, userId));
+}
+
+/** POST /ride-page/group/selfie { imageBase64, mimeType }: the group ride selfie, taken once (takeGroupSelfie). */
+async function handleGroupSelfie(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  if (!deps.groupSelfie) throw new PageError('Selfies are not available right now.', 503, 'UNAVAILABLE');
+  if (await overLimit(deps.redisClient, `ride-page:group-selfie:${userId}`, 6, 60)) throw new PageError('Too many tries. Wait a minute.', 429, 'RATE_LIMITED');
+  const body = await readJsonBody(req).catch(() => null);
+  const pick = (k: string) => (isRecord(body) && typeof body[k] === 'string' ? (body[k] as string) : null);
+  const result = await deps.groupSelfie(userId, pick('imageBase64'), pick('mimeType'));
+  if (!result.ok) throw new PageError(result.error, result.status, result.code);
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
@@ -1767,6 +1793,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/cancel-ride': { method: 'POST', run: handleCancelRide },
   '/ride-page/waiting': { method: 'POST', run: handleWaiting },
   '/ride-page/group': { method: 'POST', run: handleGroupAnswer },
+  '/ride-page/group/selfie': { method: 'POST', run: handleGroupSelfie },
   '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
   '/ride-page/trip-route/cancel': { method: 'POST', run: handleTripRouteCancel },
   '/ride-page/trip-route/quote': { method: 'POST', run: handleTripRouteQuote },

@@ -24,8 +24,10 @@ export const GROUP_RIDE_LIVE = {
   MAX_RIDERS: 3,
   /** How long riders have to say Ride together. */
   OFFER_SECONDS: 20,
-  /** A ride is in one offer at a time, for this long at most. */
-  HOLD_SECONDS: 45,
+  /** A rider who said Ride together with no selfie on file has this long after the offer to take one. */
+  SELFIE_SECONDS: 60,
+  /** A ride is in one offer at a time, for this long at most (the offer, the selfie time, a margin). */
+  HOLD_SECONDS: 95,
   /** No rider spends more than the bigger of these extra in the car. */
   MAX_EXTRA_MINUTES: 8,
   MAX_EXTRA_SHARE: 0.25,

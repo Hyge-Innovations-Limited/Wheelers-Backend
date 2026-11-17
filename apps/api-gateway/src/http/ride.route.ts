@@ -5,6 +5,7 @@ import {
   scheduledRideClient,
   rideClient,
   tripCodeClient,
+  prisma,
 } from "@wheleers/db";
 import { GoogleMapsRoutePlanner, RIDE, formatTripId, zoneFor, tripDetailsBoxOn, tripDetailsFromRequest, tripDetailsFromRow } from "@wheleers/config";
 import { Queue } from "bullmq";
@@ -22,7 +23,8 @@ import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
 import { waitingView } from "../rides/waiting";
 import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
-import { answerGroupOffer, GroupLiveError } from "../rides/group-live";
+import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from "../rides/group-live";
+import type { RedisClient as GroupRedis } from "../redis/client";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -684,7 +686,7 @@ export async function handleGroupAnswerRoute(
       return;
     }
     const result = await answerGroupOffer(deps.redisClient, rideId, user.id, answer);
-    sendJson(res, 200, { answer: result.answer });
+    sendJson(res, 200, { answer: result.answer, selfieNeeded: result.selfieNeeded });
   } catch (error) {
     if (error instanceof GroupLiveError) {
       sendJson(res, error.status, { error: error.message, code: error.code });
@@ -692,6 +694,14 @@ export async function handleGroupAnswerRoute(
     }
     sendRideRouteError(res, error, "Could not send that");
   }
+}
+
+async function groupOfferView(redis: GroupRedis, rideId: string) {
+  const offer = await offerForRide(redis, rideId);
+  if (!offer) return null;
+  const users = await prisma.user.findMany({ where: { id: { in: offer.members.map((m) => m.riderId) } }, select: { id: true, name: true } }).catch(() => []);
+  const names = new Map(users.map((u) => [u.id, (u.name ?? "").trim().split(/\s+/)[0] || "Rider"]));
+  return offerViewFor(redis, offer, rideId, names);
 }
 
 /** GET /rides/active — the rider's current in-flight ride, or null. */
@@ -720,8 +730,11 @@ export async function handleActiveRideRoute(
     const autoAccept = searching && deps.redisClient
       ? await autoAcceptStatus(deps.redisClient, active.id).catch(() => ({ on: false, priceNgn: null }))
       : { on: false, priceNgn: null };
+    // A group ride on offer to this search (rides/group-live.ts): this rider's view of it.
+    const groupOffer = searching && deps.redisClient ? await groupOfferView(deps.redisClient, active.id).catch(() => null) : null;
     const search = searching
       ? {
+          ...(groupOffer ? { groupOffer } : {}),
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),

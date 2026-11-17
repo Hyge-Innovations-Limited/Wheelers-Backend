@@ -117,6 +117,8 @@ import {
   handleCancelGroupRideMatchRequestRoute,
   handleCompleteGroupRideFaceUploadRoute,
   handleGroupRideFaceCheckRoute,
+  handleGroupLiveSelfieRoute,
+  takeGroupSelfie,
   handleCreateGroupRideFaceUploadUrlRoute,
   handleCreateGroupRideMatchRequestRoute,
   handleGetGroupRideMatchRequestRoute,
@@ -786,6 +788,8 @@ async function bootstrap(): Promise<void> {
     scheduling: { dispatcherQueue, leadTimeMs },
     // Paying with XLM (testnet): only when Stellar is on.
     stellar: stellar ?? null,
+    // The group ride selfie from the page: the same check and store as the app's.
+    groupSelfie: (userId, imageBase64, mimeType) => takeGroupSelfie(groupRideDeps, userId, imageBase64, mimeType),
   });
   setRidePageStateBuilder((riderId) => buildRidePageState(ridePageDeps(), riderId));
 
@@ -2505,6 +2509,16 @@ async function bootstrap(): Promise<void> {
       }
 
       sendMethodNotAllowed(res);
+      return;
+    }
+
+    // POST /group-rides/selfie — the group ride selfie for the live offer (taken once, reused)
+    if (url.pathname === "/group-rides/selfie") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleGroupLiveSelfieRoute(req, res, groupRideDeps);
       return;
     }
 

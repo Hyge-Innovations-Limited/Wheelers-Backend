@@ -56,6 +56,10 @@ model User {
   ninLast4                   String?
   ninStatus                  String?
   ninCheckedAt               DateTime?
+  /// The rider's group ride selfie (Timi, 17 Nov 2026): taken on their first group ride, then reused. The object's key
+  /// in the group-ride face store, and when it passed the face check.
+  groupSelfieKey             String?
+  groupSelfieAt              DateTime?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   driver                     Driver?

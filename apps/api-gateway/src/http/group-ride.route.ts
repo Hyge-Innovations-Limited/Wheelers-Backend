@@ -1,3 +1,5 @@
+import { saveGroupSelfie } from '../rides/group-selfie';
+import { selfieTaken } from '../rides/group-live';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   GroupRideGenderPreference,
@@ -11,7 +13,7 @@ import type { GroupRideMatchCancelledEvent } from '@wheleers/kafka-schemas';
 import { buildReadyForMatchEvent } from '../group-ride/ready-event';
 import { createLlm } from '../LLM/llm';
 import { verifySelfiePhoto } from '../LLM/face-check';
-import { authenticateHttpUser } from './authenticate';
+import { authenticateHttpUser, HttpAuthError } from './authenticate';
 import { runIdempotentJsonRequest } from './idempotency';
 import { readJsonBody, sendJson } from './utils';
 import { getNumber, getRecord, getString, isRecord } from '../utils/object';
@@ -479,6 +481,53 @@ export async function handleGroupRideFaceCheckRoute(
     sendJson(res, 400, {
       error: error instanceof Error ? error.message : 'Could not check that photo',
     });
+  }
+}
+
+/**
+ * The group ride selfie for the live offer (Timi, 17 Nov 2026), from the app, the ride page or the chat: the same
+ * face check as before, stored once, then reused for every group ride. A yes that was waiting on it may be decided now.
+ */
+export async function takeGroupSelfie(
+  deps: GroupRideRouteDeps,
+  userId: string,
+  imageBase64: string | null,
+  mimeTypeRaw: string | null,
+): Promise<{ ok: true } | { ok: false; status: number; code: string; error: string }> {
+  const mimeType = (mimeTypeRaw ?? 'image/jpeg').toLowerCase();
+  if (!ALLOWED_FACE_MIME_TYPES.has(mimeType)) return { ok: false, status: 400, code: 'BAD_IMAGE', error: 'Send a JPEG or PNG photo.' };
+  if (!imageBase64) return { ok: false, status: 400, code: 'BAD_IMAGE', error: 'Take a selfie first.' };
+  if (imageBase64.length > MAX_FACE_CHECK_BASE64_LENGTH) return { ok: false, status: 413, code: 'TOO_LARGE', error: 'That photo is too large.' };
+  const buffer = Buffer.from(imageBase64, 'base64');
+  if (buffer.length === 0) return { ok: false, status: 400, code: 'BAD_IMAGE', error: 'Could not read that photo.' };
+  if (!deps.faceStorage) return { ok: false, status: 503, code: 'UNAVAILABLE', error: 'Selfies are not available right now.' };
+  const groq = createLlm({ groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, timeoutMs: deps.groqTimeoutMs });
+  const verdict = await verifySelfiePhoto(groq, buffer, mimeType);
+  if (!verdict.accepted) return { ok: false, status: 422, code: 'NOT_A_SELFIE', error: "That doesn't look like a clear selfie of you. Try again in good light." };
+  const stored = await deps.faceStorage.uploadBuffer({ matchRequestId: `live-${userId}`, userId, imageBuffer: buffer, mimeType });
+  await saveGroupSelfie(userId, stored.objectKey);
+  await selfieTaken(deps.redisClient, userId).catch(() => undefined);
+  return { ok: true };
+}
+
+/** POST /group-rides/selfie { imageBase64, mimeType } — the app's group ride selfie (takeGroupSelfie). */
+export async function handleGroupLiveSelfieRoute(req: IncomingMessage, res: ServerResponse, deps: GroupRideRouteDeps): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const body = await readJsonBody(req).catch(() => null);
+    const result = await takeGroupSelfie(deps, user.id, isRecord(body) ? getString(body, 'imageBase64') ?? null : null, isRecord(body) ? getString(body, 'mimeType') ?? null : null);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error, code: result.code });
+      return;
+    }
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    if (error instanceof HttpAuthError) {
+      sendJson(res, 401, { error: error.message });
+      return;
+    }
+    console.error('[group-ride] live selfie failed', { error: error instanceof Error ? error.message : String(error) });
+    sendJson(res, 500, { error: 'Could not save your selfie. Try again.' });
   }
 }
 

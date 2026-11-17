@@ -23,8 +23,8 @@ const scheduled = [];
 
 async function searching(extra = {}) {
   const riderId = randomUUID();
-  const { balanceNgn = 20000, phone = null, ...rideExtra } = extra;
-  await prisma.user.create({ data: { id: riderId, privyDid: `test:group-offer:${riderId}`, role: 'RIDER', name: 'Ada Obi', phone } });
+  const { balanceNgn = 20000, phone = null, selfie = true, ...rideExtra } = extra;
+  await prisma.user.create({ data: { id: riderId, privyDid: `test:group-offer:${riderId}`, role: 'RIDER', name: 'Ada Obi', phone, ...(selfie ? { groupSelfieKey: `live-${riderId}/selfie.jpg`, groupSelfieAt: new Date() } : {}) } });
   await prisma.wallet.create({ data: { userId: riderId, balanceNgn } });
   made.users.push(riderId);
   const ride = await prisma.ride.create({ data: {
@@ -65,7 +65,7 @@ test('offered: every member held and asked; their view shows the seat, the other
   const view = await live.offerViewFor(redis, offer, a.rideId, new Map([[b.riderId, 'Chika']]));
   assert.deepEqual([view.ownPriceNgn, view.seatPriceNgn, view.savedNgn, view.answer], [12000, 9000, 3000, null]);
   assert.deepEqual(view.riders.map((r) => [r.name, r.pickup]), [['You', 'Ketu'], ['Chika', 'Ketu']]);
-  assert.equal(scheduled.at(-1).ms, 21_500, 'decided when the 20 s are up');
+  assert.deepEqual(scheduled.slice(-2).map((x) => x.ms), [21_500, 81_500], 'decided when the 20 s are up, and when the selfie time is');
 });
 
 test('a search in one offer is never in another at the same moment; all or none are held', async () => {
@@ -176,6 +176,36 @@ test('only riders whose wallet covers their seat, and only listed test phones wh
     delete process.env.GROUP_RIDE_LIVE_PHONES;
   }
   assert.equal(live.onTestList('+2348099999999'), true, 'no list: everyone');
+});
+
+test('a yes with no selfie: 60 s to take one; taken, the group forms at once; never taken, it does not', async () => {
+  const a = await searching();
+  const b = await searching({ selfie: false });
+  let t = Date.now();
+  const offer = await live.receiveGroupOffer(redis, offered([a, b]), { ...opts(), now: () => t });
+  assert.deepEqual(scheduled.slice(-2).map((x) => x.ms), [21_500, 81_500], 'decided at the 20 s, and again when the selfie time is up');
+  await live.answerGroupOffer(redis, a.rideId, a.riderId, 'join', { now: () => t });
+  const answered = await live.answerGroupOffer(redis, b.rideId, b.riderId, 'join', { now: () => t });
+  assert.equal(answered.selfieNeeded, true);
+  const view = await live.offerViewFor(redis, offer, b.rideId);
+  assert.equal(view.selfieNeeded, true);
+  t += 25_000;
+  assert.equal(await live.resolveGroupOffer(redis, offer.offerId, { now: () => t }), null, 'waiting on the selfie');
+  changes.length = 0;
+  await prisma.user.update({ where: { id: b.riderId }, data: { groupSelfieKey: 'k', groupSelfieAt: new Date() } });
+  await live.selfieTaken(redis, b.riderId, { now: () => t });
+  assert.equal(changes.at(-1).kind, 'formed');
+
+  const c = await searching();
+  const d = await searching({ selfie: false });
+  t = Date.now();
+  const second = await live.receiveGroupOffer(redis, offered([c, d]), { ...opts(), now: () => t });
+  await live.answerGroupOffer(redis, c.rideId, c.riderId, 'join', { now: () => t });
+  await live.answerGroupOffer(redis, d.rideId, d.riderId, 'join', { now: () => t });
+  t += 82_000;
+  const done = await live.resolveGroupOffer(redis, second.offerId, { now: () => t });
+  assert.deepEqual([done.kind, done.reason], ['dropped', 'no_selfie']);
+  assert.equal(await redis.get(`gl:hold:${c.rideId}`), null);
 });
 
 test('switched off: an offer is never held or asked', async () => {

@@ -3,6 +3,7 @@ import { prisma } from '@wheleers/db';
 import type { GroupRideLiveOfferedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import { isSearchEnded } from './booking-lock';
+import { hasGroupSelfie } from './group-selfie';
 
 /**
  * Group ride on live searches, the offer (Timi, 16-17 Nov 2026). The group-ride service found riders searching
@@ -12,9 +13,10 @@ import { isSearchEnded } from './booking-lock';
  *   hold      each ride is in one offer at a time (Redis SET NX, across every gateway); all members held, or none
  *   ask       each rider, 20 s: Ride together / No thanks (the hook tells their app, ride page or chat)
  *   answer    the first answer of each rider counts (SET NX); a later tap changes nothing
- *   resolve   exactly once (SET NX), when all have answered or the 20 s are up: 2 or more said yes and are still
- *             searching -> formed (the seats stay held for the booking); otherwise every hold is let go and each
- *             search carries on at the rider's own price, untouched
+ *   selfie    a rider who said yes with no selfie on file has 60 s after the offer to take one (taken once, reused)
+ *   resolve   exactly once (SET NX), when all have answered (and every yes has a selfie) or the time is up: 2 or more
+ *             said yes, have a selfie and are still searching -> formed (the seats stay held for the booking);
+ *             otherwise every hold is let go and each search carries on at the rider's own price, untouched
  *
  * Nothing here moves money or books a driver. A gateway that restarts mid-offer loses only its timer: the holds
  * run out on their own and every search goes on as before.
@@ -45,7 +47,7 @@ export type GroupLiveChange =
   | { kind: 'offered'; offer: GroupLiveOffer }
   | { kind: 'answered'; offer: GroupLiveOffer; rideId: string; answer: GroupAnswer }
   | { kind: 'formed'; offer: GroupLiveOffer; joined: GroupLiveMember[] }
-  | { kind: 'dropped'; offer: GroupLiveOffer; reason: 'declined' | 'expired' | 'search_moved_on' };
+  | { kind: 'dropped'; offer: GroupLiveOffer; reason: 'declined' | 'expired' | 'search_moved_on' | 'no_selfie' };
 
 export class GroupLiveError extends Error {
   constructor(message: string, readonly status: number, readonly code: string) {
@@ -199,6 +201,8 @@ export async function receiveGroupOffer(
   // The 20 s are up (plus a moment for a late tap in flight): decided. A restart loses only this timer.
   const schedule = opts.schedule ?? ((fn, ms) => { setTimeout(fn, ms).unref(); });
   schedule(() => void resolveGroupOffer(redis, offerId, { now }).catch(() => undefined), GROUP_RIDE_LIVE.OFFER_SECONDS * 1000 + 1500);
+  // And when the selfie time is up too (a yes still taking its selfie at the 20 s).
+  schedule(() => void resolveGroupOffer(redis, offerId, { now }).catch(() => undefined), (GROUP_RIDE_LIVE.OFFER_SECONDS + GROUP_RIDE_LIVE.SELFIE_SECONDS) * 1000 + 1500);
   return offer;
 }
 
@@ -209,7 +213,7 @@ export async function answerGroupOffer(
   userId: string,
   answer: GroupAnswer,
   opts: { now?: () => number } = {},
-): Promise<{ offer: GroupLiveOffer; answer: GroupAnswer }> {
+): Promise<{ offer: GroupLiveOffer; answer: GroupAnswer; selfieNeeded: boolean }> {
   const now = opts.now ?? Date.now;
   const offer = await offerForRide(redis, rideId);
   const member = offer?.members.find((m) => m.rideId === rideId);
@@ -227,7 +231,16 @@ export async function answerGroupOffer(
     const declined = answers.filter((a) => a === 'decline').length;
     if (answers.every((a) => a !== null) || offer.members.length - declined < 2) await resolveGroupOffer(redis, offer.offerId, { now });
   }
-  return { offer, answer };
+  return { offer, answer, selfieNeeded: answer === 'join' && !(await hasGroupSelfie(userId)) };
+}
+
+/** A selfie just saved: the rider's offer may be decided now (it was waiting on it). */
+export async function selfieTaken(redis: RedisClient, userId: string, opts: { now?: () => number } = {}): Promise<void> {
+  const rides = await prisma.ride.findMany({ where: { riderId: userId, status: { in: ['REQUESTED', 'MATCHING'] } }, select: { id: true } }).catch(() => []);
+  for (const ride of rides) {
+    const offer = await offerForRide(redis, ride.id);
+    if (offer) await resolveGroupOffer(redis, offer.offerId, opts).catch(() => undefined);
+  }
 }
 
 /**
@@ -241,13 +254,17 @@ export async function resolveGroupOffer(redis: RedisClient, offerId: string, opt
   const answers = await Promise.all(offer.members.map((m) => answerOf(redis, offerId, m.rideId)));
   const allAnswered = answers.every((a) => a !== null);
   const declined = answers.filter((a) => a === 'decline').length;
-  // Not yet: still time and still possible.
+  // Not yet: still time to answer, and still possible.
   if (!allAnswered && now() <= Date.parse(offer.expiresAt) && offer.members.length - declined >= 2) return null;
+  const saidYes = offer.members.filter((_, i) => answers[i] === 'join');
+  const selfies = await Promise.all(saidYes.map((m) => hasGroupSelfie(m.riderId)));
+  // Not yet: a yes is still taking their selfie, and there is still time for it.
+  const selfieDeadline = Date.parse(offer.expiresAt) + GROUP_RIDE_LIVE.SELFIE_SECONDS * 1000;
+  if (saidYes.length >= 2 && selfies.some((ok) => !ok) && now() <= selfieDeadline) return null;
   if (!(await redis.setIfNotExists(resolvedKey(offerId), '1', KEEP_SECONDS).catch(() => false))) return null;
 
-  const saidYes = offer.members.filter((_, i) => answers[i] === 'join');
   const joined: GroupLiveMember[] = [];
-  for (const m of saidYes) if (await stillSearching(redis, m)) joined.push(m);
+  for (const [i, m] of saidYes.entries()) if (selfies[i] && (await stillSearching(redis, m))) joined.push(m);
   let change: GroupLiveChange;
   if (joined.length >= 2) {
     const groupHold = `group:${offerId}`;
@@ -261,7 +278,7 @@ export async function resolveGroupOffer(redis: RedisClient, offerId: string, opt
       change = { kind: 'dropped', offer, reason: 'search_moved_on' };
     }
   } else {
-    change = { kind: 'dropped', offer, reason: saidYes.length >= 2 ? 'search_moved_on' : declined > 0 ? 'declined' : 'expired' };
+    change = { kind: 'dropped', offer, reason: saidYes.length >= 2 ? (selfies.every(Boolean) ? 'search_moved_on' : 'no_selfie') : declined > 0 ? 'declined' : 'expired' };
   }
   // Everyone not in the formed group is free again.
   const inGroup = new Set(change.kind === 'formed' ? change.joined.map((m) => m.rideId) : []);
@@ -285,6 +302,8 @@ export async function offerViewFor(redis: RedisClient, offer: GroupLiveOffer, ri
     extraMinutes: Math.max(1, Math.round(me.extraSeconds / 60)),
     people: offer.members.length,
     answer: answers[offer.members.indexOf(me)] ?? null,
+    selfieNeeded: !(await hasGroupSelfie(me.riderId)),
+    selfieDeadline: new Date(Date.parse(offer.expiresAt) + GROUP_RIDE_LIVE.SELFIE_SECONDS * 1000).toISOString(),
     riders: offer.members.map((m, i) => ({
       you: m.rideId === rideId,
       name: m.rideId === rideId ? 'You' : names.get(m.riderId) ?? 'Rider',
