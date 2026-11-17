@@ -1,3 +1,4 @@
+import { GroupTripError, mirrorTrip, skipSeat } from '../../rides/group-trip';
 import { randomUUID } from 'crypto';
 import { checkTripCodeAtStart } from '../../rides/trip-code';
 import { settleWaitingAtStart } from '../../rides/waiting';
@@ -975,11 +976,27 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    // A seat of a group trip: the trip starts too, with the first rider's code.
+    if (redis) await mirrorTrip({ redis, publisher }, event.rideId, 'started', driverId).catch(() => undefined);
 
     return {
       type: 'ride:start:accepted',
       payload: { rideId: event.rideId },
     };
+  }
+
+  // "Continue without them" on a group trip: a rider not there after their free minutes is left, free.
+  if (type === 'group:skip') {
+    if (!auth.driverId) throw new Error('Only a driver can do that.');
+    if (!redis) throw new Error('Not available right now.');
+    const rideId = requireString(payload, 'rideId');
+    try {
+      await skipSeat({ redis, publisher }, auth.driverId, rideId);
+    } catch (error) {
+      if (error instanceof GroupTripError) return { type: 'group:skip:rejected', payload: { rideId, code: error.code, message: error.message } };
+      throw error;
+    }
+    return { type: 'group:skip:accepted', payload: { rideId } };
   }
 
   if (type === 'ride:end') {
@@ -1025,6 +1042,8 @@ export async function handleRideMessage(
         timestamp,
       });
       await publisher.publishRideEvent(event);
+      // A seat of a group trip: the trip shows Arrived too, the first time (rides/group-trip.ts).
+      if (redis) await mirrorTrip({ redis, publisher }, rideId, 'arrived', driverId).catch(() => undefined);
     } else {
       console.warn('[api-gateway][ride] arrival could not be attributed — rider not notified', {
         rideId,

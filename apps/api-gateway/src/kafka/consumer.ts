@@ -6,7 +6,7 @@ import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
 import { answerOf, offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
 import { sendGroupOffer } from '../whatsapp/group-live-chat';
-import { onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, startGroupTrip, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
+import { onTripAssigned, onTripAssignmentFailed, onTripBid, readTrip, seatFinished, startGroupTrip, tripOfSeat, type GroupTripChange, type GroupTripDeps } from '../rides/group-trip';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
@@ -1912,7 +1912,11 @@ export async function handleRideEvent(
     }
 
     // Notify driver via WebSocket (app)
-    if (driverUserId) {
+    // A seat of a group trip: the driver's app follows the trip; it hears the seat moved instead.
+    const startedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
+    if (driverUserId && startedSeatOf) {
+      await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: startedSeatOf, rideId: event.rideId, seat: 'started' });
+    } else if (driverUserId) {
       await registry.sendToUser(driverUserId, 'ride:started', {
         rideId: event.rideId,
         startedAt: event.startedAt,
@@ -1982,6 +1986,16 @@ export async function handleRideEvent(
 
     // Notify driver via WebSocket (app) — show earnings breakdown
     const completionFees = calculateRideFees(event.fareNgn, await rideClient.pricingVersionOf(event.rideId));
+    // A seat of a group trip: the driver hears that rider was dropped (what it earned); the trip goes on, and when
+    // every seat is done it ends (rides/group-trip.ts seatFinished).
+    const completedSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
+    if (completedSeatOf) {
+      await registry.sendToUser(event.driverUserId, 'ride:group_update', {
+        tripId: completedSeatOf, rideId: event.rideId, seat: 'dropped', fareNgn: event.fareNgn,
+        driverEarningsNgn: completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0),
+      });
+      await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId).catch(() => false);
+    } else {
     await registry.sendToUser(event.driverUserId, 'ride:completed', {
       rideId: event.rideId,
       fareNgn: event.fareNgn,
@@ -2004,6 +2018,7 @@ export async function handleRideEvent(
     });
     const earnedNgn = completionFees.driverPayoutNgn + (waiting?.paid ? waiting.feeNgn : 0);
     await pushDriver(deps, event.driverUserId, { title: 'Trip done', body: `You earned ₦${Math.round(earnedNgn).toLocaleString('en-NG')}`, type: 'ride:completed', rideId: event.rideId, generation: 'done' });
+    }
 
     // Clean up WhatsApp Redis state
     await endOfferCount(deps, event.rideId);
@@ -2198,7 +2213,12 @@ export async function handleRideEvent(
         driverUserId = driver?.userId;
       }
 
-      if (driverUserId) {
+      // A seat of a group trip: the driver hears that rider left; the trip goes on (and ends when every seat is done).
+      const cancelledSeatOf = await tripOfSeat(deps.redisClient, event.rideId).catch(() => null);
+      if (driverUserId && cancelledSeatOf) {
+        await registry.sendToUser(driverUserId, 'ride:group_update', { tripId: cancelledSeatOf, rideId: event.rideId, seat: 'cancelled', cancelledBy: event.cancelledBy ?? 'rider' });
+        await seatFinished({ ...groupTripDeps(deps), tellDriver: (userId, payload) => registry.sendToUser(userId, 'ride:group_done', payload) }, event.rideId).catch(() => false);
+      } else if (driverUserId) {
         await registry.sendToUser(driverUserId, 'ride:cancelled', {
           rideId: event.rideId,
           reason: event.reason,

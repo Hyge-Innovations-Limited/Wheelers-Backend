@@ -121,10 +121,10 @@ export const groupTripClient = {
   },
 
   /** The trip is over (every seat done or gone): written once. */
-  async endTrip(tripId: string, at: Date = new Date()): Promise<boolean> {
+  async endTrip(tripId: string, at: Date = new Date(), status: 'COMPLETED' | 'CANCELLED' = 'COMPLETED'): Promise<boolean> {
     const wrote = await prisma.ride.updateMany({
       where: { id: tripId, groupRole: 'TRIP', status: { notIn: ['COMPLETED', 'CANCELLED'] } },
-      data: { status: 'COMPLETED', completedAt: at },
+      data: status === 'COMPLETED' ? { status, completedAt: at } : { status, cancelledAt: at, cancelledBy: 'system', cancelReason: 'Every rider in the group cancelled' },
     });
     return wrote.count > 0;
   },

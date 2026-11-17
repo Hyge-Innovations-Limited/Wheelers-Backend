@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { calculateSuggestedFare, GROUP_RIDE_LIVE } from '@wheleers/config';
 import { driverBidClient, driverClient, groupTripClient, prisma } from '@wheleers/db';
-import { RideDriverAssignedEvent, RideOfferAcceptedEvent, RideRequestedEvent, RideRiderCounterOfferEvent, GroupTripEndedEvent, GroupTripFormedEvent } from '@wheleers/kafka-schemas';
+import { RideArrivedEvent, RideCancelledEvent, RideDriverAssignedEvent, RideOfferAcceptedEvent, RideRequestedEvent, RideRiderCounterOfferEvent, RideStartedEvent, GroupTripEndedEvent, GroupTripFormedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
 import { autoAcceptOffForChatPrice } from './auto-accept';
@@ -270,3 +270,79 @@ export async function endUnbookedTrip(deps: GroupTripDeps, tripId: string): Prom
   if (trip && deps.tell) await deps.tell({ kind: 'no_driver', tripId, seats: trip.seats }).catch(() => undefined);
   return true;
 }
+
+/* ── the trip (stage 4): the driver drives the TRIP; each seat moves at its own pickup and drop-off ───────────────── */
+
+const mirrorKey = (tripId: string, kind: string) => `gt:mirror:${tripId}:${kind}`;
+const finishedKey = (tripId: string) => `gt:finished:${tripId}`;
+
+/**
+ * A seat's driver arrived or started it: the TRIP follows the first time (Arrived at the first pickup, Started with
+ * the first code), so the driver's app and ride-service see the job move. Once each.
+ */
+export async function mirrorTrip(deps: GroupTripDeps, seatRideId: string, kind: 'arrived' | 'started', driverId: string): Promise<void> {
+  const tripId = await tripOfSeat(deps.redis, seatRideId);
+  if (!tripId || !(await deps.redis.get(bookedKey(tripId)).catch(() => null))) return;
+  if (!(await deps.redis.setIfNotExists(mirrorKey(tripId, kind), '1', KEEP_SECONDS).catch(() => false))) return;
+  const trip = await readTrip(deps.redis, tripId);
+  const riderId = await groupAccountId();
+  const timestamp = new Date().toISOString();
+  if (kind === 'arrived') {
+    await deps.publisher.publishRideEvent(RideArrivedEvent.parse({ eventType: 'RIDE_ARRIVED', rideId: tripId, riderId, driverId, timestamp }));
+  } else {
+    await deps.publisher.publishRideEvent(RideStartedEvent.parse({
+      eventType: 'RIDE_STARTED', rideId: tripId, riderId, driverId,
+      lockedFareNgn: trip?.seats.reduce((s, m) => s + m.seatPriceNgn, 0) ?? 0, paymentMethod: 'CASH', startedAt: timestamp, timestamp,
+    }));
+  }
+}
+
+export class GroupTripError extends Error {
+  constructor(message: string, readonly code: string) { super(message); }
+}
+
+/**
+ * "Continue without them" (Timi, 17 Nov 2026): at a pickup, after the 5 free minutes, a rider who has not agreed a
+ * waiting price can be left; their seat is cancelled free (their money goes back) and the others keep their price.
+ * Only the trip's own driver, only an arrived seat.
+ */
+export async function skipSeat(deps: GroupTripDeps, driverId: string, seatRideId: string, now: Date = new Date()): Promise<void> {
+  const tripId = await tripOfSeat(deps.redis, seatRideId);
+  if (!tripId) throw new GroupTripError('This rider is not on your group trip.', 'NOT_SEAT');
+  const seat = await prisma.ride.findUnique({ where: { id: seatRideId }, select: { riderId: true, driverId: true, status: true, arrivedAt: true, waitingRateNgn: true } });
+  if (!seat || seat.driverId !== driverId) throw new GroupTripError('This rider is not on your group trip.', 'NOT_SEAT');
+  if (String(seat.status) !== 'ARRIVED' || !seat.arrivedAt) throw new GroupTripError('Tap Arrived at their pickup first.', 'NOT_ARRIVED');
+  if (now.getTime() - seat.arrivedAt.getTime() < GROUP_RIDE_LIVE_FREE_WAIT_MS) throw new GroupTripError('Their free waiting is not over yet.', 'STILL_FREE');
+  if (seat.waitingRateNgn != null) throw new GroupTripError('They agreed to pay for waiting: wait for them.', 'AGREED');
+  if (!(await deps.redis.setIfNotExists(`gt:skip:${seatRideId}`, '1', KEEP_SECONDS).catch(() => false))) return;
+  await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
+    eventType: 'RIDE_CANCELLED', rideId: seatRideId, riderId: seat.riderId, driverId, cancelledBy: 'system',
+    reason: 'Rider did not come: the group went on', timestamp: now.toISOString(),
+  }));
+}
+
+/**
+ * A seat is done (dropped off, or cancelled): when every seat is, the trip ends, once. The driver is freed in
+ * ride-service and told (`ride:group_done`). Returns true when this call ended it.
+ */
+export async function seatFinished(deps: GroupTripDeps & { tellDriver?: (driverUserId: string, payload: Record<string, unknown>) => Promise<void> }, seatRideId: string): Promise<boolean> {
+  const tripId = await tripOfSeat(deps.redis, seatRideId);
+  if (!tripId) return false;
+  // This seat is done, marked before anything is read: its row may not say so yet (ride-service writes a cancel from
+  // the same event, at the same moment). Two seats finishing together: whichever reads second sees both marks.
+  await deps.redis.set(`gt:seatdone:${seatRideId}`, '1', KEEP_SECONDS).catch(() => undefined);
+  const seats = await groupTripClient.seatsOf(tripId);
+  const marks = await Promise.all(seats.map((s) => deps.redis.get(`gt:seatdone:${s.id}`).catch(() => null)));
+  const done = seats.map((s, i) => String(s.status) === 'COMPLETED' || String(s.status) === 'CANCELLED' || marks[i] === '1');
+  if (!done.every(Boolean)) return false;
+  if (!(await deps.redis.setIfNotExists(finishedKey(tripId), '1', KEEP_SECONDS).catch(() => false))) return false;
+  const anyRode = seats.some((s) => String(s.status) === 'COMPLETED' || String(s.status) === 'IN_PROGRESS');
+  await groupTripClient.endTrip(tripId, new Date(), anyRode ? 'COMPLETED' : 'CANCELLED');
+  await deps.publisher.publishGroupRideEvent(GroupTripEndedEvent.parse({ eventType: 'GROUP_TRIP_ENDED', groupId: tripId, timestamp: new Date().toISOString() }));
+  const trip = await prisma.ride.findUnique({ where: { id: tripId }, select: { driver: { select: { userId: true } } } }).catch(() => null);
+  const earned = seats.filter((s) => String(s.status) === 'COMPLETED').reduce((sum, s) => sum + Number(s.agreedFareNgn ?? 0), 0);
+  if (trip?.driver?.userId && deps.tellDriver) await deps.tellDriver(trip.driver.userId, { tripId, ridersDropped: seats.filter((s) => String(s.status) === 'COMPLETED').length, faresNgn: earned }).catch(() => undefined);
+  return true;
+}
+
+const GROUP_RIDE_LIVE_FREE_WAIT_MS = 5 * 60 * 1000;
