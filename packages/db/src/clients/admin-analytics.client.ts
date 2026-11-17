@@ -362,7 +362,7 @@ async function snapshot(): Promise<Snapshot> {
       (SELECT count(*) FROM "Driver" WHERE status IN ('ONLINE', 'ON_RIDE')
          AND "lastSeenAt" > (now() AT TIME ZONE 'UTC') - interval '5 minutes') AS on_shift,
       (SELECT min("startedAt") FROM "DriverShift") AS shifts_from,
-      (SELECT count(*) FROM "Ride" WHERE status IN ('DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS')) AS in_flight,
+      (SELECT count(*) FROM "Ride" WHERE status IN ('DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS') AND "groupRole" IS DISTINCT FROM 'TRIP') AS in_flight,
       (SELECT sum("balanceNgn") FROM "Wallet" WHERE "userId" <> ${q.p(PLATFORM_USER_ID)}) AS float,
       (SELECT sum("lockedNgn") FROM "Wallet" WHERE "userId" <> ${q.p(PLATFORM_USER_ID)}) AS locked,
       (SELECT "balanceNgn" FROM "Wallet" WHERE "userId" = ${q.p(PLATFORM_USER_ID)}) AS platform`);
@@ -1496,6 +1496,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       SELECT r.* FROM "Ride" r
       WHERE r.status = 'COMPLETED' AND ${inDone}
         AND r."cancelReason" IS DISTINCT FROM 'Replaced by a newer request'
+        AND r."groupRole" IS DISTINCT FROM 'TRIP'
     ),
     view_done AS (
       SELECT count(*) AS n FROM ride_facts f WHERE f.status = 'COMPLETED' AND NOT f.superseded AND ${between(q, 'f.completed_day', f)}

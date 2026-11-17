@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { formatTripId } from '@wheleers/config';
 import { prisma } from '../prisma';
+import { NOT_GROUP_TRIP } from './group-trip.client';
 
 /**
  * Admin chat history (Timi, 4 Nov 2026): everything a rider did with Wheelers,
@@ -82,7 +83,7 @@ async function driverNames(driverIds: string[]): Promise<Map<string, { name: str
 async function collect(userId: string, window: { from?: Date; before: Date }, limit: number, onlyRideIds?: string[]): Promise<ChatItem[]> {
   const time = { lt: window.before, ...(window.from ? { gte: window.from } : {}) };
   const rideWhere = onlyRideIds ? { id: { in: onlyRideIds } } : { OR: [{ riderId: userId }, { driver: { userId } }] };
-  const rides = (await prisma.ride.findMany({ where: { ...rideWhere }, select: RIDE_SELECT, orderBy: { createdAt: 'desc' }, take: 500 })) as RideRow[];
+  const rides = (await prisma.ride.findMany({ where: { ...rideWhere, ...NOT_GROUP_TRIP }, select: RIDE_SELECT, orderBy: { createdAt: 'desc' }, take: 500 })) as RideRow[];
   const rideIds = rides.map((r) => r.id);
   const tripOf = new Map(rides.map((r) => [r.id, formatTripId(r.tripNumber)]));
   const drivers = await driverNames([...new Set(rides.map((r) => r.driverId).filter((id): id is string => Boolean(id)))]);
@@ -156,7 +157,7 @@ export const adminChatClient = {
       LEFT JOIN "User" ru ON ru.id = r."riderId"
       LEFT JOIN "Driver" d ON d.id = r."driverId"
       LEFT JOIN "User" du ON du.id = d."userId"
-      WHERE TRUE
+      WHERE r."groupRole" IS DISTINCT FROM 'TRIP'
         ${q ? Prisma.sql`AND (r.id = ${q} ${tripNumber ? Prisma.sql`OR r."tripNumber" = ${Number(tripNumber)}` : Prisma.empty}
           OR ru.name ILIKE ${like} OR ru.phone ILIKE ${like} OR du.name ILIKE ${like} OR du.phone ILIKE ${like})` : Prisma.empty}
       ORDER BY r."createdAt" DESC, r.id

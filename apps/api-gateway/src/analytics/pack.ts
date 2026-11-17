@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { prisma, userDeviceClient } from '@wheleers/db';
+import { NOT_GROUP_TRIP, prisma, userDeviceClient } from '@wheleers/db';
 import { PRICING_AREAS, holidayOn, pricingAreaOf, zoneFor } from '@wheleers/config';
 import type { AnalyticsFilters } from '@wheleers/db';
 
@@ -106,7 +106,8 @@ export async function buildAnalyticsPack(f: Pick<AnalyticsFilters, 'from' | 'to'
   const end = new Date(Date.parse(`${f.to}T00:00:00+01:00`) + 86_400_000);
 
   const rides = await prisma.ride.findMany({
-    where: { createdAt: { gte: start, lt: end } },
+    // A group trip is the driver's job, not a ride: its riders' seats are the rides.
+    where: { createdAt: { gte: start, lt: end }, ...NOT_GROUP_TRIP },
     orderBy: { createdAt: 'asc' },
     select: {
       id: true, riderId: true, driverId: true, status: true, paymentMethod: true, channel: true, pricingVersion: true,
