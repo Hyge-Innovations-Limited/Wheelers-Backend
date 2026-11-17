@@ -142,9 +142,15 @@ export async function handleWaitingFlow(body: FlowRequestBody, userId: string, d
     if (!reason) return cancelScreen('Pick a reason.');
     const found = await waitingRide(userId);
     if (!found) return note('Nothing to cancel here', 'Your driver is no longer waiting at the pickup.');
+    // Once per ride: a double tap (or Meta retrying the request) never cancels twice.
+    const claimKey = `ride:${found.ride.id}:waiting-form-cancel`;
+    if (!(await deps.redisClient.setIfNotExists(claimKey, '1', 15 * 60).catch(() => true))) {
+      return note('Ride cancelled', "Cancelling is free. You won't be charged.");
+    }
     try {
       await cancelAsTheChatDoes(deps, userId, { id: found.ride.id, driverId: found.ride.driverId ?? null }, reason);
     } catch (error) {
+      await deps.redisClient.del(claimKey).catch(() => undefined);
       console.error('[waiting-flow] cancel failed', { userId, error: error instanceof Error ? error.message : String(error) });
       return cancelScreen('Could not cancel. Try again.');
     }

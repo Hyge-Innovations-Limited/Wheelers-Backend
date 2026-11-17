@@ -131,7 +131,9 @@ test('Cancel ride: the chat\'s own reasons, then the chat\'s own cancel (the rea
   assert.equal((await send(trip.riderId, 'CANCEL', { reason: '' })).data.error, 'Pick a reason.');
 
   published.length = 0;
-  const done = await send(trip.riderId, 'CANCEL', { reason: '1' });
+  // A double tap: both at once, one cancel.
+  const [done, twice] = await Promise.all([send(trip.riderId, 'CANCEL', { reason: '1' }), send(trip.riderId, 'CANCEL', { reason: '1' })]);
+  assert.equal(twice.data.headline, 'Ride cancelled');
   assert.deepEqual([done.screen, done.data.headline], ['NOTE', 'Ride cancelled']);
   assert.equal(published.length, 1);
   assert.deepEqual([published[0].eventType, published[0].rideId, published[0].cancelledBy, published[0].reason, published[0].driverId], ['RIDE_CANCELLED', trip.rideId, 'rider', 'Long waiting time', trip.driverId]);

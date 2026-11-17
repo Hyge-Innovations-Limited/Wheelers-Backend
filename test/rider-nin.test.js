@@ -89,6 +89,21 @@ test('the check: a record that comes back for another NIN is not theirs (NOT_FOU
   assert.equal(await nin.checkRiderNin(id2, '12345678901', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, advance).fetchImpl }), 'VERIFIED');
 });
 
+test('the daily limit holds when tries arrive at the same moment (each costs ₦50)', async () => {
+  const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
+  const redis = new RedisClient(process.env.TEST_REDIS_URL || 'redis://127.0.0.1:6379/15');
+  await redis.connect();
+  try {
+    const id = await user('Ada Obi');
+    const prembly = premblyAnswers(404, { status: false, detail: 'NIN not found' });
+    const results = await Promise.all(Array.from({ length: 6 }, () => nin.checkRiderNin(id, '12345678901', 'Ada Obi', { redis, config: CONFIG, fetchImpl: prembly.fetchImpl })));
+    assert.equal(prembly.calls.length, 3, 'three lookups, never more');
+    assert.equal(results.filter((r) => r === 'LIMIT').length, 3);
+  } finally {
+    await redis.disconnect().catch(() => {});
+  }
+});
+
 test('a suspended NIN is never verified, even in the right name; the rider is told plainly', async () => {
   const id = await user('Ada Obi');
   const suspended = { ...FOUND, nin_data: undefined, data: { firstname: 'ADA', surname: 'OBI', nin: '12345678901', nin_suspension_status: true, nin_suspension_message: 'NIN suspended' } };
@@ -108,7 +123,7 @@ test('the check: another person\'s name, no such NIN, Prembly down; at most 3 a 
   assert.equal(await nin.checkRiderNin(id, '12345678902', 'Tunde Bakare', { redis, config: CONFIG, fetchImpl: premblyAnswers(404, { status: false, detail: 'NIN not found' }).fetchImpl }), 'NOT_FOUND');
   assert.equal(await nin.checkRiderNin(id, '12345678903', 'Tunde Bakare', { redis, config: CONFIG, fetchImpl: premblyAnswers(503, { detail: 'Source unavailable' }).fetchImpl }), 'UNCHECKED');
   const fourth = premblyAnswers(200, FOUND);
-  assert.equal(await nin.checkRiderNin(id, '12345678904', 'Tunde Bakare', { redis, config: CONFIG, fetchImpl: fourth.fetchImpl }), null, 'over today\'s limit');
+  assert.equal(await nin.checkRiderNin(id, '12345678904', 'Tunde Bakare', { redis, config: CONFIG, fetchImpl: fourth.fetchImpl }), 'LIMIT', 'over today\'s limit');
   assert.equal(fourth.calls.length, 0);
   assert.equal((await prisma.user.findUnique({ where: { id } })).ninLast4, '8903');
   assert.equal(await nin.checkRiderNin(id, '12345678901', 'Tunde Bakare', { redis: memoryRedis(), config: null }), null, 'Prembly not set up');
