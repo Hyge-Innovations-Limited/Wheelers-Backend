@@ -14,6 +14,8 @@ import {
   type RideOfferAcceptedEvent,
   type RideRouteUpdateRequestedEvent,
   type RideRequestedEvent,
+  type GroupTripEndedEvent,
+  type GroupTripFormedEvent,
 } from '@wheleers/kafka-schemas';
 
 import type { PendingRideMatch, RideServiceState } from '../index';
@@ -47,12 +49,27 @@ export function createRideRequestedConsumer(params: {
   /** Waits between the retries of the assignment write (tests make them short). */
   assignRetryDelaysMs?: number[];
   rideEventsProducer: RideEventsProducer;
-}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number> } {
+}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => void } {
   const { state, rideEnv, rideEventsProducer } = params;
   const assignRetryDelaysMs = params.assignRetryDelaysMs ?? [250, 1_000, 3_000];
 
+  /**
+   * Group trips (Timi, 17 Nov 2026), from the group-ride events: formed, the seats' own searches stop (the trip
+   * searches for them); ended, the trip's driver goes back to the pool and its search, if any, is gone.
+   */
+  function handleGroupTrip(event: GroupTripFormedEvent | GroupTripEndedEvent): void {
+    if (event.eventType === 'GROUP_TRIP_FORMED') {
+      for (const seat of event.seatRideIds) clearPendingMatch(seat);
+      return;
+    }
+    clearPendingMatch(event.groupId);
+    state.routeByRideId.delete(event.groupId);
+    returnAssignedDriverToPool(event.groupId);
+  }
+
   return {
     rehydrate: rehydrateOpenSearches,
+    handleGroupTrip,
     async handle(value, ctx) {
       if (ctx.topic !== TOPICS.RIDE_EVENTS) return;
       const event = safeParseKafkaEvent(TOPICS.RIDE_EVENTS, value);
@@ -90,6 +107,18 @@ export function createRideRequestedConsumer(params: {
 
       if (event.eventType === 'RIDE_ROUTE_UPDATE_REQUESTED') {
         handleRouteUpdateRequested(event);
+        return;
+      }
+
+      if (event.eventType === 'RIDE_DRIVER_ASSIGNED' && event.groupSeat) {
+        // A seat of a group trip: its own search is over, but the driver is the TRIP's (taken from the pool, and
+        // given back, with the trip only). Nothing here touches the pool.
+        clearPendingMatch(event.rideId);
+        state.rideParticipantsByRideId.set(event.rideId, {
+          ...state.rideParticipantsByRideId.get(event.rideId),
+          riderId: event.riderId,
+          driverId: event.driverId,
+        });
         return;
       }
 
@@ -269,6 +298,8 @@ export function createRideRequestedConsumer(params: {
         pickupZone: zoneFor(event.pickup.lat, event.pickup.lng),
         destZone: zoneFor(event.destination.lat, event.destination.lng),
         ...tripDetailsColumns(event.tripDetails),
+        // A group ride's TRIP: the ride the driver drives; its stops with each seat's ride id.
+        ...(event.groupTrip ? { groupTripId: event.rideId, groupRole: 'TRIP' as const, groupStops: JSON.parse(JSON.stringify(event.groupTrip.stops)) } : {}),
       });
     } catch (err) {
       console.warn(`[ride-service] ride create skipped:`, (err as any)?.message ?? err);
@@ -959,6 +990,8 @@ export function createRideRequestedConsumer(params: {
     let rebuilt = 0;
     for (const ride of open) {
       if (state.pendingMatchesByRideId.has(ride.id)) continue;
+      // A seat of a group trip is not searching on its own (the trip is): rebuilding it would restart its clock.
+      if (ride.groupRole === 'SEAT') continue;
       if (await rebuildPending(ride.id)) rebuilt += 1;
     }
     if (open.length > 0) console.info('[ride-service] open searches on start', { found: open.length, rebuilt });

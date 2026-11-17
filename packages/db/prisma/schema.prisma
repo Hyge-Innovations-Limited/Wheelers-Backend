@@ -500,6 +500,12 @@ model Ride {
   waitingOfferAt          DateTime?
   /// Offers made on this ride, both sides (a cap keeps it from turning into spam).
   waitingOfferCount       Int               @default(0)
+  /// Group ride (Timi, 17 Nov 2026): the group trip a ride belongs to. The TRIP is the ride the driver bids on and
+  /// drives (owned by the Wheelers group account, never shown to a rider); each SEAT is a rider's own ride in it, with
+  /// its own price, hold, code, waiting and receipt. groupStops (on the TRIP): the stops in order, with each seat's id.
+  groupTripId             String?
+  groupRole               String?
+  groupStops              Json?
   startedAt               DateTime?
   completedAt             DateTime?
   cancelledAt             DateTime?
@@ -518,6 +524,7 @@ model Ride {
   @@index([riderId, createdAt])
   @@index([driverId, status])
   @@index([status])
+  @@index([groupTripId])
   @@index([createdAt])
   @@index([completedAt])
   @@index([channel])

@@ -151,3 +151,4 @@ export {
   RiderKycStatus,
 } from '@prisma/client';
 export { userDeviceClient, deviceKey, type DeviceReport } from './clients/user-device.client';
+export { groupTripClient, type SeatToBook, type BookSeatsResult } from './clients/group-trip.client';

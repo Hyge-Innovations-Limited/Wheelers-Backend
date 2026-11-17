@@ -33,6 +33,69 @@ interface RideHoldWithPayoutResult {
 const ensurePlatformWallet = (): Promise<string> => ensurePlatformWalletId();
 void PLATFORM_USER_ID;
 
+/**
+ * The hold itself, inside a transaction the caller owns (walletClient.createRideHold runs it in its own; a group ride
+ * runs every seat's in one, so either every seat is held or none is). Throws when the balance does not cover it.
+ */
+export async function createRideHoldIn(
+  tx: TxClient,
+  params: { rideId: string; walletId: string; riderId: string; driverUserId?: string; amountNgn: number },
+): Promise<RideHoldMutationResult> {
+  const { rideId, walletId, riderId, driverUserId, amountNgn } = params;
+  // Duplicate-hold check MUST come before the balance check: the first
+  // hold locks the funds, so a second attempt (gateway pre-holds, the
+  // wallet-service consumer re-holds on RIDE_OFFER_ACCEPTED) fails the
+  // balance check and throws before the unique constraint could catch
+  // it — surfacing as a fake CRITICAL 'ride running unsecured'.
+  const existing = await tx.rideHold.findUnique({ where: { rideId } });
+  if (existing && existing.status !== 'RELEASED') {
+    const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: walletId } });
+    return { wallet, holdAmountNgn: Number(existing.amountNgn), applied: false as const };
+  }
+  // A RELEASED row means an earlier driver dropped and the ride was
+  // re-matched. Treating it as "already held" let the new match run
+  // with nothing locked and settlement then found no ACTIVE hold.
+  const rearm = existing?.status === 'RELEASED';
+
+  const current = await tx.wallet.findUniqueOrThrow({
+    where: { id: walletId },
+  });
+
+  if (Number(current.balanceNgn) < amountNgn) {
+    throw new Error(
+      `Cannot lock ${amountNgn} NGN on wallet ${walletId}: ` +
+      `only ${current.balanceNgn} available`,
+    );
+  }
+
+  const wallet = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
+  if (!wallet) {
+    throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
+  }
+
+  if (rearm) {
+    const reclaimed = await tx.rideHold.updateMany({
+      where: { rideId, status: 'RELEASED' },
+      data: { status: 'ACTIVE', walletId, riderId, driverUserId, amountNgn, settledAt: null, settledAmountNgn: null },
+    });
+    if (reclaimed.count === 0) {
+      throw new Error(`Ride hold for ${rideId} changed state while being re-armed`);
+    }
+  } else {
+    await tx.rideHold.create({
+      data: {
+        rideId,
+        walletId,
+        riderId,
+        driverUserId,
+        amountNgn,
+      },
+    });
+  }
+
+  return { wallet, holdAmountNgn: amountNgn, applied: true as const };
+}
+
 export const walletClient = {
 
   // ── Reads ──────────────────────────────────────────────────────────────────
@@ -325,63 +388,14 @@ export const walletClient = {
     driverUserId?: string;
     amountNgn: number;
   }): Promise<RideHoldMutationResult> => {
-    const { rideId, walletId, riderId, driverUserId, amountNgn } = params;
+    const { rideId, walletId } = params;
+    // A seat of a group trip is held only by the group's own booking (createRideHoldIn, every seat at once): never
+    // by a rider booking a driver alone on it.
+    const seat = await prisma.ride.findUnique({ where: { id: rideId }, select: { groupRole: true } }).catch(() => null);
+    if (seat?.groupRole === 'SEAT') throw new Error(`Ride ${rideId} is a group ride seat: booked by its group only`);
 
     try {
-      return await prisma.$transaction(async (tx: TxClient) => {
-        // Duplicate-hold check MUST come before the balance check: the first
-        // hold locks the funds, so a second attempt (gateway pre-holds, the
-        // wallet-service consumer re-holds on RIDE_OFFER_ACCEPTED) fails the
-        // balance check and throws before the unique constraint could catch
-        // it — surfacing as a fake CRITICAL 'ride running unsecured'.
-        const existing = await tx.rideHold.findUnique({ where: { rideId } });
-        if (existing && existing.status !== 'RELEASED') {
-          const wallet = await tx.wallet.findUniqueOrThrow({ where: { id: walletId } });
-          return { wallet, holdAmountNgn: Number(existing.amountNgn), applied: false as const };
-        }
-        // A RELEASED row means an earlier driver dropped and the ride was
-        // re-matched. Treating it as "already held" let the new match run
-        // with nothing locked and settlement then found no ACTIVE hold.
-        const rearm = existing?.status === 'RELEASED';
-
-        const current = await tx.wallet.findUniqueOrThrow({
-          where: { id: walletId },
-        });
-
-        if (Number(current.balanceNgn) < amountNgn) {
-          throw new Error(
-            `Cannot lock ${amountNgn} NGN on wallet ${walletId}: ` +
-            `only ${current.balanceNgn} available`,
-          );
-        }
-
-        const wallet = await takeFromBalance(tx, walletId, amountNgn, { lock: true });
-        if (!wallet) {
-          throw new Error(`Cannot lock ${amountNgn} NGN on wallet ${walletId}: not enough available`);
-        }
-
-        if (rearm) {
-          const reclaimed = await tx.rideHold.updateMany({
-            where: { rideId, status: 'RELEASED' },
-            data: { status: 'ACTIVE', walletId, riderId, driverUserId, amountNgn, settledAt: null, settledAmountNgn: null },
-          });
-          if (reclaimed.count === 0) {
-            throw new Error(`Ride hold for ${rideId} changed state while being re-armed`);
-          }
-        } else {
-          await tx.rideHold.create({
-            data: {
-              rideId,
-              walletId,
-              riderId,
-              driverUserId,
-              amountNgn,
-            },
-          });
-        }
-
-        return { wallet, holdAmountNgn: amountNgn, applied: true as const };
-      });
+      return await prisma.$transaction((tx: TxClient) => createRideHoldIn(tx, params));
     } catch (error) {
       if (!isUniqueConstraintError(error)) {
         throw error;

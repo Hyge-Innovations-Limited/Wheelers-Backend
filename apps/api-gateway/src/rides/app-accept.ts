@@ -93,6 +93,13 @@ async function acceptOnce(
   if (acceptingRide && acceptingRide.riderId !== riderId) {
     throw new Error('This ride is not yours.');
   }
+  // A rider riding in a group: the group books its one driver (rides/group-trip.ts), never a driver of their own.
+  if (acceptingRide?.groupRole === 'SEAT') {
+    return {
+      type: 'ride:accept_offer:rejected',
+      payload: { rideId, driverId, reason: 'already_matched', message: "You're riding in a group. We're finding your driver." },
+    };
+  }
   if (acceptingRide && acceptingRide.status !== 'REQUESTED' && acceptingRide.status !== 'MATCHING') {
     return {
       type: 'ride:accept_offer:rejected',

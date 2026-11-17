@@ -179,6 +179,16 @@ export const GroupRideLiveOfferedEvent = BaseGroupRideEvent.extend({
   savedSeconds: z.number().int().nonnegative(),
 });
 
+// A group trip was formed (groupId: the TRIP ride's id): ride-service stops the seats' own searches.
+export const GroupTripFormedEvent = BaseGroupRideEvent.extend({
+  eventType: z.literal('GROUP_TRIP_FORMED'),
+  seatRideIds: z.array(z.string().uuid()).min(2).max(3),
+});
+// A group trip is over (every seat done or gone, or it never got a driver): ride-service frees its driver.
+export const GroupTripEndedEvent = BaseGroupRideEvent.extend({
+  eventType: z.literal('GROUP_TRIP_ENDED'),
+});
+
 export const GroupRideEvent = z.discriminatedUnion('eventType', [
   GroupRideReadyForMatchEvent,
   GroupRideMatchCancelledEvent,
@@ -188,6 +198,8 @@ export const GroupRideEvent = z.discriminatedUnion('eventType', [
   GroupRideDriverDispatchRequestedEvent,
   GroupRideDriverAssignedEvent,
   GroupRideLiveOfferedEvent,
+  GroupTripFormedEvent,
+  GroupTripEndedEvent,
 ]);
 
 export type GroupRideReadyForMatchEvent = z.infer<typeof GroupRideReadyForMatchEvent>;
@@ -198,4 +210,6 @@ export type GroupRideRouteBuiltEvent = z.infer<typeof GroupRideRouteBuiltEvent>;
 export type GroupRideDriverDispatchRequestedEvent = z.infer<typeof GroupRideDriverDispatchRequestedEvent>;
 export type GroupRideDriverAssignedEvent = z.infer<typeof GroupRideDriverAssignedEvent>;
 export type GroupRideLiveOfferedEvent = z.infer<typeof GroupRideLiveOfferedEvent>;
+export type GroupTripFormedEvent = z.infer<typeof GroupTripFormedEvent>;
+export type GroupTripEndedEvent = z.infer<typeof GroupTripEndedEvent>;
 export type GroupRideEvent = z.infer<typeof GroupRideEvent>;

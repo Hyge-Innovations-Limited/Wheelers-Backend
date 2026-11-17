@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { openPaying, payingStatusEnabled, withinPayingRate } from './paying-status';
-import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
+import { driverBidClient, driverClient, prisma, rideClient, walletClient } from '@wheleers/db';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { TripDetails } from '@wheleers/config';
 import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
@@ -402,6 +402,10 @@ async function confirmOnce(
     }
     return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
   }
+
+  // Riding in a group: the group books its one driver, never one of the rider's own (rides/group-trip.ts).
+  const seat = await prisma.ride.findUnique({ where: { id: rideId }, select: { groupRole: true } }).catch(() => null);
+  if (seat?.groupRole === 'SEAT') return { ok: false, code: 'ALREADY_BOOKED' };
 
   const driver = await driverClient.findById(bid.driverId).catch(() => null);
   const fresh = driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;

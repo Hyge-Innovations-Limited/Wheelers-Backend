@@ -1,7 +1,7 @@
 import { GoogleMapsRoutePlanner, RIDE, VITALS_KEEP_MS, VITALS_KEY, createVitalsSampler, loadWorkspaceEnv, startAlerts, validateRideEnv, validateSharedEnv } from '@wheleers/config';
 import { hostname } from 'node:os';
 import { createConsumer, createProducer, onShutdown } from '@wheleers/kafka-client';
-import { TOPICS } from '@wheleers/kafka-schemas';
+import { safeParseKafkaEvent, TOPICS } from '@wheleers/kafka-schemas';
 
 import { createRideEventsProducer } from './producers/ride-events.producer';
 import { createGpsProcessedProducer } from './producers/gps-processed.producer';
@@ -304,6 +304,12 @@ async function bootstrap(): Promise<void> {
       }
 
       if (ctx.topic === TOPICS.GROUP_RIDE_EVENTS) {
+        // Group trips (live group ride): formed and ended.
+        const groupEvent = safeParseKafkaEvent(TOPICS.GROUP_RIDE_EVENTS, value);
+        if (groupEvent && (groupEvent.eventType === 'GROUP_TRIP_FORMED' || groupEvent.eventType === 'GROUP_TRIP_ENDED')) {
+          rideRequestedConsumer.handleGroupTrip(groupEvent);
+          return;
+        }
         await groupRideDispatchConsumer.handle(value, ctx);
       }
     },
