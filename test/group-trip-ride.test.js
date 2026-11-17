@@ -13,6 +13,7 @@ const { PrismaClient } = require('@prisma/client');
 const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
 const gt = require('../apps/api-gateway/dist/rides/group-trip.js');
 const { loadDriverRideSnapshot } = require('../apps/api-gateway/dist/websocket/driver-ride-sync.js');
+const { handleRideMessage } = require('../apps/api-gateway/dist/websocket/handlers/ride.handler.js');
 
 const prisma = new PrismaClient();
 let redis;
@@ -125,6 +126,49 @@ test('one seat still riding: the trip goes on', async () => {
   await prisma.ride.update({ where: { id: t.ra }, data: { status: 'IN_PROGRESS' } });
   assert.equal(await gt.seatFinished(deps(), t.rb), false);
   assert.notEqual((await prisma.ride.findUnique({ where: { id: t.tripId } })).status, 'COMPLETED');
+});
+
+test('the driver leaves before anyone got in: each seat goes back to its own search the way a driver backing out does; the trip ends once', async () => {
+  const t = await bookedTrip();
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'ARRIVED', arrivedAt: minutesAgo(2), waitingRateNgn: 50, waitingAgreedAt: minutesAgo(1) } });
+  const driver = { driverId: t.driverId, driverUserId: t.driverUserId };
+  await Promise.all([gt.leaveTrip(deps(), driver, t.tripId), gt.leaveTrip(deps(), driver, t.tripId)]);
+  const trip = await prisma.ride.findUnique({ where: { id: t.tripId } });
+  assert.deepEqual([trip.status, trip.cancelledBy], ['CANCELLED', 'driver']);
+  assert.equal(events.filter((e) => e.eventType === 'GROUP_TRIP_ENDED' && e.groupId === t.tripId).length, 1);
+  const cancels = events.filter((e) => e.eventType === 'RIDE_CANCELLED');
+  assert.deepEqual(cancels.map((e) => [e.rideId, e.cancelledBy, e.driverId, e.driverUserId]).sort(), [[t.ra, 'driver', t.driverId, t.driverUserId], [t.rb, 'driver', t.driverId, t.driverUserId]].sort());
+  const ada = await prisma.ride.findUnique({ where: { id: t.ra } });
+  // Still the driver's until ride-service reopens it (only from that driver); out of the group, its arrival and waiting gone.
+  assert.deepEqual([ada.driverId, ada.groupTripId, ada.groupRole, ada.arrivedAt, ada.waitingRateNgn], [t.driverId, null, null, null, null]);
+  assert.equal(await gt.tripOfSeat(redis, t.ra), null, 'a plain driver cancel to everyone who reads it');
+  assert.equal(await gt.seatFinished(deps(), t.rb), false, 'already ended');
+});
+
+test('the driver cannot leave with a rider in the car', async () => {
+  const t = await bookedTrip();
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'IN_PROGRESS' } });
+  await assert.rejects(gt.leaveTrip(deps(), { driverId: t.driverId, driverUserId: t.driverUserId }, t.tripId), (e) => e.code === 'RIDING');
+  await assert.rejects(gt.leaveTrip(deps(), { driverId: randomUUID(), driverUserId: t.driverUserId }, t.tripId), (e) => e.code === 'NOT_TRIP');
+  assert.equal(events.length, 0);
+});
+
+test('the socket: the TRIP itself is never arrived, started or ended; one seat is not cancelled by the driver; no route changes on a group ride', async () => {
+  const t = await bookedTrip();
+  const auth = { userId: t.driverUserId, driverId: t.driverId, role: 'DRIVER' };
+  const send = (type, payload, who = auth) => handleRideMessage(type, payload, who, publisher, {}, redis);
+  await assert.rejects(send('ride:arrived', { rideId: t.tripId }), /group ride/);
+  await assert.rejects(send('ride:start', { rideId: t.tripId, riderId: t.a, lockedFareNgn: 15750 }), /group ride/);
+  await assert.rejects(send('ride:end', { rideId: t.tripId, riderId: t.a }), /group ride/);
+  await assert.rejects(send('ride:cancel', { rideId: t.rb }), /Continue without them/);
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'IN_PROGRESS' } });
+  await assert.rejects(send('ride:route:update', { rideId: t.ra, destination: { lat: 6.6, lng: 3.5, address: 'Ikorodu' }, stops: [] }, { userId: t.a, role: 'RIDER' }), /group ride/);
+  await assert.rejects(send('ride:cancel', { rideId: t.tripId }), /in the car/);
+  assert.equal(events.length, 0, 'nothing published');
+  // A seat's own Arrived works, and the trip follows.
+  await prisma.ride.update({ where: { id: t.ra }, data: { status: 'DRIVER_ASSIGNED' } });
+  assert.equal((await send('ride:arrived', { rideId: t.ra })).type, 'ride:arrived:ack');
+  assert.deepEqual(events.map((e) => [e.eventType, e.rideId]), [['RIDE_ARRIVED', t.ra], ['RIDE_ARRIVED', t.tripId]]);
 });
 
 test.after(async () => {

@@ -1,4 +1,4 @@
-import { GroupTripError, mirrorTrip, skipSeat } from '../../rides/group-trip';
+import { GroupTripError, leaveTrip, mirrorTrip, skipSeat } from '../../rides/group-trip';
 import { randomUUID } from 'crypto';
 import { checkTripCodeAtStart } from '../../rides/trip-code';
 import { settleWaitingAtStart } from '../../rides/waiting';
@@ -83,6 +83,14 @@ async function assertDriverOwnsRide(rideId: string, auth: { driverId?: string | 
 }
 
 /**
+ * A group trip moves seat by seat (each rider's own Arrived, code and drop-off; rides/group-trip.ts): never the TRIP
+ * itself. An app older than group rides would otherwise start it with no code and end it as one ride.
+ */
+function refuseGroupTrip(ride: { groupRole?: string | null }): void {
+  if (ride.groupRole === 'TRIP') throw new Error('This is a group ride. Update the app to drive it.');
+}
+
+/**
  * Who may change a live trip: the ride's own rider, or the driver assigned to it. Decided by the
  * RIDE's ids, never the payload and never by whether the sender also has a driver record (a user
  * who is both is the rider on their own ride). Returns the ride and the sender's role.
@@ -96,6 +104,8 @@ async function assertPartyToLiveRide(
   const isRider = ride.riderId === auth.userId;
   const isDriver = !isRider && Boolean(auth.driverId) && ride.driverId === auth.driverId;
   if (!isRider && !isDriver) throw new Error('This ride is not yours.');
+  // A group ride's stops are shared and its prices agreed for them: not changed by one rider.
+  if (ride.groupRole) throw new RouteChangeRefused('Stops cannot be changed on a group ride.');
   if (!LIVE_TRIP_STATUSES.includes(String(ride.status))) {
     throw new RouteChangeRefused('This trip is not running, so its route cannot be changed.');
   }
@@ -924,6 +934,19 @@ export async function handleRideMessage(
         ? ride.driverId === auth.driverId
         : ride.riderId === auth.userId;
       if (!isParty) throw new Error('This ride is not yours to cancel.');
+      // A group trip the driver leaves: every seat they had goes back to its own search (rides/group-trip.ts).
+      if (ride.groupRole === 'TRIP' && cancelledBy === 'driver' && auth.driverId && redis) {
+        try {
+          await leaveTrip({ redis, publisher }, { driverId: auth.driverId, driverUserId: auth.userId }, rideId);
+        } catch (error) {
+          if (error instanceof GroupTripError) throw new Error(error.message);
+          throw error;
+        }
+        return { type: 'ride:cancel:accepted', payload: { rideId } };
+      }
+      if (ride.groupRole === 'TRIP') throw new Error('This ride is not yours to cancel.');
+      // One rider of a group is left only by Continue without them (after their free minutes).
+      if (ride.groupRole === 'SEAT' && cancelledBy === 'driver') throw new Error('Use Continue without them at their pickup.');
     }
 
     // A rider ending their search: over in the gateway's eyes now, before the ride service writes the row.
@@ -955,7 +978,7 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:start') {
-    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    refuseGroupTrip(await assertDriverOwnsRide(requireString(payload, 'rideId'), auth));
     const driverId = auth.driverId;
     if (!driverId) throw new Error('Missing required field: driverId');
     // The rider's 4-digit trip code, checked here so no app can skip it.
@@ -1000,7 +1023,7 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:end') {
-    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    refuseGroupTrip(await assertDriverOwnsRide(requireString(payload, 'rideId'), auth));
     const endDriverId = auth.driverId;
     if (!endDriverId) throw new Error('Missing required field: driverId');
 
@@ -1030,6 +1053,7 @@ export async function handleRideMessage(
     // never told the car was outside. The app only sends rideId, so resolve
     // the rider from the ride row.
     const ride = await assertDriverOwnsRide(rideId, auth);
+    refuseGroupTrip(ride);
     const riderId = ride.riderId;
     const driverId = auth.driverId ?? ride.driverId;
 

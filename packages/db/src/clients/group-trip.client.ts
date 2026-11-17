@@ -120,11 +120,36 @@ export const groupTripClient = {
     return released;
   },
 
-  /** The trip is over (every seat done or gone): written once. */
-  async endTrip(tripId: string, at: Date = new Date(), status: 'COMPLETED' | 'CANCELLED' = 'COMPLETED'): Promise<boolean> {
+  /**
+   * The driver leaves the trip before anyone got in: each seat they have (not started) leaves the group, its arrival
+   * and waiting cleared (a next driver starts fresh). The driver stays on the row: their cancel of each seat then goes
+   * the way any driver backing out does (ride-service reopens it without them, the money goes back, the rider hears).
+   * Returns the seats unlinked.
+   */
+  async unlinkForLeave(tripId: string, driverId: string): Promise<Array<{ id: string; riderId: string }>> {
+    const pre = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED'] as const;
+    const seats = await prisma.ride.findMany({ where: { groupTripId: tripId, groupRole: 'SEAT', driverId, status: { in: [...pre] } }, select: { id: true, riderId: true } });
+    const unlinked: Array<{ id: string; riderId: string }> = [];
+    for (const seat of seats) {
+      const wrote = await prisma.ride.updateMany({
+        where: { id: seat.id, groupTripId: tripId, driverId, status: { in: [...pre] } },
+        data: {
+          groupTripId: null, groupRole: null, arrivedAt: null,
+          waitingStoppedAt: null, waitingRateNgn: null, waitingAgreedAt: null, waitingOfferBy: null, waitingOfferNgn: null, waitingOfferAt: null, waitingOfferCount: 0,
+        },
+      });
+      if (wrote.count > 0) unlinked.push(seat);
+    }
+    return unlinked;
+  },
+
+  /** The trip is over (every seat done or gone, or the driver left before anyone got in): written once. */
+  async endTrip(tripId: string, at: Date = new Date(), status: 'COMPLETED' | 'CANCELLED' = 'COMPLETED', by: 'system' | 'driver' = 'system'): Promise<boolean> {
     const wrote = await prisma.ride.updateMany({
       where: { id: tripId, groupRole: 'TRIP', status: { notIn: ['COMPLETED', 'CANCELLED'] } },
-      data: status === 'COMPLETED' ? { status, completedAt: at } : { status, cancelledAt: at, cancelledBy: 'system', cancelReason: 'Every rider in the group cancelled' },
+      data: status === 'COMPLETED'
+        ? { status, completedAt: at }
+        : { status, cancelledAt: at, cancelledBy: by, cancelReason: by === 'driver' ? 'The driver left before anyone got in' : 'Every rider in the group cancelled' },
     });
     return wrote.count > 0;
   },

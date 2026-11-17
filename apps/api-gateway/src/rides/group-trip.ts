@@ -346,3 +346,31 @@ export async function seatFinished(deps: GroupTripDeps & { tellDriver?: (driverU
 }
 
 const GROUP_RIDE_LIVE_FREE_WAIT_MS = 5 * 60 * 1000;
+
+/**
+ * The driver cancels a group trip. Before anyone is in the car: they leave, the trip ends once (the same mark as every
+ * seat done), and each seat is cancelled by the driver the way any driver backing out is (rides/ride-service: reopened
+ * without them, the money goes back, the rider is told and searches on at their own price). With a rider in the car:
+ * refused (drop them first). A rider cancelling at the same moment: whichever ends the trip first.
+ */
+export async function leaveTrip(deps: GroupTripDeps, driver: { driverId: string; driverUserId: string }, tripId: string): Promise<void> {
+  const { driverId, driverUserId } = driver;
+  const trip = await groupTripClient.tripOf(tripId);
+  if (!trip || trip.driverId !== driverId) throw new GroupTripError('This ride is not assigned to you.', 'NOT_TRIP');
+  const seats = await groupTripClient.seatsOf(tripId);
+  if (seats.some((s) => String(s.status) === 'IN_PROGRESS' || String(s.status) === 'COMPLETED')) {
+    throw new GroupTripError('A rider is in the car. Drop them first.', 'RIDING');
+  }
+  if (!(await deps.redis.setIfNotExists(finishedKey(tripId), '1', KEEP_SECONDS).catch(() => false))) return;
+  const unlinked = await groupTripClient.unlinkForLeave(tripId, driverId);
+  await groupTripClient.endTrip(tripId, new Date(), 'CANCELLED', 'driver');
+  await deps.publisher.publishGroupRideEvent(GroupTripEndedEvent.parse({ eventType: 'GROUP_TRIP_ENDED', groupId: tripId, timestamp: new Date().toISOString() }));
+  for (const seat of unlinked) {
+    // Out of the group first: the cancel below is a plain driver cancel to everyone who reads it.
+    await deps.redis.del(seatKey(seat.id)).catch(() => undefined);
+    await deps.publisher.publishRideEvent(RideCancelledEvent.parse({
+      eventType: 'RIDE_CANCELLED', rideId: seat.id, riderId: seat.riderId, driverId, driverUserId, cancelledBy: 'driver',
+      reason: 'The driver left the group', timestamp: new Date().toISOString(),
+    }));
+  }
+}
