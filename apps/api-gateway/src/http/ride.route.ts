@@ -22,6 +22,7 @@ import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
 import { waitingView } from "../rides/waiting";
 import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
+import { answerGroupOffer, GroupLiveError } from "../rides/group-live";
 
 interface RideRouteDeps {
   jwtSecret: string;
@@ -657,6 +658,35 @@ export async function handleWaitingDealRoute(
     sendJson(res, 200, { waiting });
   } catch (error) {
     if (error instanceof WaitingDealError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return;
+    }
+    sendRideRouteError(res, error, "Could not send that");
+  }
+}
+
+/**
+ * POST /rides/:rideId/group { answer: "join" | "decline" } — the rider's answer to a group ride offer
+ * (rides/group-live.ts). The first answer counts. Answers { answer }.
+ */
+export async function handleGroupAnswerRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: { jwtSecret: string; redisClient: RedisClient },
+  rideId: string,
+): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    const body = await readJsonBody(req).catch(() => null);
+    const answer = isRecord(body) && (body.answer === "join" || body.answer === "decline") ? body.answer : null;
+    if (!answer) {
+      sendJson(res, 400, { error: "Answer join or decline.", code: "BAD_ANSWER" });
+      return;
+    }
+    const result = await answerGroupOffer(deps.redisClient, rideId, user.id, answer);
+    sendJson(res, 200, { answer: result.answer });
+  } catch (error) {
+    if (error instanceof GroupLiveError) {
       sendJson(res, error.status, { error: error.message, code: error.code });
       return;
     }

@@ -17,9 +17,11 @@ import {
   validateSharedEnv,
 } from '@wheleers/config';
 import {
+  GroupRideLiveOfferedEvent,
   safeParseKafkaEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
+import { randomUUID } from 'node:crypto';
 
 import { createGroupRidePlanner } from './planner/group-ride.planner';
 import { createGroupRideEventsProducer } from './producers/group-ride-events.producer';
@@ -129,7 +131,24 @@ async function bootstrap(): Promise<void> {
   // Group ride on live searches (GROUP_RIDE_LIVE, off unless set): riders already searching who are heading
   // along the same road. dryrun logs the groups it would offer and asks nobody.
   const liveMode = groupRideLiveMode();
-  const liveMatcher = createLiveMatcher({ mode: liveMode });
+  const liveEvents = createGroupRideEventsProducer(producer);
+  const liveMatcher = createLiveMatcher({
+    mode: liveMode,
+    // GROUP_RIDE_LIVE=on: the gateway holds the searches and asks the riders.
+    onProposal: async (proposal) => {
+      const event = GroupRideLiveOfferedEvent.parse({
+        eventType: 'GROUP_RIDE_LIVE_OFFERED',
+        groupId: randomUUID(),
+        timestamp: new Date().toISOString(),
+        rideIds: proposal.rideIds,
+        members: proposal.members.map((m) => ({ rideId: m.rideId, riderId: m.riderId, offerNgn: m.offerNgn, seatPriceNgn: m.seatPriceNgn, soloSeconds: m.soloSeconds, extraSeconds: m.extraSeconds })),
+        stops: proposal.stops.map((s) => ({ rideId: s.rideId, kind: s.kind, lat: s.lat, lng: s.lng, address: s.address })),
+        totalSeconds: proposal.totalSeconds,
+        savedSeconds: proposal.savedSeconds,
+      });
+      await liveEvents.publish(event as never);
+    },
+  });
   if (liveMode !== 'off') {
     const since = new Date(Date.now() - (RIDE.BID_TIMEOUT_SECONDS + 30) * 1000);
     const open = await prisma.ride.findMany({

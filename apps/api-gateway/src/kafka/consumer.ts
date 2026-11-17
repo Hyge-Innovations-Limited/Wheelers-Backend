@@ -4,6 +4,7 @@ import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
 import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
+import { offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
@@ -171,6 +172,8 @@ export async function startGatewayKafkaConsumer(deps: StartGatewayConsumerDeps):
   setTripRecordedHook((rideId) => sayTripRecorded(deps, rideId));
   // A waiting price offered or agreed: the other side is told (rides/waiting-deal.ts).
   setWaitingDealHook((change) => tellWaitingDeal(deps, change));
+  // A group ride offered, answered, formed or dropped: each rider in it is told (rides/group-live.ts).
+  setGroupLiveHook((change) => tellGroupLive(deps, change));
   // Searches held for a rider who was paying: ended once that choice lapses unpaid.
   setInterval(() => void sweepHeldTimeouts(deps, rideParticipants), HELD_TIMEOUT_SWEEP_MS).unref();
   // What waited while riders were on the ride page, said when they leave it.
@@ -2464,6 +2467,12 @@ async function handleGroupRideEvent(
 ): Promise<void> {
   const registry = deps.registry;
 
+  // Group ride on live searches: riders searching right now who could ride together (rides/group-live.ts).
+  if (event.eventType === 'GROUP_RIDE_LIVE_OFFERED') {
+    await receiveGroupOffer(deps.redisClient, event);
+    return;
+  }
+
   if (event.eventType === 'GROUP_RIDE_DRIVER_DISPATCH_REQUESTED') {
     // Per-seat bidding: every member negotiates their own seat with the
     // driver. Each WhatsApp member gets their own bid state keyed by THEIR
@@ -2659,6 +2668,33 @@ async function tellWaitingDeal(deps: StartGatewayConsumerDeps, change: WaitingDe
   await pushDriver(deps, change.riderId, change.kind === 'agreed'
     ? { title: `${naira}/min agreed`, body: 'Waiting time counts from now.', type: 'waiting_agreed', rideId: change.rideId, generation }
     : { title: `Your driver asks ${naira}/min`, body: 'Accept, pick another price, or cancel.', type: 'waiting_counter', rideId: change.rideId, generation });
+}
+
+/**
+ * A group ride offer moved (rides/group-live.ts): each rider in it gets their own view on their app
+ * (`ride:group_offer`, null when it is over: `ride:group_formed` / `ride:group_dropped` say how) and their ride page
+ * refreshes. Never throws.
+ */
+async function tellGroupLive(deps: StartGatewayConsumerDeps, change: GroupLiveChange): Promise<void> {
+  const riderIds = change.offer.members.map((m) => m.riderId);
+  const users = await prisma.user.findMany({ where: { id: { in: riderIds } }, select: { id: true, name: true } }).catch(() => []);
+  const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
+  for (const member of change.offer.members) {
+    const base = { rideId: member.rideId, offerId: change.offer.offerId };
+    if (change.kind === 'offered' || change.kind === 'answered') {
+      const view = await offerViewFor(deps.redisClient, change.offer, member.rideId, names);
+      await deps.registry.sendToUser(member.riderId, 'ride:group_offer', { ...base, offer: view }).catch(() => undefined);
+    } else if (change.kind === 'formed') {
+      const inGroup = change.joined.some((m) => m.rideId === member.rideId);
+      await deps.registry.sendToUser(member.riderId, inGroup ? 'ride:group_formed' : 'ride:group_dropped', {
+        ...base,
+        ...(inGroup ? { seatPriceNgn: member.seatPriceNgn, riders: change.joined.length } : { reason: 'declined' }),
+      }).catch(() => undefined);
+    } else {
+      await deps.registry.sendToUser(member.riderId, 'ride:group_dropped', { ...base, reason: change.reason }).catch(() => undefined);
+    }
+    void tellRidePage(deps.registry, member.riderId);
+  }
 }
 
 /**

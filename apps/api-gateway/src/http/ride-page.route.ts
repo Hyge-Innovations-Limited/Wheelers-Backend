@@ -32,6 +32,7 @@ import { findPlaceOptions, kmBetween, reverseGeocode, SAME_CITY_KM, SAME_PLACE_K
 import { tripPageUrl } from '../trip-chat/whatsapp';
 import { waitingView } from '../rides/waiting';
 import { actOnWaiting, readWaitingAction, WaitingDealError } from '../rides/waiting-deal';
+import { answerGroupOffer, GroupLiveError } from '../rides/group-live';
 import { overLimit } from '../trip-chat/limits';
 import { LIVE_TRIP_STATUSES, TRIP_MAX_STOPS as MAX_TRIP_STOPS } from '../rides/live-trip';
 import {
@@ -1411,6 +1412,25 @@ async function handleCancelRide(req: IncomingMessage, res: ServerResponse, deps:
   sendJson(res, 200, await buildRidePageState(deps, userId));
 }
 
+/** POST /ride-page/group { answer: 'join' | 'decline' }: the rider's answer to a group ride offer (rides/group-live.ts). */
+async function handleGroupAnswer(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  await markRidePageSeen(deps.redisClient, userId).catch(() => undefined);
+  const body = await readJsonBody(req).catch(() => null);
+  const answer = isRecord(body) && (body.answer === 'join' || body.answer === 'decline') ? body.answer : null;
+  if (!answer) throw new PageError('Answer join or decline.', 400, 'BAD_ANSWER');
+  const pointer = await getActiveRide(deps.redisClient, userId).catch(() => null);
+  const ride = pointer ?? (await rideClient.findActiveByRider(userId).catch(() => null))?.id ?? null;
+  if (!ride) throw new PageError('This search has ended.', 409, 'NO_OFFER');
+  try {
+    await answerGroupOffer(deps.redisClient, ride, userId, answer);
+  } catch (error) {
+    if (error instanceof GroupLiveError) throw new PageError(error.message, error.status, error.code);
+    throw error;
+  }
+  sendJson(res, 200, await buildRidePageState(deps, userId));
+}
+
 /** POST /ride-page/waiting { action: 'offer' | 'accept', ngn }: the waiting price with the driver (rides/waiting-deal.ts). */
 async function handleWaiting(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
   const userId = authenticate(req, deps);
@@ -1746,6 +1766,7 @@ const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/topup': { method: 'GET', run: handleTopup },
   '/ride-page/cancel-ride': { method: 'POST', run: handleCancelRide },
   '/ride-page/waiting': { method: 'POST', run: handleWaiting },
+  '/ride-page/group': { method: 'POST', run: handleGroupAnswer },
   '/ride-page/trip-route': { method: 'POST', run: handleTripRoute },
   '/ride-page/trip-route/cancel': { method: 'POST', run: handleTripRouteCancel },
   '/ride-page/trip-route/quote': { method: 'POST', run: handleTripRouteQuote },

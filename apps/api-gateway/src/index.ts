@@ -63,6 +63,7 @@ import {
   handleGetRideRoute,
   handleActiveRideRoute,
   handleWaitingDealRoute,
+  handleGroupAnswerRoute,
 } from "./http/ride.route";
 import {
   handleGetDriverStatsRoute,
@@ -2379,6 +2380,17 @@ async function bootstrap(): Promise<void> {
         return;
       }
       await handleActiveRideRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient, driverPhoto });
+      return;
+    }
+
+    // POST /rides/:rideId/group — the rider's answer to a group ride offer
+    const groupAnswerMatch = url.pathname.match(/^\/rides\/([^/]+)\/group$/);
+    if (groupAnswerMatch) {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleGroupAnswerRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient }, decodeURIComponent(groupAnswerMatch[1]));
       return;
     }
 
