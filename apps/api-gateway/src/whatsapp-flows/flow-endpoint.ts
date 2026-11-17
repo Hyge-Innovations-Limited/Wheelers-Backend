@@ -14,6 +14,7 @@ import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
 import { handleWelcomeFlow } from './welcome-flow';
 import { handleWaitingFlow } from './waiting-flow';
+import { handleGroupOfferFlow } from './group-offer-flow';
 import { recordFormStep } from '../whatsapp/transcript';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
@@ -243,6 +244,11 @@ export async function handleFlowAction(
   // ── The Welcome form (token `welcome:<userId>`): email, privacy policy, terms. Handled whatever the switch says. ──
   if (rideId === 'welcome') {
     return handleWelcomeFlow(body, userId, { redisClient: deps.redisClient, onWelcomeAgreed: deps.onWelcomeAgreed });
+  }
+
+  // ── A group ride offer (token `grp:<userId>`): Ride together or No thanks ──
+  if (rideId === 'grp') {
+    return handleGroupOfferFlow(body, userId, { redisClient: deps.redisClient });
   }
 
   // ── The waiting price (token `wait:<userId>`): keep the driver waiting at a price, answer their price, or cancel ──

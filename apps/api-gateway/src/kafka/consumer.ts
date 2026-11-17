@@ -4,7 +4,8 @@ import type { WheelersConsumer } from '@wheleers/kafka-client';
 import { tellRidePage } from '../rides/ride-page-live';
 import { setTripRecordedHook } from '../rides/trip-recorded';
 import { setWaitingDealHook, type WaitingDealChange } from '../rides/waiting-deal';
-import { offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
+import { answerOf, offerViewFor, receiveGroupOffer, setGroupLiveHook, type GroupLiveChange } from '../rides/group-live';
+import { sendGroupOffer } from '../whatsapp/group-live-chat';
 import { agreedLine, sendDriverCounter, sendWaitingAsk, sendWaitingText } from '../whatsapp/waiting-deal-chat';
 import { waitingLineForRider } from '../rides/waiting';
 import { referralClient, walletClient, virtualAccountClient, driverClient, userClient, driverBidClient, rideClient, complianceClient, tripCodeClient, scheduledRideClient, waitingClient, prisma, SEARCH_TIMED_OUT_REASON, PRICE_CHANGEABLE_STATUSES } from '@wheleers/db';
@@ -2681,6 +2682,22 @@ async function tellGroupLive(deps: StartGatewayConsumerDeps, change: GroupLiveCh
   const names = new Map(users.map((u) => [u.id, (u.name ?? '').trim().split(/\s+/)[0] || 'Rider']));
   for (const member of change.offer.members) {
     const base = { rideId: member.rideId, offerId: change.offer.offerId };
+    // WhatsApp riders not on the ride page hear it in the chat: the offer (form or buttons) once, then how it ended
+    // for those who said yes. App riders and the page see it on screen.
+    const phone = await whatsappRiderPhone(deps, member.riderId, member.rideId).catch(() => null);
+    const inChat = Boolean(phone && deps.whatsappNotifier && !(await isRidePageOpen(deps.redisClient, member.riderId).catch(() => false)));
+    if (inChat && phone && deps.whatsappNotifier) {
+      const said = await answerOf(deps.redisClient, change.offer.offerId, member.rideId).catch(() => null);
+      if (change.kind === 'offered') {
+        const view = await offerViewFor(deps.redisClient, change.offer, member.rideId, names);
+        if (view) await sendGroupOffer(deps.whatsappNotifier, phone, member.riderId, view).catch(() => undefined);
+      } else if (change.kind === 'formed' && change.joined.some((m) => m.rideId === member.rideId)) {
+        const others = change.joined.filter((m) => m.rideId !== member.rideId).map((m) => names.get(m.riderId) ?? 'Rider');
+        await sendWaitingText(deps.whatsappNotifier, phone, `You're riding together with ${others.join(' and ')}. Your seat: ₦${member.seatPriceNgn.toLocaleString('en-NG')}. Finding your driver now.`).catch(() => undefined);
+      } else if ((change.kind === 'dropped' || change.kind === 'formed') && said === 'join') {
+        await sendWaitingText(deps.whatsappNotifier, phone, `No group this time. Your own search goes on at ₦${member.offerNgn.toLocaleString('en-NG')}.`).catch(() => undefined);
+      }
+    }
     if (change.kind === 'offered' || change.kind === 'answered') {
       const view = await offerViewFor(deps.redisClient, change.offer, member.rideId, names);
       await deps.registry.sendToUser(member.riderId, 'ride:group_offer', { ...base, offer: view }).catch(() => undefined);

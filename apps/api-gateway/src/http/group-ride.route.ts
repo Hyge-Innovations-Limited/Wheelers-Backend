@@ -489,7 +489,7 @@ export async function handleGroupRideFaceCheckRoute(
  * face check as before, stored once, then reused for every group ride. A yes that was waiting on it may be decided now.
  */
 export async function takeGroupSelfie(
-  deps: GroupRideRouteDeps,
+  deps: Pick<GroupRideRouteDeps, 'faceStorage' | 'groqApiKey' | 'groqModel' | 'groqTimeoutMs' | 'redisClient'>,
   userId: string,
   imageBase64: string | null,
   mimeTypeRaw: string | null,

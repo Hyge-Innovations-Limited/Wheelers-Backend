@@ -8,6 +8,7 @@
  *   npm run flow:push:quick-actions the Quick Actions menu and everything behind it
  *   npm run flow:push:welcome       the Welcome form (email, privacy policy, terms)
  *   npm run flow:push:waiting       the Waiting time form (a price a minute, the driver's price, cancel)
+ *   npm run flow:push:group         the Group ride form (Ride together or No thanks)
  *   npm run flow:push:forms         both, one after the other
  *                                   (run ON THE SERVER, from the repo root)
  *
@@ -42,6 +43,7 @@ const FORMS = {
   'quick-actions': { envKey: 'WHATSAPP_QUICK_ACTIONS_FLOW_ID', name: 'Wheelers Quick Actions', json: 'quick-actions-flow-definition.json' },
   welcome: { envKey: 'WHATSAPP_WELCOME_FLOW_ID', name: 'Wheelers Welcome', json: 'welcome-flow-definition.json' },
   waiting: { envKey: 'WHATSAPP_WAITING_FLOW_ID', name: 'Wheelers Waiting Time', json: 'waiting-flow-definition.json' },
+  group: { envKey: 'WHATSAPP_GROUP_FLOW_ID', name: 'Wheelers Group Ride', json: 'group-offer-flow-definition.json' },
 };
 const which = process.argv[2];
 const chosen = FORMS[which];
