@@ -115,6 +115,7 @@ const gatewayPort = valueOf(envFile, "PORT") || "3000";
 // at once; two halve that, and let a deploy roll one at a time.
 const gatewayInstances = Math.max(1, Number.parseInt(valueOf(envFile, "GATEWAY_INSTANCES") || "1", 10) || 1);
 const gatewayMemory = valueOf(envFile, "GATEWAY_MAX_MEMORY") || "600M";
+const faceInstances = Math.max(1, Number.parseInt(valueOf(envFile, "FACE_INSTANCES") || "1", 10) || 1);
 
 module.exports = {
   apps: [
@@ -124,6 +125,10 @@ module.exports = {
       instances: gatewayInstances,
       extraEnv: defined.has("PORT") ? {} : { PORT: "3000" },
     }),
+    // The face check's library in a process of its own (apps/api-gateway/src/face/server.ts, 127.0.0.1:FACE_PORT,
+    // default 3040): ~450 MB once loaded, so never inside the gateway, which is recycled at GATEWAY_MAX_MEMORY.
+    // Each process reads one photo at a time (~0.5 s); FACE_INSTANCES=2 reads two at once, for ~500 MB more.
+    { ...app("api-gateway", { memory: "1500M", instances: faceInstances }), name: "face-service", script: "dist/face/server.js" },
     app("ride-service"),
     app("group-ride"),
     app("payment-service"),

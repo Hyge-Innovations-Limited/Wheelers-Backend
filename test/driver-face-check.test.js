@@ -79,6 +79,7 @@ const fakeEngine = {
     if (who === 9) return [face(DRIVER), face(OTHER)];
     return [face(who === 2 ? OTHER : DRIVER)];
   },
+  async scan(buf) { return { faces: await this.faces(buf), jpeg: buf }; },
 };
 const b64 = (b) => b.toString('base64');
 const scan = (who, turned = 0.3) => [photo(who), photo(who, turned), photo(who)].map(b64);
@@ -86,7 +87,7 @@ const scan = (who, turned = 0.3) => [photo(who), photo(who, turned), photo(who)]
 function world(mode = 'on', over = {}) {
   const w = {
     events: [], alerts: [], told: [], uploads: [], removed: [],
-    redis, mode, engine: fakeEngine, shrink: async (b) => b,
+    redis, mode, engine: fakeEngine,
     publisher: { publishRideEvent: async (e) => { w.events.push(e); } },
     kycStorage: { getFile: async () => ({ bytes: photo(1) }) },
     frameStorage: {
@@ -147,6 +148,7 @@ test('the driver, head turned: passed; Arrived and Start are refused until then'
   assert.equal(row.status, 'PASSED');
   assert.equal(row.frameKeys.length, 3, 'three frames kept');
   assert.ok(row.bestDistance < 0.01);
+  assert.match(row.lastReason, /^distance 0\.000 turn 0\.300$/, 'what was measured is kept on a pass too');
   assert.equal((await prisma.driverFaceTemplate.findUnique({ where: { driverId: d.id } })).selfieKey, `drivers/kyc/${d.id}/selfie.jpg`, 'the selfie\'s face kept');
   assert.ok(w.told.some((t) => t.type === 'ride:face_check:passed'));
   assert.equal(w.alerts.length, 0);
@@ -194,20 +196,21 @@ test('no head turn counts as a miss; an unclear photo does not, up to the scan l
   const r = await booked(d);
   await fc.startFaceCheck(w, { rideId: r.id, driverId: d.id, driverUserId: d.userId });
   const still = await fc.submitFaceCheck(w, { driverUserId: d.userId, rideId: r.id, frames: [photo(1), photo(1), photo(1)].map(b64) });
-  assert.equal(still.status, 'retry');
-  assert.equal(still.triesLeft, FACE_CHECK_TRIES - 1, 'a photo held up never turns');
-  assert.match(still.reason, /Turn your head/);
+  assert.equal(still.status, 'retry', 'a photo held up never turns: never a pass');
+  assert.equal(still.triesLeft, FACE_CHECK_TRIES, 'not turned enough is a try-again, not a miss');
+  assert.match(still.reason, /Turn your head further/);
+  assert.match((await prisma.faceCheck.findFirst({ where: { rideId: r.id } })).lastReason, /^no_turn 0\.000$/, 'what was measured is kept');
 
   for (const [who, said] of [[0, /couldn't see your face/], [9, /Only you/], [7, /closer/]]) {
     const answer = await fc.submitFaceCheck(w, { driverUserId: d.userId, rideId: r.id, frames: scan(who) });
     assert.equal(answer.status, 'retry');
     assert.match(answer.reason, said);
-    assert.equal(answer.triesLeft, FACE_CHECK_TRIES - 1, 'not counted');
+    assert.equal(answer.triesLeft, FACE_CHECK_TRIES, 'not counted');
   }
   // Bad frames (too small, two not three) are a retry and not a scan.
   assert.equal((await fc.submitFaceCheck(w, { driverUserId: d.userId, rideId: r.id, frames: ['abc', 'def'] })).status, 'retry');
   let last;
-  let n = 4; // one no-turn scan and three unclear ones so far
+  let n = 4; // one no-turn scan and three unclear ones so far (each a scan, none a miss)
   do { last = await fc.submitFaceCheck(w, { driverUserId: d.userId, rideId: r.id, frames: scan(0) }); n += 1; } while (last.status === 'retry' && n < 20);
   assert.equal(last.status, 'failed', 'scans are limited');
   assert.equal(n, FACE_CHECK_MAX_SUBMITS);
@@ -235,7 +238,7 @@ test('the check cannot run: the ride goes back, the driver takes no rides for a 
   );
 
   // The library itself failing is the same.
-  const w2 = world('on', { engine: { faces: async () => { throw new Error('wasm gone'); } } });
+  const w2 = world('on', { engine: { faces: async () => { throw new Error('wasm gone'); }, scan: async () => { throw new Error('wasm gone'); } } });
   const d2 = await driver();
   const r2 = await booked(d2);
   await fc.startFaceCheck(w2, { rideId: r2.id, driverId: d2.id, driverUserId: d2.userId });
@@ -333,7 +336,7 @@ test('POST /drivers/face-check over HTTP: signed in only, a scan answered', asyn
 
 test('the real library: finds faces, one person is close to themselves and far from others', { timeout: 120_000 }, async () => {
   const Jimp = require('jimp');
-  const { faceEngine, faceDistance } = require('../apps/api-gateway/dist/face/engine.js');
+  const { localFaceEngine: faceEngine, faceDistance } = require('../apps/api-gateway/dist/face/engine.js');
   const demo = path.join(path.dirname(require.resolve('@vladmandic/face-api/package.json')), 'demo');
   const group = await Jimp.read(path.join(demo, 'sample1.jpg'));
   const found = await faceEngine.faces(await group.getBufferAsync(Jimp.MIME_JPEG));
@@ -351,11 +354,15 @@ test('the real library: finds faces, one person is close to themselves and far f
   assert.ok(Math.max(...same) < 0.45, `same person: ${same.map((x) => x.toFixed(2))}`);
   assert.ok(Math.min(...others) > Math.max(...same), 'never closer to someone else than to themselves');
   // Not a photo: no faces, no crash.
-  assert.deepEqual(await faceEngine.faces(fs.readFileSync(path.join(demo, 'facemesh.png')).subarray(0, 0)).catch(() => []), []);
+  await assert.rejects(faceEngine.faces(Buffer.from('not a photo at all')), /not a photo/);
+  // A phone that saved the photo sideways without saying so: still found.
+  const sideways = await faceEngine.faces(await group.clone().scaleToFit(720, 720).rotate(90).getBufferAsync(Jimp.MIME_JPEG));
+  assert.ok(sideways.length >= 1, 'found turned the right way up');
 });
 
 test('a frame that is not a photo is a try-again, never a broken check (the driver is not held back)', async () => {
-  const w = world('on', { shrink: undefined });
+  const { localFaceEngine } = require('../apps/api-gateway/dist/face/engine.js');
+  const w = world('on', { engine: localFaceEngine });
   const d = await driver();
   const r = await booked(d);
   await fc.startFaceCheck(w, { rideId: r.id, driverId: d.id, driverUserId: d.userId });
@@ -366,4 +373,33 @@ test('a frame that is not a photo is a try-again, never a broken check (the driv
   assert.equal(row.status, 'PENDING');
   assert.equal(row.submits, 0, 'not counted');
   assert.equal(w.events.length + w.alerts.length, 0);
+});
+
+test('face-service: its own process on 127.0.0.1, called the way the gateway calls it', { timeout: 120_000 }, async () => {
+  const { spawn } = require('node:child_process');
+  const Jimp = require('jimp');
+  const port = String(30000 + Math.floor(Math.random() * 20000));
+  const child = spawn(process.execPath, [path.join(__dirname, '../apps/api-gateway/dist/face/server.js')], { env: { ...process.env, FACE_PORT: port, FACE_CHECK: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    await new Promise((resolve, reject) => {
+      child.stdout.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
+      child.on('exit', (code) => reject(new Error(`face-service exited ${code}`)));
+    });
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    assert.deepEqual(health, { ok: true, loaded: false }, 'FACE_CHECK off: the models wait for the first photo');
+    process.env.FACE_PORT = port;
+    const { faceEngine } = require('../apps/api-gateway/dist/face/engine.js');
+    const demo = path.join(path.dirname(require.resolve('@vladmandic/face-api/package.json')), 'demo');
+    const big = (await Jimp.read(path.join(demo, 'sample2.jpg'))).resize(3000, Jimp.AUTO);
+    const scanned = await faceEngine.scan(await big.quality(60).getBufferAsync(Jimp.MIME_JPEG));
+    assert.ok(scanned.faces.length >= 1);
+    const kept = await Jimp.read(scanned.jpeg);
+    assert.ok(Math.max(kept.bitmap.width, kept.bitmap.height) <= 720, 'a phone photo comes back as a 720-pixel copy');
+    assert.ok((await faceEngine.faces(scanned.jpeg)).length >= 1);
+    await assert.rejects(faceEngine.scan(Buffer.from('x'.repeat(2000))), /not a photo/, 'not a photo: 422, a try-again');
+    assert.equal((await (await fetch(`http://127.0.0.1:${port}/health`)).json()).loaded, true);
+  } finally {
+    delete process.env.FACE_PORT;
+    child.kill('SIGTERM');
+  }
 });

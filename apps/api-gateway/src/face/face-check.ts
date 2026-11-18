@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import Jimp from 'jimp';
 import { prisma } from '@wheleers/db';
 import {
   faceCheckMode, sendAlert, formatTripId, FACE_BLOCK_MINUTES, FACE_CHECK_MAX_SUBMITS, FACE_CHECK_SECONDS, FACE_CHECK_TRIES,
@@ -8,7 +7,7 @@ import {
 import { RideCancelledEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
 import type { GatewayPublisher } from '../websocket/publisher';
-import { faceDistance, faceEngine, type FaceEngine, type FoundFace } from './engine';
+import { faceDistance, faceEngine, NotAPhoto, type FaceEngine, type FoundFace, type ScannedPhoto } from './engine';
 
 /**
  * The driver's face check before every ride (Timi, 18 Nov 2026; packages/config face-check.ts has the rules).
@@ -17,8 +16,9 @@ import { faceDistance, faceEngine, type FaceEngine, type FoundFace } from './eng
  *               in ride:matched (faceCheck) and opens the camera.
  *   scan        submitFaceCheck: three frames (straight, turned, straight). One face in each, the same person in
  *               all, the head really turned, and close enough to the driver's KYC selfie: PASSED. Not close
- *               enough: another try with a new turn; out of tries: FAILED. Unclear (no face, two faces, too far):
- *               try again, not counted as a miss (up to FACE_CHECK_MAX_SUBMITS scans in all).
+ *               enough: another try with a new turn; out of tries: FAILED. Unclear (no face, two faces, too far,
+ *               not a photo) or the head not turned enough: try again, not counted as a miss (up to
+ *               FACE_CHECK_MAX_SUBMITS scans in all). The photos are read by face-service (face/engine.ts).
  *   no scan     sweepFaceChecks: past the 2 minutes, EXPIRED.
  *   FAILED / EXPIRED (mode on): the ride goes back to the search for the rider (a driver cancel, as when a driver
  *               backs out), the driver is told, and Telegram hears it.
@@ -43,8 +43,6 @@ export interface FaceCheckDeps {
   kycStorage: Pick<FaceFrameStore, 'getFile'> | null;
   frameStorage: FaceFrameStore | null;
   engine?: FaceEngine;
-  /** A frame made small (default: Jimp to 720 pixels, JPEG). Tests pass the bytes through. */
-  shrink?: (frame: Buffer) => Promise<Buffer>;
   notifyDriver?: (userId: string, type: string, payload: Record<string, unknown>) => Promise<unknown>;
   alert?: (title: string, body: string) => Promise<unknown>;
   mode?: FaceCheckMode;
@@ -63,13 +61,7 @@ export interface FaceCheckView {
 type Row = Awaited<ReturnType<typeof prisma.faceCheck.findFirstOrThrow>>;
 const LIVE = ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED'];
 const MAX_FRAME_BYTES = 8_000_000;
-const FRAME_SIDE = 720;
 const MIN_FACE_SIZE = 0.15;
-async function shrinkFrame(frame: Buffer): Promise<Buffer> {
-  const img = await Jimp.read(frame);
-  if (Math.max(img.bitmap.width, img.bitmap.height) > FRAME_SIDE) img.scaleToFit(FRAME_SIDE, FRAME_SIDE);
-  return (await img.quality(80).getBufferAsync(Jimp.MIME_JPEG)) as Buffer;
-}
 const pickTurn = (): 'left' | 'right' => (Math.random() < 0.5 ? 'left' : 'right');
 const modeOf = (deps: FaceCheckDeps) => deps.mode ?? faceCheckMode();
 const nowOf = (deps: FaceCheckDeps) => (deps.now ? deps.now() : Date.now());
@@ -168,7 +160,7 @@ const UNCLEAR: Record<string, string> = {
 };
 
 /** Judge three frames against the driver's selfie: unclear, not a turn, not the same person, or the distance. */
-export function judgeFrames(frames: FoundFace[][], template: number[]): { kind: 'unclear'; why: string } | { kind: 'no_turn' } | { kind: 'scored'; distance: number; match: boolean } {
+export function judgeFrames(frames: FoundFace[][], template: number[]): { kind: 'unclear'; why: string } | { kind: 'no_turn'; turn: number } | { kind: 'scored'; distance: number; turn: number; match: boolean } {
   for (const found of frames) {
     if (found.length === 0) return { kind: 'unclear', why: 'no_face' };
     if (found.length > 1) return { kind: 'unclear', why: 'two_faces' };
@@ -177,10 +169,10 @@ export function judgeFrames(frames: FoundFace[][], template: number[]): { kind: 
   const [a, b, c] = frames.map((f) => f[0]);
   // One person all through (no swapping faces between frames), and the head really turned.
   const sameAll = faceDistance(a.descriptor, b.descriptor) <= FACE_MATCH_MAX_DISTANCE + 0.1 && faceDistance(a.descriptor, c.descriptor) <= FACE_MATCH_MAX_DISTANCE;
-  const turned = Math.abs(b.turn - a.turn) >= FACE_TURN_MIN_DELTA || Math.abs(b.turn - c.turn) >= FACE_TURN_MIN_DELTA;
-  if (!turned) return { kind: 'no_turn' };
+  const turn = Math.max(Math.abs(b.turn - a.turn), Math.abs(b.turn - c.turn));
+  if (turn < FACE_TURN_MIN_DELTA) return { kind: 'no_turn', turn };
   const distance = Math.min(faceDistance(a.descriptor, template), faceDistance(c.descriptor, template));
-  return { kind: 'scored', distance, match: sameAll && distance <= FACE_MATCH_MAX_DISTANCE };
+  return { kind: 'scored', distance, turn, match: sameAll && distance <= FACE_MATCH_MAX_DISTANCE };
 }
 
 export async function submitFaceCheck(deps: FaceCheckDeps, input: { driverUserId: string; rideId: string; frames: unknown }): Promise<ScanAnswer> {
@@ -195,14 +187,26 @@ export async function submitFaceCheck(deps: FaceCheckDeps, input: { driverUserId
 
   const frames = Array.isArray(input.frames) ? input.frames : [];
   const sent = frames.slice(0, 3).map((f) => (typeof f === 'string' ? Buffer.from(f.replace(/^data:image\/\w+;base64,/, ''), 'base64') : Buffer.alloc(0)));
-  // Each frame brought down to 720 pixels once (a phone's photo is several MB): what is checked and what is kept.
-  const buffers = sent.length === 3 && sent.every((b) => b.length >= 1000 && b.length <= MAX_FRAME_BYTES)
-    ? await Promise.all(sent.map((b) => (deps.shrink ?? shrinkFrame)(b).catch(() => null)))
-    : [];
-  if (buffers.length !== 3 || buffers.some((b) => !b)) {
-    return { status: 'retry', reason: UNCLEAR.no_face, challenge: row.challenge === 'right' ? 'right' : 'left', triesLeft: FACE_CHECK_TRIES - row.failedTries };
+  const sameTurn = row.challenge === 'right' ? 'right' : 'left';
+  const again = (why: string): ScanAnswer => ({ status: 'retry', reason: UNCLEAR[why] ?? why, challenge: sameTurn, triesLeft: FACE_CHECK_TRIES - row.failedTries });
+  if (sent.length !== 3 || sent.some((b) => b.length < 1000 || b.length > MAX_FRAME_BYTES)) return again('no_face');
+
+  // Each frame read once by face-service: its faces, and its 720-pixel copy (what is kept). The three go together,
+  // so with many drivers scanning at once each driver's frames are read back to back (first come, first done).
+  const engine = deps.engine ?? faceEngine;
+  let scanned: ScannedPhoto[];
+  try {
+    const all = await Promise.allSettled(sent.map((b) => engine.scan(b)));
+    const failed = all.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
+    scanned = all.map((r) => (r as PromiseFulfilledResult<ScannedPhoto>).value);
+  } catch (error) {
+    // Not a photo (a broken upload): try again, not counted.
+    if (error instanceof NotAPhoto) return again('no_face');
+    const why = `engine: ${error instanceof Error ? error.message : String(error)}`;
+    await resolve(deps, row, 'ERROR', why);
+    return { status: 'error', reason: why };
   }
-  const photos = buffers as Buffer[];
   // One more scan, counted atomically (two submits at once never both get past the limit).
   const counted = await prisma.faceCheck.updateMany({ where: { id: row.id, status: 'PENDING', submits: { lt: FACE_CHECK_MAX_SUBMITS } }, data: { submits: { increment: 1 } } });
   if (counted.count === 0) {
@@ -211,11 +215,8 @@ export async function submitFaceCheck(deps: FaceCheckDeps, input: { driverUserId
   }
 
   let template: number[];
-  let found: FoundFace[][];
   try {
     template = await ensureTemplate(deps, row.driverId);
-    found = [];
-    for (const b of photos) found.push(await (deps.engine ?? faceEngine).faces(b).catch((e) => { throw new CheckBroken('engine', String(e?.message ?? e)); }));
   } catch (error) {
     const why = error instanceof CheckBroken ? error.message : String(error);
     await resolve(deps, row, 'ERROR', why);
@@ -223,47 +224,44 @@ export async function submitFaceCheck(deps: FaceCheckDeps, input: { driverUserId
   }
   // The frames, kept for disputes (best effort: a failed upload never fails the check).
   const keys = deps.frameStorage
-    ? await Promise.all(photos.map((b, i) => deps.frameStorage!.upload({ driverId: row.driverId, type: `face-${row.rideId}-${i + 1}-${randomUUID().slice(0, 8)}`, imageBuffer: b, mimeType: 'image/jpeg' }).catch(() => null)))
+    ? await Promise.all(scanned.map((s, i) => deps.frameStorage!.upload({ driverId: row.driverId, type: `face-${row.rideId}-${i + 1}-${randomUUID().slice(0, 8)}`, imageBuffer: s.jpeg, mimeType: 'image/jpeg' }).catch(() => null)))
     : [];
   const kept = [...((row.frameKeys as string[] | null) ?? []), ...keys.filter((k): k is string => Boolean(k))];
 
-  const verdict = judgeFrames(found, template);
+  const verdict = judgeFrames(scanned.map((s) => s.faces), template);
+  // What was measured, on the row for tuning from real scans (distance to the selfie, size of the head turn).
+  const measured = verdict.kind === 'scored' ? `distance ${verdict.distance.toFixed(3)} turn ${verdict.turn.toFixed(3)}` : verdict.kind === 'no_turn' ? `no_turn ${verdict.turn.toFixed(3)}` : `unclear: ${verdict.why}`;
   const best = verdict.kind === 'scored' ? Math.min(verdict.distance, row.bestDistance ?? Infinity) : row.bestDistance;
-  if (verdict.kind === 'unclear') {
-    await prisma.faceCheck.update({ where: { id: row.id }, data: { frameKeys: kept, lastReason: verdict.why } });
-    const after = await prisma.faceCheck.findUniqueOrThrow({ where: { id: row.id } });
+  // Unclear, or the head not turned enough: try again, not counted as a miss (a scan in all, up to the limit).
+  if (verdict.kind === 'unclear' || verdict.kind === 'no_turn') {
+    const after = await prisma.faceCheck.update({ where: { id: row.id }, data: { frameKeys: kept, lastReason: measured } });
     if (after.submits >= FACE_CHECK_MAX_SUBMITS) {
-      await resolve(deps, after, 'FAILED', `unclear: ${verdict.why}`);
+      await resolve(deps, after, 'FAILED', measured);
       return { status: 'failed' };
     }
-    return { status: 'retry', reason: UNCLEAR[verdict.why], challenge: row.challenge === 'right' ? 'right' : 'left', triesLeft: FACE_CHECK_TRIES - row.failedTries };
+    return again(verdict.kind === 'no_turn' ? 'Turn your head further when the screen says.' : verdict.why);
   }
-  if (verdict.kind === 'scored' && verdict.match) {
-    await prisma.faceCheck.update({ where: { id: row.id }, data: { frameKeys: kept, bestDistance: best, lastReason: null } });
-    await resolve(deps, row, 'PASSED', `distance ${verdict.distance.toFixed(3)}`);
+  if (verdict.match) {
+    await prisma.faceCheck.update({ where: { id: row.id }, data: { frameKeys: kept, bestDistance: best } });
+    await resolve(deps, row, 'PASSED', measured);
     return { status: 'passed' };
   }
-  // A miss (not the driver, or no head turn): one try fewer, and a new turn to ask for.
-  const reason = verdict.kind === 'no_turn' ? 'no_turn' : `no_match ${verdict.distance.toFixed(3)}`;
+  // Not the driver: one try fewer, and a new turn to ask for.
   const challenge = pickTurn();
   const updated = await prisma.faceCheck.update({
     where: { id: row.id },
-    data: { frameKeys: kept, bestDistance: best ?? null, lastReason: reason, failedTries: { increment: 1 }, challenge },
+    data: { frameKeys: kept, bestDistance: best ?? null, lastReason: `no_match ${measured}`, failedTries: { increment: 1 }, challenge },
   });
   if (updated.failedTries >= FACE_CHECK_TRIES) {
-    await resolve(deps, updated, 'FAILED', reason);
+    await resolve(deps, updated, 'FAILED', `no_match ${measured}`);
     return { status: 'failed' };
   }
-  return {
-    status: 'retry',
-    reason: verdict.kind === 'no_turn' ? 'Turn your head when the screen asks.' : "That didn't match your Wheelers photo. Try again: face the camera, good light.",
-    challenge, triesLeft: FACE_CHECK_TRIES - updated.failedTries,
-  };
+  return { status: 'retry', reason: "That didn't match your Wheelers photo. Try again: face the camera, good light.", challenge, triesLeft: FACE_CHECK_TRIES - updated.failedTries };
 }
 
 /** Ends a PENDING check once (the update is the claim) and does what its outcome needs. */
 async function resolve(deps: FaceCheckDeps, row: Row, status: 'PASSED' | 'FAILED' | 'EXPIRED' | 'ERROR', detail: string): Promise<boolean> {
-  const claimed = await prisma.faceCheck.updateMany({ where: { id: row.id, status: 'PENDING' }, data: { status, resolvedAt: new Date(nowOf(deps)), lastReason: status === 'PASSED' ? null : detail } });
+  const claimed = await prisma.faceCheck.updateMany({ where: { id: row.id, status: 'PENDING' }, data: { status, resolvedAt: new Date(nowOf(deps)), lastReason: detail } });
   if (claimed.count === 0) return false;
   const enforced = row.mode === 'on';
   const ride = await prisma.ride.findUnique({ where: { id: row.rideId }, select: { riderId: true, tripNumber: true, driverId: true, status: true } }).catch(() => null);
