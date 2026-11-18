@@ -25,7 +25,8 @@ import { getBanks } from "../payments/banks";
 import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-pin";
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
-import { depositNeededFor, MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
+import { CASH_OWED_LIMIT_NGN, cashRidesEnabled, depositNeededFor, MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
+import { owedOf } from "../rides/cash-owed";
 
 // ─── Deps ──────────────────────────────────────────────────────────
 
@@ -373,6 +374,22 @@ async function payoutAccountFor(deps: WalletRouteDeps, userId: string) {
   };
 }
 
+/**
+ * Pay with cash (Timi, 18 Nov 2026). cashRides: riders may pick Cash at accept (the apps show it only when this is
+ * true, so an app updated before the server never offers it). A driver's wallet below zero is what they owe from cash
+ * trips: owedNgn, and past owedLimitNgn requests stop (driverPaused) until they deposit depositToDriveNgn.
+ */
+function cashFields(balanceNgn: number) {
+  const owed = owedOf(balanceNgn);
+  return {
+    cashRides: cashRidesEnabled(),
+    owedNgn: owed.owedNgn,
+    owedLimitNgn: CASH_OWED_LIMIT_NGN,
+    driverPaused: owed.paused,
+    depositToDriveNgn: owed.depositNgn,
+  };
+}
+
 export async function handleWalletOverviewRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -390,6 +407,7 @@ export async function handleWalletOverviewRoute(
         updatedAt: new Date().toISOString(),
         withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
         minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
+        ...cashFields(0),
       });
       return;
     }
@@ -406,6 +424,7 @@ export async function handleWalletOverviewRoute(
       withdrawalFeeNgn: WITHDRAWAL_FEE_NGN,
       minWithdrawalNgn: MIN_WITHDRAWAL_REQUEST_NGN,
       payoutAccount: await payoutAccountFor(deps, user.id),
+      ...cashFields(balanceNgn),
     });
   } catch (error) {
     sendJson(res, 401, {

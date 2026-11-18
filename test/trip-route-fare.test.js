@@ -436,7 +436,8 @@ test('an old app without acceptedFareNgn (flag on): unchanged, agreed fare stays
   assert.equal(Number((await rideRow(t)).agreedFareNgn), 5200);
 });
 
-test('cash ride: formula fare reaches RIDE_COMPLETED, no wallet money moves, no wallet check', async () => {
+// Pay with cash (Timi, 18 Nov 2026): the rider's wallet is never touched; the driver collected the fare and owes Wheelers' share of it.
+test('cash ride: formula fare reaches RIDE_COMPLETED, no money moves from the rider, the driver owes Wheelers\' share, no wallet check', async () => {
   const t = await trip({ drivenFraction: 0.8, method: 'CASH', afterHold: undefined });
   const r = rig();
   const fare = (await quote(r, t, VI, [SURULERE])).payload.fareNgn;
@@ -446,7 +447,7 @@ test('cash ride: formula fare reaches RIDE_COMPLETED, no wallet money moves, no 
   assert.equal(completed.paymentMethod, 'CASH');
   assert.equal(completed.fareNgn, fare);
   assert.equal(await bal(t.rider), 20_000);
-  assert.equal(await bal(t.driverUser), 0);
+  assert.equal(await bal(t.driverUser), -calculateRideFees(fare).platformTotalNgn);
 });
 
 test('the driver hears ride:route:updated with the new fare and change after a gateway restart (empty rideParticipants)', async () => {

@@ -1,0 +1,188 @@
+import { rideClient } from '@wheleers/db';
+import { answerGroupOffer, GroupLiveError, offerForRide } from '../rides/group-live';
+import { SELFIE_ASK } from './group-selfie-text';
+import { answerCounter, GroupTripError } from '../rides/group-trip';
+import { takeGroupSelfie } from '../http/group-ride.route';
+import { signFlowToken } from '../whatsapp-flows/encryption';
+import { expectGroupSelfie, groupSelfieExpectedKey } from '../whatsapp-flows/group-offer-flow';
+import { downloadMetaMedia } from '../whatsapp-flows/meta-media';
+import type { MetaWhatsappRouteDeps } from './deps';
+import { sendWaitingInteractive, sendWaitingText } from './waiting-deal-chat';
+
+/**
+ * A group ride offer in the chat (Timi, 17 Nov 2026), for riders not on the ride page: one form message
+ * (WHATSAPP_GROUP_FLOW_ID, npm run flow:push:group), or until it is published (or if Meta refuses it) two buttons,
+ * Ride together / No thanks. A yes with no selfie on file sends one as a photo in the chat within 60 s.
+ */
+
+export const GROUP_JOIN_ID = 'grp_join';
+export const GROUP_DECLINE_ID = 'grp_decline';
+type FormMeta = { metaAccessToken?: string; metaPhoneNumberId?: string; flowTokenSecret?: string };
+const naira = (n: number) => `₦${Math.round(n).toLocaleString('en-NG')}`;
+
+// Each button names the offer or the price it answers (`grp_join:<offerId>`): an old button answers nothing new.
+const replyOf = (id: string | undefined | null, yes: string, no: string): { yes: boolean; ref: string | null } | null => {
+  if (!id) return null;
+  const [base, ref] = id.split(':');
+  if (base !== yes && base !== no) return null;
+  return { yes: base === yes, ref: ref ?? null };
+};
+
+export function isGroupLiveReply(id: string | undefined | null): boolean {
+  return replyOf(id, GROUP_JOIN_ID, GROUP_DECLINE_ID) !== null;
+}
+
+/* A driver's counter over +10% of this rider's seat (rides/group-trip.ts): Yes or No in 20 s; silence is No. */
+export const GROUP_COUNTER_YES_ID = 'gct_yes';
+export const GROUP_COUNTER_NO_ID = 'gct_no';
+
+export function isGroupCounterReply(id: string | undefined | null): boolean {
+  return replyOf(id, GROUP_COUNTER_YES_ID, GROUP_COUNTER_NO_ID) !== null;
+}
+
+export function groupCounterText(ask: { seatPriceNgn: number; askNgn: number }): string {
+  return `A driver asks *${naira(ask.askNgn)}* for your seat (was ${naira(ask.seatPriceNgn)}). Answer in 20 seconds.`;
+}
+
+export async function sendGroupCounterAsk(meta: FormMeta, to: string, ask: { askId: string; seatPriceNgn: number; askNgn: number }): Promise<void> {
+  await sendWaitingInteractive(meta, to, {
+    type: 'button',
+    body: { text: groupCounterText(ask) },
+    action: { buttons: [{ type: 'reply', reply: { id: `${GROUP_COUNTER_YES_ID}:${ask.askId}`, title: `Yes, ${naira(ask.askNgn)}` } }, { type: 'reply', reply: { id: `${GROUP_COUNTER_NO_ID}:${ask.askId}`, title: 'No' } }] },
+  });
+}
+
+/** A tap on Yes / No for a driver's counter. Never throws. */
+export async function handleGroupCounterTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+  const reply = replyOf(replyId, GROUP_COUNTER_YES_ID, GROUP_COUNTER_NO_ID);
+  const answer = reply?.yes ? 'yes' : 'no';
+  try {
+    const ride = await rideClient.findActiveByRider(userId).catch(() => null);
+    if (!ride || !reply?.ref) {
+      await sendWaitingText(deps, phone, 'This price has ended. Still finding your driver.');
+      return;
+    }
+    const result = await answerCounter({ redis: deps.redisClient, publisher: deps.publisher }, userId, ride.id, answer, reply.ref);
+    await sendWaitingText(deps, phone, result === 'waiting' ? 'Noted. Waiting for the others.' : result === 'done' ? 'Noted. Booking your driver.' : 'No problem. Still finding your driver.');
+  } catch (error) {
+    if (error instanceof GroupTripError) {
+      await sendWaitingText(deps, phone, error.message);
+      return;
+    }
+    console.warn('[group-live-chat] counter tap failed', { userId, error: error instanceof Error ? error.message : String(error) });
+    await sendWaitingText(deps, phone, 'Something went wrong. Try again.');
+  }
+}
+
+/** The offer's words: who, where, the seat. */
+export function groupOfferText(view: {
+  riders: Array<{ you: boolean; name: string; pickup: string }>;
+  stops?: Array<{ kind: string; address: string; you: boolean }>;
+  seatPriceNgn: number;
+  ownPriceNgn: number;
+  savedNgn?: number;
+  extraMinutes: number;
+}): string {
+  const others = view.riders.filter((r) => !r.you).map((r) => `${r.name}${r.pickup ? ` (${r.pickup})` : ''}`);
+  const to = view.stops?.find((s) => s.kind === 'dropoff' && s.you)?.address.split(',')[0]?.trim();
+  const saved = view.savedNgn ?? Math.max(0, view.ownPriceNgn - view.seatPriceNgn);
+  return [
+    `*${others.length} rider${others.length === 1 ? ' is' : 's are'} going your way*`,
+    `${others.join(' and ')} ${others.length === 1 ? 'is' : 'are'} on your road${to ? ` to ${to}` : ''}.`,
+    '',
+    `Ride together for *${naira(view.seatPriceNgn)}* instead of ${naira(view.ownPriceNgn)}, about ${view.extraMinutes} min more. You save ${naira(saved)}. Faces checked.`,
+    'You have 20 seconds.',
+  ].join('\n');
+}
+
+/** The offer: the form when published, else the two buttons. */
+export async function sendGroupOffer(meta: FormMeta, to: string, riderId: string, view: Parameters<typeof groupOfferText>[0] & { offerId: string }): Promise<void> {
+  const text = groupOfferText(view);
+  const flowId = process.env['WHATSAPP_GROUP_FLOW_ID']?.trim();
+  if (flowId && meta.flowTokenSecret) {
+    const sent = await postInteractive(meta, to, {
+      type: 'flow',
+      body: { text },
+      action: { name: 'flow', parameters: { flow_message_version: '3', flow_id: flowId, flow_token: signFlowToken(`grp:${riderId}`, meta.flowTokenSecret), flow_cta: 'Answer', flow_action: 'data_exchange' } },
+    });
+    if (sent) return;
+  }
+  await sendWaitingInteractive(meta, to, {
+    type: 'button',
+    body: { text },
+    action: { buttons: [{ type: 'reply', reply: { id: `${GROUP_JOIN_ID}:${view.offerId}`, title: 'Ride together' } }, { type: 'reply', reply: { id: `${GROUP_DECLINE_ID}:${view.offerId}`, title: 'No thanks' } }] },
+  });
+}
+
+async function postInteractive(meta: FormMeta, to: string, interactive: Record<string, unknown>): Promise<boolean> {
+  if (!meta.metaAccessToken || !meta.metaPhoneNumberId) return false;
+  const response = await fetch(`https://graph.facebook.com/v21.0/${meta.metaPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${meta.metaAccessToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: to.replace(/^\+/, ''), type: 'interactive', interactive }),
+  }).catch(() => null);
+  return Boolean(response?.ok);
+}
+
+export { SELFIE_ASK } from './group-selfie-text';
+
+/** A tap on Ride together / No thanks. Never throws. */
+export async function handleGroupLiveTap(deps: MetaWhatsappRouteDeps, userId: string, phone: string, replyId: string): Promise<void> {
+  const reply = replyOf(replyId, GROUP_JOIN_ID, GROUP_DECLINE_ID);
+  const answer = reply?.yes ? 'join' : 'decline';
+  try {
+    const ride = await rideClient.findActiveByRider(userId).catch(() => null);
+    // A button from an earlier offer answers nothing (an old message tapped late).
+    const live = ride ? await offerForRide(deps.redisClient, ride.id).catch(() => null) : null;
+    if (!ride || !live || (reply?.ref && reply.ref !== live.offerId)) {
+      await sendWaitingText(deps, phone, 'This group ride offer has ended. Your own search goes on.');
+      return;
+    }
+    const result = await answerGroupOffer(deps.redisClient, ride.id, userId, answer);
+    if (answer === 'decline') {
+      await sendWaitingText(deps, phone, 'No problem. Your own search goes on.');
+      return;
+    }
+    if (result.selfieNeeded) {
+      await expectGroupSelfie(deps.redisClient, userId);
+      await sendWaitingText(deps, phone, SELFIE_ASK);
+      return;
+    }
+    await sendWaitingText(deps, phone, "You're in. We'll tell you here when your group is set.");
+  } catch (error) {
+    if (error instanceof GroupLiveError) {
+      await sendWaitingText(deps, phone, error.message);
+      return;
+    }
+    console.warn('[group-live-chat] tap failed', { userId, error: error instanceof Error ? error.message : String(error) });
+    await sendWaitingText(deps, phone, 'Something went wrong. Try again.');
+  }
+}
+
+/** A photo in the chat while a group ride selfie is expected: true when it was taken as one (handled). */
+export async function handleGroupLivePhoto(deps: MetaWhatsappRouteDeps, userId: string, phone: string, mediaId: string | undefined): Promise<boolean> {
+  if (!(await deps.redisClient.get(groupSelfieExpectedKey(userId)).catch(() => null))) return false;
+  if (!mediaId || !deps.metaAccessToken) {
+    await sendWaitingText(deps, phone, 'Could not read that photo. Send it again.');
+    return true;
+  }
+  try {
+    const media = await downloadMetaMedia(deps.metaAccessToken, mediaId);
+    const result = await takeGroupSelfie(
+      { faceStorage: deps.groupRideFaceStorage, groqApiKey: deps.groqApiKey, groqModel: deps.groqModel, groqTimeoutMs: deps.groqTimeoutMs, redisClient: deps.redisClient },
+      userId,
+      media.buffer.toString('base64'),
+      media.mimeType,
+    );
+    if (!result.ok) {
+      await sendWaitingText(deps, phone, result.error);
+      return true;
+    }
+    await deps.redisClient.del(groupSelfieExpectedKey(userId)).catch(() => undefined);
+    await sendWaitingText(deps, phone, "Selfie saved. You're in; we'll tell you here when your group is set.");
+  } catch (error) {
+    console.warn('[group-live-chat] selfie failed', { userId, error: error instanceof Error ? error.message : String(error) });
+    await sendWaitingText(deps, phone, 'Could not save that photo. Send a clear selfie again.');
+  }
+  return true;
+}

@@ -227,21 +227,29 @@ export const rideClient = {
       select: { id: true, riderId: true, status: true, createdAt: true },
     }),
 
+  // The driver's one live ride. On a group trip that is the TRIP, never one of its seats (the driver drives the
+  // trip; each seat is a rider's own ride in it).
   findActiveByDriver: (driverId: string) =>
     prisma.ride.findFirst({
       where: {
         driverId,
         status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] },
+        OR: [{ groupRole: null }, { groupRole: { not: 'SEAT' } }],
       },
     }),
 
   /** Trips this driver was assigned that ended cancelled — the raw material
    *  of a cancellation rate. Data first; policy later. */
+  /** Which group trip these rides are seats of now (ride-service checks a group event against it). */
+  groupLinksOf: (rideIds: string[]) =>
+    prisma.ride.findMany({ where: { id: { in: rideIds } }, select: { id: true, groupTripId: true } }),
+
+  // A group trip is the driver's job, not a ride: its riders' seats are counted (each a ride of its own).
   countCancelledByDriver: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'CANCELLED' } }),
+    prisma.ride.count({ where: { driverId, status: 'CANCELLED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   countCompletedByDriver: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'COMPLETED' } }),
+    prisma.ride.count({ where: { driverId, status: 'COMPLETED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   countCompletedByRider: (riderId: string) =>
     prisma.ride.count({ where: { riderId, status: 'COMPLETED' } }),
@@ -330,6 +338,10 @@ export const rideClient = {
     hasLuggage?:      boolean | null;
     hasPet?:          boolean | null;
     riderNote?:       string | null;
+    /** A group ride's TRIP (the ride the driver drives): its group trip id and the stops with each seat's id. */
+    groupTripId?:     string | null;
+    groupRole?:       'TRIP' | null;
+    groupStops?:      Prisma.InputJsonValue;
   }) =>
     prisma.$transaction(async (tx) => {
       const { stops, ...rideData } = data;
@@ -390,7 +402,7 @@ export const rideClient = {
   findStanding: (rideId: string) =>
     prisma.ride.findUnique({
       where: { id: rideId },
-      select: { id: true, riderId: true, status: true, cancelStage: true, cancelReason: true },
+      select: { id: true, riderId: true, status: true, cancelStage: true, cancelReason: true, groupRole: true },
     }),
 
   /**
@@ -437,8 +449,16 @@ export const rideClient = {
     // `busy` tells the caller why nothing was written.
     return prisma.$transaction(async (tx): Promise<{ count: number; busy?: true }> => {
       await tx.$queryRaw`SELECT id FROM "Driver" WHERE id = ${driverId} FOR UPDATE`;
+      // A group trip (Timi, 17 Nov 2026): the driver's other live rides may be this ride's own group (its seats, or
+      // its trip); any other live ride still makes them busy. A ride with no group: exactly as before.
+      const mine = await tx.ride.findUnique({ where: { id: rideId }, select: { groupTripId: true } });
       const other = await tx.ride.findFirst({
-        where: { driverId, id: { not: rideId }, status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] } },
+        where: {
+          driverId,
+          id: { not: rideId },
+          status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] },
+          ...(mine?.groupTripId ? { OR: [{ groupTripId: null }, { groupTripId: { not: mine.groupTripId } }] } : {}),
+        },
         select: { id: true },
       });
       if (other) return { count: 0, busy: true };
@@ -482,9 +502,10 @@ export const rideClient = {
       data:  { status: 'ARRIVED', arrivedAt: new Date(), waitingStoppedAt: null },
     }),
 
+  /** Started: only from before the trip (a cancelled or finished ride is never brought back by a late start). */
   start: (rideId: string) =>
-    prisma.ride.update({
-      where: { id: rideId },
+    prisma.ride.updateMany({
+      where: { id: rideId, status: { in: ['DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED'] } },
       data: {
         status:    'IN_PROGRESS',
         startedAt: new Date(),
@@ -497,7 +518,7 @@ export const rideClient = {
    * and the fare in XLM). Accepting again resets it — a driver who bailed means
    * the next acceptance chooses afresh.
    */
-  setPayment: (rideId: string, payment: { method: 'WALLET' | 'XLM'; xlmRateNgn?: number | null; fareXlm?: string | null }) =>
+  setPayment: (rideId: string, payment: { method: 'WALLET' | 'XLM' | 'CASH'; xlmRateNgn?: number | null; fareXlm?: string | null }) =>
     prisma.ride.update({
       where: { id: rideId },
       data: {

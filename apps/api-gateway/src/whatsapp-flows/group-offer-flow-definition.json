@@ -1,0 +1,95 @@
+{
+  "version": "6.0",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "OFFER": ["NOTE", "DONE"],
+    "NOTE": [],
+    "DONE": []
+  },
+  "screens": [
+    {
+      "id": "OFFER",
+      "title": "Group ride",
+      "terminal": false,
+      "data": {
+        "heading": { "type": "string", "__example__": "2 riders are going your way" },
+        "body": { "type": "string", "__example__": "Chika (Ketu) and Tunde (Ojota) are on your road to Ikorodu." },
+        "price": { "type": "string", "__example__": "Ride together for ₦9,000 instead of ₦12,000, about 6 min more." },
+        "choices": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" } } },
+          "__example__": [{ "id": "join", "title": "Ride together", "description": "Your seat ₦9,000" }, { "id": "decline", "title": "No thanks", "description": "Keep my own search" }]
+        },
+        "error": { "type": "string", "__example__": "" },
+        "has_error": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "offer_form",
+            "children": [
+              { "type": "TextCaption", "text": "${data.error}", "visible": "${data.has_error}" },
+              { "type": "TextHeading", "text": "${data.heading}" },
+              { "type": "TextBody", "text": "${data.body}" },
+              { "type": "TextBody", "text": "${data.price}" },
+              { "type": "RadioButtonsGroup", "name": "choice", "label": "Pick one", "required": true, "data-source": "${data.choices}" },
+              {
+                "type": "Footer",
+                "label": "Send",
+                "on-click-action": { "name": "data_exchange", "payload": { "action": "group_answer", "choice": "${form.choice}" } }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NOTE",
+      "title": "Group ride",
+      "terminal": false,
+      "data": {
+        "headline": { "type": "string", "__example__": "You're in" },
+        "note": { "type": "string", "__example__": "We'll tell you in the chat when your group is set." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "note_form",
+            "children": [
+              { "type": "TextHeading", "text": "${data.headline}" },
+              { "type": "TextBody", "text": "${data.note}" },
+              { "type": "TextCaption", "text": "Swipe down to go back to the chat." }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "Wheelers",
+      "terminal": true,
+      "data": {
+        "headline": { "type": "string", "__example__": "Done" },
+        "note": { "type": "string", "__example__": "" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "done_form",
+            "children": [
+              { "type": "TextHeading", "text": "${data.headline}" },
+              { "type": "TextBody", "text": "${data.note}" },
+              { "type": "Footer", "label": "Back to chat", "on-click-action": { "name": "complete", "payload": { "flow": "group" } } }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

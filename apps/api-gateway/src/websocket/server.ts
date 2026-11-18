@@ -402,7 +402,7 @@ export function createGatewayWebSocketServer(deps: WebSocketServerDeps): { stats
                 deps.routePlanner,
                 deps.redis,
               )) ??
-              (await handleDriverMessage(parsed.type, payload, auth, deps.publisher)) ??
+              (await handleDriverMessage(parsed.type, payload, auth, deps.publisher, deps.redis)) ??
               (await handleWalletMessage(parsed.type, payload)));
 
         if (!response) {

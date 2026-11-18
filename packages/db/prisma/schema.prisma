@@ -56,6 +56,10 @@ model User {
   ninLast4                   String?
   ninStatus                  String?
   ninCheckedAt               DateTime?
+  /// The rider's group ride selfie (Timi, 17 Nov 2026): taken on their first group ride, then reused. The object's key
+  /// in the group-ride face store, and when it passed the face check.
+  groupSelfieKey             String?
+  groupSelfieAt              DateTime?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   driver                     Driver?
@@ -210,6 +214,10 @@ model Wallet {
   userId       String              @unique
   balanceNgn   Decimal             @default(0) @db.Decimal(18, 2)
   lockedNgn    Decimal             @default(0) @db.Decimal(18, 2)
+  /// Pay with cash (Timi, 18 Nov 2026): a driver's wallet may go below zero by Wheelers' share of a cash ride (what
+  /// they owe). Set only by walletClient.takeCashRideFees, in the same write; the database refuses a negative balance
+  /// on any other wallet (Wallet_balance_not_negative). Every other debit still takes only money that is there.
+  mayOwe       Boolean             @default(false)
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
   rideHolds    RideHold[]
@@ -496,6 +504,15 @@ model Ride {
   waitingOfferAt          DateTime?
   /// Offers made on this ride, both sides (a cap keeps it from turning into spam).
   waitingOfferCount       Int               @default(0)
+  /// Group ride (Timi, 17 Nov 2026): the group trip a ride belongs to. The TRIP is the ride the driver bids on and
+  /// drives (owned by the Wheelers group account, never shown to a rider); each SEAT is a rider's own ride in it, with
+  /// its own price, hold, code, waiting and receipt. groupStops (on the TRIP): the stops in order, with each seat's id.
+  groupTripId             String?
+  groupRole               String?
+  groupStops              Json?
+  /// Analytics (Timi, 18 Nov 2026): free drivers found near the pickup when the search started (the match query's
+  /// answer, capped by its limit). Null on rides from before it was recorded.
+  driversFoundAtSearch    Int?
   startedAt               DateTime?
   completedAt             DateTime?
   cancelledAt             DateTime?
@@ -514,6 +531,7 @@ model Ride {
   @@index([riderId, createdAt])
   @@index([driverId, status])
   @@index([status])
+  @@index([groupTripId])
   @@index([createdAt])
   @@index([completedAt])
   @@index([channel])
@@ -1008,6 +1026,8 @@ enum TransactionType {
   ADJUSTMENT
   /// Waiting time: the rider's DEBIT and the driver's CREDIT (all of it; no fee taken), referenceId = the ride.
   WAITING_FEE
+  /// A cash ride: Wheelers' share of the fare, a DEBIT on the driver's wallet (it may go below zero), referenceId = the ride.
+  CASH_RIDE_FEE
 }
 
 enum WalletReservationKind {
@@ -2166,4 +2186,79 @@ model FeedHide {
   createdAt      DateTime @default(now())
 
   @@id([userId, hiddenDriverId])
+}
+
+/// Analytics (Timi, 18 Nov 2026): one row per driver a search was sent to, per round (round 1 at the search start,
+/// one more each time the rider changes the price and it goes out again), and what they did with it. Written beside
+/// the dispatch, never in its way: a failed write loses a row, never a request.
+model SearchPing {
+  id          String    @id @default(uuid())
+  rideId      String
+  driverId    String
+  round       Int
+  sentAt      DateTime  @default(now())
+  /// 'bid' | 'declined'; null: no answer.
+  response    String?
+  respondedAt DateTime?
+
+  @@unique([rideId, driverId, round])
+  @@index([rideId])
+  @@index([driverId, sentAt])
+  @@index([sentAt])
+}
+
+/// Analytics (Timi, 18 Nov 2026): every price change a rider made during a search, with what was on the table at
+/// that moment (so the Studio can tell "no offers came in" from "offers above their price" and "matched the lowest").
+model RidePriceChange {
+  id            String   @id @default(uuid())
+  rideId        String
+  fromNgn       Int
+  toNgn         Int
+  /// Open driver offers when the rider changed it, and the lowest of them.
+  offersOpen    Int
+  lowestOfferNgn Int?
+  at            DateTime @default(now())
+
+  @@index([rideId])
+  @@index([at])
+}
+
+/// The driver's face check before a ride (Timi, 18 Nov 2026): one row per booked ride and driver. PENDING until the
+/// driver passes (PASSED), runs out of tries (FAILED), runs out of time (EXPIRED), or the check could not run (ERROR).
+model FaceCheck {
+  id              String    @id @default(uuid())
+  rideId          String
+  driverId        String
+  driverUserId    String
+  status          String    @default("PENDING")
+  /// 'left' | 'right': the head turn asked for this try.
+  challenge       String
+  /// Scans that did not match, and scans in all.
+  failedTries     Int       @default(0)
+  submits         Int       @default(0)
+  /// The best (smallest) distance to the selfie seen, and why the last scan was refused.
+  bestDistance    Float?
+  lastReason      String?
+  /// 'on' | 'shadow': whether the result was enforced.
+  mode            String
+  /// R2 keys of the frames sent (kept 30 days, then deleted and framesDeletedAt set).
+  frameKeys       Json?
+  framesDeletedAt DateTime?
+  deadlineAt      DateTime
+  resolvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([rideId, driverId])
+  @@index([status, deadlineAt])
+  @@index([driverId, createdAt])
+  @@index([createdAt])
+}
+
+/// A driver's face, worked out once from their KYC selfie (128 numbers), and the selfie it came from.
+model DriverFaceTemplate {
+  driverId   String   @id
+  selfieKey  String
+  descriptor Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }

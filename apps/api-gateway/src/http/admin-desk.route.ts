@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { prisma } from '@wheleers/db';
+import { NOT_GROUP_TRIP, prisma } from '@wheleers/db';
 import { verifyAdminAuth } from './admin-auth.route';
 import { readJsonBody, sendJson } from './utils';
 import { clientIp, recordAdminActivity } from '../admin/activity';
@@ -127,7 +127,8 @@ export async function handleAdminDeskRoute(req: IncomingMessage, res: ServerResp
     }
     const [rides, events, chats] = await Promise.all([
       prisma.ride.findMany({
-        where: { OR: [{ riderId: id }, ...(person.driver ? [{ driverId: person.driver.id }] : [])] },
+        // A group trip is the driver's job, not a ride: its riders' seats are listed.
+        where: { OR: [{ riderId: id }, ...(person.driver ? [{ driverId: person.driver.id }] : [])], ...NOT_GROUP_TRIP },
         orderBy: { createdAt: 'desc' },
         take: 20,
         select: tripSelect,

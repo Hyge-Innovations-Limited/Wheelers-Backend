@@ -14,6 +14,7 @@ import { handleOffersFormFlow, type OffersFormDeps } from './offers-form-flow';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, notePublishing, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from '../rides/booking-lock';
 import { handleWelcomeFlow } from './welcome-flow';
 import { handleWaitingFlow } from './waiting-flow';
+import { handleGroupOfferFlow } from './group-offer-flow';
 import { recordFormStep } from '../whatsapp/transcript';
 import { handleQuickActionsFlow, type QuickActionsFlowDeps } from './quick-actions-flow';
 import type { WhatsappNotifierDeps } from './whatsapp-notifier';
@@ -59,6 +60,7 @@ import {
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
 import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
+import { tripOfSeat } from '../rides/group-trip';
 
 export interface WhatsappFlowEndpointDeps {
   redisClient: RedisClient;
@@ -245,6 +247,11 @@ export async function handleFlowAction(
     return handleWelcomeFlow(body, userId, { redisClient: deps.redisClient, onWelcomeAgreed: deps.onWelcomeAgreed });
   }
 
+  // ── A group ride offer (token `grp:<userId>`): Ride together or No thanks ──
+  if (rideId === 'grp') {
+    return handleGroupOfferFlow(body, userId, { redisClient: deps.redisClient });
+  }
+
   // ── The waiting price (token `wait:<userId>`): keep the driver waiting at a price, answer their price, or cancel ──
   if (rideId === 'wait') {
     return handleWaitingFlow(body, userId, { redisClient: deps.redisClient, publisher: deps.publisher });
@@ -335,6 +342,9 @@ export async function handleFlowAction(
       // A changed adjust amount is a COUNTER-OFFER, not an accept at the
       // driver's price — publish it so every candidate driver sees the new
       // number, and keep the rider on the offers page.
+      if (!isNaN(adjustAmount) && adjustAmount >= 100 && adjustAmount !== meta.offerNgn && (await tripOfSeat(deps.redisClient, sessionRideId))) {
+        return { screen: 'SUCCESS', data: buildErrorData("You're riding in a group. We're finding your driver.") };
+      }
       if (!isNaN(adjustAmount) && adjustAmount >= 100 && adjustAmount !== meta.offerNgn) {
         // The old form never asks about auto-booking: a yes given elsewhere does not carry over.
         await autoAcceptOffForChatPrice(deps.redisClient, sessionRideId).catch(() => undefined);

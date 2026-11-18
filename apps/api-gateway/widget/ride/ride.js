@@ -153,15 +153,17 @@
 
   /* ── toasts: a queue, so three changes in one poll are three notes ─────── */
 
-  function say(message, tone) {
+  // `holdMs`: how long it stays (a long group line needs longer than a short note).
+  function say(message, tone, holdMs) {
     var holder = W.$('toasts');
     var node = document.createElement('div');
     node.className = 'toast-item' + (tone ? ' ' + tone : '');
     node.textContent = message;
     holder.appendChild(node);
     while (holder.children.length > 3) holder.removeChild(holder.firstChild);
-    setTimeout(function () { node.className += ' leaving'; }, 3400);
-    setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 3800);
+    var hold = holdMs || 3400;
+    setTimeout(function () { node.className += ' leaving'; }, hold);
+    setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, hold + 400);
   }
 
   /* ── small helpers ────────────────────────────────────────────────────── */
@@ -605,7 +607,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait'];
+  var SHEETS = ['sheet-nin', 'sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     // (A page cached from before a sheet has no such element: skipped.)
@@ -633,6 +635,9 @@
     }
   }
   function hideSheets() {
+    // The NIN popup put away without a NIN (a tap outside, a swipe, Back): one close.
+    var nin = W.$('sheet-nin');
+    if (nin && !nin.hidden && !ninDone) ninPromptSend('closed');
     SHEETS.forEach(function (id) { W.show(W.$(id), false); });
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
@@ -1685,6 +1690,7 @@
     var wanted = routeSig(body.destination && body.destination.address, (body.stops || []).map(function (stop) { return stop.address; }));
     var base = state && state.route ? routeSig(state.route.destAddress, state.route.stopAddresses) : null;
     track('route_wallet_short_shown', { neededNgn: Number(info.neededNgn) });
+    W.show(W.$('pay-cash-instead'), false);   // a route change is paid like the trip: never switched to cash here
     showPayPart('add');
     openSheet('sheet-pay');
     routeAdd = {
@@ -2843,6 +2849,10 @@
     if (!showingDeclined) declined = null;
     var list = showingDeclined ? declined.offers : offers;
 
+    drawGroup(s);
+    drawGroupCounter(s);
+    drawGroupNote(s);
+
     var count = offers.length;
     var searching = list.length === 0;
     W.show(W.$('searching'), searching);
@@ -3250,6 +3260,254 @@
     }
   }
 
+  /* A group ride offer (Timi, 16-17 Nov 2026, rides/group-live.ts): riders searching right now who are going the
+   * same way. 20 s to say Ride together or No thanks; a yes with no selfie takes one (once, reused) within 60 s;
+   * then "Getting your group together", and how it ended. Nothing here books or pays. */
+  var groupShown = null;     // the offer id the sheet is about
+  var groupAnswered = null;  // { offerId, answer } said here
+  var groupTimer = null;
+  var groupExpireTimer = null;
+  var groupPhoto = null;     // { base64, mimeType } of the selfie taken here
+
+  function groupNaira(n) { return W.naira(n); }
+
+  function drawGroup(s) {
+    if (!W.$('sheet-group')) return;
+    var offer = s && s.groupOffer;
+    var formed = s && s.groupFormed;
+    var open = !W.$('sheet-group').hidden;
+    if (offer && offer.offerId) {
+      if (groupShown !== offer.offerId) {
+        groupShown = offer.offerId;
+        groupPhoto = null;
+        if (busy || paying || (openSheetId() && !open)) return;
+        track('group_offer_shown', { riders: offer.people });
+      }
+      fillGroup(offer);
+      if (!open && !(busy || paying || openSheetId())) openSheet('sheet-group');
+      return;
+    }
+    if (groupShown && formed) {
+      var with_ = (formed.others || []).join(' and ');
+      if (open) closeSheets();
+      // The server says it (groupNote, the same words as the app and the chat); this line only for an older server.
+      if (!s.groupNote) say("You're riding together with " + with_ + '. Your seat: ' + groupNaira(formed.seatPriceNgn) + '. Finding your driver.', null, 6000);
+      groupShown = null;
+      return;
+    }
+    if (groupShown) {
+      if (open) closeSheets();
+      if (!s.groupNote && groupAnswered && groupAnswered.offerId === groupShown && groupAnswered.answer === 'join') say('No group this time. Your search goes on.', null, 6000);
+      groupShown = null;
+      groupAnswered = null;
+      if (groupTimer) { clearInterval(groupTimer); groupTimer = null; }
+    }
+  }
+
+  /* A driver's price over this rider's seat in a group (rides/group-trip.ts): Yes or No in 20 s; silence is No. Only
+   * the riders whose share is over +10% are asked. Gone from the state when it is over: the sheet closes. */
+  var gcounterShown = null, gcounterTimer = null;
+
+  function drawGroupCounter(s) {
+    var sheet = W.$('sheet-gcounter');
+    if (!sheet) return;
+    var ask = s && s.groupCounter;
+    var open = !sheet.hidden;
+    if (!ask || !ask.askId) {
+      if (gcounterShown) {
+        if (open) closeSheets();
+        gcounterShown = null;
+        if (gcounterTimer) { clearInterval(gcounterTimer); gcounterTimer = null; }
+      }
+      return;
+    }
+    if (gcounterShown !== ask.askId) {
+      gcounterShown = ask.askId;
+      W.show(W.$('gcounter-err'), false);
+      track('group_counter_shown', {});
+    }
+    var said = ask.answer === 'yes';
+    W.$('gcounter-title').textContent = 'A driver asks ' + W.naira(ask.askNgn) + ' for your seat';
+    W.$('gcounter-sub').textContent = said ? 'Waiting for the others.' : 'Your seat was ' + W.naira(ask.seatPriceNgn) + '.';
+    W.$('gcounter-yes').textContent = 'Yes, ' + W.naira(ask.askNgn);
+    W.$('gcounter-yes').disabled = said;
+    W.$('gcounter-no').disabled = said;
+    var tick = function () {
+      var left = Math.max(0, Math.round((Date.parse(ask.expiresAt) - Date.now()) / 1000));
+      W.$('gcounter-left').textContent = '0:' + ('0' + left).slice(-2);
+      W.$('gcounter-left').setAttribute('aria-label', left + ' seconds left');
+      W.$('gcounter-fill').style.width = Math.round((left / 20) * 100) + '%';
+      // Time is up: silence is No, and the sheet goes (it never waits on the server to close it).
+      if (left === 0 && !W.$('sheet-gcounter').hidden) {
+        if (gcounterTimer) { clearInterval(gcounterTimer); gcounterTimer = null; }
+        closeSheets();
+      }
+    };
+    tick();
+    if (gcounterTimer) clearInterval(gcounterTimer);
+    gcounterTimer = setInterval(tick, 1000);
+    if (!open && !(busy || paying || openSheetId())) openSheet('sheet-gcounter');
+  }
+
+  function answerGroupCounter(answer, button) {
+    if (!gcounterShown) return;
+    button.classList.add('busy');
+    W.show(W.$('gcounter-err'), false);
+    api('POST', '/ride-page/group/counter', { answer: answer, askId: gcounterShown }).then(function (next) {
+      track(answer === 'yes' ? 'group_counter_yes' : 'group_counter_no', {});
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('gcounter-err').textContent = error.message;
+      W.show(W.$('gcounter-err'), true);
+      if (error.status === 409) refresh();
+    }).then(function () { button.classList.remove('busy'); });
+  }
+
+  if (W.$('sheet-gcounter')) {
+    W.$('gcounter-yes').addEventListener('click', function () { answerGroupCounter('yes', W.$('gcounter-yes')); });
+    W.$('gcounter-no').addEventListener('click', function () { answerGroupCounter('no', W.$('gcounter-no')); });
+  }
+
+  /* What happened to the group while it looked for a driver (someone left, a wallet short): said once. */
+  var groupNotesSeen = {};
+  function drawGroupNote(s) {
+    var note = s && s.groupNote;
+    if (!note || !note.id || groupNotesSeen[note.id]) return;
+    groupNotesSeen[note.id] = true;
+    say(note.text, null, 6000);
+  }
+
+  function groupPart(part) {
+    W.show(W.$('group-ask'), part === 'ask');
+    W.show(W.$('group-selfie'), part === 'selfie');
+    W.show(W.$('group-wait'), part === 'wait');
+  }
+
+  function fillGroup(offer) {
+    var others = (offer.riders || []).filter(function (r) { return !r.you; });
+    W.$('group-title').textContent = others.length + (others.length === 1 ? ' rider is' : ' riders are') + ' going your way';
+    var road = W.$('group-road');
+    road.innerHTML = '';
+    (offer.riders || []).forEach(function (r) {
+      var li = el('li', r.you ? 'you' : '');
+      li.appendChild(el('b', '', r.name));
+      if (r.pickup) li.appendChild(el('span', '', r.pickup));
+      road.appendChild(li);
+    });
+    var drop = (offer.stops || []).filter(function (x) { return x.kind === 'dropoff' && x.you; })[0];
+    if (drop) { var end = el('li', 'end'); end.appendChild(el('b', '', String(drop.address).split(',')[0])); road.appendChild(end); }
+    W.$('group-seat').textContent = groupNaira(offer.seatPriceNgn);
+    W.$('group-own').textContent = groupNaira(offer.ownPriceNgn);
+    W.$('group-save').textContent = 'Save ' + groupNaira(offer.savedNgn);
+    W.$('group-facts').textContent = 'About ' + offer.extraMinutes + ' min more · ' + offer.people + ' in the car · Faces checked';
+    var answer = offer.answer || (groupAnswered && groupAnswered.offerId === offer.offerId ? groupAnswered.answer : null);
+    if (answer === 'join' && offer.selfieNeeded) {
+      // No photo taken here yet (a new offer, or the page just opened): only the camera button.
+      W.show(W.$('group-photo'), Boolean(groupPhoto));
+      W.show(W.$('group-send'), Boolean(groupPhoto));
+      if (!groupPhoto) W.$('group-take').textContent = 'Take a selfie';
+      groupPart('selfie');
+    }
+    else if (answer) {
+      W.$('group-wait-title').textContent = answer === 'join' ? 'Getting your group together' : 'No problem';
+      W.$('group-wait-sub').textContent = answer === 'join' ? "We'll tell you in a moment." : 'Your own search goes on.';
+      groupPart('wait');
+    } else groupPart('ask');
+    tickGroup(offer);
+    if (groupTimer) clearInterval(groupTimer);
+    groupTimer = setInterval(function () { tickGroup(offer); }, 1000);
+  }
+
+  function tickGroup(offer) {
+    var left = Math.max(0, Math.round((Date.parse(offer.expiresAt) - Date.now()) / 1000));
+    W.$('group-left').textContent = left > 0 ? '0:' + ('0' + left).slice(-2) : "Time's up";
+    W.$('group-left').setAttribute('aria-label', left > 0 ? left + ' seconds left' : "Time's up");
+    W.$('group-timer-fill').style.width = Math.round((left / 20) * 100) + '%';
+    // Unanswered at 0: "Time's up", then the sheet goes by itself (a lost update never leaves it stuck).
+    if (left === 0 && !W.$('group-ask').hidden && !W.$('sheet-group').hidden && !groupExpireTimer) {
+      groupExpireTimer = setTimeout(function () { groupExpireTimer = null; if (!W.$('group-ask').hidden) closeSheets(); }, 2000);
+    }
+    var selfieLeft = Math.max(0, Math.round((Date.parse(offer.selfieDeadline) - Date.now()) / 1000));
+    W.$('group-selfie-left').textContent = selfieLeft > 0 ? selfieLeft + ' s left' : '';
+    // The selfie's 60 s are over: that step goes (the app closes it too).
+    if (selfieLeft === 0 && !W.$('group-selfie').hidden && !W.$('sheet-group').hidden) closeSheets();
+    if (left === 0 && !W.$('group-ask').hidden) { W.$('group-yes').disabled = true; W.$('group-no').disabled = true; }
+  }
+
+  function answerGroup(answer, button) {
+    if (!groupShown) return;
+    var offerId = groupShown;
+    button.classList.add('busy');
+    W.show(W.$('group-err'), false);
+    api('POST', '/ride-page/group', { answer: answer }).then(function (next) {
+      groupAnswered = { offerId: offerId, answer: answer };
+      track(answer === 'join' ? 'group_joined' : 'group_declined', {});
+      apply(next);
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('group-err').textContent = error.message;
+      W.show(W.$('group-err'), true);
+      if (error.status === 409) refresh();
+    }).then(function () { button.classList.remove('busy'); });
+  }
+
+  /** The selfie, made small before it is sent (a phone photo can be several MB). */
+  function shrinkPhoto(file, done) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        var url = canvas.toDataURL('image/jpeg', 0.85);
+        done({ base64: url.split(',')[1], mimeType: 'image/jpeg', url: url });
+      };
+      img.onerror = function () { done(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { done(null); };
+    reader.readAsDataURL(file);
+  }
+
+  if (W.$('sheet-group')) {
+    W.$('group-yes').addEventListener('click', function () { answerGroup('join', W.$('group-yes')); });
+    W.$('group-no').addEventListener('click', function () { answerGroup('decline', W.$('group-no')); });
+    // The selfie control is a label (it opens the camera): the keyboard opens it too.
+    W.$('group-take').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); W.$('group-camera').click(); }
+    });
+    W.$('group-camera').addEventListener('change', function () {
+      var file = this.files && this.files[0];
+      W.show(W.$('group-selfie-err'), false);
+      if (!file) return;
+      shrinkPhoto(file, function (photo) {
+        if (!photo) { W.$('group-selfie-err').textContent = 'Could not read that photo. Try again.'; W.show(W.$('group-selfie-err'), true); return; }
+        groupPhoto = photo;
+        W.$('group-photo').src = photo.url;
+        W.show(W.$('group-photo'), true);
+        W.show(W.$('group-send'), true);
+        W.$('group-take').textContent = 'Take another';
+      });
+    });
+    W.$('group-send').addEventListener('click', function () {
+      if (!groupPhoto) return;
+      var button = W.$('group-send');
+      button.classList.add('busy');
+      api('POST', '/ride-page/group/selfie', { imageBase64: groupPhoto.base64, mimeType: groupPhoto.mimeType }).then(function (next) {
+        track('group_selfie_saved', {});
+        apply(next);
+      }).catch(function (error) {
+        if (linkDead(error)) return dead(error);
+        W.$('group-selfie-err').textContent = error.message;
+        W.show(W.$('group-selfie-err'), true);
+      }).then(function () { button.classList.remove('busy'); });
+    });
+  }
+
   /* accept → "Pay ₦X from your wallet?" (Contract D) → Confirming your driver */
 
   function acceptOffer(offer) {
@@ -3273,15 +3531,19 @@
 
   function openPaySheet(offer) {
     var xlm = state && state.xlm && state.xlm.ngnPerXlm > 0 ? state.xlm : null;
-    W.$('pay-title').textContent = 'Pay ' + W.naira(offer.priceNgn) + ' from your wallet?';
+    // Cash to the driver (Timi, 18 Nov 2026), while the server offers it.
+    var cash = Boolean(state && state.cash);
     payWith = { offer: offer, method: 'ngn', amountXlm: xlm ? xlmFor(offer.priceNgn, xlm) : 0 };
-    // Naira or XLM, when the rider has a Stellar wallet and there is a price for it.
-    W.show(W.$('pay-options'), Boolean(xlm));
+    // Naira, XLM (a Stellar wallet and a price for it), cash: the choice shows when there is more than the wallet.
+    W.show(W.$('pay-options'), Boolean(xlm) || cash);
+    W.show(W.$('pw-xlm'), Boolean(xlm));
+    W.show(W.$('pw-cash'), cash);
     W.show(W.$('pw-rate'), Boolean(xlm));
+    W.$('pw-ngn-balance').textContent = 'Balance ' + W.naira(state.balanceNgn);
+    W.$('pw-ngn-amount').textContent = W.naira(offer.priceNgn);
+    W.$('pw-cash-amount').textContent = W.naira(offer.priceNgn);
     if (xlm) {
       var xlmCovers = payWith.amountXlm <= xlm.spendableXlm;
-      W.$('pw-ngn-balance').textContent = 'Balance ' + W.naira(state.balanceNgn);
-      W.$('pw-ngn-amount').textContent = W.naira(offer.priceNgn);
       W.$('pw-xlm-balance').textContent = xlmCovers ? 'Balance ' + xlmText(xlm.balanceXlm) : 'You can spend ' + xlmText(xlm.spendableXlm);
       W.$('pw-xlm-amount').textContent = xlmText(payWith.amountXlm);
       W.$('pw-xlm').disabled = !xlmCovers;
@@ -3296,15 +3558,20 @@
   function pickMethod(method) {
     if (!payWith) return;
     payWith.method = method;
-    var xlm = method === 'xlm';
-    W.$('pw-ngn').className = 'pay-option' + (xlm ? '' : ' on');
-    W.$('pw-xlm').className = 'pay-option' + (xlm ? ' on' : '');
-    W.$('pw-ngn').setAttribute('aria-checked', String(!xlm));
-    W.$('pw-xlm').setAttribute('aria-checked', String(xlm));
-    W.$('pay-go').textContent = xlm ? 'Pay ' + xlmText(payWith.amountXlm) : 'Pay ' + W.naira(payWith.offer.priceNgn);
+    var price = W.naira(payWith.offer.priceNgn);
+    ['ngn', 'xlm', 'cash'].forEach(function (m) {
+      W.$('pw-' + m).className = 'pay-option' + (m === method ? ' on' : '');
+      W.$('pw-' + m).setAttribute('aria-checked', String(m === method));
+    });
+    var cash = method === 'cash';
+    W.$('pay-title').textContent = cash ? 'Pay ' + price + ' in cash?' : 'Pay ' + price + ' from your wallet?';
+    W.$('pay-sub').textContent = cash ? 'Pay your driver at the end. Nothing is held.' : 'Held now, paid at the end. Refunded if cancelled.';
+    W.show(W.$('pay-secure'), !cash);
+    W.$('pay-go').textContent = method === 'xlm' ? 'Pay ' + xlmText(payWith.amountXlm) : cash ? 'Pay cash' : 'Pay ' + price;
   }
   W.$('pw-ngn').addEventListener('click', function () { pickMethod('ngn'); });
   W.$('pw-xlm').addEventListener('click', function () { if (!this.disabled) pickMethod('xlm'); });
+  W.$('pw-cash').addEventListener('click', function () { pickMethod('cash'); });
   W.$('pay-go').addEventListener('click', function () {
     if (!payWith) return;
     var chosen = payWith;
@@ -3368,11 +3635,23 @@
     addFor.account = info.account || null;
     addFor.shortNgn = Number(info.shortNgn) > 0 ? Math.round(Number(info.shortNgn)) : Math.round(Number(info.sendNgn)) || 0;
     addFor.askedAt = 0;
+    // Short of money: cash needs none (Timi, 18 Nov 2026).
+    W.show(W.$('pay-cash-instead'), Boolean(state && state.cash));
     showPayPart('add');
     openSheet('sheet-pay');
     payingOpenFor(offer.key);
     loadOfferAccount();
   }
+  W.$('pay-cash-instead').addEventListener('click', function () {
+    var a = addFor;
+    if (!a || busy) return;
+    track('pay_method_chosen', { method: 'cash', from: 'add_money' });
+    addFor = null;
+    // Still marked as paying this driver from the add step: the same driver, now with cash (the paying signal stays open).
+    paying = null;
+    closeSheets();
+    payFor({ key: a.key, driverName: a.name, priceNgn: a.fareNgn }, 'cash');
+  });
   function loadOfferAccount() {
     var a = addFor;
     if (!a || a.account || a.loading || !(a.shortNgn > 0) || Date.now() - a.askedAt < ROUTE_RETRY_GAP_MS) return;
@@ -3702,7 +3981,7 @@
     var fare = driver.fareNgn || s.offerNgn;
     W.show(W.$('fd-price'), fare > 0);
     W.$('fd-fare').textContent = W.naira(fare);
-    W.$('fd-paid').textContent = s.paidWithXlm ? 'Paid with XLM' : 'Paid from your wallet';
+    W.$('fd-paid').textContent = s.paidWithXlm ? 'Paid with XLM' : s.paidInCash ? 'Pay your driver in cash' : 'Paid from your wallet';
 
     var eta = driver.etaMin || (s.trip && s.trip.etaMin) || null;
     var rows = [];
@@ -3845,10 +4124,10 @@
     W.$('d-vehicle').textContent = driver.vehicle || '';
     W.$('d-plate').textContent = driver.plate || '';
     W.show(W.$('d-plate'), Boolean(driver.plate));
-    W.show(W.$('d-foot'), Boolean(s.paidWithXlm));
+    W.show(W.$('d-foot'), Boolean(s.paidWithXlm) || Boolean(s.paidInCash));
     W.$('d-foot').textContent = s.paidWithXlm
       ? 'Paying ' + Number(s.paidWithXlm.amountXlm).toLocaleString('en-NG', { maximumFractionDigits: 2 }) + ' XLM from your Stellar wallet (testnet). It goes to your driver when the trip ends.'
-      : '';
+      : s.paidInCash ? 'Cash · pay your driver ' + W.naira(driver.fareNgn || s.offerNgn) + ' at the end.' : '';
     // Call: a Live call through Wheelers when the server has calls on (the trip page, dialling at once);
     // the phone's dialler only when it does not.
     var call = W.$('d-call');
@@ -3861,8 +4140,34 @@
     // Before the trip: the code to give the driver.
     W.show(W.$('d-code-box'), Boolean(s.tripCode));
     W.$('d-code').textContent = s.tripCode || '';
+    drawGroupTrip(s.group);
+    drawGroupNote(s);
     drawWaiting(s);
     drawTripFoot(s);
+  }
+
+  /* A group ride (rides/group-trip.ts riderGroupView): who else is in the car, and every stop in order, the rider's
+   * own in orange; the others' by first name and area only. Absent: a ride of one rider. */
+  function drawGroupTrip(group) {
+    var box = W.$('d-group');
+    if (!box) return;
+    var on = Boolean(group && group.stops && group.stops.length);
+    W.show(box, on);
+    if (!on) return;
+    var others = group.others || [];
+    W.$('d-group-title').textContent = others.length ? 'Group ride · with ' + others.join(' and ') : 'Group ride';
+    var list = W.$('d-group-stops');
+    list.textContent = '';
+    group.stops.forEach(function (stop) {
+      var li = document.createElement('li');
+      if (stop.yours) li.className = 'yours';
+      if (stop.done) li.className = (li.className ? li.className + ' ' : '') + 'done';
+      var text = document.createElement('span');
+      var verb = stop.kind === 'pickup' ? (stop.yours ? ' get in' : ' gets in') : (stop.yours ? ' get out' : ' gets out');
+      text.textContent = (stop.yours ? 'You' : stop.name) + verb + ' · ' + stop.area;
+      li.appendChild(text);
+      list.appendChild(li);
+    });
   }
 
   /* waiting time: 5 free minutes after the driver arrives. Then (Timi, 16 Nov 2026) the rider keeps the driver
@@ -3881,7 +4186,7 @@
     W.show(done, fee);
     if (fee) {
       done.textContent = 'Waiting time: ' + w.minutes + ' min · ' + W.naira(w.feeNgn) +
-        (w.paid ? ', paid from your wallet.' : ". Your wallet couldn't cover it, so pay your driver.");
+        (w.paid ? ', paid from your wallet.' : s.paidInCash ? '. Pay it to your driver in cash with the fare.' : ". Your wallet couldn't cover it, so pay your driver.");
     }
     var waiting = on && t.status === 'ARRIVED';
     W.show(W.$('d-wait'), waiting);
@@ -4376,7 +4681,65 @@
     // Back from a search to change the trip: the box holds the price they had out (raised or not).
     if (before === 'offers' && next.phase === 'price' && next.lastOfferNgn) W.$('price-input').value = Number(next.lastOfferNgn).toLocaleString('en-NG');
     render();
+    maybeAskNin();
   }
+
+  /* the NIN popup (Timi, 18 Nov 2026): when the server says it is due, once per visit, on Home or the price step,
+     never over another sheet or the after-trip tips. No Skip button: a tap outside closes it. */
+  var ninAsked = false;
+  var ninDone = false;
+  var ninTimer = null;
+  function ninDue() {
+    var s = state;
+    if (!s || !s.ninPrompt || ninAsked || busy) return false;
+    if (s.phase !== 'idle' && s.phase !== 'price') return false;
+    if (openSheetId()) return false;
+    if (s.phase === 'idle' && s.justFinished && s.justFinished.rideId && !safetySeen('after:' + s.justFinished.rideId)) return false;
+    return true;
+  }
+  function maybeAskNin() {
+    if (!ninDue() || ninTimer) return;
+    // A moment after the page settles, and only if still nothing else is open.
+    ninTimer = setTimeout(function () {
+      ninTimer = null;
+      if (!ninDue()) return;
+      ninAsked = true;
+      var retry = Boolean(state.ninPrompt.retry);
+      W.$('nin-title').textContent = retry ? 'Check your NIN' : 'Add your NIN';
+      W.$('nin-sub').textContent = retry ? "We couldn't match the last one. Type it again." : 'It keeps your account and your trips safe.';
+      W.$('nin-input').value = '';
+      W.show(W.$('nin-err'), false);
+      openSheet('sheet-nin');
+      ninPromptSend('shown');
+      track('nin_prompt_shown', { retry: retry });
+    }, 1500);
+  }
+  function ninPromptSend(event) {
+    api('POST', '/ride-page/nin-prompt', { event: event }).then(function () {}, function () {});
+  }
+  W.$('nin-input').addEventListener('input', function () {
+    var box = W.$('nin-input');
+    var digits = box.value.replace(/\D/g, '').slice(0, 11);
+    if (digits !== box.value) box.value = digits;
+    W.show(W.$('nin-err'), false);
+  });
+  W.$('nin-send').addEventListener('click', function () {
+    var button = W.$('nin-send');
+    var nin = W.$('nin-input').value.replace(/\D/g, '');
+    if (nin.length !== 11) { W.$('nin-err').textContent = 'Your NIN is 11 digits.'; W.show(W.$('nin-err'), true); return; }
+    if (button.classList.contains('busy')) return;
+    button.classList.add('busy');
+    api('POST', '/ride-page/nin', { nin: nin }).then(function () {
+      ninDone = true;
+      track('nin_prompt_done', {});
+      closeSheets();
+      say('NIN added', 'good');
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('nin-err').textContent = error.message || 'Could not check your NIN. Try again.';
+      W.show(W.$('nin-err'), true);
+    }).then(function () { button.classList.remove('busy'); });
+  });
 
   function refresh() {
     var seq = ++stateSeq;

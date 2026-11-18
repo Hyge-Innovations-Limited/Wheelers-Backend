@@ -1,3 +1,4 @@
+import { drivesGroupTrips, GroupTripError, leaveTrip, mirrorTrip, skipSeat, tripOfSeat } from '../../rides/group-trip';
 import { randomUUID } from 'crypto';
 import { checkTripCodeAtStart } from '../../rides/trip-code';
 import { settleWaitingAtStart } from '../../rides/waiting';
@@ -11,7 +12,7 @@ import {
   depositNeededFor,
   tripDetailsFromRequest,
 } from '@wheleers/config';
-import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, referralClient, rideClient, driverBidClient } from '@wheleers/db';
+import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, prisma, referralClient, rideClient, driverBidClient, studioCaptureClient } from '@wheleers/db';
 import {
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
@@ -37,6 +38,8 @@ import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
+import { assertNotOwingPastLimit } from '../../rides/cash-owed';
+import { assertFaceCheckPassed, failedFaceCheckOn, faceCheckBidRefusal } from '../../face/face-check';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
 import { RouteChangeRefused, forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled, unpricedRouteChange } from '../../rides/trip-route-quote';
 import { cancelPendingRoute, claimPublish, clearPendingRoute, fundRouteHold, releasePublish, readPendingRoute, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../../rides/trip-route-pending';
@@ -82,6 +85,14 @@ async function assertDriverOwnsRide(rideId: string, auth: { driverId?: string | 
 }
 
 /**
+ * A group trip moves seat by seat (each rider's own Arrived, code and drop-off; rides/group-trip.ts): never the TRIP
+ * itself. An app older than group rides would otherwise start it with no code and end it as one ride.
+ */
+function refuseGroupTrip(ride: { groupRole?: string | null }): void {
+  if (ride.groupRole === 'TRIP') throw new Error('This is a group ride. Update the app to drive it.');
+}
+
+/**
  * Who may change a live trip: the ride's own rider, or the driver assigned to it. Decided by the
  * RIDE's ids, never the payload and never by whether the sender also has a driver record (a user
  * who is both is the rider on their own ride). Returns the ride and the sender's role.
@@ -95,6 +106,8 @@ async function assertPartyToLiveRide(
   const isRider = ride.riderId === auth.userId;
   const isDriver = !isRider && Boolean(auth.driverId) && ride.driverId === auth.driverId;
   if (!isRider && !isDriver) throw new Error('This ride is not yours.');
+  // A group ride's stops are shared and its prices agreed for them: not changed by one rider.
+  if (ride.groupRole) throw new RouteChangeRefused('Stops cannot be changed on a group ride.');
   if (!LIVE_TRIP_STATUSES.includes(String(ride.status))) {
     throw new RouteChangeRefused('This trip is not running, so its route cannot be changed.');
   }
@@ -630,8 +643,9 @@ export async function handleRideMessage(
     // Only the ride's own rider changes its price (a driver or any other user is refused). A group seat
     // has no ride row of its own until it is booked: its owner is the member who made the match request.
     let owned: boolean;
+    let row: Awaited<ReturnType<typeof rideClient.findStanding>> = null;
     try {
-      const row = await rideClient.findStanding(event.rideId);
+      row = await rideClient.findStanding(event.rideId);
       owned = row
         ? row.riderId === auth.userId
         : Boolean(await groupRideClient.findMatchRequestByIdForUser(event.rideId, auth.userId));
@@ -639,6 +653,8 @@ export async function handleRideMessage(
       throw new Error('Could not check this ride. Try again.');
     }
     if (!owned) throw new Error('This ride is not yours.');
+    // A rider in a group: their price is the group's seat now, not changed alone.
+    if (row?.groupRole === 'SEAT' || (redis && (await tripOfSeat(redis, event.rideId)))) throw new Error("You're riding in a group. We're finding your driver.");
 
     await assertOfferWithinBand(event.rideId, event.counterOfferNgn, 'rider');
 
@@ -923,16 +939,48 @@ export async function handleRideMessage(
         ? ride.driverId === auth.driverId
         : ride.riderId === auth.userId;
       if (!isParty) throw new Error('This ride is not yours to cancel.');
+      // A group trip the driver leaves: every seat they had goes back to its own search (rides/group-trip.ts).
+      if (ride.groupRole === 'TRIP' && cancelledBy === 'driver' && auth.driverId && redis) {
+        try {
+          await leaveTrip({ redis, publisher }, { driverId: auth.driverId, driverUserId: auth.userId }, rideId);
+        } catch (error) {
+          if (error instanceof GroupTripError) throw new Error(error.message);
+          throw error;
+        }
+        return { type: 'ride:cancel:accepted', payload: { rideId } };
+      }
+      if (ride.groupRole === 'TRIP') throw new Error('This ride is not yours to cancel.');
+      // One rider of a group is left only by Continue without them (after their free minutes).
+      if (ride.groupRole === 'SEAT' && cancelledBy === 'driver') throw new Error('Use Continue without them at their pickup.');
     }
 
     // A rider ending their search: over in the gateway's eyes now, before the ride service writes the row.
     if (cancelledBy === 'rider' && redis) await markSearchEnded(redis, rideId);
 
+    // The driver is the ride's own. Only with no driver on the row yet, a driver the rider was booking (one with a
+    // price on this ride) may be named, so they hear it; never just any driver.
+    let driverId: string | undefined = ride?.driverId ?? (cancelledBy === 'driver' ? auth.driverId ?? undefined : undefined);
+    const namedDriver = getString(payload, 'driverId');
+    if (!driverId && namedDriver) {
+      if (!ride) driverId = namedDriver;
+      else if ((await driverBidClient.findByRide(rideId).catch(() => [])).some((bid) => bid.driverId === namedDriver)) driverId = namedDriver;
+    }
+
+    // A rider in a group with no driver yet: their seat is written cancelled now, so a booking at this same moment
+    // never takes it (the group goes on without them). Booked meanwhile: it is a booked seat's cancel, with its driver.
+    if (ride?.groupRole === 'SEAT' && cancelledBy === 'rider' && !ride.driverId) {
+      const wrote = await prisma.ride.updateMany({
+        where: { id: rideId, driverId: null, status: { in: ['REQUESTED', 'MATCHING'] } },
+        data: { status: 'CANCELLED', cancelledAt: new Date(), cancelledBy: 'rider', cancelStage: 'BEFORE_MATCH', cancelReason: getString(payload, 'reason') ?? 'Rider cancelled' },
+      }).catch(() => ({ count: 0 }));
+      if (wrote.count === 0) driverId = (await rideClient.findById(rideId).catch(() => null))?.driverId ?? driverId;
+    }
+
     const event = RideCancelledEvent.parse({
       eventType: 'RIDE_CANCELLED',
       rideId,
       riderId,
-      driverId: getString(payload, 'driverId') ?? ride?.driverId ?? auth.driverId,
+      driverId,
       reason: getString(payload, 'reason'),
       cancelledBy,
       driverUserId: cancelledBy === 'driver' ? auth.userId : undefined,
@@ -954,9 +1002,11 @@ export async function handleRideMessage(
   }
 
   if (type === 'ride:start') {
-    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    refuseGroupTrip(await assertDriverOwnsRide(requireString(payload, 'rideId'), auth));
     const driverId = auth.driverId;
     if (!driverId) throw new Error('Missing required field: driverId');
+    // FACE_CHECK on: the driver's face scan passed first (face/face-check.ts).
+    await assertFaceCheckPassed(requireString(payload, 'rideId'), driverId);
     // The rider's 4-digit trip code, checked here so no app can skip it.
     await checkTripCodeAtStart(requireString(payload, 'rideId'), payload['tripCode'], redis);
     // Waiting time past the free minutes: taken from the rider's wallet now (paid to the driver at the end),
@@ -975,6 +1025,10 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    // Started: from now this trip may be ended (the ride row follows a moment later).
+    if (redis) await redis.set(`ride:started:${event.rideId}`, '1', 24 * 60 * 60).catch(() => undefined);
+    // A seat of a group trip: the trip starts too, with the first rider's code.
+    if (redis) await mirrorTrip({ redis, publisher }, event.rideId, 'started', driverId).catch(() => undefined);
 
     return {
       type: 'ride:start:accepted',
@@ -982,8 +1036,26 @@ export async function handleRideMessage(
     };
   }
 
+  // "Continue without them" on a group trip: a rider not there after their free minutes is left, free.
+  if (type === 'group:skip') {
+    if (!auth.driverId) throw new Error('Only a driver can do that.');
+    if (!redis) throw new Error('Not available right now.');
+    const rideId = requireString(payload, 'rideId');
+    try {
+      await skipSeat({ redis, publisher }, auth.driverId, rideId);
+    } catch (error) {
+      if (error instanceof GroupTripError) return { type: 'group:skip:rejected', payload: { rideId, code: error.code, message: error.message } };
+      throw error;
+    }
+    return { type: 'group:skip:accepted', payload: { rideId } };
+  }
+
   if (type === 'ride:end') {
-    await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    const endingRide = await assertDriverOwnsRide(requireString(payload, 'rideId'), auth);
+    refuseGroupTrip(endingRide);
+    // Only a trip that started ends (ending one nobody got into charged the rider and paid the driver for nothing).
+    const started = String(endingRide.status) === 'IN_PROGRESS' || (redis ? Boolean(await redis.get(`ride:started:${endingRide.id}`).catch(() => null)) : true);
+    if (!started) throw new Error('Start the trip first.');
     const endDriverId = auth.driverId;
     if (!endDriverId) throw new Error('Missing required field: driverId');
 
@@ -1013,8 +1085,10 @@ export async function handleRideMessage(
     // never told the car was outside. The app only sends rideId, so resolve
     // the rider from the ride row.
     const ride = await assertDriverOwnsRide(rideId, auth);
+    refuseGroupTrip(ride);
     const riderId = ride.riderId;
     const driverId = auth.driverId ?? ride.driverId;
+    await assertFaceCheckPassed(rideId, ride.driverId);
 
     if (riderId && driverId) {
       const event = RideArrivedEvent.parse({
@@ -1025,6 +1099,8 @@ export async function handleRideMessage(
         timestamp,
       });
       await publisher.publishRideEvent(event);
+      // A seat of a group trip: the trip shows Arrived too, the first time (rides/group-trip.ts).
+      if (redis) await mirrorTrip({ redis, publisher }, rideId, 'arrived', driverId).catch(() => undefined);
     } else {
       console.warn('[api-gateway][ride] arrival could not be attributed — rider not notified', {
         rideId,
@@ -1054,6 +1130,13 @@ export async function handleRideMessage(
       auth.driverId ? rideClient.findActiveByDriver(auth.driverId).catch(() => null) : Promise.resolve(undefined),
     ]);
     if (!driver) throw new Error('Only a driver can do that.');
+    // Owes Wheelers past the cash limit (rides/cash-owed.ts): no bids until a deposit.
+    await assertNotOwingPastLimit(auth.userId);
+    // FACE_CHECK on: no bids while the check is broken for this driver, or from an app that cannot scan.
+    if (redis) {
+      const faceRefusal = await faceCheckBidRefusal(redis, auth.userId);
+      if (faceRefusal) throw new Error(faceRefusal);
+    }
     const driverId = driver.id;
     const driverRowId: string = driver.id;
     const driverName = driver.user.name ?? driver.user.phone ?? 'Driver';
@@ -1076,6 +1159,10 @@ export async function handleRideMessage(
     // the fare band (₦500/km ceiling, rider floor). The app's +100/+500
     // chips and "change bid" never checked the cap; the server must.
     await assertRideOpenForBids(acceptRideId, bidRide);
+    // A rider in a group is booked only with the group; a group trip only by a driver app that can drive one.
+    if (bidRide?.groupRole === 'SEAT') throw new Error('This request is no longer open.');
+    if (bidRide?.groupRole === 'TRIP' && (!redis || !(await drivesGroupTrips(redis, auth.userId)))) throw new Error('Update the app to take group rides.');
+    if (await failedFaceCheckOn(acceptRideId, driverRowId)) throw new Error("You can't take this ride.");
     await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn', bidRide), 'driver', bidRide);
 
     const proximity = await computeBidProximity(
@@ -1136,6 +1223,8 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(counterOfferEvent);
+    // Analytics (not awaited, never fails the bid): this driver answered the request with a bid.
+    void studioCaptureClient.noteResponse(acceptRideId, driverRowId, 'bid');
 
     return {
       type: 'driver:accept:accepted',
@@ -1164,6 +1253,8 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    // Analytics (not awaited): a driver who said no (a timeout is no answer, not a decline).
+    if (event.reason === 'manual_reject') void studioCaptureClient.noteResponse(event.rideId, rejectingDriverId, 'declined');
 
     return {
       type: 'driver:reject:accepted',

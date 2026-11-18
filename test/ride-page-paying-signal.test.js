@@ -339,3 +339,95 @@ test('coming back from the page cache with the pay sheet open tells the driver a
   await page.settle();
   assert.equal(page.paying().length, 3, 'once');
 });
+
+// ── Pay with cash (Timi, 18 Nov 2026) ─────────────────────────────────────
+
+test('cash on: the pay sheet offers Cash; picked, it says so and the accept goes with method cash', async () => {
+  const server = makeServer();
+  server.state = offerState({ cash: true });
+  const page = await loadPage(server);
+  await page.tap(page.acceptButtons()[0]);
+  assert.equal(page.el('pay-options').hidden, false);
+  assert.equal(page.el('pw-cash').hidden, false);
+  assert.equal(page.el('pw-xlm').hidden, true, 'no Stellar wallet: no XLM choice');
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 from your wallet?', 'the wallet stays the default');
+  await page.tap(page.el('pw-cash'));
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 in cash?');
+  assert.equal(page.el('pay-sub').textContent, 'Pay your driver at the end. Nothing is held.');
+  assert.equal(page.el('pay-go').textContent, 'Pay cash');
+  await page.tap(page.el('pay-go'));
+  const accepts = page.calls.filter((c) => c.url === '/ride-page/accept');
+  assert.deepEqual(accepts.map((c) => c.body), [{ key: 'bid-A', method: 'cash', priceNgn: 2000 }]);
+});
+
+test('cash off (an older server, or switched off): no Cash, and the sheet is as it was', async () => {
+  const page = await loadPage(makeServer());
+  await page.tap(page.acceptButtons()[0]);
+  assert.equal(page.el('pay-options').hidden, true);
+  assert.equal(page.el('pw-cash').hidden, true);
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 from your wallet?');
+  await page.tap(page.el('pay-go'));
+  assert.equal(page.calls.find((c) => c.url === '/ride-page/accept').body.method, 'ngn');
+});
+
+test('wallet short with cash on: Pay cash instead books the same driver with cash', async () => {
+  let n = 0;
+  const server = makeServer({
+    accept: (body) => (n++ === 0
+      ? { status: 402, json: { code: 'WALLET_SHORT', error: 'Add money', fareNgn: 2000, sendNgn: 600, shortNgn: 500, balanceNgn: 1500, account: { bankName: 'B', accountNumber: '1', accountName: 'N' } } }
+      : { status: 200, json: { ...offerState(), phase: 'confirmed', echo: body } }),
+  });
+  server.state = offerState({ cash: true });
+  const page = await loadPage(server);
+  await page.tap(page.acceptButtons()[0]);
+  await page.tap(page.el('pay-go'));
+  assert.equal(page.el('pay-add').hidden, false);
+  assert.equal(page.el('pay-cash-instead').hidden, false);
+  await page.tap(page.el('pay-cash-instead'));
+  const accepts = page.calls.filter((c) => c.url === '/ride-page/accept').map((c) => c.body);
+  assert.deepEqual(accepts, [{ key: 'bid-A', method: 'ngn', priceNgn: 2000 }, { key: 'bid-A', method: 'cash', priceNgn: 2000 }]);
+});
+
+// ── The NIN popup (Timi, 18 Nov 2026) ─────────────────────────────────────
+
+const idleState = (extra) => ({ phase: 'idle', balanceNgn: 0, chatUrl: 'https://wa.me/x', lastSearch: null, ...extra });
+
+test('NIN popup: due, it opens on Home a moment later and says shown; no Skip button; a tap outside closes it and says closed', async () => {
+  const server = makeServer();
+  server.state = idleState({ ninPrompt: { retry: false } });
+  const page = await loadPage(server);
+  assert.equal(page.el('sheet-nin').hidden, true, 'not at once');
+  await page.poll();
+  assert.equal(page.el('sheet-nin').hidden, false, 'opens after the page settles');
+  assert.equal(page.el('nin-title').textContent, 'Add your NIN');
+  const prompts = () => page.calls.filter((c) => c.url === '/ride-page/nin-prompt').map((c) => c.body.event);
+  assert.deepEqual(prompts(), ['shown']);
+  await page.tap(page.el('overlay'));
+  assert.equal(page.el('sheet-nin').hidden, true);
+  assert.deepEqual(prompts(), ['shown', 'closed']);
+  await page.poll();
+  assert.equal(page.el('sheet-nin').hidden, true, 'once per visit');
+});
+
+test('NIN popup: Verify sends the 11 digits; a NIN that did not check out says "Check your NIN"; not due, never shown', async () => {
+  const server = makeServer();
+  server.state = idleState({ ninPrompt: { retry: true } });
+  const page = await loadPage(server);
+  await page.poll();
+  assert.equal(page.el('nin-title').textContent, 'Check your NIN');
+  page.el('nin-input').value = '1234';
+  await page.tap(page.el('nin-send'));
+  assert.equal(page.el('nin-err').hidden, false, 'too short: said under the box, nothing sent');
+  assert.equal(page.calls.filter((c) => c.url === '/ride-page/nin').length, 0);
+  page.el('nin-input').value = '12345678901';
+  await page.tap(page.el('nin-send'));
+  assert.deepEqual(page.calls.filter((c) => c.url === '/ride-page/nin').map((c) => c.body), [{ nin: '12345678901' }]);
+  assert.equal(page.el('sheet-nin').hidden, true, 'verified: put away');
+  assert.ok(!page.calls.some((c) => c.url === '/ride-page/nin-prompt' && c.body.event === 'closed'), 'a verified NIN is not a close');
+
+  const quiet = makeServer();
+  quiet.state = idleState();
+  const other = await loadPage(quiet);
+  await other.poll();
+  assert.equal(other.el('sheet-nin').hidden, true);
+});

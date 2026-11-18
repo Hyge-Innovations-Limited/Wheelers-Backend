@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Jimp from 'jimp';
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export type KycFileType = 'image/jpeg' | 'image/png' | 'application/pdf';
@@ -52,6 +52,12 @@ export class DriverKycStorage {
     );
 
     return objectKey;
+  }
+
+  /** Deletes a stored file (the face-check frames after 30 days). Only keys under this store's own prefix. */
+  async remove(key: string): Promise<void> {
+    if (!key.startsWith(`${this.prefix}/`)) throw new Error('not this store\'s file');
+    await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
   /** `signingDate`: sign as of that time (Feed photos: the same link all through a window, so phones cache it). */

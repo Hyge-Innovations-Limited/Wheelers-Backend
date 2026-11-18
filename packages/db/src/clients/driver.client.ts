@@ -4,6 +4,7 @@ import { driverLocationClient } from './driver-location.client';
 import { DB_FLUSH_SECONDS, driverPresence } from './driver-presence';
 import { driverShiftClient, type ShiftEndReason } from './driver-shift.client';
 import { Prisma } from '@prisma/client';
+import { CASH_OWED_LIMIT_NGN } from '@wheleers/config';
 import type { DriverStatus, KycStatus } from '@prisma/client';
 
 type KycDocumentKeys = {
@@ -73,6 +74,12 @@ interface NearbyRow {
   distanceKm:   number;
 }
 
+/**
+ * Pay with cash (Timi, 18 Nov 2026): a driver who owes Wheelers more than CASH_OWED_LIMIT_NGN (their wallet below
+ * -₦1,000) is not sent new requests. A driver with no wallet owes nothing.
+ */
+const NOT_OWING_PAST_LIMIT = { NOT: { user: { wallet: { is: { balanceNgn: { lt: -CASH_OWED_LIMIT_NGN } } } } } };
+
 /** Matching has always required a driver to have been heard from this recently. */
 const LIVE_WINDOW_SECONDS = 90;
 
@@ -107,6 +114,8 @@ const findNearbyInPostgres = (lat: number, lng: number, radiusKm: number, limit:
       -- Ghost drivers absorbed candidate slots and swallowed offers into
       -- dead sockets while live drivers saw silence.
       AND d."lastSeenAt" > now() - (${windowSeconds} * interval '1 second')
+      -- Owes Wheelers more than the cash limit (cash rides' fees): no new requests until a deposit.
+      AND NOT EXISTS (SELECT 1 FROM "Wallet" w WHERE w."userId" = d."userId" AND w."balanceNgn" < ${-CASH_OWED_LIMIT_NGN})
       AND (
         6371 * acos(
           cos(radians(${lat})) * cos(radians(d.lat)) *
@@ -157,8 +166,9 @@ export const driverClient = {
     }),
 
   /** Rides this driver has finished (Ride @@index([driverId, status])). The rider sees it next to the photo. */
+  // A group trip is the driver's job, not a ride: its riders' seats are counted (each a ride of its own).
   completedRidesOf: (driverId: string) =>
-    prisma.ride.count({ where: { driverId, status: 'COMPLETED' } }),
+    prisma.ride.count({ where: { driverId, status: 'COMPLETED', OR: [{ groupRole: null }, { groupRole: { not: 'TRIP' } }] } }),
 
   findByUserId: (userId: string) =>
     prisma.driver.findUnique({
@@ -185,7 +195,7 @@ export const driverClient = {
     if (near.length === 0) return [];
 
     const rows = await prisma.driver.findMany({
-      where: { id: { in: near.map((n) => n.driverId) }, status: 'ONLINE', kycStatus: 'APPROVED' },
+      where: { id: { in: near.map((n) => n.driverId) }, status: 'ONLINE', kycStatus: 'APPROVED', ...NOT_OWING_PAST_LIMIT },
       select: { id: true, userId: true, rating: true, vehiclePlate: true, vehicleModel: true },
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -255,6 +265,8 @@ export const driverClient = {
         -- Same liveness rule as findNearby: ONLINE in the DB means nothing
         -- once the phone goes dark.
         AND d."lastSeenAt" > now() - interval '90 seconds'
+        -- Owes Wheelers more than the cash limit: no new requests until a deposit.
+        AND NOT EXISTS (SELECT 1 FROM "Wallet" w WHERE w."userId" = d."userId" AND w."balanceNgn" < ${-CASH_OWED_LIMIT_NGN})
         -- 1. Nearly there: the car is this close to its own drop-off.
         AND (
           6371 * acos(

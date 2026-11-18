@@ -269,6 +269,11 @@ export function createTripLifecycleHandler(params?: {
           if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') {
             return;
           }
+          // Only a trip that started ends (and is paid): ending one nobody got into charged the rider for nothing.
+          if (ride.status !== 'IN_PROGRESS') {
+            console.warn('[ride-service] completion refused: the trip never started', { rideId: event.rideId, status: ride.status });
+            return;
+          }
 
           const completedAt = resolveCompletedAt(event.completedAt, event.timestamp);
           const gpsState = state?.gpsByRideId.get(event.rideId);

@@ -735,6 +735,8 @@ async function sendRideCompletedNotification(
   paidXlm?: string | null,
   /** Waiting time past the free minutes, written when the trip started. */
   waiting?: { minutes: number; feeNgn: number; paid: boolean } | null,
+  /** Paid to the driver in cash (Timi, 18 Nov 2026): the wallet was not touched. */
+  paidInCash?: boolean,
 ): Promise<void> {
   const fees = calculateRideFees(fareNgn);
   const text = [
@@ -742,11 +744,13 @@ async function sendRideCompletedNotification(
     ``,
     paidXlm
       ? `${distanceKm.toFixed(1)} km · *${paidXlm} XLM* (₦${fees.totalNgn.toLocaleString()}) paid from your Stellar wallet`
-      : `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
+      : paidInCash
+        ? `${distanceKm.toFixed(1)} km · *pay your driver ₦${fees.totalNgn.toLocaleString()} in cash*`
+        : `${distanceKm.toFixed(1)} km · ₦${fees.totalNgn.toLocaleString()} paid from your wallet`,
     ...(waiting && waiting.feeNgn > 0
-      ? [`Waiting time · ${waiting.minutes} min · ₦${waiting.feeNgn.toLocaleString()}${waiting.paid ? '' : ' (not paid)'}`]
+      ? [`Waiting time · ${waiting.minutes} min · ₦${waiting.feeNgn.toLocaleString()}${waiting.paid ? '' : paidInCash ? ' in cash' : ' (not paid)'}`]
       : []),
-    ...(balanceNgn !== undefined && !paidXlm ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
+    ...(balanceNgn !== undefined && !paidXlm && !paidInCash ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
     ``,
     `How was your driver? Reply *1* to *5* to rate them.`,
   ].join('\n');

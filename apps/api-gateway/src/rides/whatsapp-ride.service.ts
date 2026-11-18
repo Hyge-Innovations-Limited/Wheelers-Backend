@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { openPaying, payingStatusEnabled, withinPayingRate } from './paying-status';
-import { driverBidClient, driverClient, rideClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
+import { driverBidClient, driverClient, prisma, rideClient, walletClient } from '@wheleers/db';
+import { cashRidesEnabled, depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { TripDetails } from '@wheleers/config';
 import { RideCancelledEvent, RideOfferAcceptedEvent, RideRequestedEvent } from '@wheleers/kafka-schemas';
 import type { RedisClient } from '../redis/client';
@@ -31,6 +31,7 @@ import type { PendingRouteData, WhatsappBid } from '../whatsapp-flows/bid-state'
 import { clearSaidTripDetails, searchTripDetails } from '../whatsapp/trip-details-said';
 import { startSearchClock } from './search-status';
 import { acceptSentFor, BOOKING_LOCK_WAIT_MS, clearPublishing, isSearchEnded, notePublishing, markSearchEnded, clearSearchEnded, noteAcceptSent, releaseBookingLock, releaseStaleHoldForOther, takeBookingLock } from './booking-lock';
+import { tripOfSeat } from './group-trip';
 
 /**
  * What a WhatsApp rider can DO to their booking, as plain functions with plain
@@ -155,6 +156,8 @@ export async function publishWhatsappRide(
 export type ChangeOfferResult =
   | { ok: true; offerNgn: number }
   | { ok: false; code: 'RIDE_GONE' }
+  /** In a group ride: the price is the group's seat now, not changed alone. */
+  | { ok: false; code: 'IN_GROUP' }
   | { ok: false; code: 'BELOW_MINIMUM'; minOfferNgn: number };
 
 /** A new price from the rider, shown to every driver looking at the request. */
@@ -166,6 +169,7 @@ export async function changeRiderOffer(
 ): Promise<ChangeOfferResult> {
   const meta = await getRideMeta(deps.redisClient, rideId);
   if (!meta || meta.riderId !== riderId) return { ok: false, code: 'RIDE_GONE' };
+  if (await tripOfSeat(deps.redisClient, rideId)) return { ok: false, code: 'IN_GROUP' };
 
   // The first offer cleared the minimum fare; a later one has to as well, or
   // the floor is bypassed by simply lowering the price once bidding starts.
@@ -278,10 +282,15 @@ export interface ConfirmedRide {
   stopAddresses: string[];
   /** Paid from the rider's XLM balance: the fare in XLM and the rate it was accepted at. */
   paidWithXlm?: { amountXlm: string; ngnPerXlm: number };
+  /** The rider pays the driver in cash at the end (nothing held). */
+  paidInCash?: true;
 }
 
-/** How the rider pays: naira from the wallet (held now, paid at the end), or XLM from their Stellar balance. */
-export type PayMethod = 'NGN' | 'XLM';
+/**
+ * How the rider pays: naira from the wallet (held now, paid at the end), XLM from their Stellar balance, or cash to
+ * the driver in the car (Timi, 18 Nov 2026: nothing held; Wheelers' share is taken from the driver at the end).
+ */
+export type PayMethod = 'NGN' | 'XLM' | 'CASH';
 
 /** The part of the Stellar service accepting with XLM needs. */
 export interface XlmPayer {
@@ -299,6 +308,8 @@ export type ConfirmResult =
   | { ok: false; code: 'OFFER_CHANGED'; fareNgn: number }
   /** No Stellar account yet, or no XLM price to be had right now: pay in naira instead. */
   | { ok: false; code: 'XLM_UNAVAILABLE' }
+  /** Cash is switched off (CASH_RIDES_ENABLED=false): pay from the wallet instead. */
+  | { ok: false; code: 'CASH_UNAVAILABLE' }
   | { ok: false; code: 'XLM_SHORT'; fareNgn: number; amountXlm: string; spendableXlm: number };
 
 /**
@@ -372,6 +383,8 @@ async function confirmOnce(
   const fareNgn = bid.counterOfferNgn;
   if (options.expectedFareNgn !== undefined && Math.abs(fareNgn - options.expectedFareNgn) >= 0.5) return { ok: false, code: 'OFFER_CHANGED', fareNgn };
   const payWithXlm = options.method === 'XLM';
+  const payWithCash = options.method === 'CASH';
+  if (payWithCash && !cashRidesEnabled()) return { ok: false, code: 'CASH_UNAVAILABLE' };
 
   // XLM: the fare at the current rate (asked for again every 30 minutes) must
   // fit the rider's spendable XLM. No naira is touched. Checked first, like the
@@ -383,9 +396,10 @@ async function confirmOnce(
     if (!xlmQuote.enough) return { ok: false, code: 'XLM_SHORT', fareNgn, amountXlm: xlmQuote.amountXlm, spendableXlm: xlmQuote.spendableXlm };
   }
 
-  const wallet = payWithXlm ? null : await walletClient.findByUserId(riderId);
+  // Cash: no wallet at all (nothing is held, so nothing is short).
+  const wallet = payWithXlm || payWithCash ? null : await walletClient.findByUserId(riderId);
   const balanceNgn = wallet ? Number(wallet.balanceNgn) : 0;
-  if (!payWithXlm && (!wallet || balanceNgn < fareNgn)) {
+  if (!payWithXlm && !payWithCash && (!wallet || balanceNgn < fareNgn)) {
     const shortNgn = Math.ceil(fareNgn - balanceNgn);
     // The rider chose this driver and is adding money: their card says "Rider is paying…".
     // (Not for auto-accept: nobody chose them, nobody is paying.)
@@ -402,6 +416,10 @@ async function confirmOnce(
     }
     return { ok: false, code: 'WALLET_SHORT', balanceNgn, fareNgn, shortNgn, sendNgn: depositNeededFor(shortNgn) };
   }
+
+  // Riding in a group: the group books its one driver, never one of the rider's own (rides/group-trip.ts).
+  const seat = await prisma.ride.findUnique({ where: { id: rideId }, select: { groupRole: true } }).catch(() => null);
+  if (seat?.groupRole === 'SEAT') return { ok: false, code: 'ALREADY_BOOKED' };
 
   const driver = await driverClient.findById(bid.driverId).catch(() => null);
   const fresh = driver?.lastSeenAt != null && Date.now() - driver.lastSeenAt.getTime() < 2 * 60_000;
@@ -437,6 +455,13 @@ async function confirmOnce(
     return { ok: false, code: 'ALREADY_BOOKED' };
   }
 
+  // Cash after a wallet try on this ride (held for this driver, then not sent): that money goes back, or it would
+  // stay locked for a ride that never settles from the wallet.
+  if (payWithCash) {
+    const leftover = await walletClient.rideHoldOf(rideId).catch(() => null);
+    if (leftover?.status === 'ACTIVE') await walletClient.cancelRideHold(rideId, bid.driverUserId).catch(() => undefined);
+  }
+
   if (wallet) try {
     const hold = await walletClient.createRideHold({
       rideId,
@@ -469,7 +494,7 @@ async function confirmOnce(
     // How this ride is paid, on the ride itself: settlement and receipts read it.
     await rideClient.setPayment(rideId, payWithXlm && xlmQuote
       ? { method: 'XLM', xlmRateNgn: xlmQuote.rate.ngnPerXlm, fareXlm: xlmQuote.amountXlm }
-      : { method: 'WALLET' });
+      : { method: payWithCash ? 'CASH' : 'WALLET' });
     await deps.publisher.publishRideEvent(RideOfferAcceptedEvent.parse({
       eventType: 'RIDE_OFFER_ACCEPTED',
       rideId,
@@ -478,7 +503,7 @@ async function confirmOnce(
       driverUserId: bid.driverUserId,
       bidId: bid.bidId,
       agreedFareNgn: fareNgn,
-      paymentMethod: payWithXlm ? 'XLM' : 'WALLET',
+      paymentMethod: payWithXlm ? 'XLM' : payWithCash ? 'CASH' : 'WALLET',
       timestamp: new Date().toISOString(),
     }));
   } catch (error) {
@@ -511,6 +536,7 @@ async function confirmOnce(
     destAddress: meta.destinationAddress,
     stopAddresses: (meta.stops ?? []).map((stop) => stop.address),
     ...(payWithXlm && xlmQuote ? { paidWithXlm: { amountXlm: xlmQuote.amountXlm, ngnPerXlm: xlmQuote.rate.ngnPerXlm } } : {}),
+    ...(payWithCash ? { paidInCash: true as const } : {}),
   };
   await clearPendingAccept(deps.redisClient, riderId);
   await setRideState(deps.redisClient, rideId, 'confirmed');

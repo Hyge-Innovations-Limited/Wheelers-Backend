@@ -1,4 +1,4 @@
-import { formatTripId } from '@wheleers/config';
+import { cashRidesEnabled, formatTripId } from '@wheleers/config';
 import { chatClient, driverClient, rideClient, tripCodeClient, userClient, virtualAccountClient } from '@wheleers/db';
 import { createWalletPageToken, DEPOSIT_PAGE_TOKEN_TTL_SECONDS } from '../auth/local';
 import type { RidePageChatEvent } from '../http/ride-page.route';
@@ -29,6 +29,8 @@ export interface ConfirmedRideForChat {
   tripCode?: string | null;
   /** Paid from the rider's Stellar (testnet) balance, not their naira wallet. */
   paidWithXlm?: { amountXlm: string; ngnPerXlm: number };
+  /** Paid to the driver in cash in the car (nothing held). */
+  paidInCash?: true;
 }
 
 /** An old offer tapped, or a payment for a search that is over: one message for all of them. */
@@ -84,7 +86,9 @@ export function rideDetailsText(ride: ConfirmedRideForChat, options: { chat?: 'c
     ``,
     ride.paidWithXlm
       ? `Fare ₦${ride.fareNgn.toLocaleString()} · *${ride.paidWithXlm.amountXlm} XLM* from your Stellar wallet, paid when you arrive`
-      : `Fare ₦${ride.fareNgn.toLocaleString()} · held in your wallet, paid when you arrive`,
+      : ride.paidInCash
+        ? `Fare ₦${ride.fareNgn.toLocaleString()} · *pay your driver in cash* when you arrive`
+        : `Fare ₦${ride.fareNgn.toLocaleString()} · held in your wallet, paid when you arrive`,
     `Arriving in about ${Math.max(1, Math.ceil(ride.etaSeconds / 60))} min`,
     ``,
     ...(options.chat === 'chat_and_call'
@@ -371,6 +375,8 @@ export async function sendRideTopupButton(
     `Send *₦${short.sendNgn.toLocaleString()}* and ₦${short.shortNgn.toLocaleString()} lands in your wallet.`,
     ``,
     `${driver} is booked the moment it lands. You don't need to tap anything again.`,
+    // Cash (Timi, 18 Nov 2026): no money needed now.
+    ...(cashRidesEnabled() ? [``, `Or reply *cash* to pay ${driver} in cash.`] : []),
   ];
 
   if (deps.appBaseUrl) {
@@ -427,6 +433,8 @@ export async function acceptOfferInChat(
   rideId: string,
   key: string,
   shownPriceNgn: number | null,
+  /** 'cash': the rider replied *cash* (pay the driver in the car, nothing held). Else the wallet. */
+  method: 'wallet' | 'cash' = 'wallet',
 ): Promise<void> {
   const log = (reply: string) => appendWhatsappConversation(deps.redisClient, phone, [
     { role: 'user', content: incomingMessage },
@@ -447,8 +455,10 @@ export async function acceptOfferInChat(
   }
 
   // The price they saw must still be the price when the booking takes its lock.
-  const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, user.id, rideId, key,
-    shownPriceNgn !== null ? { expectedFareNgn: shownPriceNgn } : {});
+  const result = await confirmRideWithOffer({ redisClient: deps.redisClient, publisher: deps.publisher }, user.id, rideId, key, {
+    ...(shownPriceNgn !== null ? { expectedFareNgn: shownPriceNgn } : {}),
+    ...(method === 'cash' ? { method: 'CASH' as const } : {}),
+  });
   if (result.ok) {
     logActivity({ userId: user.id, eventType: 'ride_offer_accepted', source: 'whatsapp', rideId, metadata: { fareNgn: result.ride.fareNgn, driverId: result.ride.driverId } });
     await log(await sendRideConfirmation(deps, user.id, phone, result.ride));
@@ -478,6 +488,14 @@ export async function acceptOfferInChat(
       await clearPendingAccept(deps.redisClient, user.id);
       await log(await sendCurrentOffers(deps, phone, rideId, `Another rider is booking ${bid.driverName} right now. Nothing was charged. Pick another driver.`));
       return;
+    case 'CASH_UNAVAILABLE': {
+      // Cash switched off while they chose it: the driver stays chosen, the wallet way is still open.
+      await rememberChosenOffer(deps, user.id, rideId, bid);
+      const reply = `Cash isn't available right now. Reply *pay* to pay ${driver} from your wallet.`;
+      await log(reply);
+      await sendMetaReply(deps, phone, reply);
+      return;
+    }
     case 'ALREADY_CONFIRMING': {
       // Maybe another driver: never named here.
       const reply = 'One moment, your ride is being booked…';

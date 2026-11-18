@@ -16,7 +16,7 @@ import { priceCheckLines } from '../whatsapp-flows/trip-text';
 export const GROUP_SELFIE_PROMPT = [
   'Quick safety check',
   '',
-  'Send a clear *selfie of your face* so other riders know who they are sharing with.',
+  'Send a clear *selfie of your face* so other riders know who they ride with.',
   '',
   'Just your face, good lighting, no sunglasses. Reply *cancel group* to stop.',
 ].join('\n');

@@ -1,4 +1,4 @@
-import { driverClient, groupRideClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { driverClient, groupRideClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON, studioCaptureClient } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor, tripDetailsColumns, tripDetailsFromRow } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
@@ -14,6 +14,8 @@ import {
   type RideOfferAcceptedEvent,
   type RideRouteUpdateRequestedEvent,
   type RideRequestedEvent,
+  type GroupTripEndedEvent,
+  type GroupTripFormedEvent,
 } from '@wheleers/kafka-schemas';
 
 import type { PendingRideMatch, RideServiceState } from '../index';
@@ -47,12 +49,33 @@ export function createRideRequestedConsumer(params: {
   /** Waits between the retries of the assignment write (tests make them short). */
   assignRetryDelaysMs?: number[];
   rideEventsProducer: RideEventsProducer;
-}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number> } {
+}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => Promise<void> } {
   const { state, rideEnv, rideEventsProducer } = params;
   const assignRetryDelaysMs = params.assignRetryDelaysMs ?? [250, 1_000, 3_000];
 
+  /**
+   * Group trips (Timi, 17 Nov 2026), from the group-ride events: formed, the seats' own searches stop (the trip
+   * searches for them); ended, the trip's driver goes back to the pool and its search, if any, is gone.
+   */
+  async function handleGroupTrip(event: GroupTripFormedEvent | GroupTripEndedEvent): Promise<void> {
+    if (event.eventType === 'GROUP_TRIP_FORMED') {
+      // Only seats still in this group (a redelivered "formed" after the group ended never stops their own searches).
+      const rows = await rideClient.groupLinksOf(event.seatRideIds).catch(() => null);
+      for (const seat of event.seatRideIds) {
+        const row = rows?.find((r) => r.id === seat);
+        if (rows && (!row || row.groupTripId !== event.groupId)) continue;
+        clearPendingMatch(seat);
+      }
+      return;
+    }
+    clearPendingMatch(event.groupId);
+    state.routeByRideId.delete(event.groupId);
+    returnAssignedDriverToPool(event.groupId);
+  }
+
   return {
     rehydrate: rehydrateOpenSearches,
+    handleGroupTrip,
     async handle(value, ctx) {
       if (ctx.topic !== TOPICS.RIDE_EVENTS) return;
       const event = safeParseKafkaEvent(TOPICS.RIDE_EVENTS, value);
@@ -90,6 +113,18 @@ export function createRideRequestedConsumer(params: {
 
       if (event.eventType === 'RIDE_ROUTE_UPDATE_REQUESTED') {
         handleRouteUpdateRequested(event);
+        return;
+      }
+
+      if (event.eventType === 'RIDE_DRIVER_ASSIGNED' && event.groupSeat) {
+        // A seat of a group trip: its own search is over, but the driver is the TRIP's (taken from the pool, and
+        // given back, with the trip only). Nothing here touches the pool.
+        clearPendingMatch(event.rideId);
+        state.rideParticipantsByRideId.set(event.rideId, {
+          ...state.rideParticipantsByRideId.get(event.rideId),
+          riderId: event.riderId,
+          driverId: event.driverId,
+        });
         return;
       }
 
@@ -222,8 +257,9 @@ export function createRideRequestedConsumer(params: {
     const scheduledWhatsapp = event.scheduled === true && event.channel === 'WHATSAPP';
     if (scheduledWhatsapp) {
       if (!(await scheduledWhatsappMayStart(event))) return;
-    } else {
+    } else if (!event.groupTrip) {
       // A ride for later booked on WhatsApp never ends the rider's live search (it waits for them instead).
+      // A group trip never ends another: every one is owned by the one group account.
       await supersedeOlderSearches(event);
     }
     state.routeByRideId.set(event.rideId, [
@@ -269,6 +305,8 @@ export function createRideRequestedConsumer(params: {
         pickupZone: zoneFor(event.pickup.lat, event.pickup.lng),
         destZone: zoneFor(event.destination.lat, event.destination.lng),
         ...tripDetailsColumns(event.tripDetails),
+        // A group ride's TRIP: the ride the driver drives; its stops with each seat's ride id.
+        ...(event.groupTrip ? { groupTripId: event.rideId, groupRole: 'TRIP' as const, groupStops: JSON.parse(JSON.stringify(event.groupTrip.stops)) } : {}),
       });
     } catch (err) {
       console.warn(`[ride-service] ride create skipped:`, (err as any)?.message ?? err);
@@ -306,6 +344,8 @@ export function createRideRequestedConsumer(params: {
       onlineDrivers: state.onlineDrivers,
       rideRequested: event,
     });
+    // Analytics (not awaited, never fails the search): free drivers found at the start.
+    void studioCaptureClient.noteDriversFound(event.rideId, result.ok ? result.drivers.filter((d) => !d.afterCurrentTrip).length : 0);
 
     if (!result.ok) {
       console.log(`[ride-service] no matching drivers for ride ${event.rideId}: ${result.reason}`);
@@ -338,6 +378,8 @@ export function createRideRequestedConsumer(params: {
     });
 
     console.log(`[ride-service] broadcasted ride ${event.rideId} to ${result.drivers.length} drivers`);
+    // Analytics (not awaited): who it went to, round 1.
+    void studioCaptureClient.notePings(event.rideId, result.drivers.map((d) => d.driverId), 1);
   }
 
   /**
@@ -434,6 +476,10 @@ export function createRideRequestedConsumer(params: {
       return;
     }
 
+    // Analytics (not awaited): the change and the open offers at this moment (before anything moves).
+    const seatChange = pending.group?.members?.some((m) => m.rideId === event.rideId) ?? false;
+    if (!seatChange) void studioCaptureClient.notePriceChange(event.rideId, pending.rideRequested.riderOfferNgn, event.counterOfferNgn);
+
     // The ride keeps the price the rider is offering NOW: the gateway checks a
     // driver's acceptance against it, and a search rebuilt after a restart
     // re-offers it. It used to stay at the first price.
@@ -509,6 +555,9 @@ export function createRideRequestedConsumer(params: {
           ),
         );
         console.log(`[ride-service] rider counter-offer on ride ${event.rideId} sent to ${pending.candidates.length} drivers: ₦${event.counterOfferNgn}`);
+        // Analytics (not awaited): the search went out again, one round more.
+        const candidates = pending.candidates.map((d) => d.driverId);
+        void studioCaptureClient.lastRound(event.rideId).then((round) => studioCaptureClient.notePings(event.rideId, candidates, Math.max(1, round) + 1));
       }
     }
   }
@@ -860,6 +909,8 @@ export function createRideRequestedConsumer(params: {
       plannedDistanceKm: ride.distanceKm ?? undefined,
       plannedDurationSeconds: ride.durationSeconds ?? undefined,
       ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
+      // A group trip keeps its riders' stops when its search is rebuilt (a restart).
+      ...(ride.groupRole === 'TRIP' && Array.isArray(ride.groupStops) ? { groupTrip: { stops: ride.groupStops as Array<{ rideId: string; kind: 'pickup' | 'dropoff'; lat: number; lng: number; address: string }> } } : {}),
       timestamp: new Date().toISOString(),
     };
   }
@@ -884,6 +935,8 @@ export function createRideRequestedConsumer(params: {
     });
     if (!ride) return null;
     if (ride.status === 'COMPLETED' || ride.status === 'CANCELLED') return null;
+    // A rider in a group: searched for only as the group (a price change or a late bid never revives their own search).
+    if (ride.groupRole === 'SEAT') return null;
     if (options.resetStatus) {
       // Only after the assigned driver cancelled, and only while the ride is still
       // theirs: a redelivered cancel finds it reopened (or another driver's) and
@@ -959,6 +1012,8 @@ export function createRideRequestedConsumer(params: {
     let rebuilt = 0;
     for (const ride of open) {
       if (state.pendingMatchesByRideId.has(ride.id)) continue;
+      // A seat of a group trip is not searching on its own (the trip is): rebuilding it would restart its clock.
+      if (ride.groupRole === 'SEAT') continue;
       if (await rebuildPending(ride.id)) rebuilt += 1;
     }
     if (open.length > 0) console.info('[ride-service] open searches on start', { found: open.length, rebuilt });

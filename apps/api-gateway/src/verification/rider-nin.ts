@@ -26,6 +26,8 @@ export type NinStatus = 'VERIFIED' | 'NO_MATCH' | 'NOT_FOUND' | 'SUSPENDED' | 'U
 
 export const NIN_CHECKS_PER_DAY = 3;
 
+const dayKeyFor = (userId: string) => `rider-nin:${userId}:${new Date().toISOString().slice(0, 10)}`;
+
 /** 11 digits (spaces and dashes taken out), or null. */
 export function cleanNin(raw: unknown): string | null {
   if (typeof raw !== 'string' && typeof raw !== 'number') return null;
@@ -95,7 +97,21 @@ export interface RiderNinDeps {
  * Look the NIN up and write the outcome on the rider. Returns the status written, or null when nothing was
  * looked up (not 11 digits, already verified, over today's limit, Prembly not set up). Never throws.
  */
-export async function checkRiderNin(userId: string, rawNin: unknown, fullName: string, deps: RiderNinDeps): Promise<NinStatus | null> {
+/** Take one of today's tries; false when they are used up. INCR is atomic; a store without it (tests) reads and writes. */
+async function takeTry(redis: RedisClient, userId: string): Promise<boolean> {
+  const key = dayKeyFor(userId);
+  const store = redis as RedisClient & { send?: (...args: string[]) => Promise<unknown> };
+  if (typeof store.send === 'function') {
+    const n = Number(await store.send('INCR', key));
+    if (n === 1) await store.send('EXPIRE', key, String(26 * 60 * 60)).catch(() => undefined);
+    return n <= NIN_CHECKS_PER_DAY;
+  }
+  const used = Number(await redis.get(key).catch(() => null)) || 0;
+  await redis.set(key, String(used + 1), 26 * 60 * 60).catch(() => undefined);
+  return used < NIN_CHECKS_PER_DAY;
+}
+
+export async function checkRiderNin(userId: string, rawNin: unknown, fullName: string, deps: RiderNinDeps): Promise<NinStatus | 'LIMIT' | null> {
   try {
     const nin = cleanNin(rawNin);
     if (!nin) return null;
@@ -106,10 +122,9 @@ export async function checkRiderNin(userId: string, rawNin: unknown, fullName: s
       console.warn('[rider-nin] Prembly is not set up: the NIN was not checked', { userId });
       return null;
     }
-    const dayKey = dayKeyFor(userId);
-    const used = Number(await deps.redis.get(dayKey).catch(() => null)) || 0;
-    if (used >= NIN_CHECKS_PER_DAY) return null;
-    await deps.redis.set(dayKey, String(used + 1), 26 * 60 * 60).catch(() => undefined);
+    // One of today's tries, taken atomically: two submits at the same moment never both get past the limit
+    // (each lookup costs money on the Prembly balance).
+    if (!(await takeTry(deps.redis, userId))) return 'LIMIT';
 
     const answer = await prembly.ninBasic(config, nin, deps.fetchImpl);
     const status: NinStatus = answer.kind === 'found'
@@ -141,7 +156,6 @@ export const NIN_ERRORS = {
   NIN_TOO_MANY: 'Too many tries. Leave it empty for now.',
 } as const;
 
-const dayKeyFor = (userId: string) => `rider-nin:${userId}:${new Date().toISOString().slice(0, 10)}`;
 
 /**
  * The NIN typed in the form or the app, checked now. Wrong (not 11 digits, no such NIN, another person's name,
@@ -171,6 +185,7 @@ export async function checkRiderNinLive(
   if (timer) clearTimeout(timer);
   if (status === 'NOT_FOUND') return { ok: false, code: 'NIN_NOT_FOUND', error: NIN_ERRORS.NIN_NOT_FOUND };
   if (status === 'SUSPENDED') return { ok: false, code: 'NIN_SUSPENDED', error: NIN_ERRORS.NIN_SUSPENDED };
+  if (status === 'LIMIT') return { ok: false, code: 'NIN_TOO_MANY', error: NIN_ERRORS.NIN_TOO_MANY };
   if (status === 'NO_MATCH') return { ok: false, code: 'NIN_OTHER_NAME', error: NIN_ERRORS.NIN_OTHER_NAME(fullName.trim() || 'you gave') };
   return { ok: true, status };
 }

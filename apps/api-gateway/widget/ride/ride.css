@@ -431,6 +431,8 @@ a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
 .pay-icon.naira { background: var(--orange-soft); color: var(--orange-ink); }
 .pay-icon.xlm { background: var(--ink); color: var(--on-ink); }
 .pay-icon.xlm svg { width: 22px; height: 22px; }
+.pay-icon.cash { background: var(--good-soft); color: var(--good); }
+.pay-icon.cash svg { width: 22px; height: 22px; }
 .pay-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pay-text strong { display: flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 700; white-space: nowrap; }
 .pay-text > span { font-size: 13px; color: var(--muted); }
@@ -870,3 +872,43 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 .rate[aria-checked="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
 .rate:active { opacity: 0.72; }
 #d-wait-act { margin-top: 4px; align-self: flex-start; }
+
+/* A group ride offer (rides/group-live.ts) */
+.group-top { display: flex; justify-content: space-between; align-items: baseline; }
+.group-timer { height: 4px; border-radius: 999px; background: var(--soft); overflow: hidden; margin-top: -6px; }
+.group-timer span { display: block; height: 100%; width: 100%; background: var(--orange); }
+.group-road { list-style: none; margin: 0; padding: 0 0 0 28px; position: relative; display: flex; flex-direction: column; gap: 12px; }
+.group-road::before { content: ""; position: absolute; left: 9px; top: 9px; bottom: 9px; width: 3px; border-radius: 2px; background: var(--ink); }
+.group-road li { position: relative; font-size: 15px; line-height: 19px; }
+.group-road li::before { content: ""; position: absolute; left: -25px; top: 3px; width: 13px; height: 13px; border-radius: 7px; background: var(--page); border: 3px solid var(--ink); box-sizing: border-box; }
+.group-road li.you::before { background: var(--orange); }
+.group-road li.end::before { border-radius: 2px; background: var(--ink); }
+.group-road li b { font-weight: 700; }
+.group-road li span { display: block; font-size: 13px; color: var(--muted); }
+.group-deal { display: flex; justify-content: space-between; align-items: flex-end; padding: 14px 16px; border-radius: var(--r-lg); background: var(--ink); color: var(--on-ink); }
+.group-deal .small { color: var(--on-ink-muted); }
+.group-seat { font-family: var(--display); font-weight: 800; font-size: 32px; line-height: 34px; color: var(--orange); font-variant-numeric: tabular-nums; }
+.group-was { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.strike { text-decoration: line-through; }
+.group-save { display: inline-block; padding: 3px 9px; border-radius: 999px; background: var(--good); color: #fff; font-size: 12px; font-weight: 800; }
+.group-buttons { display: flex; gap: 10px; }
+.group-buttons .btn { flex: 1; }
+.group-photo { width: 160px; height: 160px; border-radius: 80px; object-fit: cover; align-self: center; border: 3px solid var(--orange); }
+#sheet-group label.btn { display: flex; align-items: center; justify-content: center; }
+
+/* A group ride on the trip: who else is in the car, every stop in order, yours in orange. */
+.gtrip { display: flex; flex-direction: column; gap: 10px; }
+.gtrip-title { font-size: 14px; line-height: 19px; font-weight: 800; color: var(--ink); }
+.gtrip-stops { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.gtrip-stops li { display: flex; align-items: center; gap: 10px; font-size: 14px; line-height: 19px; color: var(--ink); min-width: 0; }
+.gtrip-stops li span { overflow-wrap: anywhere; }
+.gtrip-stops li::before { content: ''; flex: 0 0 auto; width: 10px; height: 10px; border-radius: 5px; border: 2px solid var(--line); background: var(--bg); }
+.gtrip-stops li.yours { font-weight: 800; color: var(--orange-ink); }
+.gtrip-stops li.yours::before { border-color: var(--orange); background: var(--orange); }
+.gtrip-stops li.done { color: var(--muted); text-decoration: line-through; }
+.gtrip-stops li.done::before { border-color: var(--muted); background: var(--muted); }
+
+
+/* the NIN popup */
+.nin-input { width: 100%; height: 56px; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 0 16px; font-size: 20px; letter-spacing: 2px; font-family: var(--display); background: var(--bg); color: var(--ink); }
+.nin-input:focus { outline: 2px solid var(--ink); outline-offset: -1px; }

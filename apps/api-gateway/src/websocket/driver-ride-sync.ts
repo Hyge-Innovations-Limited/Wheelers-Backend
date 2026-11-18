@@ -1,10 +1,12 @@
+import { pendingFaceCheck, type FaceCheckView } from '../face/face-check';
 import { formatTripId, tripDetailsFromRow } from '@wheleers/config';
 import type { TripDetails } from '@wheleers/config';
 import { tripCodeStillNeeded } from '../rides/trip-code';
 import type WebSocket from 'ws';
-import { rideClient, userClient } from '@wheleers/db';
+import { prisma, rideClient, userClient } from '@wheleers/db';
 import type { SocketRegistry } from './registry';
 import { waitingView, type WaitingView } from '../rides/waiting';
+import { firstNameOf } from '../rides/group-people';
 
 /**
  * The driver app's picture of an assigned ride.
@@ -38,6 +40,8 @@ export type DriverRideSnapshot = {
   riderName: string | null;
   /** Start trip asks for the rider's 4-digit code. The code itself never goes to the driver. */
   tripCodeRequired: boolean;
+  /** The face scan still to pass before Arrived (face/face-check.ts). Absent: none due. */
+  faceCheck?: FaceCheckView;
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
@@ -45,7 +49,59 @@ export type DriverRideSnapshot = {
   waiting: WaitingView | null;
   /** People, luggage, pet and the rider's note. Absent: booked without them. */
   tripDetails?: TripDetails;
+  /** A group trip (Timi, 17 Nov 2026): its stops in order and each rider's seat. Absent: any other ride. */
+  group?: DriverGroupTrip;
 };
+
+export type DriverGroupSeat = {
+  rideId: string;
+  riderId: string;
+  riderName: string;
+  riderPhone: string | null;
+  status: string;
+  seatPriceNgn: number;
+  pickup: { lat: number; lng: number; address: string };
+  dropoff: { lat: number; lng: number; address: string };
+  /** Their 4-digit code is still to be given at their pickup. */
+  tripCodeRequired: boolean;
+  /** Their waiting at their pickup (5 free minutes, then a price they agree). Null: not arrived. */
+  waiting: WaitingView | null;
+};
+
+export type DriverGroupTrip = {
+  seats: DriverGroupSeat[];
+  /** Every stop in order: whose, pickup or drop-off, and whether it is behind the driver. */
+  stops: Array<{ rideId: string; kind: 'pickup' | 'dropoff'; address: string; lat: number; lng: number; done: boolean }>;
+};
+
+/** The group block for a TRIP ride: its seats and its stops, as they stand. */
+async function groupTripFor(ride: { id: string; groupRole?: string | null; groupStops?: unknown }): Promise<DriverGroupTrip | null> {
+  if (ride.groupRole !== 'TRIP') return null;
+  const seatRows = await prisma.ride.findMany({ where: { groupTripId: ride.id, groupRole: 'SEAT' } }).catch(() => []);
+  const users = await prisma.user.findMany({ where: { id: { in: seatRows.map((r) => r.riderId) } }, select: { id: true, name: true, phone: true } }).catch(() => []);
+  const byUser = new Map(users.map((u) => [u.id, u]));
+  const seats: DriverGroupSeat[] = await Promise.all(seatRows.map(async (r) => ({
+    rideId: r.id,
+    riderId: r.riderId,
+    riderName: firstNameOf(byUser.get(r.riderId)?.name),
+    // A rider no longer on the trip (dropped off, cancelled, left behind): their number is not the driver's to keep.
+    riderPhone: ['COMPLETED', 'CANCELLED'].includes(String(r.status)) ? null : byUser.get(r.riderId)?.phone ?? null,
+    status: String(r.status),
+    seatPriceNgn: decimalToNumber(r.agreedFareNgn) ?? 0,
+    pickup: { lat: r.pickupLat, lng: r.pickupLng, address: r.pickupAddress },
+    dropoff: { lat: r.destLat, lng: r.destLng, address: r.destAddress },
+    tripCodeRequired: await tripCodeStillNeeded(r.id).catch(() => false),
+    waiting: waitingView(r),
+  })));
+  const status = new Map(seats.map((s) => [s.rideId, s.status]));
+  const planned = Array.isArray(ride.groupStops) ? (ride.groupStops as Array<{ rideId: string; kind: 'pickup' | 'dropoff'; address: string; lat: number; lng: number }>) : [];
+  const stops = planned.map((p) => {
+    const st = status.get(p.rideId) ?? 'CANCELLED';
+    const done = st === 'CANCELLED' || st === 'COMPLETED' || (p.kind === 'pickup' && st === 'IN_PROGRESS');
+    return { rideId: p.rideId, kind: p.kind, address: p.address, lat: p.lat, lng: p.lng, done };
+  });
+  return { seats, stops };
+}
 
 function decimalToNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -97,6 +153,8 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     startedAt: ride.startedAt?.toISOString() ?? null,
     waiting: waitingView(ride),
     ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
+    ...(await groupTripFor(ride).then((group) => (group ? { group } : {})).catch(() => ({}))),
+    ...(ride.driverId ? await pendingFaceCheck(ride.id, ride.driverId).then((faceCheck) => (faceCheck ? { faceCheck } : {})) : {}),
   };
 }
 

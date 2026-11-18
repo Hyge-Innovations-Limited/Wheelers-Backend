@@ -1,5 +1,6 @@
 import { driverBidClient, driverClient, groupRideClient, rideClient, walletClient } from '@wheleers/db';
 import { RideOfferAcceptedEvent, WalletLockedEvent } from '@wheleers/kafka-schemas';
+import { cashRidesEnabled } from '@wheleers/config';
 import type { RedisClient } from '../redis/client';
 import { driverPhotoFields, getDriverPhotoResolver } from '../drivers/driver-photo';
 import type { GatewayPublisher } from '../websocket/publisher';
@@ -61,6 +62,10 @@ async function acceptOnce(
 ): Promise<HandlerResponse> {
   const { publisher, redis } = deps;
   const { rideId, driverId, bidId, paymentMethod } = input;
+  // Cash (Timi, 18 Nov 2026) only while it is switched on; never for a group (a seat is refused below anyway).
+  if (paymentMethod === 'CASH' && !cashRidesEnabled()) {
+    return { type: 'ride:accept_offer:rejected', payload: { rideId, driverId, reason: 'cash_unavailable', message: "Cash isn't available right now. Pay from your wallet." } };
+  }
   // The driver's own user id comes from their record once it is read (never trusted from the app).
   let driverUserId = input.driverUserId;
   if (input.auto && redis && await isSearchEnded(redis, rideId)) {
@@ -92,6 +97,13 @@ async function acceptOnce(
   }
   if (acceptingRide && acceptingRide.riderId !== riderId) {
     throw new Error('This ride is not yours.');
+  }
+  // A rider riding in a group: the group books its one driver (rides/group-trip.ts), never a driver of their own.
+  if (acceptingRide?.groupRole === 'SEAT') {
+    return {
+      type: 'ride:accept_offer:rejected',
+      payload: { rideId, driverId, reason: 'already_matched', message: "You're riding in a group. We're finding your driver." },
+    };
   }
   if (acceptingRide && acceptingRide.status !== 'REQUESTED' && acceptingRide.status !== 'MATCHING') {
     return {
@@ -248,6 +260,12 @@ async function acceptOnce(
         payload: { rideId, driverId, reason: 'driver_unavailable', message: 'That driver is no longer available.' },
       };
     }
+  }
+
+  // Cash after a wallet try on this ride (held for this driver, then not sent): that money goes back, or it would
+  // stay locked for a ride that never settles from the wallet.
+  if (paymentMethod === 'CASH' && heldFor?.status === 'ACTIVE') {
+    await walletClient.cancelRideHold(rideId, driverUserId).catch(() => undefined);
   }
 
   // ── No hold, no match. WhatsApp riders were already checked at "pay";

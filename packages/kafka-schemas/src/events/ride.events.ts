@@ -70,6 +70,11 @@ export const RideRequestedEvent = BaseRideEvent.extend({
   // just now: the rider is not looking at the app and has to be told.
   scheduled:        z.boolean().optional(),
   tripDetails:      TripDetails.optional(),
+  // A group ride's TRIP (Timi, 17 Nov 2026): the ride the driver bids on and drives, owned by the Wheelers group
+  // account; its stops in order with each seat's ride id. Absent: any other ride.
+  groupTrip:        z.object({
+    stops: z.array(LatLng.extend({ rideId: z.string().uuid(), kind: z.enum(['pickup', 'dropoff']) })).min(4).max(6),
+  }).optional(),
 });
 
 export const RideRouteUpdateRequestedEvent = BaseRideEvent.extend({
@@ -215,6 +220,8 @@ export const RideDriverAssignedEvent = BaseRideEvent.extend({
   paymentMethod:  PaymentMethod,
   /** Every driver this request was offered to (users), so each can be told it is taken. */
   offeredDriverUserIds: z.array(z.string().uuid()).optional(),
+  // A seat of a group trip (Timi, 17 Nov 2026): its rider is told; the driver drives the trip, not this ride.
+  groupSeat:      z.boolean().optional(),
 });
 
 export const RideRouteUpdatedEvent = BaseRideEvent.extend({

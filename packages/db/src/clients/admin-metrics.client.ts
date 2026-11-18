@@ -1,6 +1,7 @@
 import { formatTripId, parseTripId } from '@wheleers/config';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
+import { NOT_GROUP_TRIP } from './group-trip.client';
 
 /**
  * Everything the admin panel needs to show the business as it actually is.
@@ -165,7 +166,7 @@ export const adminMetricsClient = {
           COALESCE(SUM(ride."fareFinalNgn") FILTER (WHERE ride.status = 'COMPLETED'), 0) AS spent,
           MAX(ride."createdAt")                                      AS "lastRideAt"
         FROM "Ride" ride
-        WHERE ride."riderId" = u.id
+        WHERE ride."riderId" = u.id AND ride."groupRole" IS DISTINCT FROM 'TRIP'
       ) r ON TRUE
       ${where}
       ORDER BY ${orderBy}
@@ -264,13 +265,13 @@ export const adminMetricsClient = {
       user.driver
         ? prisma.ride.groupBy({
             by: ['status'],
-            where: { driverId: user.driver.id },
+            where: { driverId: user.driver.id, ...NOT_GROUP_TRIP },
             _count: { _all: true },
           })
         : Promise.resolve([]),
       user.driver
         ? prisma.ride.findMany({
-            where: { driverId: user.driver.id },
+            where: { driverId: user.driver.id, ...NOT_GROUP_TRIP },
             orderBy: { createdAt: 'desc' },
             take: 15,
             select: {
@@ -452,6 +453,7 @@ export const adminMetricsClient = {
             COUNT(*) FILTER (WHERE "createdAt" >= ${d7})::int       AS last7d,
             COUNT(*) FILTER (WHERE "createdAt" >= ${d30})::int      AS last30d
           FROM "Ride"
+          WHERE "groupRole" IS DISTINCT FROM 'TRIP'
           GROUP BY status
         `,
         prisma.$queryRaw<Array<Record<string, string>>>`
@@ -474,7 +476,7 @@ export const adminMetricsClient = {
             COUNT(*) FILTER (WHERE "completedAt" >= ${d7})::int                                 AS "count7d",
             COUNT(*) FILTER (WHERE "completedAt" >= ${d30})::int                                AS "count30d"
           FROM "Ride"
-          WHERE status = 'COMPLETED'
+          WHERE status = 'COMPLETED' AND "groupRole" IS DISTINCT FROM 'TRIP'
         `,
         prisma.$queryRaw<Array<Record<string, unknown>>>`
           SELECT
@@ -508,7 +510,7 @@ export const adminMetricsClient = {
             COUNT(*)::int                                              AS total,
             COUNT(*) FILTER (WHERE "createdAt" >= ${d30})::int         AS last30d
           FROM "Ride"
-          WHERE status = 'CANCELLED' AND "driverId" IS NULL
+          WHERE status = 'CANCELLED' AND "driverId" IS NULL AND "groupRole" IS DISTINCT FROM 'TRIP'
         `,
       ]);
 
@@ -773,7 +775,7 @@ export const adminMetricsClient = {
       ) ds ON ds.day = d.day
       LEFT JOIN (
         SELECT date_trunc('day', "createdAt") AS day, COUNT(*) AS created
-        FROM "Ride" GROUP BY 1
+        FROM "Ride" WHERE "groupRole" IS DISTINCT FROM 'TRIP' GROUP BY 1
       ) rc ON rc.day = d.day
       LEFT JOIN (
         SELECT date_trunc('day', "completedAt") AS day,
@@ -781,13 +783,13 @@ export const adminMetricsClient = {
                SUM("fareFinalNgn") AS revenue,
                SUM("platformFeeNgn") AS fees
         FROM "Ride"
-        WHERE status = 'COMPLETED' AND "completedAt" IS NOT NULL
+        WHERE status = 'COMPLETED' AND "completedAt" IS NOT NULL AND "groupRole" IS DISTINCT FROM 'TRIP'
         GROUP BY 1
       ) rk ON rk.day = d.day
       LEFT JOIN (
         SELECT date_trunc('day', "cancelledAt") AS day, COUNT(*) AS cancelled
         FROM "Ride"
-        WHERE status = 'CANCELLED' AND "cancelledAt" IS NOT NULL
+        WHERE status = 'CANCELLED' AND "cancelledAt" IS NOT NULL AND "groupRole" IS DISTINCT FROM 'TRIP'
         GROUP BY 1
       ) rx ON rx.day = d.day
       LEFT JOIN (
@@ -817,7 +819,7 @@ export const adminMetricsClient = {
   cancellationBreakdown: async () => {
     const rows = await prisma.ride.groupBy({
       by: ['cancelReason'],
-      where: { status: 'CANCELLED' },
+      where: { status: 'CANCELLED', ...NOT_GROUP_TRIP },
       _count: { _all: true },
       orderBy: { _count: { id: 'desc' } },
       take: 15,
@@ -853,6 +855,7 @@ export const adminMetricsClient = {
           : { status: options.status as Prisma.EnumRideStatusFilter['equals'] };
 
     const where: Prisma.RideWhereInput = {
+      ...NOT_GROUP_TRIP,
       ...statusFilter,
       ...(q
         ? {

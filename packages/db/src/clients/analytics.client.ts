@@ -1,4 +1,5 @@
 import { prisma } from '../prisma';
+import { NOT_GROUP_TRIP } from './group-trip.client';
 
 export const analyticsClient = {
   /** High-level platform stats */
@@ -20,12 +21,12 @@ export const analyticsClient = {
       prisma.driver.count(),
       prisma.driver.count({ where: { kycStatus: 'APPROVED' } }),
       prisma.driver.count({ where: { status: 'ONLINE' } }),
-      prisma.ride.count(),
-      prisma.ride.count({ where: { status: 'COMPLETED' } }),
-      prisma.ride.count({ where: { status: 'CANCELLED' } }),
-      prisma.ride.count({ where: { status: { in: ['REQUESTED', 'MATCHING', 'DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] } } }),
-      prisma.ride.aggregate({ where: { status: 'COMPLETED' }, _sum: { fareFinalNgn: true } }),
-      prisma.ride.aggregate({ where: { status: 'COMPLETED' }, _sum: { platformFeeNgn: true } }),
+      prisma.ride.count({ where: NOT_GROUP_TRIP }),
+      prisma.ride.count({ where: { status: 'COMPLETED', ...NOT_GROUP_TRIP } }),
+      prisma.ride.count({ where: { status: 'CANCELLED', ...NOT_GROUP_TRIP } }),
+      prisma.ride.count({ where: { status: { in: ['REQUESTED', 'MATCHING', 'DRIVER_ASSIGNED', 'DRIVER_EN_ROUTE', 'ARRIVED', 'IN_PROGRESS'] }, ...NOT_GROUP_TRIP } }),
+      prisma.ride.aggregate({ where: { status: 'COMPLETED', ...NOT_GROUP_TRIP }, _sum: { fareFinalNgn: true } }),
+      prisma.ride.aggregate({ where: { status: 'COMPLETED', ...NOT_GROUP_TRIP }, _sum: { platformFeeNgn: true } }),
       prisma.user.count(),
     ]);
 
@@ -100,6 +101,7 @@ export const analyticsClient = {
       prisma.user.count({ where: { role: { in: ['RIDER', 'BOTH'] } } }),
       prisma.ride.groupBy({
         by: ['riderId'],
+        where: NOT_GROUP_TRIP,
         _count: true,
       }).then((g) => g.length),
       prisma.$queryRaw<Array<{
@@ -119,13 +121,14 @@ export const analyticsClient = {
           COALESCE(SUM(r."fareFinalNgn"), 0)::text AS "totalSpentNgn"
         FROM "Ride" r
         JOIN "User" u ON u.id = r."riderId"
-        WHERE r.status = 'COMPLETED'
+        WHERE r.status = 'COMPLETED' AND r."groupRole" IS DISTINCT FROM 'TRIP'
         GROUP BY r."riderId", u."name", u."phone", u."email"
         ORDER BY "rideCount" DESC
         LIMIT 10
       `,
       prisma.ride.groupBy({
         by: ['status'],
+        where: NOT_GROUP_TRIP,
         _count: true,
       }),
     ]);
@@ -148,6 +151,7 @@ export const analyticsClient = {
   /** Recent rides for admin view */
   recentRides: (limit = 20) =>
     prisma.ride.findMany({
+      where: NOT_GROUP_TRIP,
       orderBy: { createdAt: 'desc' },
       take: limit,
       select: {

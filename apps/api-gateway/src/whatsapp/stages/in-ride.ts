@@ -15,6 +15,7 @@ import { offerKey } from '../../rides/whatsapp-ride.service';
 import { depositNeededFor, validateRiderOffer } from '@wheleers/config';
 import type { StageContext } from '../stage-context';
 import { priceCheckLines } from '../../whatsapp-flows/trip-text';
+import { tripOfSeat } from '../../rides/group-trip';
 
 /** The inRide stage of the chat, carved out of handleIncomingMetaMessage. Returns true when it answered the message. */
 export async function inRide(ctx: StageContext): Promise<boolean> {
@@ -202,6 +203,12 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
         pendingAccept.bidId ?? `driver:${pendingAccept.driverId}`, pendingAccept.fareNgn);
       return true;
     }
+    // Cash (Timi, 18 Nov 2026): the same driver, paid in the car; nothing is held, so no money is needed now.
+    if (pendingAccept && /^(cash|pay cash|pay with cash|i'?ll pay cash)$/i.test(incomingMessage.trim())) {
+      await acceptOfferInChat(deps, user, phone, incomingMessage, pendingAccept.rideId,
+        pendingAccept.bidId ?? `driver:${pendingAccept.driverId}`, pendingAccept.fareNgn, 'cash');
+      return true;
+    }
 
     // ── Accept a driver: "accept 1", "accept 3" (can override pending accept) ──
     const acceptNum = parseAcceptCommand(incomingMessage);
@@ -343,6 +350,10 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
 
     // ── Counter-offer with a price: "1500", "₦2000", "2k" ──
     const counterOffer = parseCounterOffer(incomingMessage);
+    if (counterOffer !== null && (await tripOfSeat(deps.redisClient, activeRideId))) {
+      await sendMetaReply(deps, phone, "You're riding in a group. We're finding your driver.");
+      return true;
+    }
     if (counterOffer !== null) {
       const meta = await getRideMeta(deps.redisClient, activeRideId);
       if (meta) {

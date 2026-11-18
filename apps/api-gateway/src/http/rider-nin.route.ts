@@ -4,6 +4,7 @@ import { authenticateHttpUser, HttpAuthError } from './authenticate';
 import { readJsonBody, sendJson } from './utils';
 import type { RedisClient } from '../redis/client';
 import { checkRiderNin, checkRiderNinLive, type RiderNinDeps } from '../verification/rider-nin';
+import { ninPromptFor, noteNinPrompt } from '../verification/nin-prompt';
 
 /**
  * POST /auth/nin { nin, fullName? } — the NIN typed at the app's Create account (Timi, 16 Nov 2026), checked
@@ -35,5 +36,33 @@ export async function handleRiderNinRoute(
       return;
     }
     sendJson(res, 500, { error: 'Could not check your NIN. Try again.' });
+  }
+}
+
+/**
+ * GET /nin/prompt → { ask, retry }: show the NIN popup now (verification/nin-prompt.ts); retry: their NIN did not
+ * check out before. POST /nin/prompt { event: 'shown' | 'closed' }: the app showed it, or the rider closed it.
+ */
+export async function handleNinPromptRoute(req: IncomingMessage, res: ServerResponse, deps: { jwtSecret: string; redisClient: RedisClient }): Promise<void> {
+  try {
+    const user = await authenticateHttpUser(req, deps.jwtSecret);
+    if (req.method === 'GET') {
+      sendJson(res, 200, { ...(await ninPromptFor(deps.redisClient, user.id)) });
+      return;
+    }
+    const body = await readJsonBody(req).catch(() => null);
+    const event = body && typeof body === 'object' ? (body as Record<string, unknown>).event : null;
+    if (event !== 'shown' && event !== 'closed') {
+      sendJson(res, 400, { error: 'event must be shown or closed' });
+      return;
+    }
+    await noteNinPrompt(deps.redisClient, user.id, event);
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    if (error instanceof HttpAuthError) {
+      sendJson(res, 401, { error: error.message });
+      return;
+    }
+    sendJson(res, 500, { error: 'Try again.' });
   }
 }
