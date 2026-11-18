@@ -339,3 +339,51 @@ test('coming back from the page cache with the pay sheet open tells the driver a
   await page.settle();
   assert.equal(page.paying().length, 3, 'once');
 });
+
+// ── Pay with cash (Timi, 18 Nov 2026) ─────────────────────────────────────
+
+test('cash on: the pay sheet offers Cash; picked, it says so and the accept goes with method cash', async () => {
+  const server = makeServer();
+  server.state = offerState({ cash: true });
+  const page = await loadPage(server);
+  await page.tap(page.acceptButtons()[0]);
+  assert.equal(page.el('pay-options').hidden, false);
+  assert.equal(page.el('pw-cash').hidden, false);
+  assert.equal(page.el('pw-xlm').hidden, true, 'no Stellar wallet: no XLM choice');
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 from your wallet?', 'the wallet stays the default');
+  await page.tap(page.el('pw-cash'));
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 in cash?');
+  assert.equal(page.el('pay-sub').textContent, 'Pay your driver at the end. Nothing is held.');
+  assert.equal(page.el('pay-go').textContent, 'Pay cash');
+  await page.tap(page.el('pay-go'));
+  const accepts = page.calls.filter((c) => c.url === '/ride-page/accept');
+  assert.deepEqual(accepts.map((c) => c.body), [{ key: 'bid-A', method: 'cash', priceNgn: 2000 }]);
+});
+
+test('cash off (an older server, or switched off): no Cash, and the sheet is as it was', async () => {
+  const page = await loadPage(makeServer());
+  await page.tap(page.acceptButtons()[0]);
+  assert.equal(page.el('pay-options').hidden, true);
+  assert.equal(page.el('pw-cash').hidden, true);
+  assert.equal(page.el('pay-title').textContent, 'Pay ₦2,000 from your wallet?');
+  await page.tap(page.el('pay-go'));
+  assert.equal(page.calls.find((c) => c.url === '/ride-page/accept').body.method, 'ngn');
+});
+
+test('wallet short with cash on: Pay cash instead books the same driver with cash', async () => {
+  let n = 0;
+  const server = makeServer({
+    accept: (body) => (n++ === 0
+      ? { status: 402, json: { code: 'WALLET_SHORT', error: 'Add money', fareNgn: 2000, sendNgn: 600, shortNgn: 500, balanceNgn: 1500, account: { bankName: 'B', accountNumber: '1', accountName: 'N' } } }
+      : { status: 200, json: { ...offerState(), phase: 'confirmed', echo: body } }),
+  });
+  server.state = offerState({ cash: true });
+  const page = await loadPage(server);
+  await page.tap(page.acceptButtons()[0]);
+  await page.tap(page.el('pay-go'));
+  assert.equal(page.el('pay-add').hidden, false);
+  assert.equal(page.el('pay-cash-instead').hidden, false);
+  await page.tap(page.el('pay-cash-instead'));
+  const accepts = page.calls.filter((c) => c.url === '/ride-page/accept').map((c) => c.body);
+  assert.deepEqual(accepts, [{ key: 'bid-A', method: 'ngn', priceNgn: 2000 }, { key: 'bid-A', method: 'cash', priceNgn: 2000 }]);
+});

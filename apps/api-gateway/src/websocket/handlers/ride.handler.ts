@@ -38,6 +38,7 @@ import { buildRideEstimatePricing } from '../../pricing/ride-estimate';
 import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
+import { assertNotOwingPastLimit } from '../../rides/cash-owed';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
 import { RouteChangeRefused, forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled, unpricedRouteChange } from '../../rides/trip-route-quote';
 import { cancelPendingRoute, claimPublish, clearPendingRoute, fundRouteHold, releasePublish, readPendingRoute, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../../rides/trip-route-pending';
@@ -1125,6 +1126,8 @@ export async function handleRideMessage(
       auth.driverId ? rideClient.findActiveByDriver(auth.driverId).catch(() => null) : Promise.resolve(undefined),
     ]);
     if (!driver) throw new Error('Only a driver can do that.');
+    // Owes Wheelers past the cash limit (rides/cash-owed.ts): no bids until a deposit.
+    await assertNotOwingPastLimit(auth.userId);
     const driverId = driver.id;
     const driverRowId: string = driver.id;
     const driverName = driver.user.name ?? driver.user.phone ?? 'Driver';

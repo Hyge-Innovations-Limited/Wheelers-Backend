@@ -31,6 +31,8 @@ export const WalletDebitedEvent = BaseWalletEvent.extend({
     'ride_payment',
     'penalty',
     'withdrawal',
+    // A cash ride: Wheelers' share, from the driver's wallet (it may go below zero).
+    'cash_ride_fee',
   ]),
   referenceId: z.string(),
 });

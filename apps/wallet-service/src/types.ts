@@ -7,6 +7,7 @@ export type WalletRepository = Pick<
   | 'createRideHold'
   | 'adjustRideHold'
   | 'completeRideHoldWithDriverPayout'
+  | 'takeCashRideFees'
   | 'cancelRideHold'
   | 'credit'
   | 'creditDeposit'

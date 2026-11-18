@@ -171,7 +171,45 @@ export function createRideEventsConsumer(params: {
           console.error(`[${serviceId}][waiting] CRITICAL: waiting fee not paid — still held from the rider`, { rideId: event.rideId, error: getErrorMessage(error) });
         }
 
-        // Only wallet rides settle in naira: cash was collected, XLM is paid on Stellar.
+        // Cash (Timi, 18 Nov 2026): the driver collected the whole fare, so Wheelers' share is taken from their
+        // wallet, below zero if it has to (walletClient.takeCashRideFees checks the ride row is really a cash ride of
+        // theirs, never a group trip, and takes it once).
+        if (event.paymentMethod === 'CASH') {
+          try {
+            const taken = await walletRepository.takeCashRideFees({ rideId: event.rideId, fareNgn: event.fareNgn });
+            if (taken.applied) {
+              console.info(`[${serviceId}][cash] fees taken from the driver`, {
+                rideId: event.rideId,
+                driverUserId: taken.driverUserId,
+                fareNgn: event.fareNgn,
+                owedNgn: taken.owedNgn,
+                driverBalanceAfterNgn: taken.driverBalanceAfterNgn,
+              });
+              if (taken.owedNgn > 0) {
+                await walletEventsProducer.publishDebited({
+                  walletId: taken.driverWalletId,
+                  userId: taken.driverUserId,
+                  amountNgn: taken.owedNgn,
+                  newBalanceNgn: taken.driverBalanceAfterNgn,
+                  debitType: 'cash_ride_fee',
+                  referenceId: event.rideId,
+                }, { key: event.rideId });
+              }
+            } else {
+              console.info(`[${serviceId}][cash] no fees taken`, { rideId: event.rideId, reason: taken.reason });
+            }
+          } catch (error) {
+            console.error(`[${serviceId}][cash] CRITICAL: cash ride fees NOT taken — driver owes them`, {
+              rideId: event.rideId,
+              driverUserId: event.driverUserId,
+              fareNgn: event.fareNgn,
+              error: getErrorMessage(error),
+            });
+          }
+          return;
+        }
+
+        // Only wallet rides settle in naira: XLM is paid on Stellar.
         if (event.paymentMethod !== 'WALLET') {
           console.info(`[${serviceId}][escrow] settlement skipped — ${event.paymentMethod.toLowerCase()} ride`, {
             rideId: event.rideId,

@@ -1909,7 +1909,7 @@ export async function handleRideEvent(
     // Waiting time past the free minutes, written just before this event: the rider is told what it came to.
     const startedWaiting = await waitingClient.state(event.rideId).catch(() => null);
     const waitingLine = startedWaiting?.waitingFeeNgn != null
-      ? waitingLineForRider({ minutes: startedWaiting.waitingMinutes ?? 0, feeNgn: Number(startedWaiting.waitingFeeNgn), paid: startedWaiting.waitingPaid === true })
+      ? waitingLineForRider({ minutes: startedWaiting.waitingMinutes ?? 0, feeNgn: Number(startedWaiting.waitingFeeNgn), paid: startedWaiting.waitingPaid === true, cash: String(startedWaiting.paymentMethod) === 'CASH' })
       : null;
 
     // The driver's phone may already be recording it (it marks the trip a few seconds after the start).
@@ -1993,6 +1993,7 @@ export async function handleRideEvent(
           formatTripId(await rideClient.tripNumberOf(event.rideId).catch(() => null)),
           paidXlm,
           waiting,
+          event.paymentMethod === 'CASH',
         ).catch(() => {});
         // ✅ the trip is done.
         await reactInChat(deps, event.riderId, phone, event.rideId, 'done').catch(() => undefined);

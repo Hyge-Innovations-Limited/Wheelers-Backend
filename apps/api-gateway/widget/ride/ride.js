@@ -1687,6 +1687,7 @@
     var wanted = routeSig(body.destination && body.destination.address, (body.stops || []).map(function (stop) { return stop.address; }));
     var base = state && state.route ? routeSig(state.route.destAddress, state.route.stopAddresses) : null;
     track('route_wallet_short_shown', { neededNgn: Number(info.neededNgn) });
+    W.show(W.$('pay-cash-instead'), false);   // a route change is paid like the trip: never switched to cash here
     showPayPart('add');
     openSheet('sheet-pay');
     routeAdd = {
@@ -3527,15 +3528,19 @@
 
   function openPaySheet(offer) {
     var xlm = state && state.xlm && state.xlm.ngnPerXlm > 0 ? state.xlm : null;
-    W.$('pay-title').textContent = 'Pay ' + W.naira(offer.priceNgn) + ' from your wallet?';
+    // Cash to the driver (Timi, 18 Nov 2026), while the server offers it.
+    var cash = Boolean(state && state.cash);
     payWith = { offer: offer, method: 'ngn', amountXlm: xlm ? xlmFor(offer.priceNgn, xlm) : 0 };
-    // Naira or XLM, when the rider has a Stellar wallet and there is a price for it.
-    W.show(W.$('pay-options'), Boolean(xlm));
+    // Naira, XLM (a Stellar wallet and a price for it), cash: the choice shows when there is more than the wallet.
+    W.show(W.$('pay-options'), Boolean(xlm) || cash);
+    W.show(W.$('pw-xlm'), Boolean(xlm));
+    W.show(W.$('pw-cash'), cash);
     W.show(W.$('pw-rate'), Boolean(xlm));
+    W.$('pw-ngn-balance').textContent = 'Balance ' + W.naira(state.balanceNgn);
+    W.$('pw-ngn-amount').textContent = W.naira(offer.priceNgn);
+    W.$('pw-cash-amount').textContent = W.naira(offer.priceNgn);
     if (xlm) {
       var xlmCovers = payWith.amountXlm <= xlm.spendableXlm;
-      W.$('pw-ngn-balance').textContent = 'Balance ' + W.naira(state.balanceNgn);
-      W.$('pw-ngn-amount').textContent = W.naira(offer.priceNgn);
       W.$('pw-xlm-balance').textContent = xlmCovers ? 'Balance ' + xlmText(xlm.balanceXlm) : 'You can spend ' + xlmText(xlm.spendableXlm);
       W.$('pw-xlm-amount').textContent = xlmText(payWith.amountXlm);
       W.$('pw-xlm').disabled = !xlmCovers;
@@ -3550,15 +3555,20 @@
   function pickMethod(method) {
     if (!payWith) return;
     payWith.method = method;
-    var xlm = method === 'xlm';
-    W.$('pw-ngn').className = 'pay-option' + (xlm ? '' : ' on');
-    W.$('pw-xlm').className = 'pay-option' + (xlm ? ' on' : '');
-    W.$('pw-ngn').setAttribute('aria-checked', String(!xlm));
-    W.$('pw-xlm').setAttribute('aria-checked', String(xlm));
-    W.$('pay-go').textContent = xlm ? 'Pay ' + xlmText(payWith.amountXlm) : 'Pay ' + W.naira(payWith.offer.priceNgn);
+    var price = W.naira(payWith.offer.priceNgn);
+    ['ngn', 'xlm', 'cash'].forEach(function (m) {
+      W.$('pw-' + m).className = 'pay-option' + (m === method ? ' on' : '');
+      W.$('pw-' + m).setAttribute('aria-checked', String(m === method));
+    });
+    var cash = method === 'cash';
+    W.$('pay-title').textContent = cash ? 'Pay ' + price + ' in cash?' : 'Pay ' + price + ' from your wallet?';
+    W.$('pay-sub').textContent = cash ? 'Pay your driver at the end. Nothing is held.' : 'Held now, paid at the end. Refunded if cancelled.';
+    W.show(W.$('pay-secure'), !cash);
+    W.$('pay-go').textContent = method === 'xlm' ? 'Pay ' + xlmText(payWith.amountXlm) : cash ? 'Pay cash' : 'Pay ' + price;
   }
   W.$('pw-ngn').addEventListener('click', function () { pickMethod('ngn'); });
   W.$('pw-xlm').addEventListener('click', function () { if (!this.disabled) pickMethod('xlm'); });
+  W.$('pw-cash').addEventListener('click', function () { pickMethod('cash'); });
   W.$('pay-go').addEventListener('click', function () {
     if (!payWith) return;
     var chosen = payWith;
@@ -3622,11 +3632,23 @@
     addFor.account = info.account || null;
     addFor.shortNgn = Number(info.shortNgn) > 0 ? Math.round(Number(info.shortNgn)) : Math.round(Number(info.sendNgn)) || 0;
     addFor.askedAt = 0;
+    // Short of money: cash needs none (Timi, 18 Nov 2026).
+    W.show(W.$('pay-cash-instead'), Boolean(state && state.cash));
     showPayPart('add');
     openSheet('sheet-pay');
     payingOpenFor(offer.key);
     loadOfferAccount();
   }
+  W.$('pay-cash-instead').addEventListener('click', function () {
+    var a = addFor;
+    if (!a || busy) return;
+    track('pay_method_chosen', { method: 'cash', from: 'add_money' });
+    addFor = null;
+    // Still marked as paying this driver from the add step: the same driver, now with cash (the paying signal stays open).
+    paying = null;
+    closeSheets();
+    payFor({ key: a.key, driverName: a.name, priceNgn: a.fareNgn }, 'cash');
+  });
   function loadOfferAccount() {
     var a = addFor;
     if (!a || a.account || a.loading || !(a.shortNgn > 0) || Date.now() - a.askedAt < ROUTE_RETRY_GAP_MS) return;
@@ -3956,7 +3978,7 @@
     var fare = driver.fareNgn || s.offerNgn;
     W.show(W.$('fd-price'), fare > 0);
     W.$('fd-fare').textContent = W.naira(fare);
-    W.$('fd-paid').textContent = s.paidWithXlm ? 'Paid with XLM' : 'Paid from your wallet';
+    W.$('fd-paid').textContent = s.paidWithXlm ? 'Paid with XLM' : s.paidInCash ? 'Pay your driver in cash' : 'Paid from your wallet';
 
     var eta = driver.etaMin || (s.trip && s.trip.etaMin) || null;
     var rows = [];
@@ -4099,10 +4121,10 @@
     W.$('d-vehicle').textContent = driver.vehicle || '';
     W.$('d-plate').textContent = driver.plate || '';
     W.show(W.$('d-plate'), Boolean(driver.plate));
-    W.show(W.$('d-foot'), Boolean(s.paidWithXlm));
+    W.show(W.$('d-foot'), Boolean(s.paidWithXlm) || Boolean(s.paidInCash));
     W.$('d-foot').textContent = s.paidWithXlm
       ? 'Paying ' + Number(s.paidWithXlm.amountXlm).toLocaleString('en-NG', { maximumFractionDigits: 2 }) + ' XLM from your Stellar wallet (testnet). It goes to your driver when the trip ends.'
-      : '';
+      : s.paidInCash ? 'Cash · pay your driver ' + W.naira(driver.fareNgn || s.offerNgn) + ' at the end.' : '';
     // Call: a Live call through Wheelers when the server has calls on (the trip page, dialling at once);
     // the phone's dialler only when it does not.
     var call = W.$('d-call');
@@ -4161,7 +4183,7 @@
     W.show(done, fee);
     if (fee) {
       done.textContent = 'Waiting time: ' + w.minutes + ' min · ' + W.naira(w.feeNgn) +
-        (w.paid ? ', paid from your wallet.' : ". Your wallet couldn't cover it, so pay your driver.");
+        (w.paid ? ', paid from your wallet.' : s.paidInCash ? '. Pay it to your driver in cash with the fare.' : ". Your wallet couldn't cover it, so pay your driver.");
     }
     var waiting = on && t.status === 'ARRIVED';
     W.show(W.$('d-wait'), waiting);

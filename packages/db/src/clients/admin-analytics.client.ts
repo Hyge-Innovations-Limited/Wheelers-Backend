@@ -1505,9 +1505,10 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       SELECT t."referenceId" AS ride_id,
              sum(t."amountNgn") FILTER (WHERE t.type = 'PLATFORM_FEE' AND t.direction = 'CREDIT') AS fee,
              sum(t."amountNgn") FILTER (WHERE t.type = 'RIDE_PAYMENT' AND t.direction = 'DEBIT') AS paid,
-             sum(t."amountNgn") FILTER (WHERE t.type = 'DRIVER_PAYOUT' AND t.direction = 'CREDIT') AS payout
+             sum(t."amountNgn") FILTER (WHERE t.type = 'DRIVER_PAYOUT' AND t.direction = 'CREDIT') AS payout,
+             sum(t."amountNgn") FILTER (WHERE t.type = 'CASH_RIDE_FEE' AND t.direction = 'DEBIT') AS cash_fee
       FROM "Transaction" t JOIN done ON done.id = t."referenceId"
-      WHERE t.type IN ('PLATFORM_FEE', 'RIDE_PAYMENT', 'DRIVER_PAYOUT')
+      WHERE t.type IN ('PLATFORM_FEE', 'RIDE_PAYMENT', 'DRIVER_PAYOUT', 'CASH_RIDE_FEE')
       GROUP BY 1
     ),
     settled AS (SELECT done.* FROM done WHERE done."platformFeeNgn" IS NOT NULL)
@@ -1518,10 +1519,14 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
       (SELECT coalesce(sum(fee), 0) FROM ledger) AS ledger_fee_total,
       (SELECT coalesce(sum("commissionNgn" + "serviceFeeNgn" + "stateLevyNgn" + coalesce("vatNgn", 0) + coalesce("whatsappFeeNgn", 0)), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_sum,
       (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled WHERE "commissionNgn" IS NOT NULL) AS split_total,
-      (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn")), 0) FROM settled) AS fare_total,
+      -- Cash trips (Timi, 18 Nov 2026) were paid in the car: no rider payment or driver payout in the ledger, only
+      -- the fees the driver owes (CASH_RIDE_FEE), checked on their own below.
+      (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn")), 0) FROM settled WHERE "paymentMethod" <> 'CASH') AS fare_total,
       (SELECT coalesce(sum(paid), 0) FROM ledger) AS paid_total,
-      (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn") - "platformFeeNgn"), 0) FROM settled) AS payout_expected,
-      (SELECT coalesce(sum(payout), 0) FROM ledger) AS payout_total`);
+      (SELECT coalesce(sum(coalesce("fareFinalNgn", "agreedFareNgn") - "platformFeeNgn"), 0) FROM settled WHERE "paymentMethod" <> 'CASH') AS payout_expected,
+      (SELECT coalesce(sum(payout), 0) FROM ledger) AS payout_total,
+      (SELECT coalesce(sum("platformFeeNgn"), 0) FROM settled WHERE "paymentMethod" = 'CASH') AS cash_fee_rides,
+      (SELECT coalesce(sum(cash_fee), 0) FROM ledger) AS cash_fee_ledger`);
 
   const wq = new Sql();
   const [w] = await rows<Record<string, unknown>>(wq, `
@@ -1551,6 +1556,7 @@ async function reconcile(f: AnalyticsFilters): Promise<ReconcileCheck[]> {
     check('split', 'Fee split adds up to the fee', ['Commission + service + WhatsApp fee + levy', x?.split_sum], ['Platform fee on the same rides', x?.split_total]),
     check('fares', 'Fares: ride rows vs what riders paid', ['Fares of settled trips', x?.fare_total], ['RIDE_PAYMENT ledger rows', x?.paid_total]),
     check('payouts', 'Driver payouts: fare minus fees vs ledger', ['Fare minus platform fee', x?.payout_expected], ['DRIVER_PAYOUT ledger rows', x?.payout_total]),
+    check('cashFees', 'Cash trips: fees owed vs ledger', ['Platform fee on cash trips', x?.cash_fee_rides], ['CASH_RIDE_FEE ledger rows', x?.cash_fee_ledger]),
     check('withdrawals', 'Withdrawals: requests vs ledger', ['Settled withdrawal requests', w?.requested], ['WITHDRAWAL ledger rows', w?.ledger]),
     check('withdrawalFees', 'Withdrawal fees: requests vs ledger', ['Fees on settled withdrawals', w?.fee_requested], ['Withdrawal fee ledger rows', w?.fee_ledger]),
   ];

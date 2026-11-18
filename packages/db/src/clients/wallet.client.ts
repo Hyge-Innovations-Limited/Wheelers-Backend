@@ -30,6 +30,11 @@ interface RideHoldWithPayoutResult {
   applied: boolean;
 }
 
+/** walletClient.takeCashRideFees: taken now (applied), or why not. */
+export type CashRideFeesResult =
+  | { applied: true; driverUserId: string; driverWalletId: string; owedNgn: number; driverBalanceAfterNgn: number; driverPayoutNgn: number }
+  | { applied: false; reason: 'no_ride' | 'not_cash' | 'not_finished' | 'no_driver' | 'already_taken' };
+
 const ensurePlatformWallet = (): Promise<string> => ensurePlatformWalletId();
 void PLATFORM_USER_ID;
 
@@ -618,6 +623,120 @@ export const walletClient = {
         platformFeeNgn: fees.platformTotalNgn,
         applied: false,
       };
+    }
+  },
+
+  /**
+   * A cash ride, finished (Timi, 18 Nov 2026): the rider paid the driver the whole fare in the car, so Wheelers'
+   * share (every line a wallet ride pays: WhatsApp fee, VAT, levy, commission, by the ride's pricing version) comes
+   * out of the driver's wallet, below zero if it has to. Once per ride: the driver's CASH_RIDE_FEE row is unique per
+   * ride, so a redelivered event changes nothing.
+   *
+   * Only a ride that is really cash and really the driver's: paymentMethod CASH on the row, no group role (a group
+   * trip's row is CASH only so no money moves on it; its seats settle by wallet), started (IN_PROGRESS, or COMPLETED
+   * when the ride service wrote it first), and the driver is the ride's own, never one named by the caller.
+   */
+  takeCashRideFees: async (params: { rideId: string; fareNgn: number }): Promise<CashRideFeesResult> => {
+    const { rideId, fareNgn } = params;
+    try {
+      await ensurePlatformWallet();
+      return await prisma.$transaction(async (tx: TxClient): Promise<CashRideFeesResult> => {
+        const ride = await tx.ride.findUnique({
+          where: { id: rideId },
+          select: {
+            status: true, paymentMethod: true, groupRole: true, groupTripId: true, pricingVersion: true,
+            driver: { select: { userId: true } },
+          },
+        });
+        if (!ride) return { applied: false, reason: 'no_ride' };
+        if (ride.paymentMethod !== 'CASH' || ride.groupRole !== null || ride.groupTripId !== null) return { applied: false, reason: 'not_cash' };
+        if (ride.status !== 'IN_PROGRESS' && ride.status !== 'COMPLETED') return { applied: false, reason: 'not_finished' };
+        const driverUserId = ride.driver?.userId;
+        if (!driverUserId) return { applied: false, reason: 'no_driver' };
+
+        const fees = calculateRideFees(Math.max(0, fareNgn), pricingVersionOf(ride.pricingVersion));
+        const owedNgn = fees.platformTotalNgn;
+
+        // The one write that may take a wallet below zero, and the only one that marks it as allowed to (mayOwe).
+        const driverWallet = await tx.wallet.upsert({
+          where:  { userId: driverUserId },
+          create: { userId: driverUserId, balanceNgn: -owedNgn, mayOwe: true },
+          update: { balanceNgn: { decrement: owedNgn }, mayOwe: true },
+        });
+        await tx.transaction.create({
+          data: {
+            walletId: driverWallet.id,
+            type: 'CASH_RIDE_FEE',
+            direction: 'DEBIT',
+            amountNgn: owedNgn,
+            balanceAfterNgn: driverWallet.balanceNgn,
+            referenceId: rideId,
+            metadata: { fareNgn: fees.fareNgn, collectedInCashNgn: fees.fareNgn } as Prisma.InputJsonValue,
+          },
+        });
+
+        if (owedNgn > 0) {
+          const platformWallet = await tx.wallet.update({
+            where: { userId: PLATFORM_USER_ID },
+            data: { balanceNgn: { increment: owedNgn } },
+          });
+          await tx.transaction.create({
+            data: {
+              walletId: platformWallet.id,
+              type: 'PLATFORM_FEE',
+              direction: 'CREDIT',
+              amountNgn: owedNgn,
+              balanceAfterNgn: platformWallet.balanceNgn,
+              referenceId: rideId,
+              // A ride fee like a wallet ride's (kind 'ride_fee', so every fee report counts it), marked as owed by the
+              // driver from a cash trip (it was not held from a rider).
+              metadata: {
+                kind: 'ride_fee',
+                paidInCash: true,
+                pricingVersion: fees.pricingVersion,
+                bookingFeeNgn: fees.bookingFeeNgn,
+                commissionNgn: fees.commissionNgn,
+                whatsappFeeNgn: fees.whatsappFeeNgn,
+                vatNgn: fees.vatNgn,
+                stateLevyNgn: fees.stateLevyNgn,
+                serviceFeeNgn: fees.bookingFeeNgn,
+                driverWalletId: driverWallet.id,
+              } as Prisma.InputJsonValue,
+            },
+          });
+        }
+
+        // The driver earned the fare less the fees, in cash: the earnings stat counts it as a wallet ride's would.
+        await tx.driver.updateMany({
+          where: { userId: driverUserId },
+          data:  { totalEarningsNgn: { increment: fees.driverPayoutNgn } },
+        });
+        await tx.ride.update({
+          where: { id: rideId },
+          data: {
+            platformFeeNgn: owedNgn,
+            commissionNgn: fees.commissionNgn,
+            serviceFeeNgn: fees.bookingFeeNgn,
+            vatNgn: fees.vatNgn,
+            stateLevyNgn: fees.stateLevyNgn,
+            whatsappFeeNgn: fees.pricingVersion >= 3 ? fees.whatsappFeeNgn : null,
+            feeSplitEstimated: false,
+          },
+        });
+
+        return {
+          applied: true,
+          driverUserId,
+          driverWalletId: driverWallet.id,
+          owedNgn,
+          driverBalanceAfterNgn: Number(driverWallet.balanceNgn),
+          driverPayoutNgn: fees.driverPayoutNgn,
+        };
+      });
+    } catch (error) {
+      // Taken already (the driver's CASH_RIDE_FEE row for this ride exists): nothing new.
+      if (isUniqueConstraintError(error)) return { applied: false, reason: 'already_taken' };
+      throw error;
     }
   },
 

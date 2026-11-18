@@ -203,6 +203,12 @@ export async function inRide(ctx: StageContext): Promise<boolean> {
         pendingAccept.bidId ?? `driver:${pendingAccept.driverId}`, pendingAccept.fareNgn);
       return true;
     }
+    // Cash (Timi, 18 Nov 2026): the same driver, paid in the car; nothing is held, so no money is needed now.
+    if (pendingAccept && /^(cash|pay cash|pay with cash|i'?ll pay cash)$/i.test(incomingMessage.trim())) {
+      await acceptOfferInChat(deps, user, phone, incomingMessage, pendingAccept.rideId,
+        pendingAccept.bidId ?? `driver:${pendingAccept.driverId}`, pendingAccept.fareNgn, 'cash');
+      return true;
+    }
 
     // ── Accept a driver: "accept 1", "accept 3" (can override pending accept) ──
     const acceptNum = parseAcceptCommand(incomingMessage);

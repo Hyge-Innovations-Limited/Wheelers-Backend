@@ -133,8 +133,9 @@ export function waitingView(ride: WaitingRow | null | undefined): WaitingView | 
 }
 
 /** One line for the rider once the trip has started; null when no fee was due. */
-export function waitingLineForRider(w: { minutes: number; feeNgn: number; paid: boolean } | null | undefined): string | null {
+export function waitingLineForRider(w: { minutes: number; feeNgn: number; paid: boolean; cash?: boolean } | null | undefined): string | null {
   if (!w || !(w.feeNgn > 0)) return null;
+  if (w.cash && !w.paid) return `Waiting time: ${w.minutes} min · ${naira(w.feeNgn)}. Pay it to your driver in cash with the fare.`;
   return w.paid
     ? `Waiting time: ${w.minutes} min · ${naira(w.feeNgn)}, paid from your wallet.`
     : `Waiting time: ${w.minutes} min · ${naira(w.feeNgn)}. Your wallet couldn't cover it, so pay your driver.`;

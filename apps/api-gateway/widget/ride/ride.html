@@ -461,7 +461,7 @@
 <div class="sheet" id="sheet-pay" hidden role="dialog" aria-modal="true" aria-labelledby="pay-title">
   <div class="sheet-part" id="pay-ask">
     <h2 id="pay-title"></h2>
-    <p class="sub">Held now, paid at the end. Refunded if cancelled.</p>
+    <p class="sub" id="pay-sub">Held now, paid at the end. Refunded if cancelled.</p>
     <div class="pay-options" id="pay-options" role="radiogroup" aria-label="Pay with" hidden>
       <button class="pay-option on" type="button" id="pw-ngn" role="radio" aria-checked="true">
         <span class="pay-icon naira" aria-hidden="true">₦</span>
@@ -473,10 +473,15 @@
         <span class="pay-text"><strong>Stellar wallet <span class="tag">Testnet</span></strong><span id="pw-xlm-balance"></span></span>
         <span class="pay-figure" id="pw-xlm-amount"></span>
       </button>
+      <button class="pay-option" type="button" id="pw-cash" role="radio" aria-checked="false" hidden>
+        <span class="pay-icon cash" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 9.5v5M18 9.5v5"/></svg></span>
+        <span class="pay-text"><strong>Cash</strong><span>To the driver at the end</span></span>
+        <span class="pay-figure" id="pw-cash-amount"></span>
+      </button>
     </div>
     <p class="hint" id="pw-rate" hidden></p>
     <button class="btn primary" type="button" id="pay-go"></button>
-    <p class="secure-line"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Secure payment</p>
+    <p class="secure-line" id="pay-secure"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Secure payment</p>
     <button class="btn quiet" type="button" data-close>Back</button>
   </div>
   <div class="sheet-part" id="pay-add" hidden>
@@ -496,6 +501,7 @@
       <span class="spinner orange"></span>
       <span>Waiting for your transfer…</span>
     </div>
+    <button class="btn ghost" type="button" id="pay-cash-instead" hidden>Pay cash instead</button>
     <button class="btn quiet" type="button" data-close>Back</button>
   </div>
 </div>

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverBidClient, driverClient, prisma, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
-import { depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
+import { cashRidesEnabled, depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
 import { driverChecksField } from '../drivers/driver-checks';
@@ -365,6 +365,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       },
       tripCode,
       paidWithXlm,
+      // Cash (Timi, 18 Nov 2026): the rider pays the driver the fare in the car.
+      paidInCash: payment?.paymentMethod === 'CASH',
       ...(await routePendingField(deps, userId, trip.rideId)),
       // A group ride (rides/group-trip.ts): who else is in the car and every stop in order, theirs marked.
       ...(await riderGroupView(deps.redisClient, trip.rideId).then((group) => (group ? { group } : {})).catch(() => ({}))),
@@ -458,6 +460,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         ...(sameTrip && planned.tripDetails ? { tripDetails: planned.tripDetails } : {}),
         // Paying with XLM, when the rider has a Stellar account and there is a price.
         xlm: await xlmFor(deps, userId),
+        // Paying the driver in cash (Timi, 18 Nov 2026): the pay sheet offers it while this is true.
+        cash: cashRidesEnabled(),
         minOfferNgn: validateRiderOffer(0, meta.suggestedFareNgn).minOfferNgn,
         // All the page says about offers: how many are waiting in the chat, and the way back to it.
         offerCount: bids.length,
@@ -761,6 +765,7 @@ const ACCEPT_FAILURES: Record<string, { status: number; message: string }> = {
   ALREADY_CONFIRMING: { status: 409, message: 'Your ride is being booked — one moment.' },
   ALREADY_BOOKED: { status: 409, message: 'Your ride is already booked.' },
   XLM_UNAVAILABLE: { status: 409, message: "Paying with XLM isn't available right now. Pay in naira instead — your XLM has not moved." },
+  CASH_UNAVAILABLE: { status: 409, message: "Cash isn't available right now. Pay from your wallet." },
 };
 
 async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
@@ -779,7 +784,8 @@ async function handleAccept(req: IncomingMessage, res: ServerResponse, deps: Rid
   const current = await getRideState(deps.redisClient, rideId);
   if (current === 'confirmed' || current === 'in_progress') return sendJson(res, 200, await buildRidePageState(deps, userId));
 
-  const method = isRecord(body) && body.method === 'xlm' ? 'XLM' as const : 'NGN' as const;
+  // 'ngn' (the wallet, and what older pages send by leaving it out), 'xlm', or 'cash' (paid to the driver in the car).
+  const method = isRecord(body) && body.method === 'xlm' ? 'XLM' as const : isRecord(body) && body.method === 'cash' ? 'CASH' as const : 'NGN' as const;
   // The price the page showed for this offer (optional; older pages send none): a driver who
   // changed it since is not booked at the new one.
   const shownNgn = isRecord(body) && typeof body.priceNgn === 'number' && Number.isFinite(body.priceNgn) ? body.priceNgn : undefined;

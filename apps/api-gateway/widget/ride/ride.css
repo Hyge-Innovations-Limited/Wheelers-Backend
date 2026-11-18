@@ -431,6 +431,8 @@ a.rlink { display: inline-flex; align-items: center; text-decoration: none; }
 .pay-icon.naira { background: var(--orange-soft); color: var(--orange-ink); }
 .pay-icon.xlm { background: var(--ink); color: var(--on-ink); }
 .pay-icon.xlm svg { width: 22px; height: 22px; }
+.pay-icon.cash { background: var(--good-soft); color: var(--good); }
+.pay-icon.cash svg { width: 22px; height: 22px; }
 .pay-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pay-text strong { display: flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 700; white-space: nowrap; }
 .pay-text > span { font-size: 13px; color: var(--muted); }

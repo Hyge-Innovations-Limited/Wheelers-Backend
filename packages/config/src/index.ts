@@ -104,6 +104,7 @@ export { VEHICLE_TANKS, vehicleTankLitres } from './vehicle-tanks';
 export type { VehicleTankEntry } from './vehicle-tanks';
 export { createVitalsSampler, VITALS_KEY, VITALS_KEEP_MS, type VitalsSample } from './vitals';
 // Waiting time: free minutes after Arrived, then a fee per minute until the trip starts
+export { CASH_OWED_LIMIT_NGN, cashRidesEnabled, cashOwedNgn, owesPastLimit } from './cash';
 export { waitingCharge, waitingTerms, waitingDealTerms, isWaitingRate, WAITING_RATES_NGN, WAITING_MAX_OFFERS, WAITING_FREE_MINUTES, WAITING_NGN_PER_MINUTE, type WaitingCharge, type WaitingTerms } from './waiting';
 export { LAGOS_CNG_STATIONS, nearestCngStations, straightKm, type CngStation, type NearbyCngStation } from './cng-stations';
 export { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE, type SafetyMoment } from './safety-tips';

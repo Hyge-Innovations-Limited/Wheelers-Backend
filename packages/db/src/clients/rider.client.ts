@@ -518,7 +518,7 @@ export const rideClient = {
    * and the fare in XLM). Accepting again resets it — a driver who bailed means
    * the next acceptance chooses afresh.
    */
-  setPayment: (rideId: string, payment: { method: 'WALLET' | 'XLM'; xlmRateNgn?: number | null; fareXlm?: string | null }) =>
+  setPayment: (rideId: string, payment: { method: 'WALLET' | 'XLM' | 'CASH'; xlmRateNgn?: number | null; fareXlm?: string | null }) =>
     prisma.ride.update({
       where: { id: rideId },
       data: {

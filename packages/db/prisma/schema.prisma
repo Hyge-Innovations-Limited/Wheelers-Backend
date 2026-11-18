@@ -214,6 +214,10 @@ model Wallet {
   userId       String              @unique
   balanceNgn   Decimal             @default(0) @db.Decimal(18, 2)
   lockedNgn    Decimal             @default(0) @db.Decimal(18, 2)
+  /// Pay with cash (Timi, 18 Nov 2026): a driver's wallet may go below zero by Wheelers' share of a cash ride (what
+  /// they owe). Set only by walletClient.takeCashRideFees, in the same write; the database refuses a negative balance
+  /// on any other wallet (Wallet_balance_not_negative). Every other debit still takes only money that is there.
+  mayOwe       Boolean             @default(false)
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
   rideHolds    RideHold[]
@@ -1019,6 +1023,8 @@ enum TransactionType {
   ADJUSTMENT
   /// Waiting time: the rider's DEBIT and the driver's CREDIT (all of it; no fee taken), referenceId = the ride.
   WAITING_FEE
+  /// A cash ride: Wheelers' share of the fare, a DEBIT on the driver's wallet (it may go below zero), referenceId = the ride.
+  CASH_RIDE_FEE
 }
 
 enum WalletReservationKind {
