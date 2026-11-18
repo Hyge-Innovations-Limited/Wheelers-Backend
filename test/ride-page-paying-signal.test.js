@@ -387,3 +387,47 @@ test('wallet short with cash on: Pay cash instead books the same driver with cas
   const accepts = page.calls.filter((c) => c.url === '/ride-page/accept').map((c) => c.body);
   assert.deepEqual(accepts, [{ key: 'bid-A', method: 'ngn', priceNgn: 2000 }, { key: 'bid-A', method: 'cash', priceNgn: 2000 }]);
 });
+
+// ── The NIN popup (Timi, 18 Nov 2026) ─────────────────────────────────────
+
+const idleState = (extra) => ({ phase: 'idle', balanceNgn: 0, chatUrl: 'https://wa.me/x', lastSearch: null, ...extra });
+
+test('NIN popup: due, it opens on Home a moment later and says shown; no Skip button; a tap outside closes it and says closed', async () => {
+  const server = makeServer();
+  server.state = idleState({ ninPrompt: { retry: false } });
+  const page = await loadPage(server);
+  assert.equal(page.el('sheet-nin').hidden, true, 'not at once');
+  await page.poll();
+  assert.equal(page.el('sheet-nin').hidden, false, 'opens after the page settles');
+  assert.equal(page.el('nin-title').textContent, 'Add your NIN');
+  const prompts = () => page.calls.filter((c) => c.url === '/ride-page/nin-prompt').map((c) => c.body.event);
+  assert.deepEqual(prompts(), ['shown']);
+  await page.tap(page.el('overlay'));
+  assert.equal(page.el('sheet-nin').hidden, true);
+  assert.deepEqual(prompts(), ['shown', 'closed']);
+  await page.poll();
+  assert.equal(page.el('sheet-nin').hidden, true, 'once per visit');
+});
+
+test('NIN popup: Verify sends the 11 digits; a NIN that did not check out says "Check your NIN"; not due, never shown', async () => {
+  const server = makeServer();
+  server.state = idleState({ ninPrompt: { retry: true } });
+  const page = await loadPage(server);
+  await page.poll();
+  assert.equal(page.el('nin-title').textContent, 'Check your NIN');
+  page.el('nin-input').value = '1234';
+  await page.tap(page.el('nin-send'));
+  assert.equal(page.el('nin-err').hidden, false, 'too short: said under the box, nothing sent');
+  assert.equal(page.calls.filter((c) => c.url === '/ride-page/nin').length, 0);
+  page.el('nin-input').value = '12345678901';
+  await page.tap(page.el('nin-send'));
+  assert.deepEqual(page.calls.filter((c) => c.url === '/ride-page/nin').map((c) => c.body), [{ nin: '12345678901' }]);
+  assert.equal(page.el('sheet-nin').hidden, true, 'verified: put away');
+  assert.ok(!page.calls.some((c) => c.url === '/ride-page/nin-prompt' && c.body.event === 'closed'), 'a verified NIN is not a close');
+
+  const quiet = makeServer();
+  quiet.state = idleState();
+  const other = await loadPage(quiet);
+  await other.poll();
+  assert.equal(other.el('sheet-nin').hidden, true);
+});

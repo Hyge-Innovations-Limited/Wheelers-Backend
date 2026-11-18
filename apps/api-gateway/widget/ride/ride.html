@@ -596,6 +596,15 @@
   <button class="btn quiet danger-link" type="button" id="wait-cancel">Cancel ride</button>
 </div>
 
+<!-- The NIN popup (Timi, 18 Nov 2026): no Skip button; a tap outside closes it -->
+<div class="sheet" id="sheet-nin" hidden role="dialog" aria-modal="true" aria-labelledby="nin-title">
+  <h2 id="nin-title">Add your NIN</h2>
+  <p class="sub" id="nin-sub">It keeps your account and your trips safe.</p>
+  <input class="nin-input" id="nin-input" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit NIN" aria-label="NIN">
+  <div class="notice bad" id="nin-err" hidden></div>
+  <button class="btn primary" type="button" id="nin-send">Verify</button>
+</div>
+
 <!-- What was checked about a driver (an offer's ✓ chips) -->
 <div class="sheet" id="sheet-checks" hidden role="dialog" aria-modal="true" aria-labelledby="checks-title">
   <div class="sheet-head"><img class="w-mark" src="../shared/w-mark.png" alt="" width="28" height="28"><h2 id="checks-title">Checked by Wheelers</h2></div>

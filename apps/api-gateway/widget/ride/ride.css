@@ -908,3 +908,7 @@ section.expired { min-height: calc(100vh - 36px); justify-content: center; gap: 
 .gtrip-stops li.done { color: var(--muted); text-decoration: line-through; }
 .gtrip-stops li.done::before { border-color: var(--muted); background: var(--muted); }
 
+
+/* the NIN popup */
+.nin-input { width: 100%; height: 56px; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 0 16px; font-size: 20px; letter-spacing: 2px; font-family: var(--display); background: var(--bg); color: var(--ink); }
+.nin-input:focus { outline: 2px solid var(--ink); outline-offset: -1px; }

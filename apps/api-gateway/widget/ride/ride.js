@@ -607,7 +607,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
+  var SHEETS = ['sheet-nin', 'sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     // (A page cached from before a sheet has no such element: skipped.)
@@ -635,6 +635,9 @@
     }
   }
   function hideSheets() {
+    // The NIN popup put away without a NIN (a tap outside, a swipe, Back): one close.
+    var nin = W.$('sheet-nin');
+    if (nin && !nin.hidden && !ninDone) ninPromptSend('closed');
     SHEETS.forEach(function (id) { W.show(W.$(id), false); });
     W.show(W.$('overlay'), false);
     if (asking) { var answer = asking; asking = null; answer(false); }
@@ -4678,7 +4681,65 @@
     // Back from a search to change the trip: the box holds the price they had out (raised or not).
     if (before === 'offers' && next.phase === 'price' && next.lastOfferNgn) W.$('price-input').value = Number(next.lastOfferNgn).toLocaleString('en-NG');
     render();
+    maybeAskNin();
   }
+
+  /* the NIN popup (Timi, 18 Nov 2026): when the server says it is due, once per visit, on Home or the price step,
+     never over another sheet or the after-trip tips. No Skip button: a tap outside closes it. */
+  var ninAsked = false;
+  var ninDone = false;
+  var ninTimer = null;
+  function ninDue() {
+    var s = state;
+    if (!s || !s.ninPrompt || ninAsked || busy) return false;
+    if (s.phase !== 'idle' && s.phase !== 'price') return false;
+    if (openSheetId()) return false;
+    if (s.phase === 'idle' && s.justFinished && s.justFinished.rideId && !safetySeen('after:' + s.justFinished.rideId)) return false;
+    return true;
+  }
+  function maybeAskNin() {
+    if (!ninDue() || ninTimer) return;
+    // A moment after the page settles, and only if still nothing else is open.
+    ninTimer = setTimeout(function () {
+      ninTimer = null;
+      if (!ninDue()) return;
+      ninAsked = true;
+      var retry = Boolean(state.ninPrompt.retry);
+      W.$('nin-title').textContent = retry ? 'Check your NIN' : 'Add your NIN';
+      W.$('nin-sub').textContent = retry ? "We couldn't match the last one. Type it again." : 'It keeps your account and your trips safe.';
+      W.$('nin-input').value = '';
+      W.show(W.$('nin-err'), false);
+      openSheet('sheet-nin');
+      ninPromptSend('shown');
+      track('nin_prompt_shown', { retry: retry });
+    }, 1500);
+  }
+  function ninPromptSend(event) {
+    api('POST', '/ride-page/nin-prompt', { event: event }).then(function () {}, function () {});
+  }
+  W.$('nin-input').addEventListener('input', function () {
+    var box = W.$('nin-input');
+    var digits = box.value.replace(/\D/g, '').slice(0, 11);
+    if (digits !== box.value) box.value = digits;
+    W.show(W.$('nin-err'), false);
+  });
+  W.$('nin-send').addEventListener('click', function () {
+    var button = W.$('nin-send');
+    var nin = W.$('nin-input').value.replace(/\D/g, '');
+    if (nin.length !== 11) { W.$('nin-err').textContent = 'Your NIN is 11 digits.'; W.show(W.$('nin-err'), true); return; }
+    if (button.classList.contains('busy')) return;
+    button.classList.add('busy');
+    api('POST', '/ride-page/nin', { nin: nin }).then(function () {
+      ninDone = true;
+      track('nin_prompt_done', {});
+      closeSheets();
+      say('NIN added', 'good');
+    }).catch(function (error) {
+      if (linkDead(error)) return dead(error);
+      W.$('nin-err').textContent = error.message || 'Could not check your NIN. Try again.';
+      W.show(W.$('nin-err'), true);
+    }).then(function () { button.classList.remove('busy'); });
+  });
 
   function refresh() {
     var seq = ++stateSeq;

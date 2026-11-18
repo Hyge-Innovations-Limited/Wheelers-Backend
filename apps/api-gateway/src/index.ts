@@ -131,7 +131,7 @@ import { handleWalletSecurityRoute } from "./http/wallet-security.route";
 import { attachRequestLog } from "./http/request-log";
 import { recordRequestOutcome } from "./analytics/user-outcomes";
 import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
-import { handleRiderNinRoute } from "./http/rider-nin.route";
+import { handleNinPromptRoute, handleRiderNinRoute } from "./http/rider-nin.route";
 import { setRidePageStateBuilder } from "./rides/ride-page-live";
 import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
 import { createTripChatService } from "./trip-chat/service";
@@ -1003,6 +1003,16 @@ async function bootstrap(): Promise<void> {
         return;
       }
       await handleRiderNinRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient });
+      return;
+    }
+
+    // GET / POST /nin/prompt — the NIN popup: ask now?, and shown / closed (verification/nin-prompt.ts)
+    if (url.pathname === "/nin/prompt") {
+      if (req.method !== "GET" && req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleNinPromptRoute(req, res, { jwtSecret: gatewayEnv.JWT_SECRET, redisClient: redisCommandClient });
       return;
     }
 

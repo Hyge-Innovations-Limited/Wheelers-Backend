@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { driverBidClient, driverClient, prisma, referralClient, rideClient, ridePageEventClient, safetyAlertClient, scheduledRideClient, tripCodeClient, userClient, virtualAccountClient, walletClient } from '@wheleers/db';
+import { checkRiderNinLive } from '../verification/rider-nin';
+import { ninPromptFor, noteNinPrompt } from '../verification/nin-prompt';
 import { cashRidesEnabled, depositNeededFor, firstOutsideServiceArea, OUTSIDE_SERVICE_AREA_LINE, validateRiderOffer, formatTripId, tripDetailsBoxOn, tripDetailsFromRequest } from '@wheleers/config';
 import type { PaymentsClient } from '@wheleers/payments';
 import { driverPhotoFields, type DriverPhotoResolver } from '../drivers/driver-photo';
@@ -510,6 +512,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
       ...(await searchTripDetails(deps.redisClient, userId, undefined, quote.tripDetails)),
       // The page can change the trip (place search and route planning are set up), starting from these places.
       canEditTrip: Boolean(deps.googleMapsApiKey && deps.routePlanner),
+      // The NIN popup (verification/nin-prompt.ts): only when it is due.
+      ...(await ninPromptField(deps, userId)),
       places: {
         pickup: { lat: quote.pickupLat, lng: quote.pickupLng, address: quote.pickupAddress },
         destination: { lat: quote.destLat, lng: quote.destLng, address: quote.destAddress },
@@ -522,6 +526,8 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
   // No quote and no live search: it expired, was cancelled, or the trip ended.
   return {
     phase: 'idle' as const, balanceNgn, chatUrl: CHAT_URL, lastSearch: await lastSearchFor(deps, userId),
+    // The NIN popup (verification/nin-prompt.ts): only when it is due.
+    ...(await ninPromptField(deps, userId)),
     // A trip that just completed: the page shows its "Before you go" tips once.
     justFinished: await justFinishedFor(userId),
     // Home's "Later" (a ride for later), and how many stops Plan your trip takes.
@@ -1729,7 +1735,7 @@ export const RIDE_PAGE_EVENTS = [
   'trip_edit_opened', 'place_searched', 'place_picked', 'stop_removed', 'trip_saved', 'trip_save_failed',
   'offer_received', 'raise_tapped', 'price_sheet_opened', 'price_updated', 'price_update_failed',
   'offer_declined', 'decline_all',
-  'accept_tapped', 'accept_failed', 'pay_method_chosen', 'wallet_short_shown', 'account_copied', 'pay_sheet_closed',
+  'accept_tapped', 'accept_failed', 'pay_method_chosen', 'wallet_short_shown', 'account_copied', 'pay_sheet_closed', 'nin_prompt_shown', 'nin_prompt_done',
   'cancel_opened', 'cancel_reason_picked', 'cancel_confirmed', 'cancel_failed', 'cancel_kept',
   'edit_trip_back_tapped', 'edit_trip_back_confirmed', 'edit_trip_back_kept',
   'chat_link_tapped', 'call_driver_tapped', 'chat_driver_tapped', 'map_recentred',
@@ -1820,8 +1826,37 @@ async function handleTopup(req: IncomingMessage, res: ServerResponse, deps: Ride
 
 type Handler = (req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps, url: URL) => Promise<void>;
 
+/* ── the NIN popup (Timi, 18 Nov 2026) ────────────────────────────────── */
+
+async function ninPromptField(deps: RidePageRouteDeps, userId: string): Promise<{ ninPrompt?: { retry: boolean } }> {
+  const due = await ninPromptFor(deps.redisClient, userId).catch(() => null);
+  return due?.ask ? { ninPrompt: { retry: due.retry } } : {};
+}
+
+/** POST /ride-page/nin { nin }: checked as at sign-up (Prembly, while they wait); 422 with the words to show under the box. */
+async function handleNin(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const body = await readJsonBody(req).catch(() => null);
+  const fullName = (await userClient.findById(userId).catch(() => null))?.name ?? '';
+  const answer = await checkRiderNinLive(userId, isRecord(body) ? body.nin : null, fullName, { redis: deps.redisClient });
+  if (!answer.ok) throw new PageError(answer.error, 422, answer.code);
+  sendJson(res, 200, { ok: true, status: answer.status });
+}
+
+/** POST /ride-page/nin-prompt { event: shown | closed }. */
+async function handleNinPrompt(req: IncomingMessage, res: ServerResponse, deps: RidePageRouteDeps): Promise<void> {
+  const userId = authenticate(req, deps);
+  const body = await readJsonBody(req).catch(() => null);
+  const event = isRecord(body) ? body.event : null;
+  if (event !== 'shown' && event !== 'closed') throw new PageError('Try again.', 400, 'BAD_REQUEST');
+  await noteNinPrompt(deps.redisClient, userId, event);
+  sendJson(res, 200, { ok: true });
+}
+
 const ROUTES: Record<string, { method: 'GET' | 'POST'; run: Handler }> = {
   '/ride-page/state': { method: 'GET', run: handleState },
+  '/ride-page/nin': { method: 'POST', run: handleNin },
+  '/ride-page/nin-prompt': { method: 'POST', run: handleNinPrompt },
   '/ride-page/find': { method: 'POST', run: handleFind },
   '/ride-page/auto-accept': { method: 'POST', run: handleAutoAccept },
   '/ride-page/search-again': { method: 'POST', run: handleSearchAgain },

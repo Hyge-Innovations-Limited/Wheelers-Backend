@@ -1,3 +1,4 @@
+import { claimNinWhatsapp, ninPromptFor } from '../verification/nin-prompt';
 import { randomUUID } from 'node:crypto';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
 import type { WheelersConsumer } from '@wheleers/kafka-client';
@@ -97,6 +98,7 @@ import {
   sendGroupRideDispatchNotification,
 } from '../whatsapp-flows/whatsapp-notifier';
 import type { WhatsappNotifierDeps } from '../whatsapp-flows/whatsapp-notifier';
+import { sendMetaLinkMessage } from '../whatsapp-flows/whatsapp-notifier';
 import { reactForRide, rideReactionsOn, type RideMoment } from '../whatsapp-flows/ride-reactions';
 import { clearOfferCount, hasOffersPageMessage, sendOffersPageMessage, showOfferCount } from '../whatsapp-flows/offers-page-message';
 import { loadTripChat } from '../trip-chat/access';
@@ -1997,6 +1999,12 @@ export async function handleRideEvent(
         ).catch(() => {});
         // ✅ the trip is done.
         await reactInChat(deps, event.riderId, phone, event.rideId, 'done').catch(() => undefined);
+        // The NIN popup on WhatsApp (verification/nin-prompt.ts): right after a trip (inside the free 24-hour window),
+        // once a week at most, only when it is due; the button opens the ride page, which shows the NIN box.
+        const ninUrl = deps.ridePageUrlFor?.(event.riderId) ?? null;
+        if (ninUrl && (await ninPromptFor(deps.redisClient, event.riderId).catch(() => null))?.ask && (await claimNinWhatsapp(deps.redisClient, event.riderId))) {
+          await sendMetaLinkMessage(deps.whatsappNotifier, phone, 'Add your NIN to keep your account and your trips safe.', 'Add NIN', ninUrl).catch(() => undefined);
+        }
         // Arm the rating reply: a bare 1–5 in the next day rates this driver.
         const completedBid = await getAcceptedBid(deps.redisClient, event.rideId).catch(() => null);
         await storeLastCompletedRide(deps.redisClient, event.riderId, {
