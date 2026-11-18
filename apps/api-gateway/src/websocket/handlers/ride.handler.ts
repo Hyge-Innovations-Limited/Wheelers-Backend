@@ -39,6 +39,7 @@ import { assertDriverApproved } from '../../rides/driver-kyc-gate';
 import { declineOneOffer } from '../../rides/whatsapp-ride.service';
 import { acceptOfferInApp } from '../../rides/app-accept';
 import { assertNotOwingPastLimit } from '../../rides/cash-owed';
+import { assertFaceCheckPassed, failedFaceCheckOn, faceCheckBidRefusal } from '../../face/face-check';
 import { autoAcceptOnAtStart, switchAutoAccept } from '../../rides/auto-accept';
 import { RouteChangeRefused, forgetTripRouteQuote, quoteTripRoute, stampIsStale, stopFixedPriceEnabled, unpricedRouteChange } from '../../rides/trip-route-quote';
 import { cancelPendingRoute, claimPublish, clearPendingRoute, fundRouteHold, releasePublish, readPendingRoute, restoreRouteHold, routeBaseOf, sameBase, savePendingRoute, takePendingRoute } from '../../rides/trip-route-pending';
@@ -1004,6 +1005,8 @@ export async function handleRideMessage(
     refuseGroupTrip(await assertDriverOwnsRide(requireString(payload, 'rideId'), auth));
     const driverId = auth.driverId;
     if (!driverId) throw new Error('Missing required field: driverId');
+    // FACE_CHECK on: the driver's face scan passed first (face/face-check.ts).
+    await assertFaceCheckPassed(requireString(payload, 'rideId'), driverId);
     // The rider's 4-digit trip code, checked here so no app can skip it.
     await checkTripCodeAtStart(requireString(payload, 'rideId'), payload['tripCode'], redis);
     // Waiting time past the free minutes: taken from the rider's wallet now (paid to the driver at the end),
@@ -1085,6 +1088,7 @@ export async function handleRideMessage(
     refuseGroupTrip(ride);
     const riderId = ride.riderId;
     const driverId = auth.driverId ?? ride.driverId;
+    await assertFaceCheckPassed(rideId, ride.driverId);
 
     if (riderId && driverId) {
       const event = RideArrivedEvent.parse({
@@ -1128,6 +1132,11 @@ export async function handleRideMessage(
     if (!driver) throw new Error('Only a driver can do that.');
     // Owes Wheelers past the cash limit (rides/cash-owed.ts): no bids until a deposit.
     await assertNotOwingPastLimit(auth.userId);
+    // FACE_CHECK on: no bids while the check is broken for this driver, or from an app that cannot scan.
+    if (redis) {
+      const faceRefusal = await faceCheckBidRefusal(redis, auth.userId);
+      if (faceRefusal) throw new Error(faceRefusal);
+    }
     const driverId = driver.id;
     const driverRowId: string = driver.id;
     const driverName = driver.user.name ?? driver.user.phone ?? 'Driver';
@@ -1153,6 +1162,7 @@ export async function handleRideMessage(
     // A rider in a group is booked only with the group; a group trip only by a driver app that can drive one.
     if (bidRide?.groupRole === 'SEAT') throw new Error('This request is no longer open.');
     if (bidRide?.groupRole === 'TRIP' && (!redis || !(await drivesGroupTrips(redis, auth.userId)))) throw new Error('Update the app to take group rides.');
+    if (await failedFaceCheckOn(acceptRideId, driverRowId)) throw new Error("You can't take this ride.");
     await assertOfferWithinBand(acceptRideId, await resolveDriverBidFareNgn(acceptRideId, payload, 'agreedFareNgn', bidRide), 'driver', bidRide);
 
     const proximity = await computeBidProximity(

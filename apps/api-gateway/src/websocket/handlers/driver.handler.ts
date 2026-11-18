@@ -2,6 +2,7 @@ import { meterLocation } from '../../health/location-meter';
 import { driverClient, driverLocationClient, pinnedPosition, rideClient } from '@wheleers/db';
 import type { RedisClient } from '../../redis/client';
 import { noteGroupTripDriver } from '../../rides/group-trip';
+import { noteFaceCheckDriver } from '../../face/face-check';
 import { LIVE_TRIP_STATUSES } from '../../rides/live-trip';
 import {
   DriverOfflineEvent,
@@ -86,6 +87,8 @@ export async function handleDriverMessage(
     await publisher.publishDriverEvent(event);
     // This app drives group trips (the group screen, a code per rider): it may be sent one.
     if (redis && payload['groupTrips'] === true) await noteGroupTripDriver(redis, auth.userId).catch(() => undefined);
+    // This app scans the driver's face before a ride (face/face-check.ts).
+    if (redis && payload['faceChecks'] === true) await noteFaceCheckDriver(redis, auth.userId);
 
     return {
       type: 'driver:online:accepted',

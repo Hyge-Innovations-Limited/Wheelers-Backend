@@ -1,3 +1,4 @@
+import { startFaceCheck, type FaceCheckDeps } from '../face/face-check';
 import { claimNinWhatsapp, ninPromptFor } from '../verification/nin-prompt';
 import { randomUUID } from 'node:crypto';
 import { clearForBooking, closePaying, payingStatusEnabled, readPaying } from '../rides/paying-status';
@@ -149,6 +150,8 @@ export interface StartGatewayConsumerDeps {
   ridePageUrlFor?: (userId: string) => string | null;
   /** Says a ride-page event in the chat (the catch-up once the rider leaves the page). Absent: no catch-up runs. */
   ridePageChat?: (event: RidePageChatEvent) => Promise<void>;
+  /** The driver's face check before every ride (face/face-check.ts). Absent, or FACE_CHECK off: payloads as before. */
+  faceChecks?: FaceCheckDeps;
 }
 
 interface RideParticipantState {
@@ -1779,6 +1782,13 @@ export async function handleRideEvent(
 
     // A seat of a group trip: its rider is told (above); the driver drives the trip and was told about it.
     if (!event.groupSeat) {
+    // The face scan this ride needs before Arrived (null: off, a group trip, or an app that cannot scan in shadow).
+    const faceCheck = deps.faceChecks
+      ? await startFaceCheck(deps.faceChecks, { rideId: event.rideId, driverId: event.driverId, driverUserId: event.driverUserId }).catch((error) => {
+        console.error('[face-check] could not start', { rideId: event.rideId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      })
+      : null;
     await registry.sendToUser(event.driverUserId, 'ride:matched', {
       rideId: event.rideId,
       tripId: rideSnapshot?.tripId ?? null,
@@ -1818,6 +1828,7 @@ export async function handleRideEvent(
       riderName,
       // The Start button asks for the rider's code. Never the code itself.
       tripCodeRequired: tripCodeNeeded,
+      ...(faceCheck ? { faceCheck } : {}),
     });
     // The booking by push too.
     await pushDriver(deps, event.driverUserId, {

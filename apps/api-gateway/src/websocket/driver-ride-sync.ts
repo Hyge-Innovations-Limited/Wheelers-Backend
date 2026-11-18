@@ -1,3 +1,4 @@
+import { pendingFaceCheck, type FaceCheckView } from '../face/face-check';
 import { formatTripId, tripDetailsFromRow } from '@wheleers/config';
 import type { TripDetails } from '@wheleers/config';
 import { tripCodeStillNeeded } from '../rides/trip-code';
@@ -39,6 +40,8 @@ export type DriverRideSnapshot = {
   riderName: string | null;
   /** Start trip asks for the rider's 4-digit code. The code itself never goes to the driver. */
   tripCodeRequired: boolean;
+  /** The face scan still to pass before Arrived (face/face-check.ts). Absent: none due. */
+  faceCheck?: FaceCheckView;
   matchedAt: string | null;
   arrivedAt: string | null;
   startedAt: string | null;
@@ -151,6 +154,7 @@ export async function loadDriverRideSnapshot(rideId: string): Promise<DriverRide
     waiting: waitingView(ride),
     ...(tripDetailsFromRow(ride) ? { tripDetails: tripDetailsFromRow(ride) } : {}),
     ...(await groupTripFor(ride).then((group) => (group ? { group } : {})).catch(() => ({}))),
+    ...(ride.driverId ? await pendingFaceCheck(ride.id, ride.driverId).then((faceCheck) => (faceCheck ? { faceCheck } : {})) : {}),
   };
 }
 

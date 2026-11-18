@@ -2222,3 +2222,43 @@ model RidePriceChange {
   @@index([rideId])
   @@index([at])
 }
+
+/// The driver's face check before a ride (Timi, 18 Nov 2026): one row per booked ride and driver. PENDING until the
+/// driver passes (PASSED), runs out of tries (FAILED), runs out of time (EXPIRED), or the check could not run (ERROR).
+model FaceCheck {
+  id              String    @id @default(uuid())
+  rideId          String
+  driverId        String
+  driverUserId    String
+  status          String    @default("PENDING")
+  /// 'left' | 'right': the head turn asked for this try.
+  challenge       String
+  /// Scans that did not match, and scans in all.
+  failedTries     Int       @default(0)
+  submits         Int       @default(0)
+  /// The best (smallest) distance to the selfie seen, and why the last scan was refused.
+  bestDistance    Float?
+  lastReason      String?
+  /// 'on' | 'shadow': whether the result was enforced.
+  mode            String
+  /// R2 keys of the frames sent (kept 30 days, then deleted and framesDeletedAt set).
+  frameKeys       Json?
+  framesDeletedAt DateTime?
+  deadlineAt      DateTime
+  resolvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([rideId, driverId])
+  @@index([status, deadlineAt])
+  @@index([driverId, createdAt])
+  @@index([createdAt])
+}
+
+/// A driver's face, worked out once from their KYC selfie (128 numbers), and the selfie it came from.
+model DriverFaceTemplate {
+  driverId   String   @id
+  selfieKey  String
+  descriptor Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}

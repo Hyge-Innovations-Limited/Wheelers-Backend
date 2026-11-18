@@ -132,6 +132,8 @@ import { attachRequestLog } from "./http/request-log";
 import { recordRequestOutcome } from "./analytics/user-outcomes";
 import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from "./http/ride-page.route";
 import { handleNinPromptRoute, handleRiderNinRoute } from "./http/rider-nin.route";
+import { handleDriverFaceCheckRoute } from "./http/driver-face-check.route";
+import { sweepFaceChecks, type FaceCheckDeps } from "./face/face-check";
 import { setRidePageStateBuilder } from "./rides/ride-page-live";
 import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
 import { createTripChatService } from "./trip-chat/service";
@@ -650,6 +652,23 @@ async function bootstrap(): Promise<void> {
   });
 
   await registry.start();
+
+  // The driver's face check before every ride (face/face-check.ts; FACE_CHECK off | shadow | on). Frames apart from papers.
+  const faceChecks: FaceCheckDeps = {
+    redis: redisCommandClient,
+    publisher,
+    kycStorage: driverKycStorage,
+    frameStorage: r2Configured
+      ? new DriverKycStorage({
+          accountId: gatewayEnv.R2_ACCOUNT_ID!,
+          accessKeyId: gatewayEnv.R2_ACCESS_KEY_ID!,
+          secretAccessKey: gatewayEnv.R2_SECRET_ACCESS_KEY!,
+          bucket: gatewayEnv.R2_BUCKET!,
+          prefix: 'drivers/face-checks',
+        })
+      : null,
+    notifyDriver: (userId, type, payload) => registry.sendToUser(userId, type, payload),
+  };
 
   const allowedOrigins = parseAllowedOrigins(gatewayEnv.CORS_ORIGINS);
 
@@ -1422,6 +1441,16 @@ async function bootstrap(): Promise<void> {
         phoneOtpTtlSeconds: gatewayEnv.WHATSAPP_OTP_TTL_SECONDS,
       });
 
+      return;
+    }
+
+    // POST /drivers/face-check — the driver's face scan before a ride (face/face-check.ts)
+    if (url.pathname === "/drivers/face-check") {
+      if (req.method !== "POST") {
+        sendMethodNotAllowed(res);
+        return;
+      }
+      await handleDriverFaceCheckRoute(req, res, { ...faceChecks, jwtSecret: gatewayEnv.JWT_SECRET });
       return;
     }
 
@@ -2874,6 +2903,11 @@ async function bootstrap(): Promise<void> {
   // Rain at each zone every 15 minutes, for pricing (needs the Weather API enabled on the Google key).
   const stopWeatherJob = startWeatherJob(redisCommandClient, gatewayEnv.GOOGLE_MAPS_API_KEY, leader.isLeader);
   const stopPaperReminders = startPaperReminderJob({ publisher }, leader.isLeader, () => lagosToday());
+  // Face checks past their 2 minutes end (the ride goes back to the search); frames older than 30 days are deleted.
+  const faceSweep = setInterval(() => {
+    void leader.isLeader().then((lead) => (lead ? sweepFaceChecks(faceChecks) : null)).catch((error) => console.warn('[face-check] sweep failed', { error: error instanceof Error ? error.message : String(error) }));
+  }, 15_000);
+  faceSweep.unref();
   const stopHealthJobs = startHealthJobs({
     redis: redisCommandClient,
     recorder: healthStats,
@@ -2923,6 +2957,7 @@ async function bootstrap(): Promise<void> {
     // The ride page's news, told to the chat once the rider has left the page.
     ridePageChat: (event) => sayRidePageEventInChat(buildMetaWhatsappDeps(), event),
     isLeader: leader.isLeader,
+    faceChecks,
   });
 
   // Riders stuck in the group matching pool get a "still waiting?" check-in
