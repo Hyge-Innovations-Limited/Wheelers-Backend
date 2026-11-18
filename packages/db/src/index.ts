@@ -20,6 +20,7 @@ export { onPrismaQuery, onPrismaExecution } from './query-timing';
 export type { QueryListener }   from './query-timing';
 export { walletClient }         from './clients/wallet.client';
 export type { CashRideFeesResult } from './clients/wallet.client';
+export { studioCaptureClient } from './clients/studio-capture.client';
 export { takeFromBalance }      from './clients/wallet-balance';
 export { withdrawalClient, payoutAmountOf } from './clients/withdrawal.client';
 export { virtualAccountClient, ACTIVE_PAYMENT_PROVIDER } from './clients/virtual-account.client';

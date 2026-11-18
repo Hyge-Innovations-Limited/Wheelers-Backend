@@ -1,4 +1,4 @@
-import { driverClient, groupRideClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON } from '@wheleers/db';
+import { driverClient, groupRideClient, rideClient, scheduledRideClient, SEARCH_TIMED_OUT_REASON, studioCaptureClient } from '@wheleers/db';
 import { RIDE, calculateSuggestedFare, offerLimitsNgn, zoneFor, tripDetailsColumns, tripDetailsFromRow } from '@wheleers/config';
 import type { RideEnv } from '@wheleers/config';
 import type { MessageContext } from '@wheleers/kafka-client';
@@ -344,6 +344,8 @@ export function createRideRequestedConsumer(params: {
       onlineDrivers: state.onlineDrivers,
       rideRequested: event,
     });
+    // Analytics (not awaited, never fails the search): free drivers found at the start.
+    void studioCaptureClient.noteDriversFound(event.rideId, result.ok ? result.drivers.filter((d) => !d.afterCurrentTrip).length : 0);
 
     if (!result.ok) {
       console.log(`[ride-service] no matching drivers for ride ${event.rideId}: ${result.reason}`);
@@ -376,6 +378,8 @@ export function createRideRequestedConsumer(params: {
     });
 
     console.log(`[ride-service] broadcasted ride ${event.rideId} to ${result.drivers.length} drivers`);
+    // Analytics (not awaited): who it went to, round 1.
+    void studioCaptureClient.notePings(event.rideId, result.drivers.map((d) => d.driverId), 1);
   }
 
   /**
@@ -472,6 +476,10 @@ export function createRideRequestedConsumer(params: {
       return;
     }
 
+    // Analytics (not awaited): the change and the open offers at this moment (before anything moves).
+    const seatChange = pending.group?.members?.some((m) => m.rideId === event.rideId) ?? false;
+    if (!seatChange) void studioCaptureClient.notePriceChange(event.rideId, pending.rideRequested.riderOfferNgn, event.counterOfferNgn);
+
     // The ride keeps the price the rider is offering NOW: the gateway checks a
     // driver's acceptance against it, and a search rebuilt after a restart
     // re-offers it. It used to stay at the first price.
@@ -547,6 +555,9 @@ export function createRideRequestedConsumer(params: {
           ),
         );
         console.log(`[ride-service] rider counter-offer on ride ${event.rideId} sent to ${pending.candidates.length} drivers: ₦${event.counterOfferNgn}`);
+        // Analytics (not awaited): the search went out again, one round more.
+        const candidates = pending.candidates.map((d) => d.driverId);
+        void studioCaptureClient.lastRound(event.rideId).then((round) => studioCaptureClient.notePings(event.rideId, candidates, Math.max(1, round) + 1));
       }
     }
   }

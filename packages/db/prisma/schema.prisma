@@ -510,6 +510,9 @@ model Ride {
   groupTripId             String?
   groupRole               String?
   groupStops              Json?
+  /// Analytics (Timi, 18 Nov 2026): free drivers found near the pickup when the search started (the match query's
+  /// answer, capped by its limit). Null on rides from before it was recorded.
+  driversFoundAtSearch    Int?
   startedAt               DateTime?
   completedAt             DateTime?
   cancelledAt             DateTime?
@@ -2183,4 +2186,39 @@ model FeedHide {
   createdAt      DateTime @default(now())
 
   @@id([userId, hiddenDriverId])
+}
+
+/// Analytics (Timi, 18 Nov 2026): one row per driver a search was sent to, per round (round 1 at the search start,
+/// one more each time the rider changes the price and it goes out again), and what they did with it. Written beside
+/// the dispatch, never in its way: a failed write loses a row, never a request.
+model SearchPing {
+  id          String    @id @default(uuid())
+  rideId      String
+  driverId    String
+  round       Int
+  sentAt      DateTime  @default(now())
+  /// 'bid' | 'declined'; null: no answer.
+  response    String?
+  respondedAt DateTime?
+
+  @@unique([rideId, driverId, round])
+  @@index([rideId])
+  @@index([driverId, sentAt])
+  @@index([sentAt])
+}
+
+/// Analytics (Timi, 18 Nov 2026): every price change a rider made during a search, with what was on the table at
+/// that moment (so the Studio can tell "no offers came in" from "offers above their price" and "matched the lowest").
+model RidePriceChange {
+  id            String   @id @default(uuid())
+  rideId        String
+  fromNgn       Int
+  toNgn         Int
+  /// Open driver offers when the rider changed it, and the lowest of them.
+  offersOpen    Int
+  lowestOfferNgn Int?
+  at            DateTime @default(now())
+
+  @@index([rideId])
+  @@index([at])
 }

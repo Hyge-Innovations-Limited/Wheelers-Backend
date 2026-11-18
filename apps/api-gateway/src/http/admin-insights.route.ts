@@ -5,6 +5,8 @@ import type { AnalyticsFilters, BreakdownBy, Bucket, FeeKind, RideChannelName, T
 import { buildWorkbook } from '../analytics/workbook';
 import { buildAnalyticsPack } from '../analytics/pack';
 import { buildStudio } from '../analytics/studio';
+import { buildStudioDataset, studioDatasetWorkbook } from '../analytics/studio-dataset';
+import { gzipSync } from 'node:zlib';
 import { zipFiles } from '../analytics/zip';
 import type { WorkbookScope } from '../analytics/workbook';
 import { verifyAdminAuth } from './admin-auth.route';
@@ -34,6 +36,8 @@ import { sendJson } from './utils';
  *   GET /admin/insights/export?scope=overview|fees&bucket=&contacts=1&raw=0   the Excel workbook (raw=0 leaves out the raw sheets)
  *   GET /admin/insights/studio?from=&to=   the admin Studio's charts, from the Power BI pack's rows (owners only)
  *       &format=zip   a .zip of that workbook and the Power BI pack (powerbi/: the analyst's 30 files, _relationships.csv, guide, NOTES.md)
+ *   GET /admin/insights/studio-dataset?from=&to=   the Analytics Studio's rows (sessions, offers, pings, price changes,
+ *       payments, supply, driver wallets), owners only; &format=xlsx the same as a workbook, one sheet per table
  *   GET /admin/fees/summary?bucket=
  *   GET /admin/fees/ledger?kind=&q=&sort=&dir=&limit=&offset=
  *   GET /admin/fees/deposits?q=&sort=&dir=&limit=&offset=      every deposit made (not tied to a ride)
@@ -166,6 +170,38 @@ export async function handleAdminInsightsRoute(req: IncomingMessage, res: Server
           return true;
         }
         sendJson(res, 200, { filters: f, ...(await kept(async () => buildStudio(await buildAnalyticsPack(f)))) });
+        return true;
+      }
+      case '/admin/insights/studio-dataset': {
+        // The Analytics Studio's rows (analytics/studio-dataset.ts): owners only, as the Studio. No names or phones.
+        if (auth.role !== 'OWNER') {
+          sendJson(res, 403, { error: 'The Studio is not available.' });
+          return true;
+        }
+        const ds = await kept(() => buildStudioDataset(f));
+        if (url.searchParams.get('format') !== 'xlsx') {
+          // A month of rows is megabytes of JSON and compresses ~30×: gzipped when the browser takes it.
+          const body = Buffer.from(JSON.stringify(ds));
+          const gzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
+          const out = gzip ? gzipSync(body) : body;
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          if (gzip) res.setHeader('content-encoding', 'gzip');
+          res.setHeader('vary', 'accept-encoding');
+          res.setHeader('cache-control', 'no-store');
+          res.setHeader('content-length', out.length);
+          res.end(out);
+          return true;
+        }
+        recordAdminActivity({ adminId: auth.adminId, adminName: auth.adminName, kind: 'export', page: path, ip: clientIp(req), detail: { scope: 'studio-dataset', from: f.from, to: f.to } });
+        const file = await studioDatasetWorkbook(ds);
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('content-disposition', `attachment; filename="wheelers-studio-data-${f.from}-to-${f.to}.xlsx"`);
+        res.setHeader('access-control-expose-headers', 'content-disposition');
+        res.setHeader('cache-control', 'no-store');
+        res.setHeader('content-length', file.length);
+        res.end(file);
         return true;
       }
       case '/admin/insights/export': {

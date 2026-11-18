@@ -12,7 +12,7 @@ import {
   depositNeededFor,
   tripDetailsFromRequest,
 } from '@wheleers/config';
-import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, prisma, referralClient, rideClient, driverBidClient } from '@wheleers/db';
+import { PRICE_CHANGEABLE_STATUSES, driverClient, groupRideClient, prisma, referralClient, rideClient, driverBidClient, studioCaptureClient } from '@wheleers/db';
 import {
   DisputeOpenedEvent,
   FeedbackLoggedEvent,
@@ -1213,6 +1213,8 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(counterOfferEvent);
+    // Analytics (not awaited, never fails the bid): this driver answered the request with a bid.
+    void studioCaptureClient.noteResponse(acceptRideId, driverRowId, 'bid');
 
     return {
       type: 'driver:accept:accepted',
@@ -1241,6 +1243,8 @@ export async function handleRideMessage(
     });
 
     await publisher.publishRideEvent(event);
+    // Analytics (not awaited): a driver who said no (a timeout is no answer, not a decline).
+    if (event.reason === 'manual_reject') void studioCaptureClient.noteResponse(event.rideId, rejectingDriverId, 'declined');
 
     return {
       type: 'driver:reject:accepted',
