@@ -134,6 +134,7 @@ import { buildRidePageState, handleRidePageRoute, type RidePageRouteDeps } from 
 import { handleNinPromptRoute, handleRiderNinRoute } from "./http/rider-nin.route";
 import { handleDriverFaceCheckRoute } from "./http/driver-face-check.route";
 import { sweepFaceChecks, type FaceCheckDeps } from "./face/face-check";
+import { startWalletLive } from "./wallet/live";
 import { setRidePageStateBuilder } from "./rides/ride-page-live";
 import { ADMIN_LOCKED_BODY, adminAreaLocked, handleAdminAreaLockRoute, isLockedAdminPath } from "./admin/area-lock";
 import { createTripChatService } from "./trip-chat/service";
@@ -652,6 +653,12 @@ async function bootstrap(): Promise<void> {
   });
 
   await registry.start();
+
+  // The live wallet (wallet/live.ts): every balance, hold and money-history change, from the database, to the person's
+  // open app on this process. No app polls for it.
+  const walletLive = process.env["DATABASE_URL"]
+    ? startWalletLive({ databaseUrl: process.env["DATABASE_URL"], deliver: (userId, type, payload) => registry.sendToOwnSockets(userId, type, payload) })
+    : null;
 
   // The driver's face check before every ride (face/face-check.ts; FACE_CHECK off | shadow | on). Frames apart from papers.
   const faceChecks: FaceCheckDeps = {
@@ -2989,6 +2996,7 @@ async function bootstrap(): Promise<void> {
 
   // First: let go of the sockets and the job lock while Redis is still connected.
   onShutdown(async () => {
+    await walletLive?.stop();
     tripChat.stop();
     stopStellarJob();
     stopHoldSweeper();

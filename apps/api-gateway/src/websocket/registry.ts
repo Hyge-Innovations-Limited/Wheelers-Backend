@@ -229,6 +229,14 @@ export class SocketRegistry {
     );
   }
 
+  /**
+   * To this person's sockets on THIS process only, never relayed. For news every gateway process hears for itself
+   * (the live wallet, wallet/live.ts): relaying it as well would deliver it once per process.
+   */
+  sendToOwnSockets(userId: string, type: string, payload: Record<string, unknown>): void {
+    this.sendToLocalUser(userId, type, payload, new Date().toISOString());
+  }
+
   private sendToLocalUser(
     userId: string,
     type: string,
