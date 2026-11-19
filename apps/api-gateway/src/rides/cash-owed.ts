@@ -1,4 +1,4 @@
-import { CASH_OWED_LIMIT_NGN, cashOwedNgn, depositNeededFor, owesPastLimit } from '@wheleers/config';
+import { CASH_OWED_LIMIT_NGN, cashOwedNgn, cashRidesEnabled, depositNeededFor, owesPastLimit } from '@wheleers/config';
 import { walletClient } from '@wheleers/db';
 
 /**
@@ -18,6 +18,22 @@ export interface DriverOwed {
 export function owedOf(balanceNgn: number): DriverOwed {
   const owedNgn = cashOwedNgn(balanceNgn);
   return { owedNgn, paused: owesPastLimit(balanceNgn), depositNgn: owedNgn > 0 ? depositNeededFor(owedNgn) : 0 };
+}
+
+/**
+ * The wallet overview's cash lines, from the balance alone: whether riders may pay cash, and for a driver what they
+ * owe from cash trips, the limit, and past it the deposit that lets them drive again. The overview route and the live
+ * wallet message (wallet/live.ts) both send these.
+ */
+export function walletCashFields(balanceNgn: number) {
+  const owed = owedOf(balanceNgn);
+  return {
+    cashRides: cashRidesEnabled(),
+    owedNgn: owed.owedNgn,
+    owedLimitNgn: CASH_OWED_LIMIT_NGN,
+    driverPaused: owed.paused,
+    depositToDriveNgn: owed.depositNgn,
+  };
 }
 
 export function owedMessage(owed: DriverOwed): string {

@@ -26,7 +26,7 @@ import { WalletSecurityError, type PinPolicy } from "../wallet-security/wallet-p
 import type { RedisClient } from "../redis/client";
 import type { PayoutCreatedEvent } from "@wheleers/kafka-schemas";
 import { CASH_OWED_LIMIT_NGN, cashRidesEnabled, depositNeededFor, MIN_WITHDRAWAL_REQUEST_NGN, WITHDRAWAL_FEE_NGN } from "@wheleers/config";
-import { owedOf } from "../rides/cash-owed";
+import { owedOf, walletCashFields } from "../rides/cash-owed";
 
 // ─── Deps ──────────────────────────────────────────────────────────
 
@@ -380,14 +380,7 @@ async function payoutAccountFor(deps: WalletRouteDeps, userId: string) {
  * trips: owedNgn, and past owedLimitNgn requests stop (driverPaused) until they deposit depositToDriveNgn.
  */
 function cashFields(balanceNgn: number) {
-  const owed = owedOf(balanceNgn);
-  return {
-    cashRides: cashRidesEnabled(),
-    owedNgn: owed.owedNgn,
-    owedLimitNgn: CASH_OWED_LIMIT_NGN,
-    driverPaused: owed.paused,
-    depositToDriveNgn: owed.depositNgn,
-  };
+  return walletCashFields(balanceNgn);
 }
 
 export async function handleWalletOverviewRoute(
