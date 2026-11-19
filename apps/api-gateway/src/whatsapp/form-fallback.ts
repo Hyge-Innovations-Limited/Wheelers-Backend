@@ -14,11 +14,20 @@ import type { MetaWhatsappRouteDeps } from '../http/whatsapp.route';
  *   twice for one person → their profile says forms do not open, and from then on the link follows each form at once.
  * Opening a form (the form's first call to us) or writing in the chat cancels the check. The welcome form has no
  * web page of its own: its unopened sends only count (consent.ts already falls back to the text question).
+ *
+ * Never a second message for someone whose WhatsApp shows forms (Timi, 19 Nov 2026): once a person has opened any
+ * form, a form they leave alone is their choice, not a device problem, so there is no check for them at all. And
+ * Quick Actions (the menu) is never followed up: leaving a menu is normal. Only someone known not to see forms gets
+ * the link with it.
  */
 
 const pendingKey = (userId: string) => `whatsapp:form-pending:${userId}`;
 const unopenedKey = (userId: string) => `whatsapp:forms-unopened:${userId}`;
 const closedKey = (userId: string) => `whatsapp:forms-closed:${userId}`;
+const opensKey = (userId: string) => `whatsapp:forms-open:${userId}`;
+const OPENS_TTL_SECONDS = 365 * 24 * 3600;
+/** Forms a person may leave alone: no link after them unless their WhatsApp is known not to show forms. */
+const OPTIONAL_KINDS = new Set(['menu']);
 export const FORM_CHECKS_KEY = 'whatsapp:form-checks';
 export const READ_WAIT_MS = 40_000;
 export const DELIVERED_WAIT_MS = 90_000;
@@ -56,16 +65,21 @@ export function formInMessage(rawBody: string, secret: string): { userId: string
 }
 
 export async function noteFormSent(redis: RedisClient, form: { userId: string; phone: string; kind: string }, now = Date.now()): Promise<void> {
+  // Their WhatsApp shows forms (they opened one before): nothing to check, never a second message.
+  if (await redis.get(opensKey(form.userId)).catch(() => null)) return;
+  const closed = (await redis.get(closedKey(form.userId)).catch(() => null)) === '1';
+  // The menu left alone is a choice: no check (and a check already waiting for another form is kept).
+  if (OPTIONAL_KINDS.has(form.kind) && !closed) return;
   const pending: Pending = { sentAt: now, kind: form.kind, phone: form.phone };
   await redis.set(pendingKey(form.userId), JSON.stringify(pending), PENDING_TTL_SECONDS);
   // Known not to open forms: the link right away (a few seconds, so it lands after the form).
-  if ((await redis.get(closedKey(form.userId)).catch(() => null)) === '1') {
-    await redis.send('ZADD', FORM_CHECKS_KEY, String(now + 3000), form.userId);
-  }
+  if (closed) await redis.send('ZADD', FORM_CHECKS_KEY, String(now + 3000), form.userId);
 }
 
 /** The form's first call to our endpoint: it opened, so this person's WhatsApp shows forms. */
 export async function noteFormOpened(redis: RedisClient, userId: string): Promise<void> {
+  // Remembered for a year: from now on no link follows their forms.
+  await redis.set(opensKey(userId), '1', OPENS_TTL_SECONDS).catch(() => undefined);
   await redis.del(pendingKey(userId)).catch(() => undefined);
   await redis.send('ZREM', FORM_CHECKS_KEY, userId).catch(() => undefined);
   await redis.del(unopenedKey(userId)).catch(() => undefined);

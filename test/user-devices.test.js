@@ -111,7 +111,7 @@ test('a form never opened: read → 40 s → one link; twice → "forms do not o
   const sent = [];
   const sendLink = async (u, p) => { sent.push([u, p]); return true; };
   const t0 = Date.parse('2026-11-10T10:00:00Z');
-  await fallback.noteFormSent(redis, { userId, phone, kind: 'menu' }, t0);
+  await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, t0);
   await fallback.noteStatus(redis, userId, 'delivered', t0 + 1000);
   await fallback.noteStatus(redis, userId, 'read', t0 + 5000);
   assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 30_000), [], 'not yet');
@@ -119,36 +119,70 @@ test('a form never opened: read → 40 s → one link; twice → "forms do not o
   assert.deepEqual(sent, [[userId, phone]]);
   assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 200_000), [], 'once');
 
-  // Opened in time: nothing.
-  await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, t0 + 300_000);
-  await fallback.noteStatus(redis, userId, 'read', t0 + 301_000);
-  await fallback.noteFormOpened(redis, userId);
-  assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 400_000), []);
-  assert.equal((await userDeviceClient.listByUser(userId)).find((d) => d.source === 'whatsapp').formsOpen, true);
-
   // Wrote in the chat: nothing.
-  await fallback.noteFormSent(redis, { userId, phone, kind: 'menu' }, t0 + 500_000);
+  await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, t0 + 500_000);
   await fallback.noteStatus(redis, userId, 'read', t0 + 501_000);
   await fallback.noteUserWrote(redis, userId);
   assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 600_000), []);
 
   // Twice unopened (read receipts off: delivered + 90 s) → forms do not open.
   for (const at of [t0 + 700_000, t0 + 900_000]) {
-    await fallback.noteFormSent(redis, { userId, phone, kind: 'menu' }, at);
+    await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, at);
     await fallback.noteStatus(redis, userId, 'delivered', at + 1000);
     assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, at + 60_000), [], 'delivered waits 90 s');
     await fallback.sweepFormChecks(redis, sendLink, at + 95_000);
   }
   assert.equal((await userDeviceClient.listByUser(userId)).find((d) => d.source === 'whatsapp').formsOpen, false);
-  // From now on the link follows each form within seconds, no status needed.
+  // From now on the link follows each form within seconds, no status needed: the menu too (they cannot see it).
   const before = sent.length;
   await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, t0 + 2_000_000);
   await fallback.sweepFormChecks(redis, sendLink, t0 + 2_004_000);
-  assert.equal(sent.length, before + 1);
+  await fallback.noteFormSent(redis, { userId, phone, kind: 'menu' }, t0 + 2_100_000);
+  await fallback.sweepFormChecks(redis, sendLink, t0 + 2_104_000);
+  assert.equal(sent.length, before + 2);
   // The welcome form has no web page: counted, no link.
   await fallback.noteFormSent(redis, { userId, phone, kind: 'welcome' }, t0 + 3_000_000);
   const r = await fallback.sweepFormChecks(redis, sendLink, t0 + 3_004_000);
   assert.equal(r[0].sent, false);
+  // Then they open one (on their phone after all): forms open again, and no more links.
+  await fallback.noteFormOpened(redis, userId);
+  await fallback.noteFormSent(redis, { userId, phone, kind: 'offers' }, t0 + 4_000_000);
+  assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 4_100_000), []);
+});
+
+test('never a second message for someone whose WhatsApp shows forms, nor after Quick Actions left alone', async () => {
+  await redis.send('FLUSHDB');
+  const sent = [];
+  const sendLink = async (u, p) => { sent.push([u, p]); return true; };
+  const t0 = Date.parse('2026-11-19T10:00:00Z');
+
+  // Quick Actions left alone by someone new: no link, not counted.
+  const fresh = await person();
+  for (const at of [t0, t0 + 200_000, t0 + 400_000]) {
+    await fallback.noteFormSent(redis, { userId: fresh, phone: '2348030000001', kind: 'menu' }, at);
+    await fallback.noteStatus(redis, fresh, 'read', at + 2000);
+    assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, at + 60_000), []);
+  }
+  assert.equal(await redis.get(`whatsapp:forms-unopened:${fresh}`), null, 'leaving a menu says nothing about the phone');
+
+  // Opened a form once: whatever they leave alone after that (menus, offers, a search), no link and no "forms do not open".
+  const opener = await person();
+  await fallback.noteFormSent(redis, { userId: opener, phone: '2348030000002', kind: 'offers' }, t0);
+  await fallback.noteFormOpened(redis, opener);
+  for (const [kind, at] of [['menu', t0 + 100_000], ['offers', t0 + 300_000], ['search', t0 + 500_000], ['offers', t0 + 700_000]]) {
+    await fallback.noteFormSent(redis, { userId: opener, phone: '2348030000002', kind }, at);
+    await fallback.noteStatus(redis, opener, 'read', at + 2000);
+    assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, at + 60_000), [], `${kind} left alone`);
+  }
+  assert.equal(await redis.get(`whatsapp:forms-closed:${opener}`), null);
+  assert.deepEqual(sent, []);
+
+  // A menu sent while a ride's offers form waits: the offers check is kept.
+  const busy = await person();
+  await fallback.noteFormSent(redis, { userId: busy, phone: '2348030000003', kind: 'offers' }, t0);
+  await fallback.noteFormSent(redis, { userId: busy, phone: '2348030000003', kind: 'menu' }, t0 + 1000);
+  await fallback.noteStatus(redis, busy, 'read', t0 + 2000);
+  assert.deepEqual(await fallback.sweepFormChecks(redis, sendLink, t0 + 60_000), [{ userId: busy, sent: true, closed: false }]);
 });
 
 test('WhatsApp status news is read: read and delivered, with their time', () => {
