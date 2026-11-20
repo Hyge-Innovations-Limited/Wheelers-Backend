@@ -346,6 +346,8 @@ export function createRideRequestedConsumer(params: {
     });
     // Analytics (not awaited, never fails the search): free drivers found at the start.
     void studioCaptureClient.noteDriversFound(event.rideId, result.ok ? result.drivers.filter((d) => !d.afterCurrentTrip).length : 0);
+    // …and the rider's device the request came from.
+    void studioCaptureClient.noteRideDevice(event.rideId, event.riderId, event.channel);
 
     if (!result.ok) {
       console.log(`[ride-service] no matching drivers for ride ${event.rideId}: ${result.reason}`);

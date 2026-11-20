@@ -517,6 +517,9 @@ model Ride {
   /// Analytics (Timi, 18 Nov 2026): free drivers found near the pickup when the search started (the match query's
   /// answer, capped by its limit). Null on rides from before it was recorded.
   driversFoundAtSearch    Int?
+  /// Analytics (Timi, 20 Nov 2026): the rider's device the request came from (a UserDevice id: the app, or the ride
+  /// page for WhatsApp), the latest one seen of that kind when the search started. Null before it was recorded.
+  deviceId                String?
   startedAt               DateTime?
   completedAt             DateTime?
   cancelledAt             DateTime?
@@ -616,6 +619,8 @@ model DriverBid {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
   resolvedAt   DateTime?
+  /// Analytics (Timi, 20 Nov 2026): the driver's phone the bid came from (a UserDevice id, the app's). Null before.
+  deviceId     String?
   ride         Ride            @relation(fields: [rideId], references: [id], onDelete: Cascade)
   driver       Driver          @relation("DriverBids", fields: [driverId], references: [id])
 

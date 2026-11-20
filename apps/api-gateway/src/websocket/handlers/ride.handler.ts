@@ -1225,6 +1225,7 @@ export async function handleRideMessage(
     await publisher.publishRideEvent(counterOfferEvent);
     // Analytics (not awaited, never fails the bid): this driver answered the request with a bid.
     void studioCaptureClient.noteResponse(acceptRideId, driverRowId, 'bid');
+    if (bidRowId) void studioCaptureClient.noteBidDevice(bidRowId, auth.userId);
 
     return {
       type: 'driver:accept:accepted',

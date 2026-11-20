@@ -139,3 +139,70 @@ test('GET /admin/insights/studio-dataset: gzipped JSON in the Studio shape when 
   const xlsx = await call('/admin/insights/studio-dataset?from=2026-11-10&to=2026-11-10&format=xlsx');
   assert.match(xlsx.headers['content-disposition'], /wheelers-studio-data-2026-11-10-to-2026-11-10\.xlsx/);
 });
+
+test('devices: each request carries the rider\'s device (recorded, or the newest of that kind then), each offer the driver\'s phone, and one row per device', async () => {
+  const { phoneName, phoneTier } = require('../apps/api-gateway/dist/analytics/phone-models.js');
+  const day = new Date('2026-11-13T09:00:00.000Z');
+  const before = new Date('2026-11-01T09:00:00.000Z');
+  const riderId = await user('RIDER');
+  const d = await driver(4.8);
+  const devices = [];
+  const device = async (userId, data) => { const row = await prisma.userDevice.create({ data: { userId, key: `${data.source}:${randomUUID()}`, firstSeenAt: before, lastSeenAt: day, ...data } }); devices.push(row.id); return row; };
+  try {
+    const app = await device(riderId, { source: 'app', platform: 'android', maker: 'samsung', model: 'SM-A107F', ramGb: 2, appVersion: '1.4.2' });
+    const web = await device(riderId, { source: 'web', platform: 'android', model: 'SM-S918B', ramGb: 8, browser: 'Chrome', network: '3g' });
+    await device(riderId, { source: 'whatsapp', phoneNetwork: 'MTN', formsOpen: true });
+    const phone = await device(d.userId, { source: 'app', platform: 'ios', model: 'iPhone15,2', appVersion: '1.4.2' });
+
+    const base = { riderId, pickupLat: 6.51, pickupLng: 3.37, pickupAddress: 'Yaba', destLat: 6.45, destLng: 3.4, destAddress: 'Island', fareEstimateNgn: 3000, riderOfferNgn: 3000, firstRiderOfferNgn: 3000, createdAt: day };
+    const byApp = await prisma.ride.create({ data: { ...base, channel: 'APP', status: 'CANCELLED', cancelledBy: 'rider', cancelledAt: day } });
+    const byPage = await prisma.ride.create({ data: { ...base, channel: 'WHATSAPP', status: 'CANCELLED', cancelledBy: 'rider', cancelledAt: day } });
+    made.rides.push(byApp.id, byPage.id);
+    // Recorded at the search's start for the page ride; the app ride is from before the capture (estimated).
+    await studioCaptureClient.noteRideDevice(byPage.id, riderId, 'WHATSAPP');
+    assert.equal((await prisma.ride.findUnique({ where: { id: byPage.id } })).deviceId, web.id, 'the ride page, not the chat');
+    const bid = await prisma.driverBid.create({ data: { rideId: byApp.id, driverId: d.id, driverUserId: d.userId, riderId, amountNgn: 3500, etaSeconds: 300, status: 'DECLINED', createdAt: day } });
+    await studioCaptureClient.noteBidDevice(bid.id, d.userId);
+
+    const ds = await buildStudioDataset({ from: '2026-11-13', to: '2026-11-13' });
+    const mine = ds.sessions.filter((s) => s.riderId === riderId.slice(0, 8));
+    const appSession = mine.find((s) => s.channel === 'App');
+    const pageSession = mine.find((s) => s.channel === 'WhatsApp');
+    assert.deepEqual(
+      [appSession.deviceRecorded, appSession.platform, appSession.phoneModel, appSession.phoneTier, appSession.appVersion, appSession.mobileNetwork, appSession.formsOpen],
+      [false, 'Android', 'Galaxy A10s', 'Low-end', '1.4.2', 'MTN', true],
+    );
+    assert.deepEqual([pageSession.deviceRecorded, pageSession.phoneModel, pageSession.phoneTier, pageSession.signal, pageSession.browser], [true, 'Galaxy S23 Ultra', 'High-end', '3G', 'Chrome']);
+    const offer = ds.offers.find((o) => o.driverId === d.id.slice(0, 8));
+    assert.deepEqual([offer.driverPlatform, offer.driverPhoneTier, offer.driverPhoneModel, offer.driverAppVersion], ['iPhone', 'High-end', 'iPhone 14 Pro', '1.4.2']);
+    const rows = ds.devices.filter((x) => [app.id, web.id, phone.id].map((i) => i.slice(0, 8)).includes(x.deviceId));
+    assert.equal(rows.length, 3, 'one row per device used, the WhatsApp chat row is not a device that booked');
+    assert.deepEqual(rows.find((x) => x.deviceId === app.id.slice(0, 8)), {
+      deviceId: app.id.slice(0, 8), owner: 'Rider', ownerId: riderId.slice(0, 8), source: 'app', platform: 'Android', phoneMaker: 'samsung', phoneModel: 'Galaxy A10s',
+      phoneTier: 'Low-end', signal: 'Unknown', appVersion: '1.4.2', browser: null, phoneModelCode: 'SM-A107F', osVersion: null, ramGb: 2, cpuCores: null,
+      screen: null, mobileNetwork: 'MTN', formsOpen: true, firstSeen: before.toISOString(), lastSeen: day.toISOString(), timesSeen: 1, requests: 1, completed: 0, bids: 0,
+    });
+    assert.equal(rows.find((x) => x.deviceId === phone.id.slice(0, 8)).bids, 1);
+    assert.doesNotMatch(JSON.stringify(ds.devices), new RegExp(riderId), 'short ids only');
+
+    const xlsx = await studioDatasetWorkbook(ds);
+    const ExcelJS = require('exceljs');
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(xlsx);
+    assert.ok(book.getWorksheet('Devices'), 'a Devices sheet');
+    assert.ok(book.getWorksheet('Sessions').getRow(1).values.includes('phoneTier'));
+  } finally {
+    await prisma.userDevice.deleteMany({ where: { id: { in: devices } } });
+  }
+
+  // Names we are sure of; the rest as the maker reports them.
+  assert.equal(phoneName('SM-A107M'), 'Galaxy A10s', 'any region letter');
+  assert.equal(phoneName('iPhone14,5'), 'iPhone 13');
+  assert.equal(phoneName('KI7', 'TECNO'), 'Tecno KI7');
+  assert.equal(phoneName('TECNO KI7', 'TECNO'), 'TECNO KI7');
+  assert.equal(phoneName(null), null);
+  assert.equal(phoneTier({ platform: 'android', ramGb: 4 }), 'Mid-range');
+  assert.equal(phoneTier({ platform: 'android', model: 'SM-A055F' }), 'Low-end', 'no memory reading: by the family');
+  assert.equal(phoneTier({ platform: 'ios', model: 'iPhone10,3' }), 'Mid-range');
+  assert.equal(phoneTier({ formFactor: 'computer', platform: 'windows' }), 'Unknown');
+});
