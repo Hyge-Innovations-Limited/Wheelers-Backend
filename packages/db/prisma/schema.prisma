@@ -56,6 +56,9 @@ model User {
   ninLast4                   String?
   ninStatus                  String?
   ninCheckedAt               DateTime?
+  /// One NIN, one account (Timi, 20 Nov 2026): a keyed hash of a VERIFIED NIN (HMAC-SHA256 with NIN_HASH_SECRET, else
+  /// JWT_SECRET), never the number. Set only on VERIFIED; a NIN verified on another account is refused (IN_USE).
+  ninHash                    String?
   /// The rider's group ride selfie (Timi, 17 Nov 2026): taken on their first group ride, then reused. The object's key
   /// in the group-ride face store, and when it passed the face check.
   groupSelfieKey             String?
@@ -93,6 +96,7 @@ model User {
   @@index([username])
   @@index([email])
   @@index([providerCustomerId])
+  @@index([ninHash])
 }
 
 model UserConsent {

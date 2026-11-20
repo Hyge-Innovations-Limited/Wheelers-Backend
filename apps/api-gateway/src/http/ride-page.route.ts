@@ -1838,9 +1838,10 @@ async function handleNin(req: IncomingMessage, res: ServerResponse, deps: RidePa
   const userId = authenticate(req, deps);
   const body = await readJsonBody(req).catch(() => null);
   const fullName = (await userClient.findById(userId).catch(() => null))?.name ?? '';
-  const answer = await checkRiderNinLive(userId, isRecord(body) ? body.nin : null, fullName, { redis: deps.redisClient });
+  // The page's NIN popup: only "verified" when it truly is, with the name on the record (checkRiderNinLive mustCheck).
+  const answer = await checkRiderNinLive(userId, isRecord(body) ? body.nin : null, fullName, { redis: deps.redisClient, mustCheck: true });
   if (!answer.ok) throw new PageError(answer.error, 422, answer.code);
-  sendJson(res, 200, { ok: true, status: answer.status });
+  sendJson(res, 200, { ok: true, status: answer.status, ...(answer.name ? { name: answer.name } : {}) });
 }
 
 /** POST /ride-page/nin-prompt { event: shown | closed }. */
