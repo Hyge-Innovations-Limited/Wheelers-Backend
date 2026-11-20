@@ -47,6 +47,32 @@ export const studioCaptureClient = {
     }
   },
 
+  /**
+   * The rider's device the request came from (written once): the latest of that kind seen for them, the app for an
+   * app request, the ride page (else the WhatsApp row) for a WhatsApp one.
+   */
+  async noteRideDevice(rideId: string, riderId: string, channel: string | undefined): Promise<void> {
+    try {
+      const sources = channel === 'APP' ? ['app'] : channel === 'WHATSAPP' ? ['web', 'whatsapp'] : [];
+      for (const source of sources) {
+        const device = await prisma.userDevice.findFirst({ where: { userId: riderId, source }, orderBy: { lastSeenAt: 'desc' }, select: { id: true } });
+        if (!device) continue;
+        await prisma.ride.updateMany({ where: { id: rideId, deviceId: null }, data: { deviceId: device.id } });
+        return;
+      }
+    } catch (error) {
+      quiet('ride device')(error);
+    }
+  },
+
+  /** The driver's phone a bid came from: their latest app device. */
+  noteBidDevice(bidId: string, driverUserId: string): Promise<void> {
+    return prisma.userDevice
+      .findFirst({ where: { userId: driverUserId, source: 'app' }, orderBy: { lastSeenAt: 'desc' }, select: { id: true } })
+      .then((device) => (device ? prisma.driverBid.updateMany({ where: { id: bidId, deviceId: null }, data: { deviceId: device.id } }) : null))
+      .then(() => undefined, quiet('bid device'));
+  },
+
   /** How many free drivers the search found at its start (written once). */
   noteDriversFound(rideId: string, count: number): Promise<void> {
     return prisma.ride

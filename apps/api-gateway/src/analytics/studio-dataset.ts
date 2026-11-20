@@ -1,5 +1,6 @@
 import { prisma, NOT_GROUP_TRIP } from '@wheleers/db';
 import { LAUNCH_ZONES, formatTripId } from '@wheleers/config';
+import { phoneName, phoneTier, platformLabel, signalLabel } from './phone-models';
 
 /**
  * The Analytics Studio's dataset from real rows (Timi, 18 Nov 2026), in the shape of the Studio page's contract
@@ -8,7 +9,12 @@ import { LAUNCH_ZONES, formatTripId } from '@wheleers/config';
  * drop-off). What we do not record yet is null and named in `notRecorded`, so the page says "Not recorded yet"
  * instead of showing a zero as if it were a fact. No names, phones or addresses: ids are trip ids and short ids.
  *
- * Pings come as compact rows (there are many): [sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct].
+ * Pings come as compact rows (there are many): [sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct,
+ * driverPlatform, driverPhoneTier].
+ *
+ * Devices (Timi, 20 Nov 2026): each request carries the rider's device it came from (Ride.deviceId since 20 Nov;
+ * before that the newest device of that kind they had then, deviceRecorded false), each offer the driver's phone, and
+ * `devices` is one row per device in them: what it is, how often seen, requests and trips from it.
  */
 
 type Outcome = 'Completed' | 'Cancelled after match' | 'Rider cancelled' | 'Search timed out' | 'Left before search';
@@ -23,7 +29,8 @@ export interface StudioDatasetLive {
   notRecorded: string[];
   sessions: Array<Record<string, unknown>>;
   offers: Array<Record<string, unknown>>;
-  pingRows: Array<[string, number | null, PingAction, number | null, number | null]>;
+  pingRows: Array<[string, number | null, PingAction, number | null, number | null, string, string]>;
+  devices: Array<Record<string, unknown>>;
   priceChanges: Array<{ sessionId: string; direction: 'Raise' | 'Drop'; fromNgn: number; toNgn: number; trigger: string }>;
   payments: Array<{ sessionId: string; date: string; method: PayMethod; success: boolean; amountNgn: number }>;
   shifts: Array<{ date: string; onlineHours: number; tripHours: number }>;
@@ -79,7 +86,7 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
       pickupLat: true, pickupLng: true, destLat: true, destLng: true, pickupZone: true, destZone: true,
       fareEstimateNgn: true, bookingSuggestedFareNgn: true, firstRiderOfferNgn: true, riderOfferNgn: true, riderOfferChanges: true,
       agreedFareNgn: true, fareFinalNgn: true, serviceFeeNgn: true, commissionNgn: true, whatsappFeeNgn: true,
-      distanceKm: true, plannedDistanceKm: true, driversFoundAtSearch: true,
+      distanceKm: true, plannedDistanceKm: true, driversFoundAtSearch: true, deviceId: true,
       cancelReason: true, cancelledBy: true, createdAt: true, matchedAt: true, arrivedAt: true, startedAt: true, completedAt: true, cancelledAt: true,
     },
   });
@@ -87,7 +94,7 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
   const riderIds = [...new Set(rides.map((r) => r.riderId))];
 
   const [bids, pings, changes, feedback, weather, firstRides, walletPays, shifts] = await Promise.all([
-    prisma.driverBid.findMany({ where: { rideId: { in: rideIds } }, orderBy: { createdAt: 'asc' }, select: { id: true, rideId: true, driverId: true, amountNgn: true, etaSeconds: true, distanceKm: true, status: true, createdAt: true, resolvedAt: true } }),
+    prisma.driverBid.findMany({ where: { rideId: { in: rideIds } }, orderBy: { createdAt: 'asc' }, select: { id: true, rideId: true, driverId: true, amountNgn: true, etaSeconds: true, distanceKm: true, status: true, createdAt: true, resolvedAt: true, deviceId: true } }),
     prisma.searchPing.findMany({ where: { rideId: { in: rideIds } }, select: { rideId: true, driverId: true, round: true, response: true } }),
     prisma.ridePriceChange.findMany({ where: { rideId: { in: rideIds } }, orderBy: { at: 'asc' } }),
     prisma.feedback.findMany({ where: { rideId: { in: rideIds }, reviewerRole: 'RIDER' }, select: { rideId: true, rating: true } }),
@@ -99,6 +106,47 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
   const driverIds = [...new Set([...bids.map((b) => b.driverId), ...pings.map((p) => p.driverId)])];
   const drivers = await prisma.driver.findMany({ where: { id: { in: driverIds } }, select: { id: true, rating: true, userId: true } });
   const ratingOf = new Map(drivers.map((d) => [d.id, d.rating === null ? null : Number(d.rating)]));
+  const userOfDriver = new Map(drivers.map((d) => [d.id, d.userId]));
+
+  // Devices: every device of these riders and drivers.
+  const userDevices = await prisma.userDevice.findMany({ where: { userId: { in: [...riderIds, ...drivers.map((d) => d.userId)] } } });
+  type Device = (typeof userDevices)[number];
+  const deviceById = new Map(userDevices.map((d) => [d.id, d]));
+  const devicesOf = new Map<string, Device[]>();
+  for (const d of userDevices) devicesOf.set(d.userId, [...(devicesOf.get(d.userId) ?? []), d]);
+  const whatsappRowOf = (userId: string) => devicesOf.get(userId)?.find((d) => d.source === 'whatsapp') ?? null;
+  /** The device used: the one recorded, else the newest of that kind the person had by then (an estimate). */
+  const deviceUsed = (recordedId: string | null, userId: string | undefined, sources: string[], at: Date): { device: Device | null; recorded: boolean } => {
+    const recorded = recordedId ? deviceById.get(recordedId) ?? null : null;
+    if (recorded) return { device: recorded, recorded: true };
+    for (const source of sources) {
+      const mine = (userId ? devicesOf.get(userId) ?? [] : []).filter((d) => d.source === source);
+      const byThen = mine.filter((d) => d.firstSeenAt <= at).sort((a, b) => b.firstSeenAt.getTime() - a.firstSeenAt.getTime())[0];
+      const any = byThen ?? mine.sort((a, b) => a.firstSeenAt.getTime() - b.firstSeenAt.getTime())[0];
+      if (any) return { device: any, recorded: false };
+    }
+    return { device: null, recorded: false };
+  };
+  const sourcesFor = (channel: string) => (channel === 'APP' ? ['app'] : channel === 'WHATSAPP' ? ['web', 'whatsapp'] : []);
+  const shortId = (id: string | null | undefined) => (id ? id.slice(0, 8) : null);
+  const deviceCols = (d: Device | null) => ({
+    platform: platformLabel(d),
+    phoneMaker: d?.maker ?? null,
+    phoneModel: d ? phoneName(d.model, d.maker) : null,
+    phoneTier: d ? phoneTier(d) : 'Unknown',
+    signal: signalLabel(d?.network),
+    appVersion: d?.appVersion ?? null,
+    browser: d?.browser ?? null,
+  });
+  const deviceUse = new Map<string, { owner: 'Rider' | 'Driver'; requests: number; completed: number; bids: number }>();
+  const used = (d: Device | null, owner: 'Rider' | 'Driver', add: { requests?: number; completed?: number; bids?: number }) => {
+    if (!d) return;
+    const u = deviceUse.get(d.id) ?? { owner, requests: 0, completed: 0, bids: 0 };
+    u.requests += add.requests ?? 0;
+    u.completed += add.completed ?? 0;
+    u.bids += add.bids ?? 0;
+    deviceUse.set(d.id, u);
+  };
 
   const group = <T extends { rideId: string }>(rows: T[]) => {
     const m = new Map<string, T[]>();
@@ -170,6 +218,9 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
 
     for (const b of rideBids) {
       const price = Number(b.amountNgn);
+      const phone = deviceUsed(b.deviceId, userOfDriver.get(b.driverId), ['app'], b.createdAt);
+      used(phone.device, 'Driver', { bids: 1 });
+      const dc = deviceCols(phone.device);
       const riderPrice = priceAt(b.createdAt);
       const pos = sorted.findIndex((x) => x.id === b.id);
       const status = b.status === 'ACCEPTED' ? 'Accepted' : b.status === 'DECLINED' ? 'Rejected' : b.status === 'LOST' ? 'Lost to other driver'
@@ -180,6 +231,8 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
         listPos: pos >= 0 ? pos + 1 : null, cheapest: pos >= 0 ? pos === 0 : null, premiumNgn: pos >= 0 ? price - Number(sorted[0].amountNgn) : null,
         latencySec: secs(roundStart(b.createdAt), b.createdAt) ?? 0, profileViewed: null,
         driverRating: ratingOf.get(b.driverId) ?? null, pickupKm: b.distanceKm === null ? null : Math.round(b.distanceKm * 10) / 10,
+        driverDeviceId: shortId(phone.device?.id), driverPlatform: dc.platform, driverPhoneTier: dc.phoneTier, driverPhoneModel: dc.phoneModel,
+        driverAppVersion: dc.appVersion,
       });
     }
 
@@ -188,7 +241,8 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
       const riderPrice = p.round <= 1 ? opening ?? 0 : rideChanges[p.round - 2]?.toNgn ?? final ?? 0;
       const action: PingAction = p.response === 'declined' ? 'Declined'
         : p.response === 'bid' && bid ? (Math.abs(Number(bid.amountNgn) - riderPrice) < 1 ? 'Took rider price' : 'Countered') : 'No answer';
-      pingRows.push([id, ratingOf.get(p.driverId) ?? null, action, pct1(riderPrice, suggested), bid ? pct1(Number(bid.amountNgn), suggested) : null]);
+      const pingPhone = deviceUsed(bid?.deviceId ?? null, userOfDriver.get(p.driverId), ['app'], r.createdAt).device;
+      pingRows.push([id, ratingOf.get(p.driverId) ?? null, action, pct1(riderPrice, suggested), bid ? pct1(Number(bid.amountNgn), suggested) : null, platformLabel(pingPhone), pingPhone ? phoneTier(pingPhone) : 'Unknown']);
     }
 
     for (const c of rideChanges) {
@@ -206,6 +260,9 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
       if (method === 'Wallet' && paid) payments.push({ sessionId: id, date: dayOf(paid.createdAt), method, success: true, amountNgn: Number(paid.amountNgn) });
       else if (method !== 'Wallet') payments.push({ sessionId: id, date: dayOf(r.completedAt ?? r.createdAt), method, success: true, amountNgn: agreed ?? num(r.fareFinalNgn) ?? 0 });
     }
+    const riderDevice = deviceUsed(r.deviceId, r.riderId, sourcesFor(r.channel), r.createdAt);
+    used(riderDevice.device, 'Rider', { requests: 1, completed: completed ? 1 : 0 });
+    const waRow = whatsappRowOf(r.riderId);
     const eta = accepted ? Math.round(accepted.etaSeconds / 60) : null;
     const bookingFee = num(r.serviceFeeNgn) ?? 0;
     const commission = num(r.commissionNgn) ?? 0;
@@ -225,6 +282,8 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
       minutesToRide: completed && r.startedAt ? Math.round(((r.startedAt.getTime() - intent.firstAt.getTime()) / 60_000) * 10) / 10 : null,
       bookingFeeNgn: bookingFee, commissionNgn: commission, processorFeeNgn: 0, messagingCostNgn: 0, refundNgn: 0,
       wheelersNetNgn: completed ? bookingFee + commission + whatsappFee : 0, fuelNgn: completed ? Math.round(km * FUEL_PER_KM) : 0,
+      deviceId: shortId(riderDevice.device?.id), deviceRecorded: riderDevice.recorded, ...deviceCols(riderDevice.device),
+      mobileNetwork: waRow?.phoneNetwork ?? 'Unknown', formsOpen: waRow?.formsOpen ?? null,
       trip: r.driverId ? {
         status: completed ? 'Completed' : 'Cancelled after match', cancelledBy: completed ? null : (r.cancelledBy === 'driver' ? 'driver' : 'rider'),
         reason: completed ? null : r.cancelReason ?? null,
@@ -257,11 +316,24 @@ export async function buildStudioDataset(f: { from: string; to: string }): Promi
     ...withdrawals.filter((w) => w.status === 'FAILED').map((w) => ({ date: dayOf(w.createdAt), type: 'Failed withdrawals', amountNgn: Number(w.requestedAmountNgn) })),
   ];
 
+  // One row per device in the requests and offers above.
+  const devices: StudioDatasetLive['devices'] = [...deviceUse.entries()].map(([deviceId, u]) => {
+    const d = deviceById.get(deviceId)!;
+    const wa = whatsappRowOf(d.userId);
+    return {
+      deviceId: shortId(deviceId), owner: u.owner, ownerId: shortId(d.userId), source: d.source, ...deviceCols(d),
+      phoneModelCode: d.model ?? null, osVersion: d.osVersion ?? null, ramGb: d.ramGb ?? null, cpuCores: d.cpuCores ?? null,
+      screen: d.screen ?? null, mobileNetwork: wa?.phoneNetwork ?? 'Unknown', formsOpen: wa?.formsOpen ?? null,
+      firstSeen: d.firstSeenAt.toISOString(), lastSeen: d.lastSeenAt.toISOString(), timesSeen: d.timesSeen,
+      requests: u.requests, completed: u.completed, bids: u.bids,
+    };
+  });
+
   return {
     source: 'live', from: f.from, to: f.to,
     zones: [...LAUNCH_ZONES.map((z) => z.name), 'Outside zones'],
     notRecorded: NOT_RECORDED,
-    sessions, offers, pingRows, priceChanges, payments, shifts: shiftRows, ledger,
+    sessions, offers, pingRows, priceChanges, payments, shifts: shiftRows, ledger, devices,
   };
 }
 
@@ -287,7 +359,8 @@ export async function studioDatasetWorkbook(ds: StudioDatasetLive): Promise<Buff
   };
   sheet('Sessions', ds.sessions.map(flat));
   sheet('Offers', ds.offers);
-  sheet('Pings', ds.pingRows.map(([sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct]) => ({ sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct })));
+  sheet('Pings', ds.pingRows.map(([sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct, driverPlatform, driverPhoneTier]) => ({ sessionId, driverRating, action, riderVsSuggestedPct, bidVsSuggestedPct, driverPlatform, driverPhoneTier })));
+  sheet('Devices', ds.devices);
   sheet('Price changes', ds.priceChanges);
   sheet('Payments', ds.payments);
   sheet('Supply by day', ds.shifts);
