@@ -7,7 +7,7 @@ import { checkRiderNin, checkRiderNinLive, type RiderNinDeps } from '../verifica
 import { ninPromptFor, noteNinPrompt } from '../verification/nin-prompt';
 
 /**
- * POST /auth/nin { nin, fullName? } — the NIN typed at the app's Create account (Timi, 16 Nov 2026), checked
+ * POST /auth/nin { nin, fullName?, prompt? } — the NIN typed at the app's Create account (Timi, 16 Nov 2026), checked
  * while the rider waits (up to about 7 seconds). 200 { ok, status }: go on (right, or Prembly slow or down: it
  * finishes behind). 422 { error, code }: wrong (not 11 digits, no such NIN, another person's name, too many
  * tries today), the words to show under the box. `fullName` is the name typed on the same screen (the account's
@@ -24,12 +24,13 @@ export async function handleRiderNinRoute(
     const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const typedName = typeof b.fullName === 'string' ? b.fullName.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
     const fullName = typedName || (await prisma.user.findUnique({ where: { id: user.id }, select: { name: true } }))?.name || '';
-    const answer = await checkRiderNinLive(user.id, b.nin, fullName, { redis: deps.redisClient, check: deps.check, waitMs: deps.waitMs, ...deps.nin });
+    // prompt: the NIN popup (not sign-up): only "verified" when it truly is (checkRiderNinLive mustCheck).
+    const answer = await checkRiderNinLive(user.id, b.nin, fullName, { redis: deps.redisClient, check: deps.check, waitMs: deps.waitMs, mustCheck: b.prompt === true, ...deps.nin });
     if (!answer.ok) {
       sendJson(res, 422, { error: answer.error, code: answer.code });
       return;
     }
-    sendJson(res, 200, { ok: true, status: answer.status });
+    sendJson(res, 200, { ok: true, status: answer.status, ...(answer.name ? { name: answer.name } : {}) });
   } catch (error) {
     if (error instanceof HttpAuthError) {
       sendJson(res, 401, { error: error.message });

@@ -32,11 +32,13 @@ async function person(extra = {}) {
   return id;
 }
 
-test('who is asked: no NIN or one that did not check out; never verified, suspended, unchecked, or a driver', async () => {
+test('who is asked: no NIN, one that did not check out, or could not be checked; never verified, suspended, or a driver', async () => {
   assert.deepEqual(await np.ninPromptFor(redis, await person()), { ask: true, retry: false });
   assert.deepEqual(await np.ninPromptFor(redis, await person({ ninStatus: 'NO_MATCH' })), { ask: true, retry: true });
   assert.deepEqual(await np.ninPromptFor(redis, await person({ ninStatus: 'NOT_FOUND' })), { ask: true, retry: true });
-  for (const status of ['VERIFIED', 'SUSPENDED', 'UNCHECKED']) {
+  // Could not be checked (Prembly down): asked again (20 Nov 2026: it was never asked again, so never checked).
+  assert.deepEqual(await np.ninPromptFor(redis, await person({ ninStatus: 'UNCHECKED' })), { ask: true, retry: false });
+  for (const status of ['VERIFIED', 'SUSPENDED']) {
     assert.equal((await np.ninPromptFor(redis, await person({ ninStatus: status }))).ask, false, status);
   }
   assert.equal((await np.ninPromptFor(redis, await person({ role: 'DRIVER' }))).ask, false, 'drivers do KYC');

@@ -4729,11 +4729,13 @@
     if (nin.length !== 11) { W.$('nin-err').textContent = 'Your NIN is 11 digits.'; W.show(W.$('nin-err'), true); return; }
     if (button.classList.contains('busy')) return;
     button.classList.add('busy');
-    api('POST', '/ride-page/nin', { nin: nin }).then(function () {
+    api('POST', '/ride-page/nin', { nin: nin }).then(function (answer) {
       ninDone = true;
-      track('nin_prompt_done', {});
+      track('nin_prompt_done', { status: answer && answer.status });
       closeSheets();
-      say('NIN added', 'good');
+      // Only "verified" when it truly is, with the name on it; a slow check finishes behind.
+      if (answer && answer.status === 'VERIFIED') say(answer.name ? 'NIN verified · ' + answer.name : 'NIN verified', 'good');
+      else say('Checking your NIN…', 'good');
     }).catch(function (error) {
       if (linkDead(error)) return dead(error);
       W.$('nin-err').textContent = error.message || 'Could not check your NIN. Try again.';

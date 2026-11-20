@@ -45,6 +45,8 @@ function premblyAnswers(status, body) {
 const FOUND = { status: true, detail: 'Verification Successful', nin_data: { firstname: 'ADA', middlename: 'CHIOMA', surname: 'OBI' }, verification: { status: 'VERIFIED', reference: 'ref-1' } };
 
 test.before(() => { console.warn = () => {}; });
+// The tests below give many riders the same made-up NIN: each test starts with nobody holding it (one NIN, one account).
+test.beforeEach(async () => { await prisma.user.updateMany({ where: { id: { in: made } }, data: { ninHash: null } }); });
 
 test('the rules: 11 digits; the name matches when two of the rider\'s words are on the record, any order', () => {
   assert.equal(nin.cleanNin(' 123 4567-8901 '), '12345678901');
@@ -230,4 +232,69 @@ test.after(async () => {
   await prisma.userConsent.deleteMany({ where: { userId: { in: made } } }).catch(() => {});
   await prisma.user.deleteMany({ where: { id: { in: made } } });
   await prisma.$disconnect();
+});
+
+test('one NIN, one account: verified on another account is refused before Prembly is asked (nothing paid)', async () => {
+  const first = await user('Ada Obi');
+  const second = await user('Ada Obi');
+  const prembly = premblyAnswers(200, FOUND);
+  const deps = () => ({ redis: memoryRedis(), config: CONFIG, fetchImpl: prembly.fetchImpl });
+  assert.equal(await nin.checkRiderNin(first, '22233344455', 'Ada Obi', deps()), 'VERIFIED');
+  const held = await prisma.user.findUnique({ where: { id: first } });
+  assert.match(held.ninHash, /^[0-9a-f]{64}$/, 'a keyed hash, never the number');
+  assert.doesNotMatch(JSON.stringify(held), /22233344455/);
+  assert.equal(await nin.checkRiderNin(second, '22233344455', 'Ada Obi', deps()), 'IN_USE');
+  assert.equal(prembly.calls.length, 1, 'the second account cost nothing');
+  const live = await nin.checkRiderNinLive(second, '22233344455', 'Ada Obi', { ...deps(), mustCheck: true });
+  assert.deepEqual(live, { ok: false, code: 'NIN_IN_USE', error: 'This NIN is already on another Wheelers account.' });
+  // The same NIN with spaces is the same NIN.
+  assert.equal(await nin.checkRiderNin(second, '222 333 444 55', 'Ada Obi', deps()), 'IN_USE');
+});
+
+test('one NIN, one account, even when two accounts verify it at the same moment', async () => {
+  const a = await user('Ada Obi');
+  const b = await user('Ada Obi');
+  const prembly = premblyAnswers(200, FOUND);
+  const both = await Promise.all([a, b].map((id) => nin.checkRiderNin(id, '33344455566', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: prembly.fetchImpl })));
+  assert.deepEqual(both.sort(), ['IN_USE', 'VERIFIED']);
+  assert.equal(await prisma.user.count({ where: { id: { in: [a, b] }, ninStatus: 'VERIFIED' } }), 1);
+});
+
+test('the popup is never "added" unless it truly checked out: verified shows the name on it; down or not set up says so', async () => {
+  const id = await user('Ada Obi');
+  const ok = await nin.checkRiderNinLive(id, '44455566677', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(200, FOUND).fetchImpl, mustCheck: true });
+  assert.deepEqual(ok, { ok: true, status: 'VERIFIED', name: 'Ada Obi' });
+
+  const down = await user('Ada Obi');
+  const failed = await nin.checkRiderNinLive(down, '55566677788', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(500, { status: false, detail: 'down' }).fetchImpl, mustCheck: true });
+  assert.equal(failed.code, 'NIN_UNCHECKED');
+  assert.equal((await prisma.user.findUnique({ where: { id: down } })).ninStatus, 'UNCHECKED');
+  assert.equal((await nin.checkRiderNinLive(down, '55566677788', 'Ada Obi', { redis: memoryRedis(), config: null, mustCheck: true })).code, 'NIN_UNCHECKED', 'Prembly not set up: never "added"');
+  // Sign-up is unchanged: Prembly down lets the rider go on.
+  const signup = await user('Ada Obi');
+  assert.equal((await nin.checkRiderNinLive(signup, '66677788899', 'Ada Obi', { redis: memoryRedis(), config: CONFIG, fetchImpl: premblyAnswers(500, { status: false }).fetchImpl })).ok, true);
+});
+
+test('the popup asks again a rider whose NIN could not be checked, or was on another account; never without Prembly', async () => {
+  const np = require('../apps/api-gateway/dist/verification/nin-prompt.js');
+  const { RedisClient } = require('../apps/api-gateway/dist/redis/client.js');
+  const redis = new RedisClient(process.env.TEST_REDIS_URL || 'redis://127.0.0.1:6379/15');
+  await redis.connect();
+  const had = process.env.PREMBLY_API_KEY;
+  try {
+    process.env.PREMBLY_API_KEY = 'k';
+    assert.deepEqual(await np.ninPromptFor(redis, await user('Ada Obi')), { ask: true, retry: false });
+    const unchecked = await user('Ada Obi');
+    await prisma.user.update({ where: { id: unchecked }, data: { ninStatus: 'UNCHECKED' } });
+    assert.deepEqual(await np.ninPromptFor(redis, unchecked), { ask: true, retry: false });
+    const inUse = await user('Ada Obi');
+    await prisma.user.update({ where: { id: inUse }, data: { ninStatus: 'IN_USE' } });
+    assert.deepEqual(await np.ninPromptFor(redis, inUse), { ask: true, retry: true });
+    delete process.env.PREMBLY_API_KEY;
+    assert.equal((await np.ninPromptFor(redis, await user('Ada Obi'))).ask, false, 'nothing to check it with: never asked');
+  } finally {
+    if (had === undefined) delete process.env.PREMBLY_API_KEY; else process.env.PREMBLY_API_KEY = had;
+    for (const id of made) await redis.del(`nin-prompt:${id}`).catch(() => {});
+    await redis.disconnect().catch(() => {});
+  }
 });
