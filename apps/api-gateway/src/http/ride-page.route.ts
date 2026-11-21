@@ -292,7 +292,11 @@ async function liveTripFor(userId: string) {
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
     // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
-    ...safetyView(ride, driver.vehiclePlate),
+    ...safetyView(ride, {
+      plate: driver.vehiclePlate, driverName: driver.user?.name ?? null,
+      vehicleModel: [driver.vehicleMake, driver.vehicleModel].filter(Boolean).join(' ') || null,
+      fareNgn: ride.agreedFareNgn === null || ride.agreedFareNgn === undefined ? null : Number(ride.agreedFareNgn),
+    }),
   };
 }
 

@@ -582,7 +582,11 @@ function serializeRideDetail(ride: RideWithDriver) {
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
     // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
-    ...safetyView(ride, (ride as { driver?: { vehiclePlate?: string | null } | null }).driver?.vehiclePlate ?? null),
+    ...safetyView(ride, {
+      plate: ride.driver?.vehiclePlate ?? null, driverName: ride.driver?.user.name ?? null,
+      vehicleModel: [ride.driver?.vehicleMake, ride.driver?.vehicleModel].filter(Boolean).join(' ') || null,
+      fareNgn: decimalToNumber(ride.agreedFareNgn),
+    }),
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),

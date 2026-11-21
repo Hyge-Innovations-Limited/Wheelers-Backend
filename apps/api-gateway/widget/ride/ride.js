@@ -607,7 +607,7 @@
 
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
-  var SHEETS = ['sheet-nin', 'sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
+  var SHEETS = ['sheet-nin', 'sheet-offer', 'sheet-pay', 'sheet-confirm', 'sheet-cancel', 'sheet-time', 'sheet-scheduled', 'sheet-sos', 'sheet-auto', 'sheet-route-price', 'sheet-tips', 'sheet-alltips', 'sheet-checks', 'sheet-wait', 'sheet-group', 'sheet-gcounter'];
   var sheetBackPending = false;   // closeSheets() went back one entry; that popstate is ours
   function openSheetId() {
     // (A page cached from before a sheet has no such element: skipped.)
@@ -3214,10 +3214,17 @@
     seen[key] = now;
     writeStore('localStorage', SAFETY_KEY, seen);
   }
-  function showSafety(title, tips, recorded, button) {
+  function showSafety(title, tips, recorded, button, cards) {
     if (!W.$('sheet-tips') || !W.$('tips-list')) return;
     W.$('tips-title').textContent = title;
     W.show(W.$('tips-rec'), Boolean(recorded));
+    var cardBox = W.$('tips-cards');
+    if (cardBox) {
+      cardBox.innerHTML = '';
+      (cards || []).forEach(function (card) { cardBox.appendChild(tipCard(card, false)); });
+      W.show(cardBox, Boolean(cards && cards.length));
+    }
+    if (cards && cards.length) tips = [];
     var list = W.$('tips-list');
     list.innerHTML = '';
     (tips || []).forEach(function (tip) { list.appendChild(el('li', '', tip)); });
@@ -3246,7 +3253,7 @@
         showSafety('Trip started', null, true, 'OK');
         return;
       }
-      if (!running && s.trip.safety && s.trip.safety.before && !safetySeen('before:' + s.rideId)) {
+      if (!running && !s.trip.safetyCards && s.trip.safety && s.trip.safety.before && !safetySeen('before:' + s.rideId)) {
         markSafetySeen('before:' + s.rideId);
         track('safety_shown', { moment: 'before' });
         showSafety('Before you get in', s.trip.safety.before, false, 'Got it');
@@ -3256,7 +3263,7 @@
     if (s.phase === 'idle' && shownView === 'idle' && s.justFinished && s.justFinished.rideId && !safetySeen('after:' + s.justFinished.rideId)) {
       markSafetySeen('after:' + s.justFinished.rideId);
       track('safety_shown', { moment: 'after' });
-      showSafety('Before you go', s.justFinished.tips, false, 'Done');
+      showSafety('Before you go', s.justFinished.tips, false, 'Done', s.justFinished.cards);
     }
   }
 
@@ -4104,10 +4111,62 @@
     }
   });
 
+  /* ── safety tips: the one for where the ride is (packages/config safety-cards.ts) ── */
+  var tipShown = null;
+  /** Where the ride is, as the server's safetyStageFor: coming by minutes away (over 8, over 4, over 1.5), here, on the trip. */
+  function tipStage(t) {
+    if (t.status === 'ARRIVED') return 'here';
+    if (t.status === 'IN_PROGRESS') return 'trip';
+    var eta = Number(t.etaMin) * 60;
+    if (!(eta > 0)) return 'near';
+    return eta > 480 ? 'far' : eta > 240 ? 'wait' : eta > 90 ? 'near' : 'close';
+  }
+  function tipCard(card, current) {
+    var box = el('div', 'tipcard tone-' + (card.tone || 'cream') + (current ? ' current' : ''));
+    box.appendChild(el('span', 'tip-emoji', card.emoji));
+    var text = el('div', 'tip-text');
+    text.appendChild(el('span', 'tip-kick', card.kick));
+    text.appendChild(el('strong', 'tip-title', card.title));
+    text.appendChild(el('span', 'tip-line', card.line));
+    box.appendChild(text);
+    return box;
+  }
+  function drawTip(t) {
+    var cards = t && t.safetyCards;
+    var card = cards && cards.byStage ? cards.byStage[tipStage(t)] : null;
+    W.show(W.$('d-tip'), Boolean(card));
+    W.show(W.$('d-tip-all'), Boolean(card));
+    if (!card) return;
+    var box = W.$('d-tip');
+    box.className = 'tipcard tone-' + (card.tone || 'cream');
+    W.$('d-tip-emoji').textContent = card.emoji;
+    W.$('d-tip-kick').textContent = card.kick;
+    W.$('d-tip-title').textContent = card.title;
+    W.$('d-tip-line').textContent = card.line;
+    // A new moment: the card comes in once; the same one again on the next poll stays still.
+    if (tipShown !== null && tipShown !== card.key) { void box.offsetWidth; box.className += ' swap'; }
+    tipShown = card.key;
+  }
+  function fillAllTips(holder, groups, currentKey) {
+    holder.innerHTML = '';
+    (groups || []).forEach(function (group) {
+      holder.appendChild(el('p', 'tip-group', group.title));
+      (group.cards || []).forEach(function (card) { holder.appendChild(tipCard(card, card.key === currentKey)); });
+    });
+  }
+  W.$('d-tip-all').addEventListener('click', function () {
+    var t = state && state.trip;
+    if (!t || !t.safetyCards) return;
+    fillAllTips(W.$('alltips-list'), t.safetyCards.groups, tipShown);
+    track('safety_all_opened', { stage: tipStage(t) });
+    openSheet('sheet-alltips');
+  });
+
   function drawConfirmed(s) {
     if (s.route) drawRoute(s.route);
     if (s.trip) drawTrip(s.trip);
     else W.show(W.$('map-card'), false);
+    drawTip(s.trip);
     var driver = s.driver || {};
     // As the app's trip screen: "Tunde · 4.9", the car under it, the plate on the right.
     var name = (driver.name || 'Your driver').trim();

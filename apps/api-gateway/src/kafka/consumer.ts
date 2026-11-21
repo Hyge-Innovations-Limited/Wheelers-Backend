@@ -25,7 +25,7 @@ import {
   WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms, safetyTipsFor } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms, safetyTipsFor, safetyCard, safetyCardLine } from '@wheleers/config';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
@@ -1946,7 +1946,8 @@ export async function handleRideEvent(
         await sendRideStartedNotification(deps.whatsappNotifier, phone, null, {
           waitingLine: sayWaiting ? waitingLine : null,
           recorded: sayRecorded,
-          tips: safetyTipsFor(event.rideId, 'during'),
+          // One tip, inside "Trip started" (never a message of its own).
+          tipLine: safetyCardLine(safetyCard('belt', {})),
         }).catch(() => undefined);
         // Marked while this was being sent: said now, on its own.
         if (!sayRecorded) await sayTripRecorded(deps, event.rideId);
