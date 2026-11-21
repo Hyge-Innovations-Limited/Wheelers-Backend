@@ -244,3 +244,56 @@ test('an offer with nothing checked shows no chips (never a failed or expired on
   const page = await loadPage(makeServer(offers([])));
   assert.equal(find(page.el('offer-list'), (n) => n.className === 'offer-checks'), null);
 });
+
+// ── The playful tip cards (21 Nov 2026): one card for where the ride is, still until it changes; See all ──
+const { safetyCardsFor, SAFETY_GROUPS } = require('../packages/config/dist/index.js');
+const CARDS = safetyCardsFor({ plate: 'LAG 234 KJ', driverName: 'Tunde Adebayo', vehicleModel: 'Toyota Corolla', fareNgn: 4200 });
+const withCards = (status, extra = {}) => trip(status, { safetyCards: CARDS, ...extra });
+const cardText = (page) => [page.el('d-tip-kick').textContent, page.el('d-tip-title').textContent, page.el('d-tip-line').textContent];
+
+test('cards: one tip under the driver, picked by how far they are; no pop-up; it changes only when the moment does', async () => {
+  const server = makeServer(withCards('DRIVER_EN_ROUTE', { etaMin: 10 }));
+  const page = await loadPage(server);
+  await page.tap(page.el('fd-track')); // past "Your driver is confirmed", to the trip
+  assert.equal(sheetOpen(page, 'sheet-tips'), false, 'no "Before you get in" pop-up any more');
+  assert.equal(page.el('d-tip').hidden, false);
+  assert.deepEqual(cardText(page), ['Share it', 'Let someone ride along', 'Share your trip live. One person should know where you are.']);
+  assert.doesNotMatch(page.el('d-tip').className, /swap/, 'the first card just shows');
+  await page.poll();
+  assert.doesNotMatch(page.el('d-tip').className, /swap/, 'the same moment on the next poll: still');
+
+  server.state = withCards('DRIVER_EN_ROUTE', { etaMin: 1 });
+  await page.poll();
+  assert.deepEqual(cardText(page), ['Plate check', 'Plate or nothing', "If it isn't LAG 234 KJ, it isn't your ride."]);
+  assert.match(page.el('d-tip').className, /tone-orange/);
+  assert.match(page.el('d-tip').className, /swap/, 'a new moment comes in once');
+
+  server.state = withCards('ARRIVED');
+  await page.poll();
+  assert.equal(page.el('d-tip-title').textContent, 'Make them say it');
+  server.state = withCards('IN_PROGRESS');
+  await page.poll();
+  assert.equal(page.el('d-tip-title').textContent, 'Click clack');
+});
+
+test('cards: See all lists every tip by when it matters, the one on screen marked', async () => {
+  const page = await loadPage(makeServer(withCards('DRIVER_EN_ROUTE', { etaMin: 1 })));
+  await page.tap(page.el('fd-track'));
+  assert.equal(page.el('d-tip-all').hidden, false);
+  await page.tap(page.el('d-tip-all'));
+  assert.equal(sheetOpen(page, 'sheet-alltips'), true);
+  const items = page.el('alltips-list').children;
+  assert.deepEqual(items.filter((c) => c.className === 'tip-group').map((c) => c.textContent), SAFETY_GROUPS.map((g) => g.title));
+  const cards = items.filter((c) => /tipcard/.test(c.className));
+  assert.equal(cards.length, 15);
+  assert.equal(cards.filter((c) => /current/.test(c.className)).length, 1, 'the plate card, outlined');
+});
+
+test('cards: after the trip, "Before you go" shows the after-trip cards instead of the list', async () => {
+  const after = CARDS.groups[3].cards;
+  const page = await loadPage(makeServer({ phase: 'idle', balanceNgn: 1000, justFinished: { rideId: 'ride-9', tips: AFTER, cards: after } }));
+  assert.equal(sheetOpen(page, 'sheet-tips'), true);
+  assert.equal(page.el('tips-cards').hidden, false);
+  assert.equal(page.el('tips-cards').children.length, 3);
+  assert.equal(page.el('tips-list').hidden, true, 'not both');
+});

@@ -31,7 +31,7 @@ export function buildBidListData(
     has_bids: hasBids,
     has_no_bids: !hasBids,
     waiting_line:
-      'No offers yet — drivers around you are seeing your request right now. Tap Continue below to check for new offers.',
+      'No offers yet. Tap Continue below to check for new offers.',
     bid_actions: [
       { id: 'accept', title: 'Accept' },
       { id: 'decline', title: 'Decline' },

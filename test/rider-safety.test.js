@@ -10,7 +10,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { prisma } = require('@wheleers/db');
-const { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE } = require('@wheleers/config');
+const { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE, safetyCardsFor, safetyStageFor, safetyCardLine } = require('@wheleers/config');
+const notifier = require('../apps/api-gateway/dist/whatsapp-flows/whatsapp-notifier.js');
 const { handleRideEvent, sayTripRecorded } = require('../apps/api-gateway/dist/kafka/consumer.js');
 const { driverCheckBadges, driverChecksFor, clearDriverChecksCache } = require('../apps/api-gateway/dist/drivers/driver-checks.js');
 const { justFinishedFor, safetyView } = require('../apps/api-gateway/dist/rides/safety.js');
@@ -143,7 +144,7 @@ test('checks from the database, cached per driver; an unknown driver has none', 
   assert.deepEqual(await driverChecksFor(null), []);
 });
 
-test('WhatsApp, off the ride page: "Trip started" once, with the three tips; recorded only when it is', async () => {
+test('WhatsApp, off the ride page: "Trip started" once, with its one tip inside; recorded only when it is', async () => {
   const r = await person('RIDER');
   const d = await driverRow();
   const ride = await rideFor(r.id, d.id);
@@ -158,8 +159,8 @@ test('WhatsApp, off the ride page: "Trip started" once, with the three tips; rec
   assert.equal(texts.length, 1, 'once, even when delivered again');
   assert.match(texts[0], /\*Trip started\*/);
   assert.doesNotMatch(texts[0], /recorded/, 'not recorded: not said');
-  for (const tip of safetyTipsFor(ride.id, 'during')) assert.ok(texts[0].includes(tip), tip);
-  assert.match(texts[0], /\*Stay safe\*\n1\. /);
+  assert.ok(texts[0].includes('🎗️ *Click clack.* Seatbelt on, even for short trips.'), 'the tip inside the same message');
+  assert.doesNotMatch(texts[0], /Stay safe|\n1\. /, 'one tip, not a numbered list');
 });
 
 test('recorded before the message: the line is in "Trip started", and not said again', async () => {
@@ -259,4 +260,41 @@ test('a trip that just completed gives its "after" tips for 15 minutes; a cancel
   assert.equal(got.rideId, done.id);
   assert.deepEqual(got.tips, safetyTipsFor(done.id, 'after'));
   assert.equal(await justFinishedFor(r.id, now + 16 * 60_000), null, 'after 15 minutes, gone');
+});
+
+test('playful tips: the tip follows where the ride is, filled with the trip (plate, driver, car, fare); every tip under See all', () => {
+  const trip = { plate: 'lag 234 kj', driverName: 'Tunde Adebayo', vehicleModel: 'Toyota Corolla', fareNgn: 3500 };
+  const cards = safetyCardsFor(trip);
+  const stage = (etaSeconds) => safetyStageFor({ phase: 'coming', etaSeconds });
+  assert.deepEqual([stage(600), stage(360), stage(180), stage(60), stage(null)], ['far', 'wait', 'near', 'close', 'near']);
+  assert.equal(safetyStageFor({ phase: 'here' }), 'here');
+  assert.equal(cards.byStage.far.title, 'Let someone ride along');
+  assert.equal(cards.byStage.wait.line, 'Wait inside till Tunde has arrived.');
+  assert.equal(cards.byStage.near.line, 'Look for a Toyota Corolla. Not almost.');
+  assert.equal(cards.byStage.close.line, "If it isn't LAG 234 KJ, it isn't your ride.");
+  assert.equal(cards.byStage.here.title, 'Make them say it');
+  assert.equal(cards.groups.map((g) => g.cards.length).join(','), '6,3,3,3');
+  assert.ok(cards.groups[3].cards.some((c) => c.line.startsWith('Pay only ₦3,500.')));
+  assert.equal(safetyCardLine(cards.byStage.close), "🚘 *Plate or nothing.* If it isn't LAG 234 KJ, it isn't your ride.");
+  assert.equal(safetyCardLine(cards.groups[0].cards[3]), "🚫 *Didn't book it? Don't board it.* A car that just shows up is not your car.");
+  assert.equal(safetyCardLine({ ...cards.byStage.far, title: 'Ready?' }), '📍 *Ready?* Share your trip live. One person should know where you are.', 'no extra full stop after a question');
+  // Nothing known about the trip: still a sentence.
+  assert.equal(safetyCardsFor({}).byStage.close.line, "If the plate doesn't match, it isn't your ride.");
+  // The app and the ride page get them with the trip.
+  assert.equal(safetyView({ id: 'r1' }, trip).safetyCards.byStage.close.key, 'plate');
+});
+
+test('WhatsApp: each tip rides inside a message we already send; never a message of its own', async () => {
+  const deps = { metaAccessToken: 't', metaPhoneNumberId: 'p' };
+  const meta = metaCapture();
+  try {
+    await notifier.sendRideMatchedNotification(deps, '+2348030000000', 'Tunde', 'Toyota Corolla', 'LAG 234 KJ', 60, 3500, 4.8);
+    await notifier.sendRideMatchedNotification(deps, '+2348030000000', 'Tunde', 'Toyota Corolla', 'LAG 234 KJ', 600, 3500, 4.8);
+    await notifier.sendDriverArrivedNotification(deps, '+2348030000000', { driverName: 'Tunde', vehicleModel: 'Toyota Corolla', vehiclePlate: 'LAG 234 KJ', tripCode: '4827' });
+  } finally { meta.restore(); }
+  const texts = meta.texts();
+  assert.equal(texts.length, 3, 'one message each');
+  assert.match(texts[0], /Tunde is on the way[\s\S]*🚘 \*Plate or nothing\.\* If it isn't LAG 234 KJ/, '1 minute away: the plate, in the same message');
+  assert.match(texts[1], /📍 \*Let someone ride along\.\*/, '10 minutes away: share the trip');
+  assert.match(texts[2], /TRIP CODE: 4827[\s\S]*🗣️ \*Make them say it\.\*/, 'driver here: the name, with the code');
 });

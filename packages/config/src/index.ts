@@ -109,4 +109,5 @@ export { faceCheckMode, FACE_MATCH_MAX_DISTANCE, FACE_CHECK_SECONDS, FACE_CHECK_
 export { waitingCharge, waitingTerms, waitingDealTerms, isWaitingRate, WAITING_RATES_NGN, WAITING_MAX_OFFERS, WAITING_FREE_MINUTES, WAITING_NGN_PER_MINUTE, type WaitingCharge, type WaitingTerms } from './waiting';
 export { LAGOS_CNG_STATIONS, nearestCngStations, straightKm, type CngStation, type NearbyCngStation } from './cng-stations';
 export { SAFETY_TIPS, safetyTipsFor, TRIP_RECORDED_LINE, type SafetyMoment } from './safety-tips';
+export { SAFETY_GROUPS, STAGE_TIP, safetyCard, safetyCardLine, safetyCardsFor, safetyStageFor, type SafetyCard, type SafetyStage, type SafetyTone, type SafetyTrip } from './safety-cards';
 export { GROUP_RIDE_LIVE, groupRideLiveMode, groupSeatFloorNgn, groupSeatPriceNgn, type GroupRideLiveMode } from './group-ride-live';

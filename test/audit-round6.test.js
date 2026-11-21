@@ -246,7 +246,8 @@ test('2 · same, on the ride page: no chat message (the card was in the chat: un
   await handleRideEvent({ ...busy, rideId: rr2.id, riderId: r2.id }, gatewayDeps(redis), new Map());
   assert.equal(await holdOf(rr2.id), 'RELEASED');
   assert.equal(meta.messages().length, before + 1);
-  assert.match(JSON.stringify(meta.messages().at(-1)), /No driver took/);
+  // The timeout's message: this search reached no driver, so it says that (rides/search-situation.ts).
+  assert.match(JSON.stringify(meta.messages().at(-1)), /No drivers came online near you\. Nothing was charged\./);
 });
 
 test('2 · an app rider hears ride:bid_timeout; another driver\'s booking in flight is left alone', async () => {

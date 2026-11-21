@@ -16,6 +16,7 @@ import type { LastRouteData, PendingRouteData, SearchTimedOut, WhatsappBid } fro
 import type { FlowRequestBody } from './encryption';
 import { actionFor } from './flow-dispatch';
 import { autoAcceptOffForChatPrice } from '../rides/auto-accept';
+import { loadSearchSituation } from '../rides/search-situation';
 import { offerReplyId, parseOfferReplyId, sortOffers } from './whatsapp-notifier';
 
 /**
@@ -108,6 +109,11 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
   const [meta, bids] = await Promise.all([getRideMeta(deps.redisClient, rideId), getBids(deps.redisClient, rideId)]);
   if (!meta) return closedOffers('This search has ended — nothing was charged. Send your trip again in the chat.');
   const offers = sortOffers(bids);
+  // No offers yet: what is happening, as it is ("No drivers near you right now", "4 drivers have your request").
+  const situation = offers.length === 0
+    ? await loadSearchSituation(deps.redisClient, rideId, { offerNgn: meta.offerNgn, usualNgn: meta.suggestedFareNgn ?? null, asks: [] }).catch(() => null)
+    : null;
+  const waiting = situation && situation.title ? situation : null;
   // What "1" means if they type a number in the chat instead must be what this screen shows.
   await storeLastBatch(deps.redisClient, rideId, offers).catch(() => undefined);
 
@@ -116,7 +122,7 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
     data: {
       route_line: clip(`${meta.pickupAddress.split(',')[0]} → ${meta.destinationAddress.split(',')[0]}`, 80),
       offer_line: `Your price: ${naira(meta.offerNgn)}`,
-      count_line: offers.length === 0 ? 'No offers yet — drivers are still looking at your request.'
+      count_line: offers.length === 0 ? (waiting ? `${waiting.title}. ${waiting.line}` : 'No offers yet. Drivers are getting your request.')
         : offers.length === 1 ? '1 driver has made an offer' : `${offers.length} drivers have made offers — cheapest first`,
       choices: [
         ...offers.slice(0, 9).map((bid) => ({
@@ -125,7 +131,7 @@ export async function offersScreen(deps: OffersFormDeps, rideId: string, error =
           title: clip(`${naira(bid.counterOfferNgn)} · ${bid.driverName}`, 30),
           description: clip([bid.vehicleModel, bid.vehiclePlate, `${bid.driverRating.toFixed(1)}★`, `${Math.max(1, Math.ceil(bid.etaSeconds / 60))} min away`].filter(Boolean).join(' · '), 300),
         })),
-        { id: REFRESH, title: 'Check for more offers', description: offers.length === 0 ? 'Drivers usually answer within a minute' : 'See if more drivers have answered' },
+        { id: REFRESH, title: 'Check for more offers', description: offers.length === 0 ? (waiting?.kind === 'none_near' ? 'We keep looking for you' : 'Drivers usually answer within a minute') : 'See if more drivers have answered' },
         { id: CHANGE_PRICE, title: 'Change my price', description: 'Offer drivers a different amount' },
         ...(offers.length > 0 ? [{ id: DECLINE_ALL, title: 'Decline all', description: 'None of these drivers — keep searching' }] : []),
         { id: CANCEL_SEARCH, title: 'Cancel search', description: 'Stop looking. Nothing is charged.' },
@@ -160,16 +166,18 @@ function priceBox(trip: { offerNgn: number; suggestedFareNgn: number }, error = 
 
 function endedSearchScreen(timedOut: SearchTimedOut, route: LastRouteData, error = ''): FlowScreen {
   const price = timedOut.offerNgn || route.offerNgn;
-  const higher = Math.ceil((price * 1.1) / 100) * 100;
+  // How it ended (rides/search-situation.ts): a higher price is named only when drivers passed on the price or asked more.
+  const ended = timedOut.ended && timedOut.ended.kind !== 'offers' ? timedOut.ended : null;
+  const higher = ended ? ended.retryNgn[0] ?? null : Math.ceil(Math.round(price * 1.1) / 100) * 100;
   return {
     screen: 'OFFERS',
     data: {
       route_line: clip(`${route.pickupAddress.split(',')[0]} → ${route.destAddress.split(',')[0]}`, 80),
-      offer_line: `No driver took ${naira(price)} this time.`,
-      count_line: 'Nothing was charged. Two ways forward: search again at the same price, or raise it — that usually gets drivers moving.',
+      offer_line: ended ? ended.title : `No driver took ${naira(price)} this time.`,
+      count_line: ended ? 'Nothing was charged.' : 'Nothing was charged. Two ways forward: search again at the same price, or raise it — that usually gets drivers moving.',
       choices: [
         { id: SEARCH_AGAIN, title: 'Search again', description: `Same route, ${naira(price)} again, a fresh search` },
-        { id: CHANGE_PRICE, title: 'Change my price', description: `Same route at a new price — e.g. ${naira(higher)}` },
+        { id: CHANGE_PRICE, title: 'Change my price', description: higher ? `Same route at a new price — e.g. ${naira(higher)}` : 'Same route at a new price' },
         { id: CLOSE, title: 'Close', description: 'Go back to the chat' },
       ],
       error,

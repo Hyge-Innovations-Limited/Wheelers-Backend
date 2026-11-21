@@ -841,7 +841,10 @@ export async function handleIncomingMetaMessage(
         `${lastRoute.pickupAddress} → ${lastRoute.destAddress}`,
         `Your price: *₦${lastRoute.offerNgn.toLocaleString()}*`,
         ``,
-        `Offers come in as drivers answer. A higher price gets drivers moving faster: just send the number.`,
+        // A price named only when it is under what trips like this usually go for (rides/search-situation.ts).
+        lastRoute.suggestedFareNgn && lastRoute.offerNgn < lastRoute.suggestedFareNgn - 50
+          ? `Trips like this usually go for ₦${Math.round(lastRoute.suggestedFareNgn).toLocaleString()}. Send a number to change yours.`
+          : `Offers come in as drivers answer.`,
       ].join('\n');
       await appendWhatsappConversation(deps.redisClient, phone, [
         { role: 'user', content: incomingMessage },

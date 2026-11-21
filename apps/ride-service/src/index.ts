@@ -271,6 +271,17 @@ async function bootstrap(): Promise<void> {
     rideEnv,
     rideEventsProducer,
   });
+  // Searches that reached nobody look again every 30 s (drivers who drove into range since).
+  // One at a time: a slow pass is never doubled by the next tick.
+  let rescanning = false;
+  const rescanTimer = setInterval(() => {
+    if (rescanning) return;
+    rescanning = true;
+    void rideRequestedConsumer.rescanEmptySearches()
+      .catch((error) => console.warn('[ride-service] rescan failed', { error: error instanceof Error ? error.message : String(error) }))
+      .finally(() => { rescanning = false; });
+  }, 30_000);
+  rescanTimer.unref();
 
   const gpsUpdateConsumer = createGpsUpdateConsumer({
     state,

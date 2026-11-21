@@ -25,7 +25,7 @@ import {
   WalletHoldAdjustedEvent,
   TOPICS,
 } from '@wheleers/kafka-schemas';
-import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms, safetyTipsFor } from '@wheleers/config';
+import { BOOKING_FEE_NGN, CURRENT_PRICING_VERSION, offerLimitsNgn, rateLimitsPerKmNgn, calculateRideFees, formatTripId, tripDetailsForOffer, tripDetailsBoxOn, waitingTerms, safetyTipsFor, safetyCard, safetyCardLine } from '@wheleers/config';
 import type { GoogleMapsRoutePlanner } from '@wheleers/config';
 import { buildRideEstimatePricing } from '../pricing/ride-estimate';
 import { SocketRegistry } from '../websocket/registry';
@@ -42,6 +42,7 @@ import {
   hasOffersMessage,
   markOffersMessageSent,
   markSearchTimedOut,
+  type SearchEnded,
   getGroupSeat,
   clearActiveRide,
   clearActiveRideIfMatches,
@@ -113,7 +114,8 @@ import type { CatchupItem } from '../whatsapp-flows/page-catchup';
 import type { RidePageChatEvent } from '../http/ride-page.route';
 import type { DriverKycStorage } from '../storage/driver-kyc-storage';
 import type { GatewayPublisher } from '../websocket/publisher';
-import { noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rides/search-status';
+import { getSearchStatus, noteOfferSent, noteOfferedDriverUser, offeredDriverUsers } from '../rides/search-status';
+import { noteDeclined, noteFinishingSent, situationForRide, type SearchSituation } from '../rides/search-situation';
 import { autoAcceptOffAtStart, autoAcceptPriceChanged, autoAcceptToldChat, autoBookedDriver, clearAutoAcceptBooked, tryAutoAccept, type AutoAcceptDeps } from '../rides/auto-accept';
 import { acceptPublishingFor, acceptSentFor, BOOKING_LOCK_HOLD_MS, BOOKING_LOCK_WAIT_MS, clearAcceptSent, isSearchEnded, markSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { clearSaidTripDetails } from '../whatsapp/trip-details-said';
@@ -721,6 +723,11 @@ export async function deliverPageCatchup(deps: StartGatewayConsumerDeps, userId:
  *               it hears, once, that the booking did not go through instead
  *   alreadyTold the search had already been ended and said: nothing more is said
  */
+/** What the end screens need of how a search ended. */
+function endedOf(situation: SearchSituation): SearchEnded {
+  return { kind: situation.kind, title: situation.endTitle, usualNgn: situation.usualNgn, retryNgn: situation.retryNgn };
+}
+
 async function endTimedOutSearch(
   deps: StartGatewayConsumerDeps,
   rideId: string,
@@ -733,6 +740,9 @@ async function endTimedOutSearch(
   const { registry } = deps;
   // The rider has moved on to a newer search: the drivers and the money are dealt with, the rider hears nothing.
   const quiet = options.quietForRider === true;
+  // How it ended, read before the search's keys go (rides/search-situation.ts): every screen says the same.
+  const ended = await situationForRide(deps.redisClient, rideId).catch(() => null);
+  const endedView = ended ? endedOf(ended) : null;
   // Over in the gateway's eyes: auto-accept never books it (a late bid revives its chat state only).
   await markSearchEnded(deps.redisClient, rideId);
   if (payingStatusEnabled()) await closePaying(deps, rideId, 'search_ended').catch(() => false);
@@ -765,7 +775,7 @@ async function endTimedOutSearch(
     if (phone) {
       const timedOutMeta = await getRideMeta(deps.redisClient, rideId).catch(() => null);
       // Remembered for the offers form: it says "no driver took ₦X" and offers Search again there.
-      await markSearchTimedOut(deps.redisClient, riderId, { rideId, offerNgn: timedOutMeta?.offerNgn ?? 0, at: new Date().toISOString() }).catch(() => undefined);
+      await markSearchTimedOut(deps.redisClient, riderId, { rideId, offerNgn: timedOutMeta?.offerNgn ?? 0, at: new Date().toISOString(), ...(endedView ? { ended: endedView } : {}) }).catch(() => undefined);
       // On the ride page, the page says the search ended.
       const pageShowsIt = await isRidePageOpen(deps.redisClient, riderId);
       if (options.toldBooked) {
@@ -782,7 +792,7 @@ async function endTimedOutSearch(
         // With the form's button already in the chat, the end of the search is not a message:
         // the rider opens the form when they like and finds the two ways forward inside it.
         const formHoldsIt = offersFormIsOn(deps.whatsappNotifier) && await hasOffersMessage(deps.redisClient, rideId);
-        if (!formHoldsIt && !pageShowsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn).catch(() => {});
+        if (!formHoldsIt && !pageShowsIt) await sendBidTimeoutNotification(deps.whatsappNotifier, phone, timedOutMeta?.offerNgn, endedView).catch(() => {});
       }
     }
     await clearActiveRideIfMatches(deps.redisClient, riderId, rideId);
@@ -792,16 +802,18 @@ async function endTimedOutSearch(
     await endOfferCount(deps, rideId);
     await cleanupRideKeys(deps.redisClient, rideId);
     // An app open on the same search (begun on WhatsApp) ends it too.
-    await registry.sendToUser(riderId, 'ride:bid_timeout', { rideId });
+    await registry.sendToUser(riderId, 'ride:bid_timeout', { rideId, ...(endedView ? { ended: endedView } : {}) });
   } else {
     await registry.sendToUser(riderId, 'ride:bid_timeout', {
       rideId,
+      // How it ended: the app's end screen says it ("No drivers came online near you.").
+      ...(endedView ? { ended: endedView } : {}),
     });
     // Said by push as well when the app is closed: a search that ends
     // unseen (a scheduled ride, most of all) must not just vanish.
     if (!registry.hasUser(riderId) && !options.alreadyTold) {
       await tellAppRider(deps, riderId, {
-        title: 'No driver accepted your ride',
+        title: endedView?.title ?? 'No driver accepted your ride',
         body: 'You were not charged. Open Wheelers to search again or change your price.',
         type: 'ride:bid_timeout',
         rideId,
@@ -951,7 +963,10 @@ function sendSearchStatusSoon(deps: StartGatewayConsumerDeps, riderId: string, r
   if (before) clearTimeout(before);
   const timer = setTimeout(() => {
     searchStatusTimers.delete(rideId);
-    void Promise.resolve().then(() => deps.registry.sendToUser(riderId, 'ride:search_status', { rideId, ...status })).catch(() => undefined);
+    // With what is happening (rides/search-situation.ts): the screen's one line comes from the server.
+    void situationForRide(deps.redisClient, rideId).catch(() => null)
+      .then((situation) => deps.registry.sendToUser(riderId, 'ride:search_status', { rideId, ...status, ...(situation ? { situation } : {}) }))
+      .catch(() => undefined);
   }, SEARCH_STATUS_DELAY_MS);
   timer.unref?.();
   searchStatusTimers.set(rideId, timer);
@@ -1122,6 +1137,7 @@ export async function handleRideEvent(
       ...(event.tripDetails ? { tripDetails: tripDetailsBoxOn() ? tripDetailsForOffer(event.tripDetails) : withoutNote(tripDetailsForOffer(event.tripDetails)) } : {}),
     });
     // The rider's waiting screen: drivers who saw the price, and the search's clock.
+    if (event.afterCurrentTrip) await noteFinishingSent(deps.redisClient, event.rideId, event.driverId).catch(() => undefined);
     const status = await noteOfferSent(deps.redisClient, event.rideId, event.driverId, event.bidsCloseAt ?? event.expiresAt).catch(() => null);
     await noteOfferedDriverUser(deps.redisClient, event.rideId, event.driverUserId).catch(() => undefined);
     if (status?.changed) sendSearchStatusSoon(deps, event.riderId, event.rideId, { driversNotified: status.driversNotified, bidsCloseAt: status.bidsCloseAt });
@@ -1148,6 +1164,8 @@ export async function handleRideEvent(
       console.info('[group-trip] driver price', { tripId: event.rideId, driverId: event.driverId, priceNgn: event.counterOfferNgn, outcome });
       return;
     }
+    // The waiting screen's line ("2 drivers asked ₦3,900 – ₦4,300"), a moment after the offer is written.
+    void getSearchStatus(deps.redisClient, event.rideId).then((status) => sendSearchStatusSoon(deps, event.riderId, event.rideId, status)).catch(() => undefined);
     const waRiderByPointer = await isWhatsappRider(deps.redisClient, event.riderId);
     let waRider = waRiderByPointer;
     if (!waRider && deps.whatsappNotifier) {
@@ -1946,7 +1964,8 @@ export async function handleRideEvent(
         await sendRideStartedNotification(deps.whatsappNotifier, phone, null, {
           waitingLine: sayWaiting ? waitingLine : null,
           recorded: sayRecorded,
-          tips: safetyTipsFor(event.rideId, 'during'),
+          // One tip, inside "Trip started" (never a message of its own).
+          tipLine: safetyCardLine(safetyCard('belt', {})),
         }).catch(() => undefined);
         // Marked while this was being sent: said now, on its own.
         if (!sayRecorded) await sayTripRecorded(deps, event.rideId);
@@ -2317,6 +2336,10 @@ export async function handleRideEvent(
     if (event.reason === 'manual_reject') {
       await driverBidClient.markWithdrawn(event.rideId, event.driverId).catch(() => {});
       await dropBidFromWhatsappRide(deps, event.rideId, event.riderId, event.driverId);
+      // A driver who said no: "3 drivers passed at ₦2,800" when most did and the price is under the usual one.
+      await noteDeclined(deps.redisClient, event.rideId, event.driverId).catch(() => undefined);
+      const status = await getSearchStatus(deps.redisClient, event.rideId).catch(() => null);
+      if (status) sendSearchStatusSoon(deps, event.riderId, event.rideId, status);
     }
     await registry.sendToUser(event.riderId, 'ride:driver_rejected', {
       rideId: event.rideId,

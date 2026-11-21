@@ -219,7 +219,7 @@
     </div>
     <div class="card trip-card" id="nd-trip" hidden><strong id="nd-route"></strong><span class="small muted" id="nd-line"></span></div>
     <div class="retry-card" id="nd-retry" hidden>
-      <span class="retry-label">Try a higher price</span>
+      <span class="retry-label" id="nd-retry-label">Try a higher price</span>
       <div class="retry-row" id="nd-options"></div>
       <button class="rlink orange-on-ink" type="button" id="nd-other">Enter another amount</button>
     </div>
@@ -317,7 +317,14 @@
           <button class="btn ghost" type="button" data-raise="0" aria-label="Set another price">Other</button>
         </div>
       </div>
-      <div class="waiting-box">Waiting for the first offer</div>
+      <div class="waiting-box" id="waiting-box">Waiting for the first offer</div>
+    </div>
+
+    <!-- what is happening with the search, as the server says it (rides/search-situation.ts) -->
+    <div class="sit" id="sit" role="status" hidden>
+      <strong class="sit-title" id="sit-title"></strong>
+      <span class="sit-line" id="sit-line"></span>
+      <button class="btn ghost sit-act" type="button" id="sit-act" hidden></button>
     </div>
 
     <div class="offer-list" id="offer-list" aria-live="polite"></div>
@@ -382,6 +389,13 @@
       <div class="driver-text"><strong id="d-name"></strong><span id="d-vehicle"></span></div>
       <span class="plate big-plate" id="d-plate"></span>
     </div>
+
+    <!-- The safety tip for where the ride is (packages/config safety-cards.ts): still until the moment changes -->
+    <div class="tipcard" id="d-tip" role="note" aria-live="polite" hidden>
+      <span class="tip-emoji" id="d-tip-emoji" aria-hidden="true"></span>
+      <div class="tip-text"><span class="tip-kick" id="d-tip-kick"></span><strong class="tip-title" id="d-tip-title"></strong><span class="tip-line" id="d-tip-line"></span></div>
+    </div>
+    <button class="tip-all" type="button" id="d-tip-all" hidden>See all safety tips</button>
 
     <!-- Waiting time: 5 free minutes after the driver arrives, then a fee a minute until the trip starts -->
     <div class="wait-card" id="d-wait" role="timer" hidden>
@@ -534,6 +548,7 @@
   <div class="sheet-head"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><h2 id="tips-title"></h2></div>
   <div class="rec-line" id="tips-rec" hidden><svg class="ico mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>This trip is recorded for your safety.</span></div>
   <ol class="tips" id="tips-list"></ol>
+  <div class="alltips" id="tips-cards" hidden></div>
   <button class="btn primary" type="button" id="tips-ok">Got it</button>
 </div>
 
@@ -603,6 +618,13 @@
   <input class="nin-input" id="nin-input" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="11-digit NIN" aria-label="NIN">
   <div class="notice bad" id="nin-err" hidden></div>
   <button class="btn primary" type="button" id="nin-send">Verify</button>
+</div>
+
+<!-- Every safety tip of the ride, by when it matters -->
+<div class="sheet" id="sheet-alltips" hidden role="dialog" aria-modal="true" aria-labelledby="alltips-title">
+  <h2 id="alltips-title">Safety tips for this ride</h2>
+  <div class="alltips" id="alltips-list"></div>
+  <button class="btn primary" type="button" data-close>Close</button>
 </div>
 
 <!-- What was checked about a driver (an offer's ✓ chips) -->

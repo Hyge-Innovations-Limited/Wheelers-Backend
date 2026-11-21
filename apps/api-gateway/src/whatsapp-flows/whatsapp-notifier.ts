@@ -1,5 +1,5 @@
 import { signFlowToken } from './encryption';
-import { calculateRideFees, TRIP_RECORDED_LINE } from '@wheleers/config';
+import { calculateRideFees, safetyCard, safetyCardLine, safetyCardsFor, safetyStageFor, TRIP_RECORDED_LINE } from '@wheleers/config';
 import type { WhatsappBid, WhatsappRideMeta } from './bid-state';
 import { tripLines } from './trip-text';
 
@@ -566,6 +566,8 @@ export async function sendRideMatchedNotification(
     ...(formatTappablePhone(driverPhone) ? [`Call your driver: ${formatTappablePhone(driverPhone)}`] : []),
     ``,
     `${driverName} is on the way — they'll be with you in ~${etaMin} min.`,
+    ``,
+    safetyCardLine(safetyCardsFor({ plate: vehiclePlate, driverName, vehicleModel, fareNgn: fees.totalNgn }).byStage[safetyStageFor({ phase: 'coming', etaSeconds })]),
   ].join('\n');
 
   await sendMetaWhatsappMessage(deps, phone, msg);
@@ -603,6 +605,8 @@ export async function sendDriverArrivedNotification(
       ? [`Free waiting: ${Math.round(details.waiting.freeSeconds / 60)} min.`]
       : []),
     ...(details?.tripCode ? [``, `*TRIP CODE: ${details.tripCode}*`, `Give it to your driver when you get in.`] : []),
+    ``,
+    safetyCardLine(safetyCard('name', {})),
   ];
   const text = [...head, ...(call ? [``, `Can't find them? Call ${call}`] : [])].join('\n');
 
@@ -699,11 +703,10 @@ export async function sendRideStartedNotification(
     waitingLine?: string | null;
     /** The driver's phone is recording this trip: said only when it is. */
     recorded?: boolean;
-    /** Three safety tips for the trip (safetyTipsFor(rideId, 'during')). */
-    tips?: string[];
+    /** The safety tip for the trip, as one line (safetyCardLine). */
+    tipLine?: string | null;
   } = {},
 ): Promise<void> {
-  const tips = (extras.tips ?? []).filter(Boolean);
   await sendMetaWhatsappMessage(deps, phone, [
     // No trip ID in the chat: riders never need it (admin and the Excel keep it).
     `*Trip started*`,
@@ -711,7 +714,7 @@ export async function sendRideStartedNotification(
     `Sit back and enjoy the ride. Your receipt comes here when you arrive.`,
     ...(extras.waitingLine ? [``, extras.waitingLine] : []),
     ...(extras.recorded ? [``, `🎙 ${TRIP_RECORDED_LINE}`] : []),
-    ...(tips.length ? [``, `*Stay safe*`, ...tips.map((tip, i) => `${i + 1}. ${tip}`)] : []),
+    ...(extras.tipLine ? [``, extras.tipLine] : []),
   ].join('\n'));
 }
 
@@ -751,6 +754,8 @@ async function sendRideCompletedNotification(
       ? [`Waiting time · ${waiting.minutes} min · ₦${waiting.feeNgn.toLocaleString()}${waiting.paid ? '' : paidInCash ? ' in cash' : ' (not paid)'}`]
       : []),
     ...(balanceNgn !== undefined && !paidXlm && !paidInCash ? [`Wallet balance ₦${balanceNgn.toLocaleString()}`] : []),
+    ``,
+    safetyCardLine(safetyCard('keys', {})),
     ``,
     `How was your driver? Reply *1* to *5* to rate them.`,
   ].join('\n');
@@ -858,19 +863,38 @@ export async function sendBidTimeoutNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
   offerNgn?: number,
+  /** How it ended (rides/search-situation.ts): said as it is, a higher price named only when it would help. */
+  ended?: { kind: string; title: string; retryNgn: number[] } | null,
 ): Promise<void> {
-  // A dead end with no door is where riders churn. Name the two ways
-  // forward, in order of what actually works.
-  const lines = [
+  await sendMetaWhatsappMessage(deps, phone, bidTimeoutText(offerNgn, ended).join('\n'));
+}
+
+/** The end of a search nobody took, in the chat. */
+export function bidTimeoutText(offerNgn?: number, ended?: { kind: string; title: string; retryNgn: number[] } | null): string[] {
+  const price = offerNgn ? `₦${offerNgn.toLocaleString()}` : null;
+  const next = ended?.retryNgn?.[0];
+  if (ended && ended.kind !== 'offers') {
+    const said = ended.kind === 'waiting' || ended.kind === 'on_trips'
+      ? ended.title.replace(/^(\d+ drivers?) saw it/, `$1 saw ${price ?? 'it'}`)
+      : ended.title;
+    return [
+      `${said} Nothing was charged.`,
+      '',
+      next
+        ? `Send *${next}* to search at that price, or reply *search again*.`
+        : `Reply *search again* to try${price ? ` ${price}` : ''} again.`,
+    ];
+  }
+  // A dead end with no door is where riders churn. Name the two ways forward, in order of what actually works.
+  return [
     offerNgn
       ? `No driver took ₦${offerNgn.toLocaleString()} this time. Nothing was charged.`
       : 'No driver took this trip this time. Nothing was charged.',
     '',
     offerNgn
-      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*.`
+      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil(Math.round(offerNgn * 1.1) / 100) * 100}*.`
       : 'Reply *search again* to try again, or send a higher price.',
   ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 
 export async function sendRiderPaidNotification(

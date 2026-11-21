@@ -49,7 +49,7 @@ export function createRideRequestedConsumer(params: {
   /** Waits between the retries of the assignment write (tests make them short). */
   assignRetryDelaysMs?: number[];
   rideEventsProducer: RideEventsProducer;
-}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => Promise<void> } {
+}): { handle: (value: unknown, ctx: MessageContext) => Promise<void>; rehydrate: () => Promise<number>; handleGroupTrip: (event: GroupTripFormedEvent | GroupTripEndedEvent) => Promise<void>; rescanEmptySearches: () => Promise<number> } {
   const { state, rideEnv, rideEventsProducer } = params;
   const assignRetryDelaysMs = params.assignRetryDelaysMs ?? [250, 1_000, 3_000];
 
@@ -73,9 +73,33 @@ export function createRideRequestedConsumer(params: {
     returnAssignedDriverToPool(event.groupId);
   }
 
+  /**
+   * "Keep looking" (Timi, 21 Nov 2026): a search that has reached nobody yet looks again, for drivers who drove into
+   * range or came online since (a driver going online is sent it at once too, onDriverOnline). Every 30 s from
+   * index.ts; only searches with no driver sent, never one booked, never a group's. Returns how many were sent.
+   */
+  async function rescanEmptySearches(): Promise<number> {
+    let sent = 0;
+    for (const [rideId, pending] of state.pendingMatchesByRideId) {
+      if (pending.candidates.length > 0 || state.assignedDriversByRideId.has(rideId) || pending.group) continue;
+      if (pending.closesAt && pending.closesAt <= Date.now()) continue;
+      const result = await matchDriver({ rideEnv, onlineDrivers: state.onlineDrivers, rideRequested: pending.rideRequested }).catch(() => null);
+      if (!result?.ok) continue;
+      const fresh = result.drivers.filter((d) => !pending.attemptedDriverIds.has(d.driverId));
+      if (fresh.length === 0) continue;
+      pending.candidates = [...pending.candidates, ...fresh];
+      await rideEventsProducer.broadcastRideOffer({ drivers: fresh, rideRequested: pending.rideRequested, expiresAt: searchClock(pending) });
+      void studioCaptureClient.notePings(rideId, fresh.map((d) => d.driverId), 1);
+      console.log(`[ride-service] search ${rideId} had reached nobody; sent now to ${fresh.length} driver(s)`);
+      sent += 1;
+    }
+    return sent;
+  }
+
   return {
     rehydrate: rehydrateOpenSearches,
     handleGroupTrip,
+    rescanEmptySearches,
     async handle(value, ctx) {
       if (ctx.topic !== TOPICS.RIDE_EVENTS) return;
       const event = safeParseKafkaEvent(TOPICS.RIDE_EVENTS, value);

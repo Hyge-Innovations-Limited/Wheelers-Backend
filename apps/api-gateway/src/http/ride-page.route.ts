@@ -22,6 +22,7 @@ import { logActivity } from '../analytics/log-activity';
 import { estimateEtaSeconds, haversineKm } from '../utils/geo';
 import { clearActiveRideIfMatches, clearBookingStage, clearPendingRoute, clearPendingAccept, getPendingAccept, markCancelledOnPage, unmarkCancelledOnPage, wasCancelledOnPage, getAcceptedBid, getActiveRide, getBids, getGroupSeat, getPendingRoute, getRideMeta, getRideState, markRidePageSeen, getLastRoute, getSearchTimedOut, setBookingStage, storePendingRoute, whatsappWindowEnd, MAX_CHAT_STOPS, getPageNotice, clearPageNotice, getTripLine, storeTripLine } from '../whatsapp-flows/bid-state';
 import { getSearchStatus } from '../rides/search-status';
+import { loadSearchSituation } from '../rides/search-situation';
 import { isSearchEnded, releaseBookingLock, takeBookingLock } from '../rides/booking-lock';
 import { searchTripDetails } from '../whatsapp/trip-details-said';
 import { autoAcceptOnAtStart, autoAcceptStatus, switchAutoAccept } from '../rides/auto-accept';
@@ -292,7 +293,11 @@ async function liveTripFor(userId: string) {
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
     // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
-    ...safetyView(ride, driver.vehiclePlate),
+    ...safetyView(ride, {
+      plate: driver.vehiclePlate, driverName: driver.user?.name ?? null,
+      vehicleModel: [driver.vehicleMake, driver.vehicleModel].filter(Boolean).join(' ') || null,
+      fareNgn: ride.agreedFareNgn === null || ride.agreedFareNgn === undefined ? null : Number(ride.agreedFareNgn),
+    }),
   };
 }
 
@@ -437,10 +442,12 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         };
       }
 
-      const [status, autoBook, planned] = await Promise.all([
+      const [status, autoBook, planned, situation] = await Promise.all([
         getSearchStatus(deps.redisClient, rideId).catch(() => ({ driversNotified: null, bidsCloseAt: null })),
         autoAcceptStatus(deps.redisClient, rideId).catch(() => ({ on: false, priceNgn: null })),
         getLastRoute(deps.redisClient, userId).catch(() => null),
+        // What is happening with the search, as one line (rides/search-situation.ts).
+        loadSearchSituation(deps.redisClient, rideId, { offerNgn: meta.offerNgn, usualNgn: meta.suggestedFareNgn ?? null, asks: bids.map((bid) => bid.counterOfferNgn) }).catch(() => null),
       ]);
       // The Finding map: the trip's places, and its road when the last route saved is this search's trip.
       const places = placesOf(meta);
@@ -452,6 +459,7 @@ async function buildPhaseState(deps: RidePageRouteDeps, userId: string) {
         // The waiting screen: drivers the price went out to, and when the search closes.
         driversNotified: status.driversNotified,
         bidsCloseAt: status.bidsCloseAt,
+        situation,
         // Only when the rider said yes at Find: the first driver at or under the price (never above the
         // price of the yes, autoAcceptPriceNgn), ≤ 10 min away, is booked when the wallet covers them.
         autoAccept: autoBook.on,
@@ -600,6 +608,8 @@ async function lastSearchFor(deps: RidePageRouteDeps, userId: string) {
   const last = await getLastRoute(deps.redisClient, userId).catch(() => null);
   return {
     offerNgn: timedOut.offerNgn || last?.offerNgn || 0,
+    // How it ended ("No drivers came online near you."), and the prices worth trying, if any.
+    ...(timedOut.ended ? { ended: timedOut.ended } : {}),
     route: last ? {
       pickupAddress: last.pickupAddress,
       destAddress: last.destAddress,

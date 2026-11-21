@@ -440,7 +440,9 @@ export async function hasUnopenedOffersMessage(redis: RedisClient, rideId: strin
  * rider finds out in the offers form (its button is already in the chat), which
  * offers Search again and Change my price. Cleared the moment a new search starts.
  */
-export interface SearchTimedOut { rideId: string; offerNgn: number; at: string }
+/** How a search ended (rides/search-situation.ts): the end screen's title and the prices worth trying, if any. */
+export interface SearchEnded { kind: string; title: string; usualNgn: number | null; retryNgn: number[] }
+export interface SearchTimedOut { rideId: string; offerNgn: number; at: string; ended?: SearchEnded }
 const searchTimedOutKey = (userId: string) => `whatsapp:user:${userId}:search_timed_out`;
 const SEARCH_TIMED_OUT_TTL = 86_400;
 

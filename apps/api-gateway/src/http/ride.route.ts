@@ -23,6 +23,7 @@ import { driverChecksField } from "../drivers/driver-checks";
 import { safetyView } from "../rides/safety";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
+import { situationForRide } from "../rides/search-situation";
 import { waitingView } from "../rides/waiting";
 import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
 import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from "../rides/group-live";
@@ -582,7 +583,11 @@ function serializeRideDetail(ride: RideWithDriver) {
     // Waiting time: the free minutes and the meter while the driver waits, the fee once the trip started.
     waiting: waitingView(ride),
     // Recorded (the driver's phone started it), and the safety tips for before and after the trip.
-    ...safetyView(ride, (ride as { driver?: { vehiclePlate?: string | null } | null }).driver?.vehiclePlate ?? null),
+    ...safetyView(ride, {
+      plate: ride.driver?.vehiclePlate ?? null, driverName: ride.driver?.user.name ?? null,
+      vehicleModel: [ride.driver?.vehicleMake, ride.driver?.vehicleModel].filter(Boolean).join(' ') || null,
+      fareNgn: decimalToNumber(ride.agreedFareNgn),
+    }),
     cancelledAt: ride.cancelledAt?.toISOString() ?? null,
     createdAt: ride.createdAt.toISOString(),
     updatedAt: ride.updatedAt.toISOString(),
@@ -778,6 +783,8 @@ export async function handleActiveRideRoute(
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
+          // What is happening with the search, as one line ("No drivers near you right now"): rides/search-situation.ts.
+          ...(deps.redisClient ? { situation: await situationForRide(deps.redisClient, active.id).catch(() => null) } : {}),
           offers: await Promise.all((await rideClient.pendingBids(active.id).catch(() => [])).map(async (bid) => ({
             bidId: bid.id,
             driverId: bid.driverId,
