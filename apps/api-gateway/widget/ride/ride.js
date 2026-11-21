@@ -2458,10 +2458,14 @@
     var last = lastSearchOf(s);
     if (!last) return;
     var sig = noDriverSig(last);
-    var prices = retryPrices(last.offerNgn);
+    var endedHow = last.ended && last.ended.title && last.ended.kind !== 'offers' ? last.ended : null;
+    // Higher prices only when they would help (drivers passed on the price, or asked more): the server names them.
+    var prices = endedHow ? (endedHow.retryNgn || []).filter(function (p) { return Number(p) > last.offerNgn; }).map(Number) : retryPrices(last.offerNgn);
     if (changed || ndDrawnFor !== sig) { ndDrawnFor = sig; ndPicked = prices.length ? prices[0] : null; W.show(W.$('nd-err'), false); }
 
-    W.$('nd-title').textContent = 'No driver accepted ' + W.naira(last.offerNgn);
+    // How it ended, as the server says it ("No drivers came online near you."); an older search: as before.
+    var ended = last.ended && last.ended.title && last.ended.kind !== 'offers' ? last.ended : null;
+    W.$('nd-title').textContent = ended ? ended.title : 'No driver accepted ' + W.naira(last.offerNgn);
     var route = last.route;
     W.show(W.$('nd-trip'), Boolean(route));
     if (route) {
@@ -2472,7 +2476,10 @@
       ].filter(Boolean).join(' · ');
     }
 
-    W.show(W.$('nd-retry'), prices.length > 0);
+    // No price worth naming: only "Enter another amount" (the rider may still want one).
+    W.show(W.$('nd-retry'), prices.length > 0 || Boolean(endedHow));
+    W.show(W.$('nd-retry-label'), prices.length > 0);
+    W.show(W.$('nd-options'), prices.length > 0);
     var holder = W.$('nd-options');
     var optionsSig = JSON.stringify([prices, ndPicked]);
     if (optionsSig !== ndOptionsSig) {
@@ -2973,9 +2980,44 @@
     return nudgeFrom[key];
   }
 
+  /**
+   * What is happening with the search, as the server says it (Timi, 21 Nov 2026): "No drivers near you right now",
+   * "4 drivers have your request", "3 drivers passed at ₦2,800", "2 drivers asked ₦3,900 – ₦4,300". A higher price
+   * is offered only when drivers passed on it or asked more; never when nobody was near.
+   */
+  function situationOf(s) {
+    var sit = s && s.situation;
+    return sit && typeof sit.kind === 'string' ? sit : null;
+  }
+  function drawSituation(s) {
+    var sit = situationOf(s);
+    var shown = Boolean(sit && sit.title);
+    W.show(W.$('sit'), shown);
+    W.show(W.$('waiting-box'), !shown);
+    if (!shown) return;
+    W.$('sit-title').textContent = sit.title;
+    W.$('sit-line').textContent = sit.line || '';
+    W.show(W.$('sit-line'), Boolean(sit.line));
+    var act = W.$('sit-act');
+    var amount = Number(sit.suggestNgn) > Number(s.offerNgn) ? Number(sit.suggestNgn) : 0;
+    W.show(act, amount > 0 && (sit.kind === 'passed' || sit.kind === 'countered'));
+    act.textContent = amount > 0 ? (sit.kind === 'countered' ? 'Match ' : 'Offer ') + W.naira(amount) : '';
+    act.setAttribute('data-amount', String(amount));
+  }
+  W.$('sit-act').addEventListener('click', function () {
+    var amount = Number(W.$('sit-act').getAttribute('data-amount')) || 0;
+    if (!state || !(amount > state.offerNgn)) return;
+    var sit = situationOf(state);
+    track('situation_price_tapped', { kind: sit ? sit.kind : '', amountNgn: amount });
+    openChangePrice(amount - state.offerNgn);
+  });
+
   function drawClock(s) {
     var notified = Number(s.driversNotified);
     var saw = W.$('drivers-saw');
+    var sit = situationOf(s);
+    // The situation card says how many have it: the count is not said twice.
+    if (sit && sit.title) notified = 0;
     W.show(saw, notified > 0);
     saw.textContent = notified === 1 ? '1 driver saw your price' : notified + ' drivers saw your price';
 
@@ -2989,9 +3031,13 @@
     W.show(W.$('search-stats'), notified > 0 || isFinite(closeAt));
 
     var noOffers = (s.offers || []).length === 0;
-    var nudge = noOffers && Date.now() - nudgeStart(s) >= NUDGE_MS;
+    // Nobody near: more money changes nothing, so no price buttons. With the server's situation, no two-minute nudge:
+    // a higher price is named only when drivers passed on it (the card's button). An older server: as before.
+    W.show(W.$('raise'), !(sit && sit.kind === 'none_near'));
+    var nudge = !sit && noOffers && Date.now() - nudgeStart(s) >= NUDGE_MS;
     W.$('raise').classList.toggle('nudge', nudge);
     W.$('raise-label').textContent = nudge ? 'No offers yet. Raise your price' : 'Raise your offer';
+    drawSituation(s);
   }
 
   setInterval(function () {

@@ -23,6 +23,7 @@ import { driverChecksField } from "../drivers/driver-checks";
 import { safetyView } from "../rides/safety";
 import { assertInServiceArea, refusalCode } from "../utils/service-area";
 import { autoAcceptStatus } from "../rides/auto-accept";
+import { situationForRide } from "../rides/search-situation";
 import { waitingView } from "../rides/waiting";
 import { actOnWaiting, readWaitingAction, WaitingDealError } from "../rides/waiting-deal";
 import { answerGroupOffer, GroupLiveError, offerForRide, offerViewFor } from "../rides/group-live";
@@ -782,6 +783,8 @@ export async function handleActiveRideRoute(
           autoAccept: autoAccept.on,
           autoAcceptPriceNgn: autoAccept.priceNgn,
           bidsCloseAt: new Date(ride.updatedAt.getTime() + RIDE.BID_TIMEOUT_SECONDS * 1000).toISOString(),
+          // What is happening with the search, as one line ("No drivers near you right now"): rides/search-situation.ts.
+          ...(deps.redisClient ? { situation: await situationForRide(deps.redisClient, active.id).catch(() => null) } : {}),
           offers: await Promise.all((await rideClient.pendingBids(active.id).catch(() => [])).map(async (bid) => ({
             bidId: bid.id,
             driverId: bid.driverId,

@@ -863,19 +863,38 @@ export async function sendBidTimeoutNotification(
   deps: WhatsappNotifierDeps,
   phone: string,
   offerNgn?: number,
+  /** How it ended (rides/search-situation.ts): said as it is, a higher price named only when it would help. */
+  ended?: { kind: string; title: string; retryNgn: number[] } | null,
 ): Promise<void> {
-  // A dead end with no door is where riders churn. Name the two ways
-  // forward, in order of what actually works.
-  const lines = [
+  await sendMetaWhatsappMessage(deps, phone, bidTimeoutText(offerNgn, ended).join('\n'));
+}
+
+/** The end of a search nobody took, in the chat. */
+export function bidTimeoutText(offerNgn?: number, ended?: { kind: string; title: string; retryNgn: number[] } | null): string[] {
+  const price = offerNgn ? `₦${offerNgn.toLocaleString()}` : null;
+  const next = ended?.retryNgn?.[0];
+  if (ended && ended.kind !== 'offers') {
+    const said = ended.kind === 'waiting' || ended.kind === 'on_trips'
+      ? ended.title.replace(/^(\d+ drivers?) saw it/, `$1 saw ${price ?? 'it'}`)
+      : ended.title;
+    return [
+      `${said} Nothing was charged.`,
+      '',
+      next
+        ? `Send *${next}* to search at that price, or reply *search again*.`
+        : `Reply *search again* to try${price ? ` ${price}` : ''} again.`,
+    ];
+  }
+  // A dead end with no door is where riders churn. Name the two ways forward, in order of what actually works.
+  return [
     offerNgn
       ? `No driver took ₦${offerNgn.toLocaleString()} this time. Nothing was charged.`
       : 'No driver took this trip this time. Nothing was charged.',
     '',
     offerNgn
-      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil((offerNgn * 1.1) / 100) * 100}*.`
+      ? `Reply *search again* to try the same price, or send a higher price, e.g. *${Math.ceil(Math.round(offerNgn * 1.1) / 100) * 100}*.`
       : 'Reply *search again* to try again, or send a higher price.',
   ];
-  await sendMetaWhatsappMessage(deps, phone, lines.join('\n'));
 }
 
 export async function sendRiderPaidNotification(

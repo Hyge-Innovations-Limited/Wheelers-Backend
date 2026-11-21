@@ -2719,7 +2719,8 @@ test('SEARCH RUNS OUT · with the form, no message: the form says "No driver too
 
   const opened = await at.form('INIT');
   assert.equal(opened.screen, 'OFFERS');
-  assert.match(opened.data.offer_line, /^No driver took ₦2,000 this time/);
+  // Sent to no driver: said as it is (rides/search-situation.ts), not "No driver took ₦X".
+  assert.match(opened.data.offer_line, /^No drivers came online near you\./);
   assert.deepEqual(opened.data.choices.map((c) => c.id), ['search_again', 'change_price', 'close']);
   assert.equal((await at.form('data_exchange', { action: 'offers_choice', choice: 'refresh' })).data.offer_line, opened.data.offer_line, 'a stale Check for more offers lands here too');
 
@@ -2765,7 +2766,9 @@ test('SEARCH RUNS OUT · without the form (no button in the chat), the rider is 
   await handleRideEvent({ eventType: 'RIDE_BID_TIMEOUT', rideId: at.rideId, riderId: at.user.id, timestamp: new Date().toISOString() },
     { redisClient: at.redis, publisher: at.deps.publisher, whatsappNotifier: { metaAccessToken: 'meta-token', metaPhoneNumberId: '1234567890' }, registry: { sendToUser: async () => {}, hasUser: () => false } }, new Map());
   assert.equal(at.sent.length, before + 1);
-  assert.match(textOf(last(at.sent)), /No driver took ₦2,000[\s\S]*search again/);
+  // Sent to no driver: said as it is, and no "send a higher price" (more money changes nothing then).
+  assert.match(textOf(last(at.sent)), /No drivers came online near you\.[\s\S]*search again\* to try ₦2,000 again/);
+  assert.doesNotMatch(textOf(last(at.sent)), /higher price/);
 });
 
 /* ── the first batch of fixes from the co-founder's list ─────────────────── */

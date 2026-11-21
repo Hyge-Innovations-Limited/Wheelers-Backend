@@ -661,6 +661,11 @@ section[data-view="offers"] { position: relative; }
 .search-stats { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: -4px; font-size: 13px; line-height: 19px; }
 .search-stats .saw { font-weight: 700; }
 .search-stats .countdown { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: var(--soft); font-weight: 700; font-variant-numeric: tabular-nums; }
+/* the search's situation: one small card, the page's own soft fill */
+.sit { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: var(--r-md); background: var(--soft); }
+.sit-title { font-size: 14px; line-height: 19px; font-weight: 700; }
+.sit-line { font-size: 13px; line-height: 18px; color: var(--muted); }
+.sit-act { margin-top: 8px; }
 .raise.nudge .label-caps { text-transform: none; letter-spacing: 0; font-size: 14px; line-height: 19px; color: var(--orange-ink); }
 .raise.nudge [data-raise="500"] { background: var(--orange); border-color: var(--orange); }
 .auto-line { margin-top: -8px; font-size: 13px; line-height: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }

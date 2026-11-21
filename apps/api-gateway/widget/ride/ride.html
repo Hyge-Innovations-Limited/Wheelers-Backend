@@ -219,7 +219,7 @@
     </div>
     <div class="card trip-card" id="nd-trip" hidden><strong id="nd-route"></strong><span class="small muted" id="nd-line"></span></div>
     <div class="retry-card" id="nd-retry" hidden>
-      <span class="retry-label">Try a higher price</span>
+      <span class="retry-label" id="nd-retry-label">Try a higher price</span>
       <div class="retry-row" id="nd-options"></div>
       <button class="rlink orange-on-ink" type="button" id="nd-other">Enter another amount</button>
     </div>
@@ -317,7 +317,14 @@
           <button class="btn ghost" type="button" data-raise="0" aria-label="Set another price">Other</button>
         </div>
       </div>
-      <div class="waiting-box">Waiting for the first offer</div>
+      <div class="waiting-box" id="waiting-box">Waiting for the first offer</div>
+    </div>
+
+    <!-- what is happening with the search, as the server says it (rides/search-situation.ts) -->
+    <div class="sit" id="sit" role="status" hidden>
+      <strong class="sit-title" id="sit-title"></strong>
+      <span class="sit-line" id="sit-line"></span>
+      <button class="btn ghost sit-act" type="button" id="sit-act" hidden></button>
     </div>
 
     <div class="offer-list" id="offer-list" aria-live="polite"></div>
